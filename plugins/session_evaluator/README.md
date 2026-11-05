@@ -55,7 +55,9 @@ upgrade of an older document.
   The backend's model-invocation budget is not Session state and is not exported.
 - `runs`: terminal product records with their execution root, lifecycle,
   model invocations and outputs, prepared tools, tool changes, and rejected
-  proposals. Each relationship retains its Run-local identities/sequences.
+  proposals. Each relationship retains its Run-local identities/sequences. The
+  root preserves `run_id`, `session_id`, and `terminal_run_id`; all three must
+  agree with the selected terminal product record and its canonical Session.
 - `command_tools`: independently collected, Session-scoped retained command
   captures, including exact decoded stdout/stderr text and capture metadata.
 - `coverage`: explicit completeness status, associated Run IDs without observed
@@ -74,6 +76,25 @@ opaque compatibility/data maps are not read or exported.
 Selected text, arguments, provider details, and full command output are not
 redacted and may contain secrets or other sensitive development data; the caller
 controls handling of the assembled document.
+
+The provisional v2 document includes the execution owner's current pre-release v1
+root columns, including the Session identity and nullable terminal link introduced
+by incremental checkpoint storage. This is an additive selected-evidence shape
+adjustment, not a new completeness meaning or transport version. For every exported
+terminal Run the link must be non-null and match its Run ID. Missing expected SQL
+columns are `incompatible_schema`; null or mismatched terminal pairing and invalid
+stored identities are `malformed_data`. Neither failure emits a partial document.
+Older same-version database shapes are not upgraded or silently projected as the
+current shape.
+
+Unsealed execution roots remain outside `runs`; the evaluator does not export the
+application's interrupted recovery view or turn a last-observed waiting state into
+an actionable approval. Associated Runs without terminal records retain the
+existing partial-coverage treatment. No product outcome is synthesized.
+Ownership-only checks for Chat and command-capture associations also reject a Run
+ID known to belong to another Session through an unsealed root. These checks read
+only a boolean, not that Session's records or partial activity, and do not establish
+terminal provenance or live execution state.
 
 Model proposals are output occurrences, not executions. Prepared tools can be
 denied or rejected without an `executionStarted` change. Terminal Runs can contain

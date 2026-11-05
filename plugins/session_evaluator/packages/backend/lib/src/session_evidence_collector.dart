@@ -143,6 +143,23 @@ final class _Collection {
     message: message,
   );
 
+  Future<void> requireRunSession(String runId) async {
+    // Only ownership booleans, never another Session's records or unsealed activity.
+    final foreign = await query(
+      'Run association',
+      'SELECT (EXISTS (SELECT 1 FROM adele_product_runs '
+          'WHERE id = :run AND session_id <> :session) '
+          'OR EXISTS (SELECT 1 FROM adele_execution_run_activity '
+          'WHERE run_id = :run AND session_id <> :session)) AS foreign_run '
+          'WHERE $sessionExists LIMIT 1',
+      {':run': runId},
+    );
+    evidenceRequire(
+      foreign.length == 1 && foreign.single['foreign_run'] == 0,
+      'Run association belongs to another Session.',
+    );
+  }
+
   Future<List<Map<String, Object?>>> readTable(
     EvidenceTable table, {
     String? runId,
@@ -302,18 +319,7 @@ WHERE s.id = :session ORDER BY a.environment_id LIMIT 2
     for (final entry in conversation['entries'] as List<Map<String, Object?>>) {
       final runId = entry['run_id'];
       if (runId is! String || retained.contains(runId)) continue;
-      // Only a boolean ownership check is read, never another Session's record.
-      final foreign = await query(
-        'Chat Run association',
-        'SELECT EXISTS (SELECT 1 FROM adele_product_runs '
-            'WHERE id = :run AND session_id <> :session) AS foreign_run '
-            'WHERE $sessionExists LIMIT 1',
-        {':run': runId},
-      );
-      evidenceRequire(
-        foreign.length == 1 && foreign.single['foreign_run'] == 0,
-        'Chat Run association belongs to another Session.',
-      );
+      await requireRunSession(runId);
       missing.add(runId);
     }
     final commands = await readCommands(identity, runs);

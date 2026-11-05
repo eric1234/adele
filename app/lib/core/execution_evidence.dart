@@ -10,23 +10,45 @@ void validateTerminalRunActivity(
   RunRecord record,
   RunActivitySnapshot activity,
 ) {
+  if (record.id != activity.runId ||
+      record.sessionId != activity.sessionId ||
+      record.state.name != activity.state.name) {
+    throw const FormatException(
+      'Invalid terminal Run activity: record identity, Session, or terminal state mismatch.',
+    );
+  }
+  _validateRunActivity(activity, terminal: true);
+}
+
+/// Validates a public nonterminal prefix without inventing missing observations.
+void validatePartialRunActivity(RunActivitySnapshot activity) =>
+    _validateRunActivity(activity, terminal: false);
+
+bool _terminal(RunState state) => const {
+  RunState.completed,
+  RunState.failed,
+  RunState.cancelled,
+}.contains(state);
+
+void _validateRunActivity(
+  RunActivitySnapshot activity, {
+  required bool terminal,
+}) {
   void require(bool valid, String message) {
     if (!valid) {
-      throw FormatException('Invalid terminal Run activity: $message');
+      throw FormatException('Invalid Run activity: $message');
     }
   }
 
-  require(
-    record.id == activity.runId &&
-        record.sessionId == activity.sessionId &&
-        record.state.name == activity.state.name,
-    'record identity, Session, or terminal state mismatch.',
-  );
+  require(_terminal(activity.state) == terminal, 'unexpected terminal state.');
   require(activity.sequence >= 0, 'negative latest sequence.');
   final sequences = <int>{};
   void sequence(int value) {
     require(
-      value >= 0 && value <= activity.sequence && sequences.add(value),
+      value >= 0 &&
+          value >= activity.lifecycle.first.sequence &&
+          value <= activity.sequence &&
+          sequences.add(value),
       'out-of-range or duplicate sequence $value.',
     );
   }
@@ -39,24 +61,43 @@ void validateTerminalRunActivity(
     }
   }
 
-  require(activity.lifecycle.isNotEmpty, 'missing lifecycle.');
+  if (activity.lifecycle.isEmpty) {
+    require(
+      activity.state == RunState.created &&
+          activity.sequence == 0 &&
+          activity.failure == null &&
+          activity.models.isEmpty &&
+          activity.tools.isEmpty &&
+          activity.rejectedProposals.isEmpty,
+      'only an empty created Run may have no lifecycle.',
+    );
+    return;
+  }
   ordered(activity.lifecycle.map((value) => value.sequence));
+  RunState? previousState;
   for (final value in activity.lifecycle) {
     sequence(value.sequence);
+    require(value.state != RunState.created, 'created lifecycle occurrence.');
     require(
-      value == activity.lifecycle.last ||
-          !const {
-            RunState.completed,
-            RunState.failed,
-            RunState.cancelled,
-          }.contains(value.state),
+      !_terminal(value.state) || (terminal && value == activity.lifecycle.last),
       'lifecycle continued after terminal state.',
     );
+    require(switch (previousState) {
+      null => value.state == RunState.running || _terminal(value.state),
+      RunState.running =>
+        value.state == RunState.waiting || _terminal(value.state),
+      RunState.waiting =>
+        value.state == RunState.running ||
+            value.state == RunState.failed ||
+            value.state == RunState.cancelled,
+      _ => false,
+    }, 'invalid lifecycle transition.');
+    previousState = value.state;
   }
   require(
     activity.lifecycle.last.state == activity.state &&
-        activity.lifecycle.last.sequence == activity.sequence,
-    'final lifecycle must match terminal state and latest sequence.',
+        (!terminal || activity.lifecycle.last.sequence == activity.sequence),
+    'final lifecycle must match state and terminal latest sequence.',
   );
   require(
     (activity.failure != null) == (activity.state == RunState.failed),
@@ -154,6 +195,11 @@ void validateTerminalRunActivity(
     EffectDescription? effects;
     ToolOutcomeActivity? outcome;
     RunInterruptionId? pending;
+    ToolActivityPolicyDecision? policy;
+    var policyObserved = false;
+    var approvalRequested = false;
+    bool? approved;
+    var executionStarted = false;
     for (final change in tool.changes) {
       sequence(change.sequence);
       final allowed = switch (change.kind) {
@@ -185,16 +231,65 @@ void validateTerminalRunActivity(
             change == tool.changes.first,
         'repeated tool preparation.',
       );
+      if (change.kind == ToolActivityKind.policyEvaluated ||
+          change.kind == ToolActivityKind.policyFailed) {
+        require(
+          !policyObserved && !executionStarted && !approvalRequested,
+          'repeated or late tool policy.',
+        );
+        policyObserved = true;
+        policy = change.policyDecision;
+      }
       if (change.kind == ToolActivityKind.approvalRequested) {
         require(
-          pending == null && interruptions.add(change.interruptionId!),
-          'duplicate approval request.',
+          policy == ToolActivityPolicyDecision.ask &&
+              !approvalRequested &&
+              !executionStarted &&
+              interruptions.add(change.interruptionId!),
+          'invalid or duplicate approval request.',
         );
+        approvalRequested = true;
         pending = change.interruptionId;
       }
       if (change.kind == ToolActivityKind.approvalResolved) {
-        require(pending == change.interruptionId, 'approval origin mismatch.');
+        require(
+          pending == change.interruptionId && !executionStarted,
+          'approval origin mismatch.',
+        );
+        approved = change.approved;
         pending = null;
+      }
+      if (change.kind == ToolActivityKind.executionStarted) {
+        require(
+          !executionStarted &&
+              pending == null &&
+              (policy == ToolActivityPolicyDecision.allow ||
+                  (policy == ToolActivityPolicyDecision.ask &&
+                      approved == true)),
+          'tool execution lacks a unique allowed or approved start.',
+        );
+        require(
+          activity.lifecycle
+                  .lastWhere((v) => v.sequence < change.sequence)
+                  .state ==
+              RunState.running,
+          'tool execution started while Run was not running.',
+        );
+        executionStarted = true;
+      }
+      if (change.kind == ToolActivityKind.progress) {
+        require(executionStarted, 'tool progress precedes execution.');
+      }
+      if (change.outcome case final value?) {
+        require(pending == null, 'tool completed with unresolved approval.');
+        require(switch (value.disposition) {
+          ToolOutcomeDisposition.success => executionStarted,
+          ToolOutcomeDisposition.policyDenied =>
+            executionStarted || policy == ToolActivityPolicyDecision.deny,
+          ToolOutcomeDisposition.userRejected =>
+            executionStarted || approved == false,
+          _ => true,
+        }, 'tool outcome disagrees with execution or approval evidence.');
       }
       effects = change.effects ?? effects;
       outcome = change.outcome ?? outcome;
@@ -222,47 +317,272 @@ void validateTerminalRunActivity(
     );
     _nonblank(rejected.message);
   }
+  require(
+    sequences.contains(activity.sequence),
+    'latest sequence has no evidence.',
+  );
 }
 
-/// Called only inside ProjectDatabase's record-and-evidence transaction.
-void insertExecutionEvidence(Database database, RunActivitySnapshot activity) {
-  final run = activity.runId.value;
-  database.execute(
-    'INSERT INTO adele_execution_run_activity '
-    '(run_id, latest_sequence, failure_kind, failure_message, '
-    'failure_provider_code, failure_provider_details_json) VALUES (?, ?, ?, ?, ?, ?)',
-    [
-      run,
-      activity.sequence,
-      activity.failure?.kind,
-      activity.failure?.message,
-      activity.failure?.providerCode,
-      _encode(activity.failure?.providerDetails),
+/// Previously committed occurrences are immutable, including gaps in sequence.
+void validateRunActivityExtension(
+  RunActivitySnapshot previous,
+  RunActivitySnapshot activity,
+) {
+  void require(bool valid) {
+    if (!valid) {
+      throw const FormatException(
+        'Run activity does not extend its durable prefix.',
+      );
+    }
+  }
+
+  require(
+    !_terminal(previous.state) &&
+        previous.runId == activity.runId &&
+        previous.sessionId == activity.sessionId &&
+        previous.sequence <= activity.sequence,
+  );
+  // An empty created snapshot's zero is a cursor, not an occurrence.
+  final cutoff = previous.lifecycle.isEmpty ? -1 : previous.sequence;
+  void prefix<T>(
+    List<T> before,
+    List<T> after,
+    int Function(T) sequence,
+    Object? Function(T) data,
+  ) {
+    require(after.length >= before.length);
+    for (var index = 0; index < before.length; index++) {
+      if (identical(before[index], after[index])) continue;
+      require(_equal(data(before[index]), data(after[index])));
+    }
+    for (final value in after.skip(before.length)) {
+      require(sequence(value) > cutoff);
+    }
+  }
+
+  prefix(
+    previous.lifecycle,
+    activity.lifecycle,
+    (v) => v.sequence,
+    (v) => [v.sequence, v.state],
+  );
+  require(activity.models.length >= previous.models.length);
+  for (var index = 0; index < activity.models.length; index++) {
+    final model = activity.models[index];
+    if (index >= previous.models.length) {
+      require(model.startSequence > cutoff);
+      continue;
+    }
+    final before = previous.models[index];
+    if (identical(before, model)) continue;
+    require(
+      before.id == model.id && before.startSequence == model.startSequence,
+    );
+    prefix(before.outputs, model.outputs, (v) => v.sequence, _outputData);
+    if (before.terminalSequence != null) {
+      require(_equal(_modelTerminalData(before), _modelTerminalData(model)));
+    } else if (model.terminalSequence case final sequence?) {
+      require(sequence > cutoff);
+    }
+  }
+  require(activity.tools.length >= previous.tools.length);
+  for (var index = 0; index < activity.tools.length; index++) {
+    final tool = activity.tools[index];
+    if (index >= previous.tools.length) {
+      require(tool.preparedSequence > cutoff);
+      continue;
+    }
+    final before = previous.tools[index];
+    if (identical(before, tool)) continue;
+    require(_equal(_toolIdentityData(before), _toolIdentityData(tool)));
+    prefix(before.changes, tool.changes, (v) => v.sequence, _changeData);
+  }
+  prefix(
+    previous.rejectedProposals,
+    activity.rejectedProposals,
+    (v) => v.sequence,
+    (v) => [
+      v.sequence,
+      v.modelInvocationId,
+      v.proposalSequence,
+      _proposalData(v.proposal),
+      v.kind,
+      v.message,
     ],
   );
-  for (final value in activity.lifecycle) {
+}
+
+Object? _nativeData(ModelNativeEnvelope? value) =>
+    value == null ? null : [value.kind, value.compatibility, value.data];
+
+Object? _failureData(ActivityFailure? value) => value == null
+    ? null
+    : [value.kind, value.message, value.providerCode, value.providerDetails];
+
+Object _proposalData(ProviderToolProposal value) => [
+  value.providerCallId,
+  value.alias,
+  value.arguments,
+];
+
+Object _outputData(ModelOutputActivity value) => [
+  value.sequence,
+  switch (value.item) {
+    ModelTextOutput(
+      :final content,
+      :final providerItemId,
+      :final providerNativeMetadata,
+    ) =>
+      ['text', content, providerItemId, _nativeData(providerNativeMetadata)],
+    ModelNativeOutput(
+      :final providerItemId,
+      :final providerNativeMetadata,
+      :final presentation,
+    ) =>
+      [
+        'native',
+        providerItemId,
+        _nativeData(providerNativeMetadata),
+        if (presentation == null)
+          null
+        else
+          [presentation.kind, presentation.compactText, presentation.data],
+      ],
+    ModelToolProposalOutput(
+      :final proposal,
+      :final providerItemId,
+      :final providerNativeMetadata,
+    ) =>
+      [
+        'proposal',
+        _proposalData(proposal),
+        providerItemId,
+        _nativeData(providerNativeMetadata),
+      ],
+  },
+];
+
+Object _modelTerminalData(ModelInvocationActivity value) {
+  final metadata = value.metadata;
+  final usage = metadata?.usage;
+  return [
+    value.terminalSequence,
+    value.settlement,
+    value.incompleteReason,
+    _failureData(value.failure),
+    if (metadata == null)
+      null
+    else
+      [
+        metadata.effectiveModel,
+        metadata.providerResponseId,
+        metadata.providerRequestId,
+        metadata.providerStopReason,
+        _nativeData(metadata.providerNativeState),
+        if (usage == null)
+          null
+        else
+          [
+            usage.inputTokens,
+            usage.outputTokens,
+            usage.cacheReadTokens,
+            usage.cacheWriteTokens,
+            usage.providerDetails,
+          ],
+      ],
+  ];
+}
+
+Object _toolIdentityData(ToolInvocationActivity value) => [
+  value.id,
+  value.preparedSequence,
+  value.modelInvocationId,
+  value.proposalSequence,
+  value.toolId,
+  value.alias,
+  value.providerCallId,
+  value.canonicalArguments,
+];
+
+Object _changeData(ToolActivityChange value) {
+  final outcome = value.outcome;
+  return [
+    value.sequence,
+    value.kind,
+    value.policyDecision,
+    _effectsData(value.effects),
+    value.interruptionId,
+    value.approved,
+    value.progress?.kind,
+    value.progress?.content,
+    if (outcome == null)
+      null
+    else
+      [
+        outcome.disposition,
+        outcome.failureKind,
+        outcome.effectCertainty,
+        outcome.modelContent,
+        outcome.hostData,
+      ],
+  ];
+}
+
+/// Called only inside a ProjectDatabase transaction, after prefix validation.
+void insertExecutionEvidence(
+  Database database,
+  RunActivitySnapshot activity, {
+  RunActivitySnapshot? previous,
+  bool seal = false,
+}) {
+  final run = activity.runId.value;
+  final cutoff = previous == null || previous.lifecycle.isEmpty
+      ? -1
+      : previous.sequence;
+  final header = <Object?>[
+    seal ? run : null,
+    activity.sequence,
+    activity.failure?.kind,
+    activity.failure?.message,
+    activity.failure?.providerCode,
+    _encode(activity.failure?.providerDetails),
+  ];
+  if (previous == null) {
+    database.execute(
+      'INSERT INTO adele_execution_run_activity '
+      '(run_id, session_id, terminal_run_id, latest_sequence, failure_kind, failure_message, '
+      'failure_provider_code, failure_provider_details_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      [run, activity.sessionId.value, ...header],
+    );
+  } else {
+    database.execute(
+      'UPDATE adele_execution_run_activity SET terminal_run_id = ?, latest_sequence = ?, '
+      'failure_kind = ?, failure_message = ?, failure_provider_code = ?, failure_provider_details_json = ? '
+      'WHERE run_id = ? AND session_id = ? AND latest_sequence = ? AND terminal_run_id IS NULL',
+      [...header, run, activity.sessionId.value, previous.sequence],
+    );
+    if (database.updatedRows != 1) {
+      throw StateError('Durable Run activity prefix changed.');
+    }
+  }
+  for (final value in activity.lifecycle.where((v) => v.sequence > cutoff)) {
     database.execute(
       'INSERT INTO adele_execution_run_lifecycle VALUES (?, ?, ?)',
       [run, value.sequence, value.state.name],
     );
   }
+  final priorModels = {
+    for (final model in previous?.models ?? <ModelInvocationActivity>[])
+      model.id: model,
+  };
   for (final model in activity.models) {
-    final metadata = model.metadata;
-    final usage = metadata?.usage;
-    final native = metadata?.providerNativeState;
-    database.execute(
-      'INSERT INTO adele_execution_model_invocations '
-      '(run_id, invocation_id, start_sequence, terminal_sequence, settlement, '
-      'incomplete_reason, metadata_present, effective_model, provider_response_id, '
-      'provider_request_id, provider_stop_reason, usage_present, input_tokens, '
-      'output_tokens, cache_read_tokens, cache_write_tokens, usage_provider_details_json, '
-      'native_state_kind, native_state_compatibility_json, native_state_data_json, '
-      'failure_kind, failure_message, failure_provider_code, failure_provider_details_json) '
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [
-        run,
-        model.id.value,
-        model.startSequence,
+    final prior = priorModels[model.id];
+    if (prior == null ||
+        (prior.terminalSequence == null && model.terminalSequence != null)) {
+      final metadata = model.metadata;
+      final usage = metadata?.usage;
+      final native = metadata?.providerNativeState;
+      final terminalValues = <Object?>[
         model.terminalSequence,
         model.settlement?.name,
         model.incompleteReason?.name,
@@ -284,9 +604,36 @@ void insertExecutionEvidence(Database database, RunActivitySnapshot activity) {
         model.failure?.message,
         model.failure?.providerCode,
         _encode(model.failure?.providerDetails),
-      ],
-    );
-    for (final output in model.outputs) {
+      ];
+      if (prior == null) {
+        database.execute(
+          'INSERT INTO adele_execution_model_invocations '
+          '(run_id, invocation_id, start_sequence, terminal_sequence, settlement, '
+          'incomplete_reason, metadata_present, effective_model, provider_response_id, '
+          'provider_request_id, provider_stop_reason, usage_present, input_tokens, '
+          'output_tokens, cache_read_tokens, cache_write_tokens, usage_provider_details_json, '
+          'native_state_kind, native_state_compatibility_json, native_state_data_json, '
+          'failure_kind, failure_message, failure_provider_code, failure_provider_details_json) '
+          'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          [run, model.id.value, model.startSequence, ...terminalValues],
+        );
+      } else {
+        database.execute(
+          'UPDATE adele_execution_model_invocations SET '
+          'terminal_sequence = ?, settlement = ?, incomplete_reason = ?, metadata_present = ?, '
+          'effective_model = ?, provider_response_id = ?, provider_request_id = ?, provider_stop_reason = ?, '
+          'usage_present = ?, input_tokens = ?, output_tokens = ?, cache_read_tokens = ?, cache_write_tokens = ?, '
+          'usage_provider_details_json = ?, native_state_kind = ?, native_state_compatibility_json = ?, '
+          'native_state_data_json = ?, failure_kind = ?, failure_message = ?, failure_provider_code = ?, '
+          'failure_provider_details_json = ? WHERE run_id = ? AND invocation_id = ? AND terminal_sequence IS NULL',
+          [...terminalValues, run, model.id.value],
+        );
+        if (database.updatedRows != 1) {
+          throw StateError('Durable model settlement changed.');
+        }
+      }
+    }
+    for (final output in model.outputs.where((v) => v.sequence > cutoff)) {
       final item = output.item;
       final (
         kind,
@@ -349,24 +696,26 @@ void insertExecutionEvidence(Database database, RunActivitySnapshot activity) {
     }
   }
   for (final tool in activity.tools) {
-    database.execute(
-      'INSERT INTO adele_execution_tool_invocations '
-      '(run_id, invocation_id, prepared_sequence, model_invocation_id, proposal_sequence, '
-      'tool_id, alias, provider_call_id, canonical_arguments_json) '
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [
-        run,
-        tool.id.value,
-        tool.preparedSequence,
-        tool.modelInvocationId.value,
-        tool.proposalSequence,
-        tool.toolId.value,
-        tool.alias,
-        tool.providerCallId,
-        jsonEncode(tool.canonicalArguments),
-      ],
-    );
-    for (final change in tool.changes) {
+    if (tool.preparedSequence > cutoff) {
+      database.execute(
+        'INSERT INTO adele_execution_tool_invocations '
+        '(run_id, invocation_id, prepared_sequence, model_invocation_id, proposal_sequence, '
+        'tool_id, alias, provider_call_id, canonical_arguments_json) '
+        'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [
+          run,
+          tool.id.value,
+          tool.preparedSequence,
+          tool.modelInvocationId.value,
+          tool.proposalSequence,
+          tool.toolId.value,
+          tool.alias,
+          tool.providerCallId,
+          jsonEncode(tool.canonicalArguments),
+        ],
+      );
+    }
+    for (final change in tool.changes.where((v) => v.sequence > cutoff)) {
       database.execute(
         'INSERT INTO adele_execution_tool_changes '
         '(run_id, tool_invocation_id, sequence, kind, policy_decision, effects_json, '
@@ -393,7 +742,9 @@ void insertExecutionEvidence(Database database, RunActivitySnapshot activity) {
       );
     }
   }
-  for (final value in activity.rejectedProposals) {
+  for (final value in activity.rejectedProposals.where(
+    (v) => v.sequence > cutoff,
+  )) {
     database.execute(
       'INSERT INTO adele_execution_rejected_proposals VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
       [
@@ -412,10 +763,15 @@ void insertExecutionEvidence(Database database, RunActivitySnapshot activity) {
 }
 
 /// Reads all execution-owned rows, including orphans, before returning any history.
-List<RunActivitySnapshot> loadExecutionEvidence(
-  Database database,
-  Iterable<RunRecord> records,
-) {
+({List<RunActivitySnapshot> terminal, List<RunActivitySnapshot> unsealed})
+loadExecutionEvidence(Database database, Iterable<RunRecord> records) {
+  // Enabling foreign_keys does not check corruption written by another connection
+  // while it was disabled, including an unsealed root with no actual Session.
+  if (database
+      .select('PRAGMA foreign_key_check(adele_execution_run_activity)')
+      .isNotEmpty) {
+    throw const FormatException('Invalid execution root relationship.');
+  }
   final byId = <String, RunRecord>{};
   for (final record in records) {
     if (byId.containsKey(record.id.value)) {
@@ -444,12 +800,19 @@ List<RunActivitySnapshot> loadExecutionEvidence(
     'SELECT * FROM adele_execution_run_activity',
   )) {
     final id = _text(row, 'run_id');
-    if (!byId.containsKey(id) || roots.containsKey(id)) {
-      throw const FormatException('Orphan or duplicate Run activity root.');
+    final terminalRun = _optionalText(row, 'terminal_run_id');
+    final record = byId[id];
+    if (roots.containsKey(id) ||
+        (terminalRun == null
+            ? record != null
+            : terminalRun != id ||
+                  record == null ||
+                  record.sessionId.value != _text(row, 'session_id'))) {
+      throw const FormatException('Invalid terminal Run activity pairing.');
     }
     roots[id] = row;
   }
-  if (roots.length != byId.length) {
+  if (byId.keys.any((id) => !roots.containsKey(id))) {
     throw const FormatException('Missing terminal Run activity root.');
   }
   Map<String, List<Row>> rows(String table, String order) {
@@ -472,10 +835,11 @@ List<RunActivitySnapshot> loadExecutionEvidence(
   final tools = rows('tool_invocations', 'prepared_sequence');
   final changes = rows('tool_changes', 'sequence');
   final rejections = rows('rejected_proposals', 'sequence');
-  final result = <RunActivitySnapshot>[];
+  final terminal = <RunActivitySnapshot>[];
+  final unsealed = <RunActivitySnapshot>[];
   for (final entry in roots.entries) {
     final run = entry.key;
-    final record = byId[run]!;
+    final record = byId[run];
     final modelRows = models[run] ?? [];
     final toolRows = tools[run] ?? [];
     final modelIds = modelRows
@@ -503,19 +867,22 @@ List<RunActivitySnapshot> loadExecutionEvidence(
       }
       (toolChanges[id] ??= []).add(_changeFrom(row));
     }
+    final runLifecycle = [
+      for (final row in lifecycle[run] ?? <Row>[])
+        RunLifecycleActivity(
+          sequence: _integer(row, 'sequence'),
+          state: RunState.values.byName(_text(row, 'state')),
+        ),
+    ];
     final activity = RunActivitySnapshot(
-      runId: record.id,
-      sessionId: record.sessionId,
-      state: RunState.values.byName(record.state.name),
+      runId: RunId(run),
+      sessionId: SessionId(_text(entry.value, 'session_id')),
+      state: record == null
+          ? (runLifecycle.isEmpty ? RunState.created : runLifecycle.last.state)
+          : RunState.values.byName(record.state.name),
       sequence: _integer(entry.value, 'latest_sequence'),
       failure: _failureFrom(entry.value),
-      lifecycle: [
-        for (final row in lifecycle[run] ?? <Row>[])
-          RunLifecycleActivity(
-            sequence: _integer(row, 'sequence'),
-            state: RunState.values.byName(_text(row, 'state')),
-          ),
-      ],
+      lifecycle: runLifecycle,
       models: [
         for (final row in modelRows)
           ModelInvocationActivity(
@@ -557,10 +924,18 @@ List<RunActivitySnapshot> loadExecutionEvidence(
           ),
       ],
     );
-    validateTerminalRunActivity(record, activity);
-    result.add(activity);
+    if (record == null) {
+      validatePartialRunActivity(activity);
+      unsealed.add(activity);
+    } else {
+      validateTerminalRunActivity(record, activity);
+      terminal.add(activity);
+    }
   }
-  return List.unmodifiable(result);
+  return (
+    terminal: List.unmodifiable(terminal),
+    unsealed: List.unmodifiable(unsealed),
+  );
 }
 
 ModelOutputItem _outputFrom(Row row) {
@@ -711,6 +1086,7 @@ String _nonblank(String value) {
 }
 
 bool _equal(Object? a, Object? b) {
+  if (identical(a, b)) return true;
   if (a is Map && b is Map) {
     return a.length == b.length &&
         a.keys.every((key) => b.containsKey(key) && _equal(a[key], b[key]));

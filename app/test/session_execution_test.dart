@@ -1028,6 +1028,33 @@ Widget build(String handle) => buildSessionActivity(handle);
   );
 
   test(
+    'checkpoint retirement does not invent a UI-owned Run failure',
+    () async {
+      final controller = fixture.controller();
+      final id = await controller.startRun();
+      final advancing = controller.activeRunFuture!;
+      final call = await fixture.model.callAt(0);
+      await fixture.runtime.lifecycle.close();
+      call.native();
+      await advancing;
+
+      final run = controller.currentRun!.run;
+      expect(controller.failure, isA<StateError>());
+      expect(controller.isRunning, isFalse);
+      expect(controller.isAdvancing, isFalse);
+      expect(controller.pendingApproval, isNull);
+      expect(run.state, RunState.running);
+      expect(run.failure, isNull);
+      expect(_events(run).whereType<RunFailed>(), isEmpty);
+      expect(_events(run).whereType<ModelInvocationFailed>(), isEmpty);
+      expect(fixture.runtime.store.runRecord(id), isNull);
+      expect(fixture.runtime.lifecycle.runActivity(id), isNull);
+      expect(fixture.tool.executions, 0);
+      expect(fixture.executions.single.closeCalls, 1);
+    },
+  );
+
+  test(
     'pinned strategy retirement rejects replacement and allocates no Run',
     () async {
       final controller = fixture.controller();

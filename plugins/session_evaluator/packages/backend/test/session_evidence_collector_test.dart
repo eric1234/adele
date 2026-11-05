@@ -74,6 +74,17 @@ void main() {
     final runs = (document['runs'] as List).cast<_Row>();
     expect(runs.map((run) => run['id']), ['run-a', 'run-z']);
     for (final run in runs) {
+      final root = (run['evidence'] as _Row)['root'] as _Row;
+      expect(root, {
+        'run_id': run['id'],
+        'session_id': _session,
+        'terminal_run_id': run['id'],
+        'latest_sequence': 5,
+        'failure_kind': null,
+        'failure_message': null,
+        'failure_provider_code': null,
+        'failure_provider_details_json': null,
+      });
       final model =
           ((run['evidence'] as _Row)['model_invocations'] as List).single
               as _Row;
@@ -224,6 +235,125 @@ void main() {
     test('${corruption.key} fails without publishing empty evidence', () async {
       corruption.value(storage);
       await _expectUnpublishedFailure(collector, 'incompatible_schema');
+    });
+  }
+
+  for (final column in executionTables['root']!.columns) {
+    test('missing execution root column $column is incompatible', () async {
+      storage.addRun('run');
+      storage.columns[executionTables['root']!.name]!.remove(column);
+      await _expectUnpublishedFailure(collector, 'incompatible_schema');
+    });
+  }
+
+  for (final (field, values) in <(String, List<Object?>)>[
+    ('session_id', [null, '', ' session ', 'other-session', 1]),
+    ('terminal_run_id', [null, '', ' run ', 'different-run', 1]),
+  ]) {
+    for (final value in values) {
+      test('terminal root $field=${jsonEncode(value)} is malformed', () async {
+        storage.addRun('already-valid');
+        storage.addRun('run');
+        storage.rows[executionTables['root']!.name]!.last[field] = value;
+        await _expectUnpublishedFailure(collector, 'malformed_data');
+        expect(storage.cursors[executionTables['root']!.name], isNotEmpty);
+      });
+    }
+  }
+
+  for (final field in ['run_id', 'session_id', 'terminal_run_id']) {
+    test('missing returned root $field fails without partial export', () async {
+      storage.addRun('run');
+      storage.afterSelect = (sql, _, rows) {
+        if (sql.startsWith('select e.run_id') &&
+            sql.contains('from ${executionTables['root']!.name} e ')) {
+          for (final row in rows) {
+            row.remove(field);
+          }
+        }
+      };
+      await _expectUnpublishedFailure(collector, 'malformed_data');
+    });
+  }
+
+  test('foreign Run root returned by storage fails without export', () async {
+    storage.addRun('run');
+    storage.afterSelect = (sql, _, rows) {
+      if (sql.startsWith('select e.run_id') &&
+          sql.contains('from ${executionTables['root']!.name} e ')) {
+        for (final row in rows) {
+          row['run_id'] = 'foreign-run';
+        }
+      }
+    };
+    await _expectUnpublishedFailure(collector, 'malformed_data');
+  });
+
+  test('terminal link cannot borrow another Session terminal Run', () async {
+    storage.addRun('run');
+    storage.rows[productRuns.name]!.add({
+      'id': 'foreign-run',
+      'session_id': 'other-session',
+      'terminal_state': 'completed',
+    });
+    storage.rows[executionTables['root']!.name]!.single['terminal_run_id'] =
+        'foreign-run';
+    await _expectUnpublishedFailure(collector, 'malformed_data');
+  });
+
+  test('unsealed activity does not expand terminal Run exports', () async {
+    storage.entries(1);
+    storage.rows[chatEntries.name]!.single['run_id'] = 'unsealed';
+    final root = executionTables['root']!;
+    storage.rows[root.name]!.add(
+      _row(root, {
+        'run_id': 'unsealed',
+        'session_id': _session,
+        'terminal_run_id': null,
+        'latest_sequence': 1,
+      }),
+    );
+    storage.rows[executionTables['lifecycle']!.name]!.add({
+      'run_id': 'unsealed',
+      'sequence': 1,
+      'state': 'running',
+    });
+    final capture = storage.capture(run: 'unsealed');
+    final document = await read();
+    expect(document['runs'], isEmpty);
+    expect(_captures(document).single['header'], capture);
+    expect(
+      _captures(document).single['terminal_provenance'],
+      'terminal_evidence_unavailable',
+    );
+    expect(
+      (document['coverage']
+          as _Row)['associated_runs_without_terminal_evidence'],
+      ['unsealed'],
+    );
+    expect((document['coverage'] as _Row)['status'], 'partial');
+    expect(storage.cursors[root.name], isNull);
+  });
+
+  for (final origin in ['Chat', 'command']) {
+    test('$origin association cannot borrow a foreign unsealed Run', () async {
+      final root = executionTables['root']!;
+      storage.rows[root.name]!.add(
+        _row(root, {
+          'run_id': 'unsealed',
+          'session_id': 'other-session',
+          'terminal_run_id': null,
+          'latest_sequence': 0,
+        }),
+      );
+      if (origin == 'Chat') {
+        storage.entries(1);
+        storage.rows[chatEntries.name]!.single['run_id'] = 'unsealed';
+      } else {
+        storage.capture(run: 'unsealed');
+      }
+      await _expectUnpublishedFailure(collector, 'malformed_data');
+      expect(storage.chunkQueries, isEmpty);
     });
   }
 
@@ -2095,7 +2225,14 @@ final class _QueryFixture implements ProjectStorageService {
       'terminal_state': 'completed',
     });
     final root = executionTables['root']!;
-    rows[root.name]!.add(_row(root, {'run_id': id, 'latest_sequence': latest}));
+    rows[root.name]!.add(
+      _row(root, {
+        'run_id': id,
+        'session_id': _session,
+        'terminal_run_id': id,
+        'latest_sequence': latest,
+      }),
+    );
     rows[executionTables['lifecycle']!.name]!.addAll([
       {'run_id': id, 'sequence': 0, 'state': 'created'},
       {'run_id': id, 'sequence': latest, 'state': 'completed'},
@@ -2351,18 +2488,30 @@ final class _QueryFixture implements ProjectStorageService {
     }
     if (sql.contains('as foreign_run ')) {
       _require(
-        sql.contains('id = :run and session_id <> :session') &&
+        sql.contains(
+              'exists (select 1 from adele_product_runs '
+              'where id = :run and session_id <> :session)',
+            ) &&
+            sql.contains(
+              'or exists (select 1 from adele_execution_run_activity '
+              'where run_id = :run and session_id <> :session)',
+            ) &&
             sql.contains(sessionExists),
         'Invalid foreign Run ownership query.',
       );
       return [
         {
           'foreign_run':
-              rows[productRuns.name]!.any(
-                (row) =>
-                    row['id'] == parameters[':run'] &&
-                    row['session_id'] != parameters[':session'],
-              )
+              (rows[productRuns.name]!.any(
+                    (row) =>
+                        row['id'] == parameters[':run'] &&
+                        row['session_id'] != parameters[':session'],
+                  ) ||
+                  rows[executionTables['root']!.name]!.any(
+                    (row) =>
+                        row['run_id'] == parameters[':run'] &&
+                        row['session_id'] != parameters[':session'],
+                  ))
               ? 1
               : 0,
         },

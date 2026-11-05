@@ -1617,8 +1617,8 @@ changes, including the required nullable `ChatEntry.runId` key, additionally req
 and `dart tools/adele.dart generate --check`; eval preparation derives the current
 wire shape from those same declarations, with no old-wire compatibility.
 
-For terminal Run/history changes, select public-value checks from the repository
-root for the affected boundary:
+For execution evidence and terminal Run/history changes, select public-value
+checks from the repository root for the affected boundary:
 
 ```sh
 dart tools/adele.dart test --target adele_product
@@ -1649,10 +1649,21 @@ These are focused implementation checks, not a reason to run the broad
 `adele_desktop` target or launch/build the desktop for a terminal-history change.
 The Run restart fixture uses real SQLite and deterministic strategy/model/tool
 mechanics; the Chat fixture crosses real backend generations without a live model.
-The assertions distinguish immutable terminal evidence from live execution and
-recovery, and check primary-error preservation, sole storage-error surfacing,
-cleanup, and no automatic retry. Historical activity checks also cover Session
-scope and the read-only bridge; the prepared frontend cases cover placement and
+Evidence checks cover unfinished model/tool and approval prefixes, original
+Run-local sequences/provenance, suffix-only SQL writes, immutable-prefix checks,
+INSERT/COMMIT rollback, and complete validation before restored publication. A
+failed terminal seal must preserve its earlier checkpoint without publishing a
+product outcome. Recovery distinguishes sealed terminal evidence, unsealed
+interrupted history, and unknown evidence; terminal-only lookup stays unchanged.
+The durable Run suite also kills a small writer subprocess after independently
+confirming its committed tool-start prefix, then reopens without orderly Run close.
+The SIGKILL case is Linux-only; the remaining deterministic gates are
+platform-neutral.
+The assertions distinguish immutable historical evidence from live execution and
+check pre-effect commit ordering, checkpoint-failure fencing, primary-error
+preservation, sole storage-error surfacing, cleanup, and no automatic retry.
+Historical activity checks also cover Session scope and the read-only bridge;
+the prepared frontend cases cover placement and
 safe display without feeding historical native data into future continuation.
 See [terminal retention semantics](../architecture/execution-model.md#terminal-run-retention)
 and [execution history](../architecture/execution-model.md#terminal-execution-history).

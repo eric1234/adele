@@ -1,12 +1,18 @@
+import 'package:sqlite3/sqlite3.dart';
+
 // Application-private execution owner baseline. Product remains at version 1.
 const executionEvidenceSchema = '''
 CREATE TABLE adele_execution_run_activity (
-  run_id TEXT NOT NULL PRIMARY KEY REFERENCES adele_product_runs(id),
+  run_id TEXT NOT NULL PRIMARY KEY,
+  session_id TEXT NOT NULL REFERENCES adele_product_sessions(id),
+  terminal_run_id TEXT CHECK (terminal_run_id IS NULL OR terminal_run_id = run_id),
   latest_sequence INTEGER NOT NULL CHECK (latest_sequence >= 0),
   failure_kind TEXT,
   failure_message TEXT,
   failure_provider_code TEXT,
-  failure_provider_details_json TEXT
+  failure_provider_details_json TEXT,
+  FOREIGN KEY (terminal_run_id, session_id)
+    REFERENCES adele_product_runs(id, session_id)
 );
 CREATE TABLE adele_execution_run_lifecycle (
   run_id TEXT NOT NULL REFERENCES adele_execution_run_activity(run_id),
@@ -116,3 +122,74 @@ CREATE TABLE adele_execution_rejected_proposals (
     REFERENCES adele_execution_model_outputs(run_id, sequence)
 );
 ''';
+
+/// Pre-release baselines are replaced, never upgraded or silently interpreted.
+void validateExecutionProductIdentity(Database database) {
+  final uniqueIdentity = database
+      .select('PRAGMA index_list(adele_product_runs)')
+      .any((index) {
+        if (index['unique'] != 1 || index['partial'] != 0) return false;
+        final fields = database.select(
+          'SELECT name FROM pragma_index_info(?) ORDER BY seqno',
+          [index['name']],
+        );
+        return fields.length == 2 &&
+            fields[0]['name'] == 'id' &&
+            fields[1]['name'] == 'session_id';
+      });
+  if (!uniqueIdentity) {
+    throw const FormatException('Unsupported product Run identity baseline.');
+  }
+}
+
+void validateExecutionEvidenceSchema(Database database) {
+  final columns = database.select(
+    'PRAGMA table_info(adele_execution_run_activity)',
+  );
+  final names = columns.map((row) => row['name']).toList();
+  const expected = [
+    'run_id',
+    'session_id',
+    'terminal_run_id',
+    'latest_sequence',
+    'failure_kind',
+    'failure_message',
+    'failure_provider_code',
+    'failure_provider_details_json',
+  ];
+  final foreignKeys = database.select(
+    'PRAGMA foreign_key_list(adele_execution_run_activity)',
+  );
+  final terminalKey = foreignKeys
+      .where((row) => row['table'] == 'adele_product_runs')
+      .toList();
+  final sessionKey = foreignKeys
+      .where((row) => row['table'] == 'adele_product_sessions')
+      .toList();
+  final definition = database.select(
+    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'adele_execution_run_activity'",
+  );
+  final sql = definition.isEmpty ? '' : definition.single['sql'] as String;
+  if (names.length != expected.length ||
+      !Iterable<int>.generate(
+        expected.length,
+      ).every((index) => names[index] == expected[index]) ||
+      columns[1]['notnull'] != 1 ||
+      columns[2]['notnull'] != 0 ||
+      foreignKeys.length != 3 ||
+      sessionKey.length != 1 ||
+      sessionKey.single['from'] != 'session_id' ||
+      sessionKey.single['to'] != 'id' ||
+      terminalKey.length != 2 ||
+      terminalKey[0]['id'] != terminalKey[1]['id'] ||
+      terminalKey[0]['from'] != 'terminal_run_id' ||
+      terminalKey[0]['to'] != 'id' ||
+      terminalKey[1]['from'] != 'session_id' ||
+      terminalKey[1]['to'] != 'session_id' ||
+      !RegExp(
+        r'CHECK\s*\(\s*terminal_run_id\s+IS\s+NULL\s+OR\s+terminal_run_id\s*=\s*run_id\s*\)',
+        caseSensitive: false,
+      ).hasMatch(sql)) {
+    throw const FormatException('Unsupported execution evidence baseline.');
+  }
+}

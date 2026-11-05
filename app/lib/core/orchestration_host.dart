@@ -229,7 +229,7 @@ final class SessionOrchestrationRun implements OrchestrationExecution {
       _advance(resolution: resolution);
 
   Future<void> _advance({ToolApprovalResolution? resolution}) async {
-    _host._exitFence.throwIfInterrupted();
+    _host._throwIfStopped();
     if (_closed) {
       throw const InvalidRunOperation('The orchestration execution is closed.');
     }
@@ -271,7 +271,7 @@ final class SessionOrchestrationRun implements OrchestrationExecution {
       } else {
         await _host._resume(_execution!, resolution);
       }
-      _host._exitFence.throwIfInterrupted();
+      _host._throwIfStopped();
       if (run.state == RunState.created ||
           run.state == RunState.running ||
           run.state == RunState.waiting) {
@@ -313,7 +313,7 @@ final class SessionOrchestrationRun implements OrchestrationExecution {
   }
 
   void _retainTerminalRun() {
-    if (_terminalRecordAttempted) return;
+    if (_terminalRecordAttempted || _host._checkpointFailure != null) return;
     final state = switch (run.state) {
       RunState.completed => RunTerminalState.completed,
       RunState.failed => RunTerminalState.failed,
@@ -410,6 +410,9 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
   bool _busy = false;
   Completer<void>? _operationSettled;
   Object? _deferredFailure;
+  // A failed checkpoint permanently fences this execution and all retention.
+  // If recording an actual failure also failed, retain that primary error.
+  (Object, StackTrace)? _checkpointFailure;
   ToolInvocation? _pendingApproval;
   ToolApprovalResolution? _authorizedResolution;
   ToolOutcome? _lastToolOutcome;
@@ -426,8 +429,47 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
 
   @override
   void validateBinding() {
-    _exitFence.throwIfInterrupted();
+    _throwIfStopped();
     _strategy.validateBinding();
+  }
+
+  void _throwIfStopped() {
+    if (_checkpointFailure case final failure?) {
+      Error.throwWithStackTrace(failure.$1, failure.$2);
+    }
+    _exitFence.throwIfInterrupted();
+  }
+
+  ExecutionEventRecord _record(
+    ExecutionEvent event, {
+    Object? primaryError,
+    StackTrace? primaryStack,
+  }) {
+    _throwIfStopped();
+    final record = _run.record(event);
+    if (event is! ModelObservationObserved) {
+      _checkpoint(primaryError: primaryError, primaryStack: primaryStack);
+    }
+    return record;
+  }
+
+  void _checkpoint({Object? primaryError, StackTrace? primaryStack}) {
+    _throwIfStopped();
+    try {
+      // This is an execution barrier, not an activity subscriber. Reading the
+      // snapshot synchronously consumes the journal suffix before the DB commit.
+      _lifecycle.validateSessionInput(_session);
+      if (_lifecycle.databaseForSession(_session.id) != null) {
+        _lifecycle.checkpointRunActivity(_session, activity.snapshot);
+      }
+    } on Object catch (error, stack) {
+      _checkpointFailure = (
+        primaryError ?? error,
+        primaryError == null ? stack : primaryStack ?? StackTrace.current,
+      );
+      _throwIfStopped();
+    }
+    _throwIfStopped();
   }
 
   @override
@@ -474,6 +516,7 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
     _requireIdle();
     validateBinding();
     _run.start();
+    _checkpoint();
   }
 
   @override
@@ -490,7 +533,7 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
   }
 
   void _fail(Object error) {
-    if (_exitFence.isInterrupted) return;
+    if (_exitFence.isInterrupted || _checkpointFailure != null) return;
     if (_busy) {
       // Preserve the active mechanics operation's terminal evidence first.
       _deferredFailure ??= error;
@@ -530,7 +573,7 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
     );
     final _ToolSnapshot snapshot = _ToolSnapshot(this, tools, invocationId);
     _exitFence.throwIfInterrupted();
-    _run.record(ModelInvocationStarted(invocationId));
+    _record(ModelInvocationStarted(invocationId));
     final List<ModelOutputItem> output = <ModelOutputItem>[];
     try {
       final ModelInvocationObservation observation =
@@ -539,7 +582,7 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
             invocationId: invocationId,
             onObservation: (ModelObservation observation) {
               if (_exitFence.isInterrupted) return;
-              _run.record(
+              _record(
                 ModelObservationObserved(
                   invocationId: invocationId,
                   observation: observation,
@@ -549,7 +592,7 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
             onOutput: (ModelOutputItem item) {
               if (_exitFence.isInterrupted) return;
               output.add(item);
-              final ExecutionEventRecord record = _run.record(
+              final ExecutionEventRecord record = _record(
                 ModelOutputObserved(invocationId: invocationId, item: item),
               );
               if (item is ModelToolProposalOutput) {
@@ -563,7 +606,7 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
       _exitFence.throwIfInterrupted();
       switch (observation.terminal) {
         case final ModelInvocationSettledEvent terminal:
-          _run.record(
+          _record(
             ModelInvocationSettled(
               invocationId: invocationId,
               settlement: terminal.settlement,
@@ -582,14 +625,17 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
           );
         case ModelInvocationFailedEvent(
           :final error,
+          :final stackTrace,
           :final semanticTerminalMetadata,
         ):
-          _run.record(
+          _record(
             ModelInvocationFailed(
               invocationId: invocationId,
               error: error,
               semanticTerminalMetadata: semanticTerminalMetadata,
             ),
+            primaryError: error,
+            primaryStack: stackTrace,
           );
           return StrategyModelTurn.failed(
             tools: snapshot,
@@ -597,10 +643,12 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
             error: error,
           );
       }
-    } on Object catch (error) {
-      _exitFence.throwIfInterrupted();
-      _run.record(
+    } on Object catch (error, stack) {
+      _throwIfStopped();
+      _record(
         ModelInvocationFailed(invocationId: invocationId, error: error),
+        primaryError: error,
+        primaryStack: stack,
       );
       return StrategyModelTurn.failed(
         tools: snapshot,
@@ -644,7 +692,7 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
     validateBinding();
     switch (resolution) {
       case RejectedToolProposal(:final failure):
-        _run.record(
+        _record(
           ToolProposalRejected(
             modelInvocationId: tools._modelInvocationId,
             proposalSequence: proposalSequence,
@@ -657,7 +705,7 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
         );
       case ResolvedToolProposal(:final invocation):
         _lastToolInvocation = invocation;
-        _run.record(
+        _record(
           ToolInvocationPrepared(
             invocation,
             modelInvocationId: tools._modelInvocationId,
@@ -678,7 +726,7 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
           '${id.value}-interruption-${_nextInterruption++}',
         ),
       );
-    } on ToolEffectDescriptionFailed catch (error) {
+    } on ToolEffectDescriptionFailed catch (error, stack) {
       return StrategyToolContinuation(
         _recordToolTerminal(
           invocation,
@@ -691,12 +739,15 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
             cause: error.cause,
           ),
           executionStarted: false,
+          primaryStack: stack,
         ),
       );
-    } on ToolPolicyEvaluationFailed catch (error) {
+    } on ToolPolicyEvaluationFailed catch (error, stack) {
       _exitFence.throwIfInterrupted();
-      _run.record(
+      _record(
         ToolPolicyFailed(invocationId: invocation.id, effects: error.effects),
+        primaryError: error.cause,
+        primaryStack: stack,
       );
       return StrategyToolContinuation(
         _recordToolTerminal(
@@ -710,13 +761,14 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
             cause: error.cause,
           ),
           executionStarted: false,
+          primaryStack: stack,
         ),
       );
     }
     // Preserve the completed preflight evidence even if the strategy retired
     // while describe() was pending; execution still requires a live binding.
     _exitFence.throwIfInterrupted();
-    _run.record(
+    _record(
       ToolPolicyEvaluated(
         invocationId: invocation.id,
         decision: switch (result) {
@@ -738,6 +790,8 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
       case ToolApprovalRequired(:final interruption):
         _pendingApproval = invocation;
         _run.interrupt(interruption);
+        // Approval request and waiting are one coherent observation boundary.
+        _checkpoint();
         return const StrategyToolWaiting();
     }
   }
@@ -758,6 +812,7 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
     final ResolvedRunInterruption resolved = _run.resolveInterruption(
       resolution,
     );
+    _checkpoint();
     _authorizedResolution = null;
     _pendingApproval = null;
     if (!resolution.approved) {
@@ -823,15 +878,17 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
       );
     }
     _exitFence.throwIfInterrupted();
-    _run.record(ToolExecutionStarted(invocation.id));
+    // The execution-start prefix must commit before events() can dispatch.
+    _record(ToolExecutionStarted(invocation.id));
     late final ToolOutcome outcome;
+    StackTrace? failureStack;
     try {
       final ToolExecutionObservation observation = await collectToolExecution(
         _exitFence._observe(start.events()),
         retainProgress: false,
         onProgress: (ToolProgress progress) {
           if (_exitFence.isInterrupted) return;
-          _run.record(
+          _record(
             ToolProgressObserved(
               invocationId: invocation.id,
               progress: progress,
@@ -840,8 +897,9 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
         },
       );
       outcome = observation.outcome;
-    } on Object catch (error) {
-      _exitFence.throwIfInterrupted();
+    } on Object catch (error, stack) {
+      _throwIfStopped();
+      failureStack = stack;
       outcome = ToolOutcome(
         disposition: ToolOutcomeDisposition.failure,
         failureKind: ToolFailureKind.infrastructure,
@@ -851,17 +909,23 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
         cause: error,
       );
     }
-    return _recordToolTerminal(invocation, outcome, executionStarted: true);
+    return _recordToolTerminal(
+      invocation,
+      outcome,
+      executionStarted: true,
+      primaryStack: failureStack,
+    );
   }
 
   SemanticToolOutcomeInput _recordToolTerminal(
     ToolInvocation invocation,
     ToolOutcome outcome, {
     required bool executionStarted,
+    StackTrace? primaryStack,
   }) {
     _exitFence.throwIfInterrupted();
     _lastToolOutcome = outcome;
-    _run.record(
+    _record(
       executionStarted
           ? ToolExecutionCompleted(
               invocationId: invocation.id,
@@ -871,6 +935,10 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
               invocationId: invocation.id,
               outcome: outcome,
             ),
+      primaryError: outcome.disposition == ToolOutcomeDisposition.failure
+          ? outcome.cause
+          : null,
+      primaryStack: primaryStack,
     );
     return SemanticToolOutcomeInput(
       providerCallId: invocation.proposal.providerCallId,
@@ -905,7 +973,7 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
   }
 
   void _requireIdle() {
-    _exitFence.throwIfInterrupted();
+    _throwIfStopped();
     if (!_executionEnabled) {
       throw const InvalidRunOperation(
         'The execution host is unavailable outside active strategy advancement.',

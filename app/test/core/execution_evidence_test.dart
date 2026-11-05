@@ -73,7 +73,7 @@ void main() {
       database.loadExecutionHistory(database.loadProductGraph().runRecords);
 
   test(
-    'relational baseline has no root state/Session or whole-snapshot JSON',
+    'relational baseline has Session and optional seal but no root state or snapshot JSON',
     () {
       expect(
         inspection.select(
@@ -90,6 +90,8 @@ void main() {
             .map((row) => row['name']),
         [
           'run_id',
+          'session_id',
+          'terminal_run_id',
           'latest_sequence',
           'failure_kind',
           'failure_message',
@@ -147,6 +149,751 @@ void main() {
       );
       expect(load(), isEmpty);
       expect(() => load().add(activity), throwsUnsupportedError);
+    },
+  );
+
+  test(
+    'created, running and waiting prefixes roundtrip without product records',
+    () {
+      final created = RunActivitySnapshot(
+        runId: record.id,
+        sessionId: record.sessionId,
+        state: RunState.created,
+        sequence: 0,
+      );
+      for (final snapshot in [
+        created,
+        for (final sequence in [
+          0,
+          2,
+          6,
+          17,
+          24,
+          30,
+          31,
+          32,
+          33,
+          35,
+          36,
+          37,
+          42,
+          104,
+          110,
+          120,
+          122,
+          124,
+          130,
+          132,
+          140,
+          144,
+        ])
+          _prefix(activity, sequence),
+      ]) {
+        database.checkpointRunActivity(snapshot);
+        expect(database.autocommit, isTrue);
+        expect(inspection.select('SELECT * FROM adele_product_runs'), isEmpty);
+        expect(inspection.select('PRAGMA foreign_key_check'), isEmpty);
+        database.close();
+        database = ProjectDatabase.open(backing);
+        final restored = database.loadExecutionRestoreSet([]);
+        expect(restored.terminal, isEmpty);
+        _expectActivity(restored.unsealed.single, snapshot);
+        expect(load(), isEmpty);
+        expect(() => restored.unsealed.clear(), throwsUnsupportedError);
+      }
+      database.insertTerminalRun(record, activity);
+      final restored = database.loadExecutionRestoreSet([record]);
+      expect(restored.unsealed, isEmpty);
+      _expectActivity(restored.terminal.single, activity);
+      expect(
+        inspection
+            .select('SELECT terminal_run_id FROM adele_execution_run_activity')
+            .single['terminal_run_id'],
+        record.id.value,
+      );
+    },
+  );
+
+  test(
+    'mixed restore separates terminal records and multiple unsealed roots',
+    () {
+      database.insertTerminalRun(record, activity);
+      final running = _copy(_prefix(activity, 37), runId: RunId('running'));
+      final waiting = _copy(_prefix(activity, 33), runId: RunId('waiting'));
+      database.checkpointRunActivity(running);
+      database.checkpointRunActivity(waiting);
+      database.close();
+      database = ProjectDatabase.open(backing);
+      final restored = database.loadExecutionRestoreSet([record]);
+      _expectActivity(restored.terminal.single, activity);
+      expect(
+        restored.unsealed.map((v) => v.runId),
+        unorderedEquals([running.runId, waiting.runId]),
+      );
+      _expectActivity(
+        restored.unsealed.singleWhere((v) => v.runId == running.runId),
+        running,
+      );
+      _expectActivity(
+        restored.unsealed.singleWhere((v) => v.runId == waiting.runId),
+        waiting,
+      );
+      expect(load().map((v) => v.runId), [record.id]);
+    },
+  );
+
+  test('checkpoint writes suffix only and updates each model settlement once', () {
+    inspection.execute(
+      'CREATE TABLE evidence_writes (table_name TEXT, operation TEXT)',
+    );
+    for (final table in _tables) {
+      inspection.execute('''
+        CREATE TRIGGER count_${table}_insert AFTER INSERT ON adele_execution_$table
+        BEGIN INSERT INTO evidence_writes VALUES ('$table', 'insert'); END;
+        CREATE TRIGGER forbid_${table}_delete BEFORE DELETE ON adele_execution_$table
+        BEGIN SELECT RAISE(ABORT, 'immutable evidence'); END;
+      ''');
+      if (table == 'run_activity' || table == 'model_invocations') {
+        inspection.execute('''
+          CREATE TRIGGER count_${table}_update AFTER UPDATE ON adele_execution_$table
+          BEGIN INSERT INTO evidence_writes VALUES ('$table', 'update'); END;
+        ''');
+      } else {
+        inspection.execute('''
+          CREATE TRIGGER forbid_${table}_update BEFORE UPDATE ON adele_execution_$table
+          BEGIN SELECT RAISE(ABORT, 'immutable evidence'); END;
+        ''');
+      }
+    }
+    for (final sequence in [
+      0,
+      2,
+      6,
+      17,
+      24,
+      30,
+      33,
+      37,
+      42,
+      104,
+      110,
+      120,
+      122,
+      124,
+      130,
+      132,
+      140,
+      144,
+    ]) {
+      database.checkpointRunActivity(_prefix(activity, sequence));
+    }
+    // A structurally equal checkpoint is legal, even without shared references.
+    final equal = _prefix(_fixture(record), 144);
+    database.checkpointRunActivity(
+      _copy(
+        equal,
+        tools: [
+          for (final tool in equal.tools)
+            _copyTool(
+              tool,
+              canonicalArguments: Map.fromEntries(
+                tool.canonicalArguments.entries.toList().reversed,
+              ),
+            ),
+        ],
+      ),
+    );
+    database.insertTerminalRun(record, activity);
+    for (final table in _tables) {
+      expect(
+        inspection.select(
+          "SELECT COUNT(*) AS n FROM evidence_writes WHERE table_name = ? AND operation = 'insert'",
+          [table],
+        ).single['n'],
+        inspection
+            .select('SELECT COUNT(*) AS n FROM adele_execution_$table')
+            .single['n'],
+        reason: table,
+      );
+    }
+    expect(
+      inspection
+          .select(
+            "SELECT COUNT(*) AS n FROM evidence_writes WHERE table_name = 'model_invocations' AND operation = 'update'",
+          )
+          .single['n'],
+      4,
+    );
+    _expectActivity(load().single, activity);
+  });
+
+  for (final seal in [false, true]) {
+    for (final commitFailure in [false, true]) {
+      test(
+        '${seal ? 'seal' : 'checkpoint'} ${commitFailure ? 'COMMIT' : 'INSERT'} failure preserves committed prefix',
+        () {
+          final before = _prefix(activity, 33);
+          database.checkpointRunActivity(before);
+          final rows = {
+            for (final table in _tables)
+              table: inspection
+                  .select('SELECT * FROM adele_execution_$table')
+                  .map((row) => Map<String, Object?>.of(row))
+                  .toList(),
+          };
+          inspection.execute(
+            commitFailure
+                ? '''
+          CREATE TABLE deferred_check (run_id TEXT REFERENCES adele_product_runs(id) DEFERRABLE INITIALLY DEFERRED);
+          CREATE TRIGGER fail_suffix AFTER INSERT ON adele_execution_rejected_proposals
+          BEGIN INSERT INTO deferred_check VALUES ('missing'); END;
+        '''
+                : '''
+          CREATE TRIGGER fail_suffix BEFORE INSERT ON adele_execution_rejected_proposals
+          BEGIN SELECT RAISE(ABORT, 'suffix failure'); END;
+        ''',
+          );
+          final after = _prefix(activity, 144);
+          expect(
+            () => seal
+                ? database.insertTerminalRun(record, activity)
+                : database.checkpointRunActivity(after),
+            throwsA(isA<SqliteException>()),
+          );
+          expect(database.autocommit, isTrue);
+          expect(
+            inspection.select('SELECT * FROM adele_product_runs'),
+            isEmpty,
+          );
+          for (final table in _tables) {
+            expect(
+              inspection.select('SELECT * FROM adele_execution_$table'),
+              rows[table],
+              reason: table,
+            );
+          }
+          inspection.execute('DROP TRIGGER fail_suffix');
+          // No restore here: a failed transaction must not advance the writer cache.
+          database.checkpointRunActivity(after);
+          _expectActivity(
+            database.loadExecutionRestoreSet([]).unsealed.single,
+            after,
+          );
+          database.insertTerminalRun(record, activity);
+          _expectActivity(load().single, activity);
+        },
+      );
+    }
+  }
+
+  test(
+    'partial validation rejects terminal state, invented latest and missing lifecycle',
+    () {
+      final running = _prefix(activity, 37);
+      for (final invalid in [
+        activity,
+        _copy(running, sequence: 38),
+        _copy(running, lifecycle: []),
+        _copy(running, state: RunState.created),
+        _copy(running, state: RunState.waiting),
+        _copy(
+          activity,
+          state: RunState.running,
+          lifecycle: activity.lifecycle.take(5),
+        ),
+      ]) {
+        expect(
+          () => validatePartialRunActivity(invalid),
+          throwsFormatException,
+        );
+        expect(
+          () => database.checkpointRunActivity(invalid),
+          throwsFormatException,
+        );
+      }
+      expect(
+        () => database.insertTerminalRun(record, running),
+        throwsFormatException,
+      );
+      database.insertTerminalRun(record, activity);
+      expect(
+        () => database.checkpointRunActivity(running),
+        throwsFormatException,
+      );
+    },
+  );
+
+  test(
+    'partial tool phases reject impossible dispatch and progress before SQL',
+    () {
+      final started = _prefix(activity, 37);
+      final progressing = _prefix(activity, 38);
+      final tool = started.tools.single;
+      final progressTool = progressing.tools.single;
+      final invalid = [
+        _copy(
+          progressing,
+          tools: [
+            _copyTool(
+              progressTool,
+              changes: progressTool.changes.where((v) => v.sequence != 37),
+            ),
+          ],
+        ),
+        _copy(
+          progressing,
+          tools: [
+            _copyTool(
+              progressTool,
+              changes: [
+                ...tool.changes,
+                const ToolActivityChange(
+                  sequence: 38,
+                  kind: ToolActivityKind.executionStarted,
+                ),
+              ],
+            ),
+          ],
+        ),
+        for (final deny in [false, true])
+          _copy(
+            started,
+            tools: [
+              _copyTool(
+                tool,
+                changes: [
+                  tool.changes.first,
+                  ToolActivityChange(
+                    sequence: 31,
+                    kind: deny
+                        ? ToolActivityKind.policyEvaluated
+                        : ToolActivityKind.policyFailed,
+                    policyDecision: deny
+                        ? ToolActivityPolicyDecision.deny
+                        : null,
+                    effects: tool.effects,
+                  ),
+                  tool.changes.last,
+                ],
+              ),
+            ],
+          ),
+        _copy(
+          started,
+          tools: [
+            _copyTool(
+              tool,
+              changes: tool.changes.where((v) => v.sequence != 35),
+            ),
+          ],
+        ),
+        _copy(
+          started,
+          tools: [
+            _copyTool(
+              tool,
+              changes: [
+                for (final change in tool.changes)
+                  if (change.sequence == 35)
+                    ToolActivityChange(
+                      sequence: 35,
+                      kind: ToolActivityKind.approvalResolved,
+                      interruptionId: change.interruptionId,
+                      approved: false,
+                    )
+                  else
+                    change,
+              ],
+            ),
+          ],
+        ),
+        _copy(
+          started,
+          state: RunState.waiting,
+          lifecycle: started.lifecycle.take(2),
+        ),
+        _copy(
+          started,
+          lifecycle: [
+            started.lifecycle.first,
+            const RunLifecycleActivity(sequence: 1, state: RunState.running),
+            ...started.lifecycle.skip(1),
+          ],
+        ),
+        _copy(
+          started,
+          lifecycle: [
+            const RunLifecycleActivity(sequence: 3, state: RunState.running),
+            ...started.lifecycle.skip(1),
+          ],
+        ),
+      ];
+      for (final snapshot in invalid) {
+        expect(
+          () => validatePartialRunActivity(snapshot),
+          throwsFormatException,
+        );
+        expect(
+          () => database.checkpointRunActivity(snapshot),
+          throwsFormatException,
+        );
+        expect(
+          inspection.select('SELECT * FROM adele_execution_run_activity'),
+          isEmpty,
+        );
+      }
+    },
+  );
+
+  test(
+    'pre-dispatch failure may finish prepared-only evidence without inventing policy',
+    () {
+      final before = _prefix(activity, 30);
+      final tool = before.tools.single;
+      final outcome = ToolOutcomeActivity(
+        disposition: ToolOutcomeDisposition.failure,
+        failureKind: ToolFailureKind.infrastructure,
+        effectCertainty: EffectCertainty.knownNotOccurred,
+        modelContent: 'Effect description failed.',
+      );
+      final after = _copy(
+        before,
+        sequence: 31,
+        tools: [
+          ToolInvocationActivity(
+            id: tool.id,
+            preparedSequence: tool.preparedSequence,
+            modelInvocationId: tool.modelInvocationId,
+            proposalSequence: tool.proposalSequence,
+            toolId: tool.toolId,
+            alias: tool.alias,
+            providerCallId: tool.providerCallId,
+            canonicalArguments: tool.canonicalArguments,
+            outcome: outcome,
+            changes: [
+              ...tool.changes,
+              ToolActivityChange(
+                sequence: 31,
+                kind: ToolActivityKind.completed,
+                outcome: outcome,
+              ),
+            ],
+          ),
+        ],
+      );
+      database.checkpointRunActivity(before);
+      database.checkpointRunActivity(after);
+      _expectActivity(
+        database.loadExecutionRestoreSet([]).unsealed.single,
+        after,
+      );
+    },
+  );
+
+  test(
+    'an unfinished model cannot later settle inside an acknowledged gap',
+    () {
+      final after = _prefix(activity, 140);
+      final missing = after.models[1];
+      final before = _copy(
+        after,
+        models: [
+          after.models.first,
+          ModelInvocationActivity(
+            id: missing.id,
+            startSequence: missing.startSequence,
+            outputs: missing.outputs,
+          ),
+          ...after.models.skip(2),
+        ],
+      );
+      database.checkpointRunActivity(before);
+      expect(
+        () => database.checkpointRunActivity(after),
+        throwsFormatException,
+      );
+      expect(
+        () => database.insertTerminalRun(record, activity),
+        throwsFormatException,
+      );
+      _expectActivity(
+        database.loadExecutionRestoreSet([]).unsealed.single,
+        before,
+      );
+    },
+  );
+
+  for (final disposition in ToolOutcomeDisposition.values) {
+    test(
+      'executed tool retains its contract-valid ${disposition.name} outcome',
+      () {
+        final before = _prefix(activity, 37);
+        final tool = before.tools.single;
+        final outcome = ToolOutcomeActivity(
+          disposition: disposition,
+          failureKind: disposition == ToolOutcomeDisposition.failure
+              ? ToolFailureKind.domain
+              : null,
+          effectCertainty: EffectCertainty.knownNotOccurred,
+          modelContent: 'Declared tool result.',
+        );
+        final after = _copy(
+          before,
+          sequence: 38,
+          tools: [
+            _copyTool(
+              tool,
+              outcome: outcome,
+              changes: [
+                ...tool.changes,
+                ToolActivityChange(
+                  sequence: 38,
+                  kind: ToolActivityKind.completed,
+                  outcome: outcome,
+                ),
+              ],
+            ),
+          ],
+        );
+        database.checkpointRunActivity(before);
+        database.checkpointRunActivity(after);
+        _expectActivity(
+          database.loadExecutionRestoreSet([]).unsealed.single,
+          after,
+        );
+      },
+    );
+  }
+
+  test(
+    'immutable prefix rejects rewrites, truncation, reordering and gap backfill',
+    () {
+      final before = _prefix(activity, 144);
+      database.checkpointRunActivity(before);
+      final model = before.models.first;
+      final tool = before.tools.first;
+      final rejection = before.rejectedProposals.single;
+      final invalid = [
+        _prefix(activity, 132),
+        _copy(before, sessionId: SessionId('other')),
+        _copy(before, lifecycle: before.lifecycle.skip(1)),
+        _copy(before, models: [model, ...before.models.skip(2)]),
+        _copy(before, models: before.models.reversed),
+        _copy(before, tools: before.tools.skip(1)),
+        _copy(before, rejectedProposals: []),
+        _copy(
+          before,
+          models: [
+            _copyModel(
+              model,
+              metadata: ModelTerminalMetadata(effectiveModel: 'rewritten'),
+            ),
+            ...before.models.skip(1),
+          ],
+        ),
+        _copy(
+          before,
+          models: [
+            _copyModel(
+              model,
+              outputs: [
+                ModelOutputActivity(
+                  sequence: 4,
+                  item: ModelTextOutput('rewritten'),
+                ),
+                ...model.outputs.skip(1),
+              ],
+            ),
+            ...before.models.skip(1),
+          ],
+        ),
+        _copy(
+          before,
+          models: [
+            _copyModel(
+              model,
+              outputs: [
+                model.outputs.first,
+                ModelOutputActivity(
+                  sequence: 5,
+                  item: ModelTextOutput('backfill'),
+                ),
+                ...model.outputs.skip(1),
+              ],
+            ),
+            ...before.models.skip(1),
+          ],
+        ),
+        _copy(
+          before,
+          tools: [
+            _copyTool(tool, canonicalArguments: {'changed': true}),
+            ...before.tools.skip(1),
+          ],
+        ),
+        _copy(
+          before,
+          tools: [
+            _copyTool(
+              tool,
+              changes: [
+                for (final change in tool.changes)
+                  if (change.sequence == 38)
+                    ToolActivityChange(
+                      sequence: 38,
+                      kind: ToolActivityKind.progress,
+                      progress: ToolProgress(
+                        kind: change.progress!.kind,
+                        content: 'rewritten',
+                      ),
+                    )
+                  else
+                    change,
+              ],
+            ),
+            ...before.tools.skip(1),
+          ],
+        ),
+        _copy(
+          before,
+          rejectedProposals: [
+            RejectedToolProposalActivity(
+              sequence: rejection.sequence,
+              modelInvocationId: rejection.modelInvocationId,
+              proposalSequence: rejection.proposalSequence,
+              proposal: rejection.proposal,
+              kind: rejection.kind,
+              message: 'rewritten',
+            ),
+          ],
+        ),
+      ];
+      for (final snapshot in invalid) {
+        expect(
+          () => database.checkpointRunActivity(snapshot),
+          throwsFormatException,
+        );
+        expect(inspection.select('SELECT * FROM adele_product_runs'), isEmpty);
+        _expectActivity(
+          database.loadExecutionRestoreSet([]).unsealed.single,
+          before,
+        );
+      }
+      final finalMutation = _copy(activity, tools: activity.tools.skip(1));
+      expect(
+        () => database.insertTerminalRun(record, finalMutation),
+        throwsFormatException,
+      );
+      expect(inspection.select('SELECT * FROM adele_product_runs'), isEmpty);
+      database.insertTerminalRun(record, activity);
+      _expectActivity(load().single, activity);
+    },
+  );
+
+  test(
+    'SQL enforces root Session, seal identity and composite same-Session pairing',
+    () {
+      inspection.execute('PRAGMA foreign_keys = ON');
+      inspection.execute(
+        "INSERT INTO adele_product_sessions VALUES ('other', 'task', 'test.strategy')",
+      );
+      inspection.execute(
+        "INSERT INTO adele_product_runs VALUES ('wrong-session', 'other', 'completed')",
+      );
+      for (final values in [
+        ['missing-session', 'missing', null],
+        ['wrong-session', 'session', 'wrong-session'],
+        ['wrong-id', 'other', 'wrong-session'],
+        ['missing-terminal', 'session', 'missing-terminal'],
+      ]) {
+        expect(
+          () => inspection.execute(
+            'INSERT INTO adele_execution_run_activity (run_id, session_id, terminal_run_id, latest_sequence) VALUES (?, ?, ?, 0)',
+            values,
+          ),
+          throwsA(isA<SqliteException>()),
+        );
+      }
+      inspection.execute(
+        "INSERT INTO adele_execution_run_activity (run_id, session_id, latest_sequence) VALUES ('partial', 'session', 0)",
+      );
+      expect(inspection.select('PRAGMA foreign_key_check'), isEmpty);
+    },
+  );
+
+  for (final sql in [
+    "UPDATE adele_execution_run_activity SET session_id = 'missing' WHERE run_id = 'partial'",
+    "UPDATE adele_execution_run_activity SET terminal_run_id = 'partial' WHERE run_id = 'partial'",
+    "UPDATE adele_execution_run_activity SET terminal_run_id = 'run' WHERE run_id = 'partial'",
+    "UPDATE adele_execution_model_outputs SET model_invocation_id = 'missing' WHERE run_id = 'partial' AND sequence = 4",
+    "UPDATE adele_execution_tool_changes SET tool_invocation_id = 'missing' WHERE run_id = 'partial' AND sequence = 30",
+    "UPDATE adele_execution_run_activity SET latest_sequence = 34 WHERE run_id = 'partial'",
+    "UPDATE adele_execution_run_lifecycle SET state = 'completed' WHERE run_id = 'partial' AND sequence = 33",
+    "INSERT INTO adele_product_runs VALUES ('partial', 'session', 'completed')",
+    "UPDATE adele_execution_run_activity SET terminal_run_id = NULL WHERE run_id = 'run'",
+  ]) {
+    test(
+      'terminal wrapper rejects corrupt unsealed or mismatched full set: $sql',
+      () {
+        database.insertTerminalRun(record, activity);
+        database.checkpointRunActivity(
+          _copy(_prefix(activity, 33), runId: RunId('partial')),
+        );
+        inspection.execute('PRAGMA ignore_check_constraints = ON');
+        inspection.execute(sql);
+        expect(
+          load,
+          throwsA(anyOf(isA<FormatException>(), isA<ArgumentError>())),
+        );
+        expect(
+          () => database.loadExecutionRestoreSet(
+            database.loadProductGraph().runRecords,
+          ),
+          throwsA(anyOf(isA<FormatException>(), isA<ArgumentError>())),
+        );
+        expect(database.autocommit, isTrue);
+      },
+    );
+  }
+
+  test('obsolete same-version root schema is refused without mutation', () {
+    database.close();
+    inspection.execute('DROP TABLE adele_execution_run_activity');
+    inspection.execute('''
+      CREATE TABLE adele_execution_run_activity (
+        run_id TEXT NOT NULL PRIMARY KEY REFERENCES adele_product_runs(id),
+        latest_sequence INTEGER NOT NULL,
+        failure_kind TEXT, failure_message TEXT, failure_provider_code TEXT,
+        failure_provider_details_json TEXT
+      )
+    ''');
+    inspection.close();
+    final before = File(database.path).readAsBytesSync();
+    expect(() => ProjectDatabase.open(backing), throwsFormatException);
+    expect(File(database.path).readAsBytesSync(), before);
+  });
+
+  test(
+    'obsolete product-only v1 is refused before execution schema creation',
+    () {
+      database.close();
+      for (final table in _tables.reversed) {
+        inspection.execute('DROP TABLE adele_execution_$table');
+      }
+      inspection.execute(
+        "DELETE FROM adele_schema_versions WHERE owner_id = 'dev.adele.execution'",
+      );
+      inspection.execute('''
+      DROP TABLE adele_product_runs;
+      CREATE TABLE adele_product_runs (
+        id TEXT PRIMARY KEY, session_id TEXT NOT NULL, terminal_state TEXT NOT NULL,
+        FOREIGN KEY (session_id) REFERENCES adele_product_sessions(id)
+      );
+    ''');
+      inspection.close();
+      final before = File(database.path).readAsBytesSync();
+      expect(() => ProjectDatabase.open(backing), throwsFormatException);
+      expect(File(database.path).readAsBytesSync(), before);
     },
   );
 
@@ -674,6 +1421,15 @@ void main() {
     "UPDATE adele_execution_run_lifecycle SET state = 'running' WHERE sequence = 150",
     "UPDATE adele_execution_run_lifecycle SET state = 'failed' WHERE sequence = 0",
     "UPDATE adele_execution_run_lifecycle SET state = 'invented' WHERE sequence = 0",
+    "UPDATE adele_execution_run_lifecycle SET sequence = 3 WHERE sequence = 0",
+    "INSERT INTO adele_execution_run_lifecycle VALUES ('run', 1, 'running')",
+    "UPDATE adele_execution_run_lifecycle SET state = 'waiting' WHERE sequence = 0",
+    "DELETE FROM adele_execution_tool_changes WHERE sequence = 37",
+    "INSERT INTO adele_execution_tool_changes (run_id, tool_invocation_id, sequence, kind) VALUES ('run', 'tool-0', 41, 'executionStarted')",
+    "UPDATE adele_execution_tool_changes SET policy_decision = 'deny' WHERE sequence = 31; DELETE FROM adele_execution_tool_changes WHERE sequence IN (32, 35)",
+    "UPDATE adele_execution_tool_changes SET approved = 0 WHERE sequence = 35",
+    "DELETE FROM adele_execution_tool_changes WHERE sequence = 35",
+    "DELETE FROM adele_execution_run_lifecycle WHERE sequence = 36",
     "UPDATE adele_execution_model_invocations SET start_sequence = 0 WHERE invocation_id = 'model'",
     "UPDATE adele_execution_model_invocations SET terminal_sequence = 3 WHERE invocation_id = 'model'",
     "UPDATE adele_execution_model_invocations SET settlement = 'invalid' WHERE invocation_id = 'model'",
@@ -790,6 +1546,107 @@ void main() {
     });
   }
 }
+
+RunActivitySnapshot _prefix(RunActivitySnapshot value, int sequence) {
+  final lifecycle = value.lifecycle
+      .where((v) => v.sequence <= sequence)
+      .toList();
+  final tools = <ToolInvocationActivity>[];
+  for (final tool in value.tools.where((v) => v.preparedSequence <= sequence)) {
+    final changes = tool.changes.where((v) => v.sequence <= sequence).toList();
+    EffectDescription? effects;
+    ToolOutcomeActivity? outcome;
+    for (final change in changes) {
+      effects = change.effects ?? effects;
+      outcome = change.outcome ?? outcome;
+    }
+    tools.add(
+      ToolInvocationActivity(
+        id: tool.id,
+        preparedSequence: tool.preparedSequence,
+        modelInvocationId: tool.modelInvocationId,
+        proposalSequence: tool.proposalSequence,
+        toolId: tool.toolId,
+        alias: tool.alias,
+        providerCallId: tool.providerCallId,
+        canonicalArguments: tool.canonicalArguments,
+        changes: changes,
+        effects: effects,
+        outcome: outcome,
+      ),
+    );
+  }
+  return RunActivitySnapshot(
+    runId: value.runId,
+    sessionId: value.sessionId,
+    state: lifecycle.last.state,
+    sequence: sequence,
+    lifecycle: lifecycle,
+    models: [
+      for (final model in value.models.where(
+        (v) => v.startSequence <= sequence,
+      ))
+        ModelInvocationActivity(
+          id: model.id,
+          startSequence: model.startSequence,
+          outputs: model.outputs.where((v) => v.sequence <= sequence),
+          terminalSequence: (model.terminalSequence ?? sequence + 1) <= sequence
+              ? model.terminalSequence
+              : null,
+          settlement: (model.terminalSequence ?? sequence + 1) <= sequence
+              ? model.settlement
+              : null,
+          incompleteReason: (model.terminalSequence ?? sequence + 1) <= sequence
+              ? model.incompleteReason
+              : null,
+          metadata: (model.terminalSequence ?? sequence + 1) <= sequence
+              ? model.metadata
+              : null,
+          failure: (model.terminalSequence ?? sequence + 1) <= sequence
+              ? model.failure
+              : null,
+        ),
+    ],
+    tools: tools,
+    rejectedProposals: value.rejectedProposals.where(
+      (v) => v.sequence <= sequence,
+    ),
+  );
+}
+
+ModelInvocationActivity _copyModel(
+  ModelInvocationActivity value, {
+  Iterable<ModelOutputActivity>? outputs,
+  ModelTerminalMetadata? metadata,
+}) => ModelInvocationActivity(
+  id: value.id,
+  startSequence: value.startSequence,
+  terminalSequence: value.terminalSequence,
+  settlement: value.settlement,
+  incompleteReason: value.incompleteReason,
+  metadata: metadata ?? value.metadata,
+  failure: value.failure,
+  outputs: outputs ?? value.outputs,
+);
+
+ToolInvocationActivity _copyTool(
+  ToolInvocationActivity value, {
+  Map<String, Object?>? canonicalArguments,
+  Iterable<ToolActivityChange>? changes,
+  ToolOutcomeActivity? outcome,
+}) => ToolInvocationActivity(
+  id: value.id,
+  preparedSequence: value.preparedSequence,
+  modelInvocationId: value.modelInvocationId,
+  proposalSequence: value.proposalSequence,
+  toolId: value.toolId,
+  alias: value.alias,
+  providerCallId: value.providerCallId,
+  canonicalArguments: canonicalArguments ?? value.canonicalArguments,
+  changes: changes ?? value.changes,
+  effects: value.effects,
+  outcome: outcome ?? value.outcome,
+);
 
 RunActivitySnapshot _fixture(RunRecord record) {
   final native = ModelNativeEnvelope(

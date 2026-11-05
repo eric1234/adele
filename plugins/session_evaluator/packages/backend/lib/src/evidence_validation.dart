@@ -206,6 +206,7 @@ void validateEvidenceRow(EvidenceTable table, Map<String, Object?> row) {
           'id',
           'session_id',
           'run_id',
+          'terminal_run_id',
           'entry_id',
           'invocation_id',
           'model_invocation_id',
@@ -328,6 +329,12 @@ void validateRunEvidence(Map<String, Object?> run) {
   );
   final evidence = run['evidence'] as Map<String, Object?>;
   final root = evidence['root'] as Map<String, Object?>;
+  evidenceRequire(
+    root['run_id'] == run['id'] &&
+        root['session_id'] == run['session_id'] &&
+        root['terminal_run_id'] == run['id'],
+    'Execution root disagrees with terminal Run/Session identity.',
+  );
   final latest = root['latest_sequence'] as int;
   final sequences = <int>{};
   void occurrence(Object? value) {

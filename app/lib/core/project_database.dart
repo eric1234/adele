@@ -29,6 +29,7 @@ final class ProjectDatabase {
   final String _relativePath;
   final Directory? _temporaryDirectory;
   bool _closed = false;
+  final Map<RunId, RunActivitySnapshot> _executionActivity = {};
 
   /// Whether the host-owned connection has no active transaction.
   bool get autocommit {
@@ -144,15 +145,19 @@ final class ProjectDatabase {
               session_id TEXT NOT NULL,
               terminal_state TEXT NOT NULL
                 CHECK (terminal_state IN ('completed', 'failed', 'cancelled')),
+              UNIQUE (id, session_id),
               FOREIGN KEY (session_id) REFERENCES adele_product_sessions(id)
             );
           '''),
         ],
       );
+      // Reject an obsolete product baseline before creating execution tables.
+      validateExecutionProductIdentity(database);
       MigrationCoordinator(database).migrate(
         ownerId: 'dev.adele.execution',
         migrations: [(database) => database.execute(executionEvidenceSchema)],
       );
+      validateExecutionEvidenceSchema(database);
       return ProjectDatabase._(
         database,
         path,
@@ -383,13 +388,55 @@ final class ProjectDatabase {
     [sessionId.value, environmentId.value],
   );
 
-  /// Loads complete terminal evidence separately from the product-only graph.
-  List<RunActivitySnapshot> loadExecutionHistory(Iterable<RunRecord> records) {
+  /// The terminal-only view still validates every unsealed root and child row.
+  List<RunActivitySnapshot> loadExecutionHistory(Iterable<RunRecord> records) =>
+      loadExecutionRestoreSet(records).terminal;
+
+  /// Returns both immutable sets only after complete product/evidence validation.
+  ({List<RunActivitySnapshot> terminal, List<RunActivitySnapshot> unsealed})
+  loadExecutionRestoreSet(Iterable<RunRecord> records) {
     _requireOpen();
-    return _transaction(
+    final restored = _transaction(
       _database,
       () => loadExecutionEvidence(_database, records),
     );
+    _executionActivity
+      ..clear()
+      ..addEntries([
+        for (final activity in [...restored.terminal, ...restored.unsealed])
+          MapEntry(activity.runId, activity),
+      ]);
+    return restored;
+  }
+
+  RunActivitySnapshot? _previousActivity(RunId runId) {
+    if (_executionActivity[runId] case final activity?) return activity;
+    if (_database.select(
+      'SELECT run_id FROM adele_execution_run_activity WHERE run_id = ?',
+      [runId.value],
+    ).isEmpty) {
+      if (_database.select('SELECT id FROM adele_product_runs WHERE id = ?', [
+        runId.value,
+      ]).isNotEmpty) {
+        throw const FormatException('Missing terminal Run activity root.');
+      }
+      return null;
+    }
+    loadExecutionRestoreSet(loadProductGraph().runRecords);
+    return _executionActivity[runId];
+  }
+
+  /// Return acknowledges COMMIT, not admission or a pending background write.
+  void checkpointRunActivity(RunActivitySnapshot activity) {
+    _requireOpen();
+    validatePartialRunActivity(activity);
+    _backingPath(_root, _relativePath);
+    final previous = _previousActivity(activity.runId);
+    if (previous != null) validateRunActivityExtension(previous, activity);
+    _transaction(_database, () {
+      insertExecutionEvidence(_database, activity, previous: previous);
+    });
+    _executionActivity[activity.runId] = activity;
   }
 
   /// Commits a terminal record and all evidence without replacing an identity.
@@ -397,14 +444,22 @@ final class ProjectDatabase {
     _requireOpen();
     validateTerminalRunActivity(record, activity);
     _backingPath(_root, _relativePath);
+    final previous = _previousActivity(activity.runId);
     _transaction(_database, () {
       _database.execute(
         'INSERT INTO adele_product_runs (id, session_id, terminal_state) '
         'VALUES (?, ?, ?)',
         [record.id.value, record.sessionId.value, record.state.name],
       );
-      insertExecutionEvidence(_database, activity);
+      if (previous != null) validateRunActivityExtension(previous, activity);
+      insertExecutionEvidence(
+        _database,
+        activity,
+        previous: previous,
+        seal: true,
+      );
     });
+    _executionActivity[activity.runId] = activity;
   }
 
   /// Refreshes only opaque provider state, never semantic identity/relationships.

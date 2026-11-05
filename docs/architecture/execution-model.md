@@ -47,7 +47,7 @@ stock implementations, or presentation policy.
 | Product/core identity | `adele_product` owns canonical product identities and relationships, including `SessionId`, `RunId`, the Session's `OrchestrationStrategyId`, and terminal `RunRecord`/`RunTerminalState` values. It does not own the executable Run object. |
 | Public orchestration | `adele_orchestration` is the provider-neutral strategy/host boundary. It owns strategy resolution/execution contracts, `RunState`, invocation/interruption identities and approval-resolution values, strategy inference material, semantic model turns/output/proposals, context contracts, and public activity snapshots. It reexports the product identities rather than redefining them. |
 | Internal mechanics | `agent_kernel` implements `AgentRun`, model invocation collection, tool composition/materialization/resolution, policy gates, interruptions, outcome handling, and the deterministic journal. Public tool definitions, effects, progress, and outcome values belong to `adele_model_tool` and are reused here. |
-| Application/core adapters | Compose public strategy operations with selected model-provider bindings, model-tool contributions, context sources, Session Environment authority, approval policy, and internal mechanics/evidence; atomically retain terminal Run records and public activity through lifecycle. |
+| Application/core adapters | Compose public strategy operations with selected model-provider bindings, model-tool contributions, context sources, Session Environment authority, approval policy, and internal mechanics/evidence; checkpoint semantic activity incrementally and atomically seal terminal Run records and public activity through lifecycle. |
 | Plugins | Own strategy-specific Session state and sequencing, concrete tool behavior, provider-specific semantics/protocols, and presentation. |
 
 Plugins and public APIs must not depend on `agent_kernel`. The kernel depends
@@ -396,7 +396,9 @@ advancement, host effects, and evidence publication. It initiates best-effort mo
 and tool stream cancellation through the existing adapters before requesting
 backend/runtime and frontend retirement. Any already-real terminal host state gets
 its existing single retention attempt while storage is still available; later
-finalization cannot write after the cutoff. An in-flight strategy persistence
+finalization cannot write after the cutoff. Synchronous core checkpoints already
+committed before this fence remain available for read-only restoration; no late
+callback may advance their prefix. An in-flight strategy persistence
 operation is not thereby acknowledged or guaranteed durable. Existing committed
 records remain facts; absent acknowledgement is uncertain work, not rollback.
 
@@ -405,9 +407,9 @@ and reports incomplete resource release rather than success. Cancellation may
 itself stall and cannot guarantee that an external process/effect stopped. No
 terminal Run record, approval decision, model result, or tool outcome is invented
 to unwind shutdown. This adds no public Run cancellation or universal plugin
-shutdown contract, interrupted-Run persistence, replay authorization, or automatic
-resumption. Terminal history, ordinary resource close, and crash recovery remain
-separate.
+shutdown contract, replay authorization, or automatic resumption. The independent
+execution checkpoint contract below supplies interrupted historical evidence,
+without extending the exit budget or claiming cancellation stopped external effects.
 
 The cleanup bound covers asynchronous waiting after final acceptance, not
 synchronous code that blocks the application isolate or OS process termination.
@@ -543,12 +545,14 @@ may settle only after strategy advancement ends.
 The wrapper sets `_terminalRecordAttempted` before calling lifecycle retention,
 and therefore before SQL. It makes at most one recording attempt, including when
 that attempt fails; subsequent cleanup/close does not retry. Created, running, and
-waiting states cause no attempt. Closing a waiting Run creates no outcome, resolves
+waiting states cause no terminal-record attempt, although their observed activity
+can already be checkpointed. Closing a waiting Run creates no outcome, resolves
 no approval, and adds no `abandoned` or invented cancellation state.
 
 If strategy/execution advancement throws and terminal recording also throws, the
 primary execution error is preserved and the secondary recording error is
-suppressed. There is no multi-error diagnostic or retry mechanism. If recording is
+suppressed. There is no multi-error diagnostic or retry mechanism. A failed terminal
+transaction leaves its earlier committed partial prefix intact. If recording is
 the sole error, it surfaces without rewriting the live terminal state. Resource
 cleanup is still attempted when recording fails and cannot change terminal state
 or evidence. Automatic cleanup does not replace the advancement error; explicit
@@ -576,7 +580,7 @@ represented, not used as replay input. Current public activity is not a text-del
 stream. It excludes executable authority, internal `AgentRun`/journal objects,
 host-only diagnostics, and arbitrary exception objects.
 
-Terminal public activity is retained through the explicit snapshot boundary below.
+Public semantic activity is retained through the explicit snapshot boundary below.
 The internal journal is neither its storage input nor a persistence/replay format;
 its in-memory mechanics/test/projection role is unchanged.
 
@@ -590,7 +594,9 @@ current UI behavior belongs to [UI](../../packages/ui/README.md),
 [provider](../../plugins/openai/packages/frontend/README.md)/tool plugin READMEs.
 Intended UX remains [product direction](../product/README.md).
 
-### Terminal execution history
+<a id="terminal-execution-history"></a>
+
+### Durable execution evidence
 
 Execution owner `dev.adele.execution` has its own version-1 schema in the same
 app-private per-Project SQLite connection as product owner `dev.adele.product`.
@@ -598,7 +604,7 @@ Product stays at version 1. Execution history uses normalized relational rows:
 
 | Table | Execution-owned meaning |
 | --- | --- |
-| `adele_execution_run_activity` | One terminal activity header per product Run, latest Run-local sequence, and optional data-only failure. |
+| `adele_execution_run_activity` | One activity header per canonical Run ID and Session ID, latest committed Run-local sequence, optional terminal-record link, and optional data-only failure. |
 | `adele_execution_run_lifecycle` | Ordered Run-state observations. |
 | `adele_execution_model_invocations` | Invocation identities, start/terminal occurrences, settlement, metadata, and failure. |
 | `adele_execution_model_outputs` | Ordered text, native, and proposal output occurrences with their model provenance. |
@@ -615,25 +621,78 @@ outcome host data. It does not store whole semantic objects as JSON, serialize
 `RunJournal`, or introduce a public database handle. Core never interprets
 provider-native schemas.
 
-Retention accepts an explicit terminal `RunActivitySnapshot` alongside `RunRecord`.
-Their Run ID, Session ID, and terminal state must agree. Validation preserves
-Run-local occurrence identities and order, model/output/tool provenance, and
-data-only failure/outcome semantics; malformed or inconsistent history fails
-explicitly rather than being truncated, reset, or published partially. Every
-terminal product record requires exactly one activity root, and every root requires
-its terminal record. The terminal state remains authoritative in the product row.
-One SQL transaction inserts both owners' rows, then lifecycle publishes the product record
-and immutable activity. A failed commit publishes neither. Explicitly volatile
-Projects retain both only in memory, never as a storage-error fallback.
+Core checkpoints factual public semantic observations during actual Run execution,
+not from UI subscriptions, frame coalescing, Chat, or application cleanup. Run
+start/wait/resume, model invocation starts and completed output items, observed
+model settlement/failure, tool proposal preparation/rejection, policy/effects,
+approval requests/resolutions, and tool execution/progress/outcomes retain their
+original Run-local sequences and provenance. Raw model text deltas are omitted,
+leaving legitimate sequence gaps. Settlement/outcome observation follows existing
+collector validation, not merely receipt of an unvalidated raw terminal wire item.
+The journal remains an in-memory mechanics and projection input, never the durable
+format.
+
+An **acknowledged checkpoint** means its synchronous SQLite transaction committed
+successfully. Observation in memory, attempted SQL, and a later UI render do not
+acknowledge persistence. Each transaction inserts only new relational occurrences,
+updates newly observed model settlement and the root cursor, and preserves all
+previously committed facts. Existing identity, payload, and provenance cannot be
+rewritten, removed, or backfilled into committed sequence gaps. A crash may lose
+uncommitted observations, not expose a half-applied checkpoint. This is not a
+general event-sourcing or distributed exactly-once framework.
+
+The execution root directly references its canonical Session and may have no
+terminal product row. Sealing adds an optional same-Run, same-Session terminal
+link, enforced by a composite foreign key. The product schema remains independent
+of orchestration evidence. Partial validation preserves monotonic order, unique
+occurrences, internal identity and provenance, payload shapes, and lifecycle
+consistency while permitting genuinely unfinished subordinate activity: a model
+without settlement, a prepared tool without execution, an execution start without
+outcome, or approval without resolution. An approved request is not proof of
+execution; a start is not proof that effects completed. Missing facts stay missing.
+
+At the host-controlled tool dispatch boundary, execution-start evidence must
+commit **before calling the executable**, including before a synchronous effect
+inside `execute()`. A failed required checkpoint latches a failure for that Run,
+fences further advancement and checkpoint attempts, and surfaces the error. It
+does not create a model failure, tool outcome, or terminal Run merely to close
+the evidence. If an actual execution error also occurs, that primary error wins
+over secondary persistence or cleanup failure. There is no blind retry or volatile
+fallback. Cancellation of an already-dispatched stream is only best effort.
+
+Terminal retention still accepts an explicit terminal `RunActivitySnapshot`
+alongside `RunRecord`. Their Run ID, Session ID, and actual terminal state must
+agree. One transaction reconciles any committed prefix, inserts the product record
+and remaining final evidence, and seals the root without duplicate occurrences.
+Every terminal product record requires exactly one matching sealed activity root;
+an unsealed root cannot pair with a terminal product record. Lifecycle publishes
+the product record and immutable terminal activity only after successful commit.
+A failed terminal transaction publishes neither and preserves its prior unsealed
+prefix. The terminal state is authoritative only in the committed product row.
+Explicitly volatile Projects remain non-durable, including when plugin-owned
+temporary backing exists; storage errors never select that mode.
 
 `ProjectDatabase.loadProductGraph` remains product-only.
-`loadExecutionHistory` separately reconstructs and validates public snapshots
-against terminal product records, without consulting plugin tables or resolving
-strategies, model/tool providers, or Environment materializations. Both restore
-sets must validate before either is published. `ProductLifecycleCoordinator` owns
-the retained activity map and exposes `runActivity` and `runActivitiesForSession`;
-the product store remains independent of orchestration activity types. Session
-lookup returns an immutable collection without a cross-Run chronology guarantee.
+`loadExecutionRestoreSet` separately reconstructs and validates all sealed and
+unsealed public snapshots against the canonical product graph, without consulting
+plugin tables or resolving strategies, model/tool providers, or Environment
+materializations. It checks all execution tables, including orphan rows that a
+join could hide. Malformed, contradictory, or incorrectly associated evidence
+fails the complete Project restore without resetting storage or publishing a
+partial graph. Both owners' complete restore sets and live identity conflicts must
+validate before any publication. `loadExecutionHistory` remains a terminal-only
+projection of this complete validation, not a way to skip corrupt unsealed rows.
+
+`ProductLifecycleCoordinator.runActivity` and `runActivitiesForSession` remain
+terminal-only. Its application-owned `recoveredRun` and `recoveredRunsForSession`
+expose immutable `RecoveredRunEvidence` loaded on Project reopening: the canonical
+Session, original activity, optional terminal product record, and a separate
+`RecoveredRunStatus` of `terminal` or `interrupted`. Unsealed evidence without a
+terminal product record is historically **interrupted**, regardless of whether its
+last observed state was running or waiting. The activity state is not overwritten.
+A recovered waiting observation is not a live `RunInterruption` or actionable
+approval. An unknown Run ID returns no recovery evidence, not a claim that it
+never started. Session lookup has no cross-Run chronology guarantee.
 
 Historical activity includes lifecycle, invocation/output order, proposal
 rejections, policy/approval evidence, progress, outcomes, and opaque native
@@ -650,15 +709,23 @@ outcome evidence. Other tools keep their own progress semantics, and do not acqu
 process stdout/stderr merely because Command Tools supports it. See
 [Command Tools ownership](plugin-system.md#command-tools-participation).
 
-This is terminal history, not event sourcing or recovery. It retains no live
-`AgentRun`, bindings, authority tokens, active/waiting Run state, Session claims,
-approval restart state, or workbench state. There are no timestamps, cross-Run
-ordering guarantees, pruning, development-schema upgrade migrations, automatic
-resume, or live execution recovery. The Task Browser can open retained Sessions
+This is read-only historical recovery, not execution resumption or event sourcing.
+It restores no live `AgentRun`, strategy instance, model adapter, tool catalog,
+binding, authority token, Session claim, approval resolution token, Environment
+materialization, provider-native continuation, or workbench state. Reopening
+allocates no Run ID and performs no model/tool invocation, approval, or replay.
+There are no timestamps, cross-Run ordering guarantees, pruning,
+development-schema upgrade migrations, automatic
+resume, or live execution recovery. Chat rendering, Inspection, public historical
+transport, and stock Chat's cross-Run model-context projection do not yet consume
+interrupted evidence. The Task Browser can open retained Sessions
 without starting execution. The version-1 baseline requires coherent current
 development storage rather than legacy readers. Before the first declared storage
 compatibility commitment, further execution-schema changes rewrite/squash version 1
-instead of accumulating development migrations.
+instead of accumulating development migrations. Incompatible same-version shapes
+fail explicitly and non-destructively; version equality does not claim compatibility
+with earlier development storage. Failed or absent acknowledgement is not evidence
+of rollback: a fresh open reads and validates what SQLite actually retained.
 
 ### Strategy access to historical evidence
 
@@ -700,8 +767,8 @@ with no partial success, implicit summarization or truncation. The
 owns precise fields, failure codes and bounds. Larger retrieval requires a later
 explicit design, not a generalized streaming framework in this boundary.
 
-Terminal retention and durable Project reopening remain unchanged. The read grants
-no authorization to repeat historical operations and promises no cross-Run
+This public read remains terminal-only despite private interrupted recovery. It
+grants no authorization to repeat historical operations and promises no cross-Run
 chronology or file freshness. Core does not automatically add this evidence to
 inference context. A strategy owns its selection and semantic projection.
 
@@ -738,15 +805,17 @@ for representation and context limits.
 The implemented foundation includes bounded strategy-driven Runs, streaming model
 invocation, dynamic tool contribution/materialization, policy/approval,
 interruptions, structured outcomes, instruction-context capture, public
-activity projection, and terminal Run/activity retention. The [product graph and
-terminal records](product-model.md#project-storage), terminal public snapshots,
+activity projection, incremental execution checkpoints, and terminal Run/activity
+sealing. The [product graph and terminal records](product-model.md#project-storage),
+committed public activity,
 and initialized plugin-owned Chat state have durable storage; live execution
 remains in memory.
 Concurrent Sessions do not imply simultaneous Runs within one Session, parallel
 tool proposals within a Run, or a background-command mode. Those remain outside
 the implemented execution policy.
-Persistent active Run recovery, child-Session lifecycle, broader context
-material, general background scheduling, and richer multi-agent execution are not
+Read-only restoration of interrupted evidence does not establish executable Run
+recovery. Child-Session lifecycle, broader context material, general background
+scheduling, and richer multi-agent execution are not
 established by this foundation.
 
 ## Execution invariants

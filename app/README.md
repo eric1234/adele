@@ -25,7 +25,7 @@ and [architecture overview](../docs/architecture/overview.md) for cross-system c
 | Exact-generation mediation of Session- or Environment-addressed relational storage | Public [Project storage contract](../packages/project_storage/lib/adele_project_storage.dart); plugin schema/state semantics: [plugin persistence](../docs/architecture/plugin-system.md#plugin-owned-state-and-persistence). |
 | Declared backend Capability consumption and exact-generation handles | Public [backend consumer API](../packages/plugin_backend_support/README.md#capability-consumption); provider selection: [capabilities](../packages/capabilities/README.md); semantic generated contracts remain plugin-owned. |
 | Session execution hosting and provider/tool/context adaptation | Public [orchestration](../packages/orchestration/README.md), [model-tool](../packages/model_tool/), and [model-provider](../packages/model_provider/) contracts; generic mechanics in [agent kernel](../packages/agent_kernel/README.md). |
-| Host policy, exact-invocation approval, Run activity projection, and terminal evidence storage | Concrete strategy sequencing, conversation state/history, and grouping: [Chat](../plugins/chat_strategy/README.md). |
+| Host policy, exact-invocation approval, Run activity projection, incremental evidence storage, and read-only recovery | Concrete strategy sequencing, conversation state/history, and grouping: [Chat](../plugins/chat_strategy/README.md). |
 | Generic shell, Task Browser/Session/Inspection hosting, grouped Main Content, shared console chrome, and application-local window state | Browser presentation: [Task Browser](../plugins/task_browser/README.md); console content: [Terminal](../plugins/terminal/README.md); tool behavior and bespoke cards: [Filesystem](../plugins/filesystem_tools/README.md), [Command](../plugins/command_tools/README.md), and [Search](../plugins/search_tools/README.md). |
 | Global Command Palette and application-owned Commands | Presentation-independent Command contract, composition, and dispatch admission: [core extensions](../packages/core_extensions/README.md#commands). |
 | Trusted host credential identity and lifecycle | Internal OS storage binding: [credential store](../packages/credential_store/README.md); authorization and configuration separation: [profiles and configuration](../docs/architecture/profiles-and-configuration.md#credentials-and-secrets). |
@@ -88,7 +88,7 @@ controllers. Run ID allocation and injection follow the
 `InferenceContextComposer` uses only the shared extension registry; and
 `ApplicationPluginBootstrap` uses the shared capability and extension registries.
 Lifecycle additionally owns private `ProjectDatabase` instances for durable opens
-and a separate map of immutable terminal snapshots; constructing the runtime does
+and separate immutable terminal and recovered-evidence views; constructing the runtime does
 not open a database. Lifecycle is constructed before
 bootstrap so the runtime can supply the generic
 `projectStorageServices(lifecycle, connection)` infrastructure factory to every
@@ -1405,9 +1405,9 @@ exact `ProviderBinding`, and optional host `validateSelection` callback. Private
 and symlinks, hosts `sqlite3`, and coordinates explicit SQL migrations. After final
 binding validation, SQLite work is synchronous. After the identity/source commit,
 `loadProductGraph` reconstructs Tasks, Environments, Sessions, their semantic
-Environment associations, and terminal Run records. Separate `loadExecutionHistory`
-reconstructs terminal public snapshots against those records. Lifecycle validates
-both restore sets before publishing the graph through `publishRestoredProject`
+Environment associations, and terminal Run records. Separate `loadExecutionRestoreSet`
+reconstructs sealed terminal snapshots and unsealed execution evidence. Lifecycle validates
+all restore sets before publishing the graph through `publishRestoredProject`
 and retaining activity outside the product store. Stored strategies and
 Environment providers are not resolved; missing Chat or an Environment provider
 does not prevent these records loading or cause plugin tables to be touched. Later
@@ -1969,8 +1969,24 @@ the stored record; the [execution model](../docs/architecture/execution-model.md
 defines finalization, failure precedence, and the one-attempt boundary.
 Retention supplies the explicit public snapshot and commits it with the record in
 one SQL transaction before in-memory publication; the kernel journal is not a
-storage format. Lifecycle exposes `runActivity` and `runActivitiesForSession` for
-read-only historical lookup.
+storage format. The core host checkpoints public semantic observations through
+`ProductLifecycleCoordinator.checkpointRunActivity`, synchronously before further
+advancement, including tool execution-start before dispatch. The private database
+inserts new normalized rows and updates settlement/cursor fields rather than
+replacing accumulated history. Required checkpoint failure fences that Run without
+inventing a terminal outcome; the controller reports the error, not a UI-owned
+Run transition. The existing forced-exit fence prevents late writes.
+
+Lifecycle's `runActivity` and `runActivitiesForSession` remain terminal-only.
+`recoveredRun` and `recoveredRunsForSession` expose immutable application-owned
+`RecoveredRunEvidence` on fresh Project opening. Each carries the canonical Session,
+original activity, optional terminal record, and `terminal` or `interrupted`
+retention status. The last observed activity state stays unchanged; historical
+waiting does not restore an approval or an active Session claim. No provider,
+strategy, Environment, or Run identity is created by this read-only restoration.
+This seam is not yet wired into Chat, Inspection, or public historical transport.
+The [execution evidence contract](../docs/architecture/execution-model.md#terminal-execution-history)
+owns acknowledgement, partial validation, terminal sealing, and recovery limits.
 
 | Application adapter | Local responsibility |
 | --- | --- |
@@ -2155,12 +2171,13 @@ validation belongs to the [OpenAI backend](../plugins/openai/packages/backend/RE
 
 Project identity/source, Tasks, Environment semantic records, and provider-state
 snapshots, Sessions, semantic Environment associations, terminal Run records, and
-terminal public activity snapshots are durable; initialized Chat conversation,
+committed partial/final public activity are durable; initialized Chat conversation,
 instructions, plain-text Draft Request, and user-entry Run associations are
 plugin-owned durable state. Environment materialization remains lazy
 and runtime-only.
-Active/waiting Runs, claims, approval restart, live bindings, and native continuation
-recovery are not persisted. Rich Draft Request documents, conversation forks,
+Active/waiting execution, claims, approval restart, live bindings, and native
+continuation are not restored. Unsealed execution evidence is read-only interrupted
+history, not a resumable Run. Rich Draft Request documents, conversation forks,
 and concurrent editing are unimplemented. The browser supports one open Project
 and one presented Session with multiple independently active Sessions, not multiple
 active Runs per Session. Global scalar settings and nonsecret configuration records
@@ -2197,7 +2214,7 @@ repository-wide deferred-feature ledger here.
 | Product lifecycle/Environment authority | [`lib/core/product_lifecycle.dart`](lib/core/product_lifecycle.dart): `ProductLifecycleCoordinator`, `EnvironmentRuntime` |
 | Private Project persistence | [`lib/core/project_database.dart`](lib/core/project_database.dart): `ProjectDatabase`, `MigrationCoordinator` |
 | Terminal Run retention and lookup | [`lib/core/product_lifecycle.dart`](lib/core/product_lifecycle.dart): `retainTerminalRun`, `InMemoryProductStore.runRecord`, `runsForSession`, `publishTerminalRun` |
-| Terminal activity retention and restore | [`lib/core/product_lifecycle.dart`](lib/core/product_lifecycle.dart): `runActivity`, `runActivitiesForSession`; [`lib/core/project_database.dart`](lib/core/project_database.dart): `loadExecutionHistory`, `insertTerminalRun` |
+| Execution checkpoints, terminal sealing, and recovery | [`lib/core/product_lifecycle.dart`](lib/core/product_lifecycle.dart): `checkpointRunActivity`, `runActivity`, `runActivitiesForSession`, `recoveredRun`, `recoveredRunsForSession`; [`lib/core/project_database.dart`](lib/core/project_database.dart): `loadExecutionRestoreSet`, `loadExecutionHistory`, `insertTerminalRun` |
 | Execution evidence validation/schema | [`lib/core/execution_evidence.dart`](lib/core/execution_evidence.dart), [`lib/core/execution_evidence_schema.dart`](lib/core/execution_evidence_schema.dart) |
 | Plugin relational storage mediation | [`lib/core/project_storage_host.dart`](lib/core/project_storage_host.dart): `projectStorageServices`, `ProjectStorageHost` |
 | Main Content registration/hosting | [`lib/frontend/prepared_main_content_host.dart`](lib/frontend/prepared_main_content_host.dart), [`lib/ui/main_content/main_content_controller.dart`](lib/ui/main_content/main_content_controller.dart), [`lib/ui/main_content/main_content_host.dart`](lib/ui/main_content/main_content_host.dart) |

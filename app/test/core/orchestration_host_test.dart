@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:adele_desktop/core/inference_context_host.dart';
 import 'package:adele_desktop/core/orchestration_host.dart';
+import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/run_activity_projection.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
@@ -47,7 +48,7 @@ void main() {
       session = topology.createSession(strategyId);
     });
 
-    Future<SessionOrchestrationRun> create() async {
+    Future<SessionOrchestrationRun> create({bool registerClose = true}) async {
       final result = await createSessionOrchestrationRun(
         lifecycle: topology.lifecycle,
         sessionId: session.id,
@@ -57,7 +58,7 @@ void main() {
         toolCatalog: _catalog(_Executable()),
         policy: const _Policy(ToolPolicyDecision.ask),
       );
-      addTearDown(result.close);
+      if (registerClose) addTearDown(result.close);
       return result;
     }
 
@@ -342,6 +343,48 @@ void main() {
     });
 
     test(
+      'caught start checkpoint failure remains an admission fence',
+      () async {
+        final run = await create(registerClose: false);
+        Object? checkpointError;
+        execution.onStart = () async {
+          await topology.lifecycle.close();
+          try {
+            execution.host.start();
+            fail('A closed lifecycle cannot acknowledge Run start.');
+          } on StateError catch (error) {
+            checkpointError = error;
+          }
+          expect(execution.host.complete, throwsA(same(checkpointError)));
+          expect(
+            () => execution.host.fail(StateError('Strategy fallback.')),
+            throwsA(same(checkpointError)),
+          );
+          await expectLater(
+            execution.host.invokeModel(StrategyInferenceMaterial(input: [])),
+            throwsA(same(checkpointError)),
+          );
+          // Even swallowing every host error cannot make advancement succeed.
+        };
+        final cleanupError = StateError('Secondary cleanup failure.');
+        execution.onClose = () async => throw cleanupError;
+        await expectLater(
+          run.start(),
+          throwsA(
+            predicate<Object>((error) => identical(error, checkpointError)),
+          ),
+        );
+        expect(run.run.state, RunState.running);
+        expect(_events(run.run).map((event) => event.runtimeType), [
+          RunStarted,
+        ]);
+        expect(topology.lifecycle.store.runRecord(run.run.id), isNull);
+        expect(topology.lifecycle.runActivity(run.run.id), isNull);
+        await expectLater(run.close(), throwsA(same(cleanupError)));
+      },
+    );
+
+    test(
       'matching Session fields cannot replace canonical Session authority',
       () async {
         final record = retain('previous');
@@ -411,6 +454,211 @@ void main() {
       },
     );
   });
+
+  test('model-start checkpoint failure precedes provider invocation', () async {
+    final fixture = await _fixture(ToolPolicyDecision.allow);
+    fixture.registerSource(
+      ExtensionId('dev.adele.test.checkpoint-before-model'),
+      snapshot: (_) async {
+        await fixture.lifecycle.close();
+        return [];
+      },
+    );
+    await expectLater(fixture.strategy.start(), throwsStateError);
+    expect(fixture.model.invocations, 0);
+    expect(_events(fixture.run).map((event) => event.runtimeType), [
+      RunStarted,
+      ModelInvocationStarted,
+    ]);
+    expect(fixture.run.state, RunState.running);
+    expect(fixture.lifecycle.store.runRecord(fixture.run.id), isNull);
+  });
+
+  for (final boundary in ['output', 'settlement']) {
+    test(
+      '$boundary checkpoint failure does not invent model failure',
+      () async {
+        final fixture = await _fixture(ToolPolicyDecision.allow);
+        if (boundary == 'output') {
+          fixture.model.beforeOutput = fixture.lifecycle.close;
+          fixture.model.observations.add(
+            ModelTextDeltaObservation('ephemeral'),
+          );
+        } else {
+          fixture.model.beforeSettlement = fixture.lifecycle.close;
+        }
+        await expectLater(fixture.strategy.start(), throwsStateError);
+        expect(fixture.run.state, RunState.running);
+        expect(fixture.run.failure, isNull);
+        expect(fixture.model.invocations, 1);
+        expect(fixture.executable.dispatches, 0);
+        expect(
+          _events(fixture.run).whereType<ModelInvocationFailed>(),
+          isEmpty,
+        );
+        expect(_events(fixture.run).whereType<RunFailed>(), isEmpty);
+        expect(
+          _events(fixture.run).whereType<ModelOutputObserved>(),
+          hasLength(1),
+        );
+        expect(
+          _events(fixture.run).whereType<ModelInvocationSettled>(),
+          hasLength(boundary == 'settlement' ? 1 : 0),
+        );
+        if (boundary == 'output') {
+          expect(
+            _events(fixture.run).whereType<ModelObservationObserved>(),
+            hasLength(1),
+          );
+          expect(
+            fixture.strategy.activity.snapshot.models.single.outputs,
+            hasLength(1),
+          );
+        }
+        expect(fixture.lifecycle.store.runRecord(fixture.run.id), isNull);
+        expect(fixture.lifecycle.runActivity(fixture.run.id), isNull);
+      },
+    );
+  }
+
+  test(
+    'execution-start checkpoint precedes synchronous tool dispatch',
+    () async {
+      final fixture = await _fixture(ToolPolicyDecision.allow);
+      fixture.executable.beforeDescribe = () async {
+        // The next binding check belongs to startToolExecution, after policy.
+        fixture.executable.onValidateBinding = () {
+          unawaited(fixture.lifecycle.close());
+        };
+      };
+      Object? checkpointError;
+      await expectLater(
+        fixture.strategy.start(),
+        throwsA(
+          predicate<Object>((error) {
+            checkpointError = error;
+            return error is StateError;
+          }),
+        ),
+      );
+      expect(fixture.executable.dispatches, 0);
+      expect(fixture.executable.executions, 0);
+      expect(_events(fixture.run).last, isA<ToolExecutionStarted>());
+      expect(_events(fixture.run).whereType<ToolExecutionCompleted>(), isEmpty);
+      expect(fixture.strategy.lastToolOutcome, isNull);
+      expect(fixture.run.state, RunState.running);
+      final journal = fixture.run.journal.records;
+      await expectLater(
+        fixture.strategy.start(),
+        throwsA(same(checkpointError)),
+      );
+      await fixture.strategy.close();
+      expect(fixture.run.journal.records, orderedEquals(journal));
+      expect(fixture.lifecycle.store.runRecord(fixture.run.id), isNull);
+    },
+  );
+
+  for (final boundary in ['progress', 'outcome']) {
+    test('$boundary checkpoint failure does not invent tool outcome', () async {
+      final fixture = await _fixture(
+        ToolPolicyDecision.allow,
+        progress: [ToolProgress(content: 'Observed.')],
+      );
+      if (boundary == 'progress') {
+        fixture.executable.onDispatch = () {
+          unawaited(fixture.lifecycle.close());
+        };
+      } else {
+        fixture.executable.beforeTerminal = fixture.lifecycle.close;
+      }
+      await expectLater(fixture.strategy.start(), throwsStateError);
+      expect(fixture.executable.dispatches, 1);
+      expect(fixture.model.invocations, 1);
+      expect(fixture.run.state, RunState.running);
+      expect(_events(fixture.run).whereType<RunFailed>(), isEmpty);
+      expect(
+        _events(fixture.run).whereType<ToolProgressObserved>(),
+        hasLength(1),
+      );
+      final outcomes = _events(fixture.run).whereType<ToolExecutionCompleted>();
+      expect(outcomes, hasLength(boundary == 'outcome' ? 1 : 0));
+      if (boundary == 'outcome') {
+        expect(
+          outcomes.single.outcome.disposition,
+          ToolOutcomeDisposition.success,
+        );
+      } else {
+        expect(fixture.strategy.lastToolOutcome, isNull);
+      }
+      expect(fixture.lifecycle.store.runRecord(fixture.run.id), isNull);
+    });
+  }
+
+  for (final duringModel in [true, false]) {
+    test(
+      'primary ${duringModel ? 'model' : 'tool'} error wins checkpoint failure',
+      () async {
+        final fixture = await _fixture(ToolPolicyDecision.allow);
+        final primaryError = StateError('Primary execution failure.');
+        Future<void> failAfterClose() async {
+          await fixture.lifecycle.close();
+          throw primaryError;
+        }
+
+        if (duringModel) {
+          fixture.model.beforeSettlement = failAfterClose;
+        } else {
+          fixture.executable.beforeTerminal = failAfterClose;
+        }
+        await expectLater(
+          fixture.strategy.start(),
+          throwsA(same(primaryError)),
+        );
+        expect(fixture.run.state, RunState.running);
+        expect(_events(fixture.run).whereType<RunFailed>(), isEmpty);
+        if (duringModel) {
+          expect(
+            _events(
+              fixture.run,
+            ).whereType<ModelInvocationFailed>().single.error,
+            same(primaryError),
+          );
+        } else {
+          expect(
+            _events(
+              fixture.run,
+            ).whereType<ToolExecutionCompleted>().single.outcome.cause,
+            same(primaryError),
+          );
+        }
+        await fixture.strategy.close();
+        expect(fixture.lifecycle.store.runRecord(fixture.run.id), isNull);
+      },
+    );
+  }
+
+  test(
+    'cutoff during final tool binding check prevents dispatch and late evidence',
+    () async {
+      final fence = ApplicationExitExecutionFence();
+      final fixture = await _fixture(
+        ToolPolicyDecision.allow,
+        applicationExitFence: fence,
+      );
+      fixture.executable.beforeDescribe = () async {
+        fixture.executable.onValidateBinding =
+            fence.interruptForApplicationExit;
+      };
+      await expectLater(fixture.strategy.start(), throwsA(isA<Exception>()));
+      expect(fixture.executable.dispatches, 0);
+      expect(fixture.run.state, RunState.running);
+      expect(_events(fixture.run).last, isA<ToolPolicyEvaluated>());
+      final records = fixture.run.journal.records;
+      await fixture.strategy.close();
+      expect(fixture.run.journal.records, orderedEquals(records));
+      expect(fixture.lifecycle.store.runRecord(fixture.run.id), isNull);
+    },
+  );
 
   test(
     'identical calls retain distinct host identities through approval, execution and activity',
@@ -3862,6 +4110,7 @@ Future<_StrategyFixture> _fixture(
   bool alwaysPropose = false,
   int maxModelInvocations = 8,
   List<ToolProgress> progress = const <ToolProgress>[],
+  ApplicationExitExecutionFence? applicationExitFence,
 }) async {
   final ExtensionRegistry extensions = ExtensionRegistry();
   final ChatStrategyPlugin chat = ChatStrategyPlugin(
@@ -3887,6 +4136,7 @@ Future<_StrategyFixture> _fixture(
   final _Executable executable = _Executable(progress: progress);
   final ToolCatalog catalog = _catalog(executable);
   final _StrategyFixture fixture = _StrategyFixture(
+    lifecycle: topology.lifecycle,
     extensions: extensions,
     strategyRegistration: strategyRegistration,
     session: session,
@@ -3901,6 +4151,7 @@ Future<_StrategyFixture> _fixture(
       model: model,
       toolCatalog: catalog,
       policy: _Policy(decision),
+      applicationExitFence: applicationExitFence,
     ),
   );
   addTearDown(fixture.strategy.close);
@@ -3909,6 +4160,7 @@ Future<_StrategyFixture> _fixture(
 
 final class _StrategyFixture {
   const _StrategyFixture({
+    required this.lifecycle,
     required this.extensions,
     required this.strategyRegistration,
     required this.session,
@@ -3919,6 +4171,7 @@ final class _StrategyFixture {
   });
 
   AgentRun get run => strategy.run;
+  final ProductLifecycleCoordinator lifecycle;
   final ExtensionRegistry extensions;
   final ExtensionRegistration strategyRegistration;
   final Session session;
@@ -3986,6 +4239,8 @@ final class _Model implements ModelPort {
   final bool alwaysPropose;
   final List<SemanticModelRequest> requests = <SemanticModelRequest>[];
   int invocations = 0;
+  Future<void> Function()? beforeOutput;
+  final List<ModelObservation> observations = [];
   Future<void> Function()? beforeSettlement;
   bool sawCorrelatedContinuation = false;
   bool sawPreservedOutputOrder = false;
@@ -3994,6 +4249,13 @@ final class _Model implements ModelPort {
   Stream<ModelEvent> invoke(SemanticModelRequest request) async* {
     invocations++;
     requests.add(request);
+    await beforeOutput?.call();
+    for (final observation in observations) {
+      yield ModelObservationEvent(
+        invocationId: request.invocationId,
+        observation: observation,
+      );
+    }
     final List<SemanticToolOutcomeInput> outcomes = request.input
         .whereType<SemanticToolOutcomeInput>()
         .toList(growable: false);
@@ -4071,6 +4333,9 @@ final class _Executable implements ToolExecutable {
 
   final List<ToolProgress> progress;
   int executions = 0;
+  int dispatches = 0;
+  void Function()? onDispatch;
+  void Function()? onValidateBinding;
   FutureOr<CanonicalToolArguments> Function(Map<String, Object?>)? validator;
   Future<void> Function()? beforeDescribe;
   Future<void> Function()? beforeTerminal;
@@ -4095,7 +4360,13 @@ final class _Executable implements ToolExecutable {
   Stream<ToolExecutionEvent> execute(
     CanonicalToolArguments arguments,
     ToolExecutionContext context,
-  ) async* {
+  ) {
+    dispatches++;
+    onDispatch?.call();
+    return _events();
+  }
+
+  Stream<ToolExecutionEvent> _events() async* {
     executions++;
     for (final ToolProgress item in progress) {
       yield ToolExecutionProgress(item);
@@ -4119,7 +4390,7 @@ final class _Executable implements ToolExecutable {
       CanonicalToolArguments(proposedArguments);
 
   @override
-  void validateBinding() {}
+  void validateBinding() => onValidateBinding?.call();
 }
 
 final class _NoHostServices implements ModelToolHostContext {

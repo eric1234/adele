@@ -77,9 +77,10 @@ const executionTables = <String, EvidenceTable>{
   'root': EvidenceTable(
     'adele_execution_run_activity',
     'run_id',
-    text: ['run_id'],
+    text: ['run_id', 'session_id'],
     integers: ['latest_sequence'],
     nullableText: [
+      'terminal_run_id',
       'failure_kind',
       'failure_message',
       'failure_provider_code',
