@@ -30,6 +30,12 @@ factual documentation claims. A behavioral test is appropriate for documentation
 work only when a specific factual uncertainty cannot reasonably be resolved by
 inspecting source and existing tests.
 
+Catalog-wide integration tests should tolerate additive frontend contributions
+while checking independently named required identities, uniqueness, and lifecycle
+invariants. Intentionally closed fixtures should retain exact cardinality checks
+when the declared fixture set is the contract. Sensitive capability opt-in
+restrictions remain explicit contracts, not incidental catalog sizes.
+
 ## Maintained commands
 
 Run repository commands from the repository root with the pinned toolchain:

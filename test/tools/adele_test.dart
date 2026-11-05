@@ -5,6 +5,8 @@ import 'dart:io';
 import 'package:test/test.dart';
 import 'package:yaml/yaml.dart';
 
+// ignore: avoid_relative_lib_imports
+import '../../packages/plugin_runtime/lib/plugin_runtime.dart';
 import '../../tools/adele.dart';
 import '../../tools/stock_frontend_descriptors.dart';
 import '../../tools/test_runner.dart';
@@ -1668,15 +1670,19 @@ exit "$CLIPPY_EXIT"
         Directory('plugins/task_browser/packages/backend').existsSync(),
         isFalse,
       );
-      expect(stockFrontendDescriptors['dev.adele.plugin.task-browser'], [
-        {
-          'role': 'taskBrowser',
-          'extensionId': 'dev.adele.plugin.task-browser.task-browser',
-          'displayName': 'Task Browser',
-          'library': 'package:task_browser_frontend/task_browser_frontend.dart',
-          'entrypoint': 'createTaskBrowser',
-        },
-      ]);
+      expect(
+        stockFrontendDescriptors['dev.adele.plugin.task-browser'],
+        contains(
+          equals({
+            'role': 'taskBrowser',
+            'extensionId': 'dev.adele.plugin.task-browser.task-browser',
+            'displayName': 'Task Browser',
+            'library':
+                'package:task_browser_frontend/task_browser_frontend.dart',
+            'entrypoint': 'createTaskBrowser',
+          }),
+        ),
+      );
     });
 
     test('discovers the frontend-only Terminal in workspace and CI', () {
@@ -1710,30 +1716,36 @@ exit "$CLIPPY_EXIT"
         (manifest['dev_dependencies'] as YamlMap).keys,
         containsAll(['flutter_test', 'dart_eval', 'flutter_eval']),
       );
-      expect(stockFrontendDescriptors['dev.adele.plugin.terminal'], [
-        {
-          'role': 'console',
-          'extensionId': 'dev.adele.plugin.terminal.console',
-          'library': 'package:terminal_frontend/terminal_frontend.dart',
-          'entrypoint': 'buildTerminal',
-          'actions': [
-            {
-              'id': 'new-terminal',
-              'label': 'New Terminal',
-              'entrypoint': 'newTerminal',
-            },
-          ],
-        },
-      ]);
-      expect(stockFrontendExtensionDescriptors['dev.adele.plugin.terminal'], [
-        {
-          'kind': 'consoleActionCommand',
-          'extensionId': 'dev.adele.plugin.terminal.command.new-terminal',
-          'commandId': 'dev.adele.plugin.terminal.new-terminal',
-          'consoleExtensionId': 'dev.adele.plugin.terminal.console',
-          'actionId': 'new-terminal',
-        },
-      ]);
+      expect(
+        stockFrontendDescriptors['dev.adele.plugin.terminal'],
+        contains(
+          equals({
+            'role': 'console',
+            'extensionId': 'dev.adele.plugin.terminal.console',
+            'library': 'package:terminal_frontend/terminal_frontend.dart',
+            'entrypoint': 'buildTerminal',
+            'actions': [
+              {
+                'id': 'new-terminal',
+                'label': 'New Terminal',
+                'entrypoint': 'newTerminal',
+              },
+            ],
+          }),
+        ),
+      );
+      expect(
+        stockFrontendExtensionDescriptors['dev.adele.plugin.terminal'],
+        contains(
+          equals({
+            'kind': 'consoleActionCommand',
+            'extensionId': 'dev.adele.plugin.terminal.command.new-terminal',
+            'commandId': 'dev.adele.plugin.terminal.new-terminal',
+            'consoleExtensionId': 'dev.adele.plugin.terminal.console',
+            'actionId': 'new-terminal',
+          }),
+        ),
+      );
     });
 
     test(
@@ -1788,44 +1800,50 @@ exit "$CLIPPY_EXIT"
           'adele_ui': '^0.1.0',
           'flutter': {'sdk': 'flutter'},
         });
-        expect(stockFrontendDescriptors['dev.adele.source-editor'], [
-          {
-            'role': 'mainContent',
-            'extensionId': 'dev.adele.source-editor.main-content',
-            'library': 'package:source_editor_frontend/main.dart',
-            'initialize': 'initializeSource',
-            'entrypoint': 'sourcePane',
-            'order': 300,
-            'actions': [
-              {
-                'id': 'open',
-                'label': 'Open Source...',
-                'entrypoint': 'openSourceInput',
+        expect(
+          stockFrontendDescriptors['dev.adele.source-editor'],
+          contains(
+            equals({
+              'role': 'mainContent',
+              'extensionId': 'dev.adele.source-editor.main-content',
+              'library': 'package:source_editor_frontend/main.dart',
+              'initialize': 'initializeSource',
+              'entrypoint': 'sourcePane',
+              'order': 300,
+              'actions': [
+                {
+                  'id': 'open',
+                  'label': 'Open Source...',
+                  'entrypoint': 'openSourceInput',
+                },
+              ],
+              'operations': {
+                'display': 'displaySource',
+                'save': 'saveSource',
+                'close': 'closeSource',
+                'exit': 'closeSources',
               },
-            ],
-            'operations': {
-              'display': 'displaySource',
-              'save': 'saveSource',
-              'close': 'closeSource',
-              'exit': 'closeSources',
-            },
-            'closeOperation': 'close',
-            'exitOperation': 'exit',
-            'displaySourceFileOperation': 'display',
-            'retainedData': true,
-            'nativeCodeEditor': true,
-            'environmentTextFiles': true,
-          },
-        ]);
-        expect(stockFrontendExtensionDescriptors['dev.adele.source-editor'], [
-          {
-            'kind': 'mainContentActionCommand',
-            'extensionId': 'dev.adele.source-editor.command.open-source',
-            'commandId': 'dev.adele.source-editor.open-source',
-            'mainContentExtensionId': 'dev.adele.source-editor.main-content',
-            'actionId': 'open',
-          },
-        ]);
+              'closeOperation': 'close',
+              'exitOperation': 'exit',
+              'displaySourceFileOperation': 'display',
+              'retainedData': true,
+              'nativeCodeEditor': true,
+              'environmentTextFiles': true,
+            }),
+          ),
+        );
+        expect(
+          stockFrontendExtensionDescriptors['dev.adele.source-editor'],
+          contains(
+            equals({
+              'kind': 'mainContentActionCommand',
+              'extensionId': 'dev.adele.source-editor.command.open-source',
+              'commandId': 'dev.adele.source-editor.open-source',
+              'mainContentExtensionId': 'dev.adele.source-editor.main-content',
+              'actionId': 'open',
+            }),
+          ),
+        );
         final compiler = File(
           'app/tool/source_editor_frontend_compiler.dart',
         ).readAsStringSync();
@@ -1892,23 +1910,26 @@ exit "$CLIPPY_EXIT"
           'diff_viewer_contract': '^0.1.0',
           'flutter': {'sdk': 'flutter'},
         });
-        expect(stockFrontendDescriptors['dev.adele.diff-viewer'], [
-          {
-            'role': 'mainContent',
-            'extensionId': 'dev.adele.diff-viewer.main-content',
-            'library': 'package:diff_viewer_frontend/main.dart',
-            'initialize': 'initializeDiff',
-            'entrypoint': 'buildDiffPane',
-            'order': 200,
-            'optionalBackendServices': ['diff.reviewDraft'],
-            'sessionFeedback': true,
-            'canRequestSourceDisplay': true,
-            'environmentBufferedProcessCapabilities': [
-              {'id': 'adele.diff.change-set-source', 'majorVersion': 1},
-              {'id': 'adele.diff.review-approval', 'majorVersion': 1},
-            ],
-          },
-        ]);
+        expect(
+          stockFrontendDescriptors['dev.adele.diff-viewer'],
+          contains(
+            equals({
+              'role': 'mainContent',
+              'extensionId': 'dev.adele.diff-viewer.main-content',
+              'library': 'package:diff_viewer_frontend/main.dart',
+              'initialize': 'initializeDiff',
+              'entrypoint': 'buildDiffPane',
+              'order': 200,
+              'optionalBackendServices': ['diff.reviewDraft'],
+              'sessionFeedback': true,
+              'canRequestSourceDisplay': true,
+              'environmentBufferedProcessCapabilities': [
+                {'id': 'adele.diff.change-set-source', 'majorVersion': 1},
+                {'id': 'adele.diff.review-approval', 'majorVersion': 1},
+              ],
+            }),
+          ),
+        );
         expect(
           stockFrontendExtensionDescriptors['dev.adele.diff-viewer'],
           isNull,
@@ -2022,39 +2043,132 @@ exit "$CLIPPY_EXIT"
 
   test(
     'stock descriptors name existing frontend entrypoints and sibling actions',
-    () {
-      expect(stockFrontendDescriptors, hasLength(8));
-      expect(stockFrontendExtensionDescriptors, hasLength(3));
+    () async {
+      expect(
+        stockFrontendDescriptors.keys,
+        containsAll([
+          'dev.adele.diff-viewer',
+          'dev.adele.source-editor',
+          'dev.adele.plugin.terminal',
+          'dev.adele.plugin.task-browser',
+          'dev.adele.plugin.chat-strategy',
+          'dev.adele.plugin.filesystem-tools',
+          'dev.adele.plugin.command-tools',
+          'dev.adele.openai',
+        ]),
+      );
+      expect(
+        stockFrontendExtensionDescriptors.keys,
+        containsAll([
+          'dev.adele.source-editor',
+          'dev.adele.plugin.terminal',
+          'dev.adele.plugin.local-directory-project',
+        ]),
+      );
+
+      // Use the maintained parser for required fields, types and opt-in shape.
+      final fixture = Directory.systemTemp.createTempSync('stock-descriptors-');
+      addTearDown(() => fixture.deleteSync(recursive: true));
+      for (final owner in {
+        ...stockFrontendDescriptors.keys,
+        ...stockFrontendExtensionDescriptors.keys,
+      }) {
+        final installation = Directory('${fixture.path}/$owner')..createSync();
+        File('${installation.path}/frontend.evc').createSync();
+        File(
+          '${installation.path}/adele_plugin.installation.json',
+        ).writeAsStringSync(
+          jsonEncode({
+            'manifestVersion': 1,
+            'metadata': {'id': owner, 'version': '0.1.0', 'displayName': owner},
+            'components': {
+              'frontend': {
+                'artifact': 'frontend.evc',
+                'presentations': stockFrontendDescriptors[owner] ?? [],
+                'extensions': stockFrontendExtensionDescriptors[owner] ?? [],
+              },
+            },
+          }),
+        );
+      }
+      final catalog = await PreparedPluginCatalog.discover(fixture.path);
+      expect(catalog.issues, isEmpty);
+
       final config = File('.dart_tool/package_config.json').absolute;
       final packages =
           (jsonDecode(config.readAsStringSync())
                   as Map<String, dynamic>)['packages']
               as List<dynamic>;
+      final registrations = <(String, String)>{};
+      final toolIds = <String>{};
+      final presentationKinds = <String>{};
       for (final entry in [
         ...stockFrontendDescriptors.entries,
         ...stockFrontendExtensionDescriptors.entries,
       ]) {
         final descriptors = entry.value;
-        expect(
-          descriptors,
-          hasLength(
-            identical(
-                      descriptors,
-                      stockFrontendDescriptors['dev.adele.plugin.command-tools'],
-                    ) ||
-                    identical(
-                      descriptors,
-                      stockFrontendDescriptors['dev.adele.plugin.chat-strategy'],
-                    ) ||
-                    identical(
-                      descriptors,
-                      stockFrontendDescriptors['dev.adele.plugin.filesystem-tools'],
-                    )
-                ? 2
-                : 1,
-          ),
-        );
+        expect(descriptors, isNotEmpty, reason: entry.key);
         for (final descriptor in descriptors) {
+          for (final field in [
+            'extensionId',
+            'inspectionExtensionId',
+            'compactExtensionId',
+          ]) {
+            if (!descriptor.containsKey(field)) continue;
+            final id = descriptor[field]! as String;
+            // Extension IDs are point-scoped. All Command descriptor kinds
+            // share one point; activity Inspection and compact roles do not.
+            final point = switch ((
+              descriptor['role'] ?? descriptor['kind'],
+              field,
+            )) {
+              ('mainContent', 'extensionId') => 'main-content',
+              ('console', 'extensionId') => 'consoles',
+              ('taskBrowser', 'extensionId') => 'task-browsers',
+              ('sessionContentInspection', 'extensionId') =>
+                'session-content-inspections',
+              ('toolActivity', 'inspectionExtensionId') =>
+                'tool-activity-inspections',
+              ('toolActivity', 'compactExtensionId') =>
+                'tool-activity-compact-presentations',
+              ('modelNativeActivity', 'inspectionExtensionId') =>
+                'model-native-activity-presentations',
+              ('modelNativeActivity', 'compactExtensionId') =>
+                'model-native-activity-compact-presentations',
+              (
+                'command' ||
+                    'consoleActionCommand' ||
+                    'mainContentActionCommand',
+                'extensionId',
+              ) =>
+                'commands',
+              ('projectSelector', 'extensionId') => 'project-selectors',
+              _ => throw StateError(
+                'Unknown registration: $descriptor ($field)',
+              ),
+            };
+            expect(
+              registrations.add((point, id)),
+              isTrue,
+              reason: '${entry.key}: duplicate Extension ID $id at $point',
+            );
+          }
+          if (descriptor['role'] == 'toolActivity') {
+            final id = descriptor['toolId']! as String;
+            expect(
+              toolIds.add(id),
+              isTrue,
+              reason: '${entry.key}: duplicate semantic Tool ID $id',
+            );
+          }
+          if (descriptor['role'] == 'modelNativeActivity') {
+            final kind = descriptor['presentationKind']! as String;
+            expect(
+              presentationKinds.add(kind),
+              isTrue,
+              reason: '${entry.key}: duplicate model presentation kind $kind',
+            );
+          }
           if (descriptor['kind'] == 'consoleActionCommand' ||
               descriptor['kind'] == 'mainContentActionCommand') {
             final console = descriptor['kind'] == 'consoleActionCommand';
@@ -2111,7 +2225,8 @@ exit "$CLIPPY_EXIT"
                   RegExp(
                     (descriptor['kind'] == 'projectSelector'
                             ? r'\bFuture<String\?>\s+'
-                            : field == 'initialize'
+                            : field == 'initialize' ||
+                                  descriptor['kind'] == 'command'
                             ? r'\b(?:void|Future<void>)\s+'
                             : r'\b(?:Widget|Future<Widget>)\s+') +
                         RegExp.escape(entrypoint) +
@@ -2158,12 +2273,121 @@ exit "$CLIPPY_EXIT"
           }
         }
       }
+      expect(
+        registrations,
+        containsAll([
+          ('main-content', 'dev.adele.diff-viewer.main-content'),
+          ('main-content', 'dev.adele.source-editor.main-content'),
+          ('consoles', 'dev.adele.plugin.terminal.console'),
+          ('task-browsers', 'dev.adele.plugin.task-browser.task-browser'),
+          ('main-content', 'dev.adele.plugin.chat-strategy.presentation'),
+          (
+            'session-content-inspections',
+            'dev.adele.plugin.chat-strategy.feedback-inspection',
+          ),
+          ('consoles', 'dev.adele.plugin.command-tools.output'),
+          ('commands', 'dev.adele.source-editor.command.open-source'),
+          ('commands', 'dev.adele.plugin.terminal.command.new-terminal'),
+          (
+            'project-selectors',
+            'dev.adele.plugin.local-directory-project.project-selector',
+          ),
+        ]),
+      );
+      const requiredTools = {
+        'dev.adele.plugin.filesystem-tools.read-file': (
+          owner: 'dev.adele.plugin.filesystem-tools',
+          inspection: 'dev.adele.plugin.filesystem-tools.read-file-inspection',
+          compact: 'dev.adele.plugin.filesystem-tools.read-file-compact',
+        ),
+        'dev.adele.plugin.filesystem-tools.apply-patch': (
+          owner: 'dev.adele.plugin.filesystem-tools',
+          inspection: 'dev.adele.plugin.filesystem-tools.inspection',
+          compact: 'dev.adele.plugin.filesystem-tools.compact',
+        ),
+        'dev.adele.plugin.command-tools.run-command': (
+          owner: 'dev.adele.plugin.command-tools',
+          inspection: 'dev.adele.plugin.command-tools.inspection',
+          compact: 'dev.adele.plugin.command-tools.compact',
+        ),
+      };
+      for (final required in requiredTools.entries) {
+        final descriptor = stockFrontendDescriptors[required.value.owner]!
+            .singleWhere(
+              (descriptor) =>
+                  descriptor['role'] == 'toolActivity' &&
+                  descriptor['toolId'] == required.key,
+            );
+        expect(
+          descriptor['inspectionExtensionId'],
+          required.value.inspection,
+          reason: required.key,
+        );
+        expect(
+          descriptor['compactExtensionId'],
+          required.value.compact,
+          reason: required.key,
+        );
+      }
+      final reasoning = stockFrontendDescriptors['dev.adele.openai']!
+          .singleWhere(
+            (descriptor) =>
+                descriptor['inspectionExtensionId'] ==
+                'dev.adele.plugin.openai.activity-presentation',
+          );
+      expect(reasoning['role'], 'modelNativeActivity');
+      expect(
+        reasoning['presentationKind'],
+        'openai.responses.reasoning-summary.v1',
+      );
+      expect(
+        reasoning['compactExtensionId'],
+        'dev.adele.plugin.openai.activity-compact',
+      );
+      final chat = stockFrontendDescriptors['dev.adele.plugin.chat-strategy']!;
+      expect(
+        chat.singleWhere(
+          (descriptor) =>
+              descriptor['extensionId'] ==
+              'dev.adele.plugin.chat-strategy.presentation',
+        )['role'],
+        'mainContent',
+      );
+      final feedback = chat.singleWhere(
+        (descriptor) =>
+            descriptor['extensionId'] ==
+            'dev.adele.plugin.chat-strategy.feedback-inspection',
+      );
+      expect(feedback['role'], 'sessionContentInspection');
+      expect(feedback['contentKind'], 'dev.adele.chat.review-feedback');
+      expect(feedback['backendServices'], ['chat.feedbackInspection']);
+      for (final permission in {
+        'sessionFeedback': 'dev.adele.diff-viewer.main-content',
+        'canInspectSessionContent':
+            'dev.adele.plugin.chat-strategy.presentation',
+        'canRequestSourceDisplay': 'dev.adele.diff-viewer.main-content',
+      }.entries) {
+        expect(
+          stockFrontendDescriptors.values
+              .expand((descriptors) => descriptors)
+              .where((descriptor) => descriptor[permission.key] == true)
+              .map((descriptor) => descriptor['extensionId']),
+          [permission.value],
+          reason: permission.key,
+        );
+      }
       final command =
           stockFrontendDescriptors['dev.adele.plugin.command-tools']!;
       final inspection = command.singleWhere(
-        (value) => value['role'] == 'toolActivity',
+        (value) =>
+            value['inspectionExtensionId'] ==
+            'dev.adele.plugin.command-tools.inspection',
       );
-      final output = command.singleWhere((value) => value['role'] == 'console');
+      final output = command.singleWhere(
+        (value) =>
+            value['extensionId'] == 'dev.adele.plugin.command-tools.output',
+      );
+      expect(output['role'], 'console');
       expect(inspection['backendServices'], ['command.output']);
       expect(inspection['consoleExtensions'], [output['extensionId']]);
       expect(output['backendServices'], ['command.output']);
@@ -2230,8 +2454,8 @@ exit "$CLIPPY_EXIT"
     );
     expect(
       stockFrontendExtensionDescriptors['dev.adele.plugin.local-directory-project'],
-      [
-        {
+      contains(
+        equals({
           'kind': 'projectSelector',
           'extensionId':
               'dev.adele.plugin.local-directory-project.project-selector',
@@ -2240,8 +2464,8 @@ exit "$CLIPPY_EXIT"
           'library':
               'package:local_directory_project_frontend/local_directory_project_frontend.dart',
           'entrypoint': 'selectProject',
-        },
-      ],
+        }),
+      ),
     );
   });
 
@@ -2448,7 +2672,13 @@ exit "$CLIPPY_EXIT"
     expect(activation, contains('PreparedModelNativeActivityPresentation'));
     for (final forbidden in [
       'openAiReasoningSummaryPresentationKind',
-      ...stockFrontendDescriptors['dev.adele.openai']!.single.entries
+      ...stockFrontendDescriptors['dev.adele.openai']!
+          .singleWhere(
+            (descriptor) =>
+                descriptor['inspectionExtensionId'] ==
+                'dev.adele.plugin.openai.activity-presentation',
+          )
+          .entries
           .where((entry) => entry.key != 'role')
           .map((entry) => entry.value as String),
       'projectOpenAi',

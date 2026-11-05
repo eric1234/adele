@@ -89,6 +89,16 @@ const _localDirectoryProjectPluginId =
 const _taskBrowserPluginId = 'dev.adele.plugin.task-browser';
 const _terminalPluginId = 'dev.adele.plugin.terminal';
 const _sourceEditorPluginId = 'dev.adele.source-editor';
+const _requiredToolInspections = {
+  'dev.adele.plugin.filesystem-tools.read-file':
+      'dev.adele.plugin.filesystem-tools.read-file-inspection',
+  'dev.adele.plugin.filesystem-tools.apply-patch':
+      'dev.adele.plugin.filesystem-tools.inspection',
+  'dev.adele.plugin.command-tools.run-command':
+      'dev.adele.plugin.command-tools.inspection',
+};
+const _reasoningPresentationKind = 'openai.responses.reasoning-summary.v1';
+const _reasoningInspectionId = 'dev.adele.plugin.openai.activity-presentation';
 const _foldingSetting = '$_sourceEditorPluginId.enable-folding';
 const _reviewPluginId = 'test.review-workspace';
 const _reviewLibrary = 'package:review_workspace/main.dart';
@@ -134,6 +144,102 @@ void main() {
       );
     }
   });
+
+  testWidgets(
+    'normal startup accepts additional unrelated frontend contributions',
+    (tester) => tester.runAsync(() async {
+      final fixture = await _ProductFixture.create();
+      final additionalSource = fixture.runtime.extensions.register(
+        point: displaySourceFileContributions,
+        id: ExtensionId('test.additional-source'),
+        value: DisplaySourceFileContribution(
+          display: (_) async =>
+              throw StateError('Must not select this provider.'),
+        ),
+      );
+      addTearDown(additionalSource.close);
+      final root = await prepared.copyInstallations(fixture.directory);
+      // Reuse compiled stock factories with distinct test-only semantic IDs.
+      // Both additions activate through the ordinary prepared catalog before
+      // launch can observe the required Task Browser registration.
+      for (final (owner, presentation) in [
+        (
+          _filesystemPluginId,
+          {
+            'role': 'toolActivity',
+            'library':
+                'package:filesystem_tools_frontend/filesystem_tools_frontend.dart',
+            'toolId': 'test.additional-tool',
+            'inspectionExtensionId': 'test.additional-tool.inspection',
+            // The two roles register at independent extension points.
+            'compactExtensionId': 'test.additional-tool.inspection',
+            'inspectionEntrypoint': 'buildReadFileInspection',
+            'compactEntrypoint': 'buildReadFileCompact',
+          },
+        ),
+        (
+          _openAiPluginId,
+          {
+            'role': 'modelNativeActivity',
+            'library': 'package:openai_frontend/openai_frontend.dart',
+            'presentationKind': 'test.additional-model-kind',
+            'inspectionExtensionId': 'test.additional-model.inspection',
+            'compactExtensionId': 'test.additional-model.compact',
+            'inspectionEntrypoint': 'buildOpenAiReasoningInspection',
+            'compactEntrypoint': 'buildOpenAiReasoningCompact',
+          },
+        ),
+      ]) {
+        final manifest = File(
+          '${root.path}/$owner/adele_plugin.installation.json',
+        );
+        final json =
+            jsonDecode(await manifest.readAsString()) as Map<String, dynamic>;
+        (json['components']['frontend']['presentations'] as List<dynamic>).add(
+          presentation,
+        );
+        await manifest.writeAsString(jsonEncode(json));
+      }
+      try {
+        await fixture.launch(
+          tester,
+          prepared,
+          root: root,
+          configureModel: false,
+        );
+        final extensions = fixture.runtime.extensions;
+        expect(fixture.runtime.plugins.catalog!.issues, isEmpty);
+        expect(
+          ToolActivityInspectionResolver(
+            extensions,
+          ).resolve(ToolId('test.additional-tool')).id.value,
+          'test.additional-tool.inspection',
+        );
+        expect(
+          ToolActivityCompactPresentationResolver(
+            extensions,
+          ).resolve(ToolId('test.additional-tool')).id.value,
+          'test.additional-tool.inspection',
+        );
+        expect(
+          () => DisplaySourceFileResolver(extensions).resolve(),
+          throwsA(isA<AmbiguousDisplaySourceFile>()),
+        );
+        expect(
+          ModelNativeActivityPresentationResolver(
+            extensions,
+          ).resolve('test.additional-model-kind').id.value,
+          'test.additional-model.inspection',
+        );
+        _expectRequiredActivityPresentations(extensions);
+        expect(find.text('Open Local Directory...'), findsOneWidget);
+        expect(tester.takeException(), isNull);
+      } finally {
+        await tester.binding.handleRequestAppExit();
+        await tester.pumpWidget(const SizedBox.shrink());
+      }
+    }),
+  );
 
   testWidgets(
     'normal Source Editor retains Environment documents without Chat, a model or a Run',
@@ -6667,22 +6773,7 @@ void main() {
             runtime.extensions.discover(modelToolContributions),
             hasLength(4),
           );
-          expect(
-            runtime.extensions
-                .discover(toolActivityInspectionContributions)
-                .map((binding) => binding.value.toolId.value),
-            unorderedEquals([
-              'dev.adele.plugin.filesystem-tools.read-file',
-              'dev.adele.plugin.filesystem-tools.apply-patch',
-              'dev.adele.plugin.command-tools.run-command',
-            ]),
-          );
-          expect(
-            runtime.extensions.discover(
-              modelNativeActivityPresentationContributions,
-            ),
-            hasLength(1),
-          );
+          _expectRequiredActivityPresentations(runtime.extensions);
           expect(
             runtime.extensions.discover(projectSelectorContributions),
             hasLength(1),
@@ -7817,36 +7908,88 @@ final class _ProductFixture {
     final hasSource = runtime.plugins.catalog!.installations.any(
       (entry) => entry.metadata.id.value == _sourceEditorPluginId,
     );
+    String startupDiagnostics() => [
+      'Required Tool Inspections: $_requiredToolInspections',
+      'Tool Inspections: ${runtime.extensions.discover(toolActivityInspectionContributions).map((binding) => (binding.value.toolId.value, binding.id.value)).toList()}',
+      'Required model-native presentation: ($_reasoningPresentationKind, $_reasoningInspectionId)',
+      'Model-native presentations: ${runtime.extensions.discover(modelNativeActivityPresentationContributions).map((binding) => (binding.value.presentationKind, binding.id.value)).toList()}',
+      'Required Project Selector: $_localDirectoryProjectPluginId.project-selector / dev.adele.project.local-directory',
+      'Project Selectors: ${runtime.extensions.discover(projectSelectorContributions).map((binding) => (binding.id.value, binding.value.projectProviderId.value)).toList()}',
+      'Required Task Browser: $_taskBrowserPluginId.task-browser',
+      'Task Browsers: ${runtime.extensions.discover(taskBrowserContributions).map((binding) => binding.id.value).toList()}',
+      if (hasSource) ...[
+        'Required Source display: $_sourceEditorPluginId.main-content',
+        'Source displays: ${runtime.extensions.discover(displaySourceFileContributions).map((binding) => binding.id.value).toList()}',
+      ],
+      'Plugin bootstrap: ${runtime.plugins.state}; failure: ${runtime.plugins.failure}',
+      'Catalog issues: ${runtime.plugins.catalog?.issues}',
+      'Backend activations: ${runtime.plugins.backends.map((backend) => (backend.installation.metadata.id.value, backend.state, backend.failure)).toList()}',
+    ].join('\n');
     await _pumpUntil(
       tester,
       () =>
           runtime.extensions
               .discover(projectSelectorContributions)
-              .isNotEmpty &&
-          runtime.extensions.discover(taskBrowserContributions).isNotEmpty &&
+              .any(
+                (binding) =>
+                    binding.id.value ==
+                        '$_localDirectoryProjectPluginId.project-selector' &&
+                    binding.value.projectProviderId.value ==
+                        'dev.adele.project.local-directory',
+              ) &&
           runtime.extensions
-                  .discover(toolActivityInspectionContributions)
-                  .length ==
-              3 &&
+              .discover(taskBrowserContributions)
+              .any(
+                (binding) =>
+                    binding.id.value == '$_taskBrowserPluginId.task-browser',
+              ) &&
+          _requiredToolInspections.entries.every(
+            (required) => runtime.extensions
+                .discover(toolActivityInspectionContributions)
+                .any(
+                  (binding) =>
+                      binding.value.toolId.value == required.key &&
+                      binding.id.value == required.value,
+                ),
+          ) &&
           runtime.extensions
-                  .discover(modelNativeActivityPresentationContributions)
-                  .length ==
-              1 &&
+              .discover(modelNativeActivityPresentationContributions)
+              .any(
+                (binding) =>
+                    binding.value.presentationKind ==
+                        _reasoningPresentationKind &&
+                    binding.id.value == _reasoningInspectionId,
+              ) &&
           (!hasSource ||
               runtime.extensions
                   .discover(displaySourceFileContributions)
-                  .isNotEmpty),
+                  .any(
+                    (binding) =>
+                        binding.id.value ==
+                        '$_sourceEditorPluginId.main-content',
+                  )),
+      describeFailure: startupDiagnostics,
     );
-    expect(
-      runtime.extensions
-          .discover(toolActivityInspectionContributions)
-          .map((binding) => binding.value.toolId.value),
-      unorderedEquals([
-        'dev.adele.plugin.filesystem-tools.read-file',
-        'dev.adele.plugin.filesystem-tools.apply-patch',
-        'dev.adele.plugin.command-tools.run-command',
-      ]),
-    );
+    try {
+      _expectRequiredActivityPresentations(runtime.extensions);
+      expect(
+        TaskBrowserResolver(runtime.extensions).resolve().id.value,
+        '$_taskBrowserPluginId.task-browser',
+      );
+      if (hasSource) {
+        expect(
+          DisplaySourceFileResolver(runtime.extensions)
+              .resolve(
+                select: ExtensionId('$_sourceEditorPluginId.main-content'),
+              )
+              .id
+              .value,
+          '$_sourceEditorPluginId.main-content',
+        );
+      }
+    } on Object catch (error) {
+      fail('Invalid startup registrations: $error\n${startupDiagnostics()}');
+    }
     expect(picker.calls, 0);
     if (usingRunIds == null) expect(runIds.values, isEmpty);
   }
@@ -8259,10 +8402,34 @@ Future<void> _terminalReaped(WidgetTester tester, List<int> pids) =>
 
 String _shellQuote(String value) => "'${value.replaceAll("'", "'\"'\"'")}'";
 
+void _expectRequiredActivityPresentations(ExtensionRegistry extensions) {
+  final tools = extensions.discover(toolActivityInspectionContributions);
+  // Check every semantic ID, not only the required stock subset: unrelated
+  // distinct tools are welcome, but ambiguous presentations are not.
+  final toolResolver = ToolActivityInspectionResolver(extensions);
+  for (final binding in tools) {
+    toolResolver.resolve(binding.value.toolId);
+  }
+  for (final required in _requiredToolInspections.entries) {
+    expect(toolResolver.resolve(ToolId(required.key)).id.value, required.value);
+  }
+  final modelResolver = ModelNativeActivityPresentationResolver(extensions);
+  for (final binding in extensions.discover(
+    modelNativeActivityPresentationContributions,
+  )) {
+    modelResolver.resolve(binding.value.presentationKind);
+  }
+  expect(
+    modelResolver.resolve(_reasoningPresentationKind).id.value,
+    _reasoningInspectionId,
+  );
+}
+
 Future<void> _pumpUntil(
   WidgetTester tester,
-  FutureOr<bool> Function() ready,
-) async {
+  FutureOr<bool> Function() ready, {
+  String Function()? describeFailure,
+}) async {
   final deadline = DateTime.now().add(const Duration(seconds: 15));
   while (!await ready() && DateTime.now().isBefore(deadline)) {
     await Future<void>.delayed(Duration.zero);
@@ -8271,7 +8438,9 @@ Future<void> _pumpUntil(
   expect(
     await ready(),
     isTrue,
-    reason: 'Timed out waiting for installed product state.',
+    reason:
+        'Timed out waiting for installed product state.'
+        '${describeFailure == null ? '' : '\n${describeFailure()}'}',
   );
   await _composerFrames(tester);
 }
