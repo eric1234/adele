@@ -122,8 +122,10 @@ void main() {
       final probe = await activate();
       final host = _RecordingHost();
       final previous = _historyEvidence(host.sessionId);
+      final interrupted = _historyEvidence(host.sessionId, interrupted: true);
       host.historyReader = (runId) async {
-        if (runId == previous.record.id) return previous;
+        if (runId == previous.activity.runId) return previous;
+        if (runId == interrupted.activity.runId) return interrupted;
         throw HistoricalRunEvidenceFailure(
           code: runId.value,
           message: 'History read failed.',
@@ -138,14 +140,23 @@ void main() {
         expect(host.failure, isNull);
       }
       expect(
-        await _history(probe.connection, active, previous.record.id.value),
+        await _history(probe.connection, active, previous.activity.runId.value),
         {'ok': true, 'evidence': previous.toJson()},
+      );
+      expect(
+        await _history(
+          probe.connection,
+          active,
+          interrupted.activity.runId.value,
+        ),
+        {'ok': true, 'evidence': interrupted.toJson()},
       );
       expect(host.historyReads.map((id) => id.value), [
         'unavailable',
         'current_run',
         'result_too_large',
-        previous.record.id.value,
+        previous.activity.runId.value,
+        interrupted.activity.runId.value,
       ]);
       expect(host.processed, isEmpty);
       expect(host.approvals, isEmpty);
@@ -161,19 +172,20 @@ void main() {
     () async {
       final probe = await activate();
       final host = _RecordingHost()..waitForApproval = true;
-      final previous = _historyEvidence(host.sessionId);
+      final previous = _historyEvidence(host.sessionId, interrupted: true);
+      final previousId = previous.activity.runId.value;
       host.historyReader = (_) async => previous;
       final execution = await materialize(host);
       _expectDenied(
         await _history(probe.connection, {
           'context': 'unavailable',
-        }, 'previous'),
+        }, previousId),
         'host_invocation_unavailable',
       );
       expect(host.historyReads, isEmpty);
       final starting = execution.start();
       final start = await _ready(probe.connection, 'execution-0/start');
-      expect(await _history(probe.connection, start, 'previous'), {
+      expect(await _history(probe.connection, start, previousId), {
         'ok': true,
         'evidence': previous.toJson(),
       });
@@ -185,7 +197,7 @@ void main() {
       await _finish(probe.connection, 'execution-0/start', 'waiting');
       await starting;
       _expectDenied(
-        await _history(probe.connection, start, 'previous'),
+        await _history(probe.connection, start, previousId),
         'host_invocation_unavailable',
       );
       expect(host.historyReads, hasLength(1));
@@ -198,10 +210,10 @@ void main() {
       );
       final resume = await _ready(probe.connection, 'execution-0/resume');
       _expectDenied(
-        await _history(probe.connection, start, 'previous'),
+        await _history(probe.connection, start, previousId),
         'host_invocation_unavailable',
       );
-      expect(await _history(probe.connection, resume, 'previous'), {
+      expect(await _history(probe.connection, resume, previousId), {
         'ok': true,
         'evidence': previous.toJson(),
       });
@@ -213,7 +225,7 @@ void main() {
       await resuming;
       await execution.close();
       _expectDenied(
-        await _history(probe.connection, resume, 'previous'),
+        await _history(probe.connection, resume, previousId),
         'host_invocation_unavailable',
       );
       expect(host.historyReads, hasLength(2));
@@ -900,25 +912,35 @@ Future<Object?> _history(
   'runId': runId,
 });
 
-HistoricalRunEvidence _historyEvidence(SessionId sessionId) =>
-    HistoricalRunEvidence.fromActivity(
-      record: RunRecord(
-        id: RunId('previous'),
-        sessionId: sessionId,
-        state: RunTerminalState.failed,
-      ),
-      activity: RunActivitySnapshot(
-        runId: RunId('previous'),
-        sessionId: sessionId,
-        state: RunState.failed,
-        sequence: 2,
-        lifecycle: const [
-          RunLifecycleActivity(sequence: 1, state: RunState.running),
-          RunLifecycleActivity(sequence: 2, state: RunState.failed),
-        ],
-        failure: ActivityFailure(kind: 'fixture', message: 'Earlier failure.'),
-      ),
-    );
+HistoricalRunEvidence _historyEvidence(
+  SessionId sessionId, {
+  bool interrupted = false,
+}) => HistoricalRunEvidence.fromActivity(
+  status: interrupted
+      ? HistoricalRunStatus.interrupted
+      : HistoricalRunStatus.terminal,
+  record: interrupted
+      ? null
+      : RunRecord(
+          id: RunId('previous'),
+          sessionId: sessionId,
+          state: RunTerminalState.failed,
+        ),
+  activity: RunActivitySnapshot(
+    runId: RunId(interrupted ? 'interrupted' : 'previous'),
+    sessionId: sessionId,
+    state: interrupted ? RunState.running : RunState.failed,
+    sequence: 2,
+    lifecycle: [
+      const RunLifecycleActivity(sequence: 1, state: RunState.running),
+      if (!interrupted)
+        const RunLifecycleActivity(sequence: 2, state: RunState.failed),
+    ],
+    failure: interrupted
+        ? null
+        : ActivityFailure(kind: 'fixture', message: 'Earlier failure.'),
+  ),
+);
 
 void _expectDenied(Object? result, [String code = 'internal_error']) {
   expect(result, isA<Map<Object?, Object?>>());

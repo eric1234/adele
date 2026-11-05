@@ -491,24 +491,51 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
         message: 'Historical evidence does not include the current Run.',
       );
     }
-    final record = _lifecycle.store.runRecord(runId);
-    final activity = record?.sessionId == _session.id
-        ? _lifecycle.runActivity(runId)
-        : null;
-    if (record == null ||
-        activity == null ||
-        activity.runId != record.id ||
-        activity.sessionId != record.sessionId ||
-        activity.state.name != record.state.name) {
-      throw const HistoricalRunEvidenceFailure(
-        code: 'unavailable',
-        message: 'Historical Run evidence is unavailable.',
-      );
-    }
-    return HistoricalRunEvidence.fromActivity(
-      record: record,
-      activity: activity,
+    const unavailable = HistoricalRunEvidenceFailure(
+      code: 'unavailable',
+      message: 'Historical Run evidence is unavailable.',
     );
+    final record = _lifecycle.store.runRecord(runId);
+    late final RunActivitySnapshot activity;
+    if (record != null) {
+      final retained = record.sessionId == _session.id
+          ? _lifecycle.runActivity(runId)
+          : null;
+      if (retained == null ||
+          record.id != runId ||
+          retained.runId != record.id ||
+          retained.sessionId != record.sessionId ||
+          retained.state.name != record.state.name) {
+        throw unavailable;
+      }
+      activity = retained;
+    } else {
+      // Only a fresh Project restore establishes interrupted history. A live
+      // checkpoint (including an approval wait) confers no historical access.
+      final recovered = _lifecycle.recoveredRun(runId);
+      if (recovered == null ||
+          !identical(recovered.session, _session) ||
+          recovered.status != RecoveredRunStatus.interrupted ||
+          recovered.terminalRecord != null ||
+          recovered.activity.runId != runId ||
+          recovered.activity.sessionId != _session.id) {
+        throw unavailable;
+      }
+      activity = recovered.activity;
+    }
+    try {
+      return HistoricalRunEvidence.fromActivity(
+        status: record == null
+            ? HistoricalRunStatus.interrupted
+            : HistoricalRunStatus.terminal,
+        record: record,
+        activity: activity,
+      );
+    } on FormatException {
+      // Malformed retained data must not disclose membership or contents.
+      // Declared bounds failures retain their distinct result_too_large code.
+      throw unavailable;
+    }
   }
 
   @override

@@ -110,13 +110,28 @@ identical evidence stable without timestamps or native provider reconstruction.
 Model text, proposals and arguments, resolved tool identity/canonical arguments,
 policy/approval/rejection facts, progress, actual model-visible outcomes, and
 failures retain Run-local sequence and correlation. Missing proposal resolution,
-model terminal, and tool outcome observations are explicit, not invented success.
+approval resolution, model terminal, and tool outcome observations are explicit,
+not invented success. An unresolved approval retains its request sequence,
+interruption identity, and tool invocation identity without acquiring a synthetic
+resolution occurrence.
 The actual terminal status and available failure classification are retained;
 generic `unknown` failures are not diagnosed as a specific invocation-budget cause.
 
-Final-answer deduplication requires a completed Run, its last settled answer or
-refusal, and an immediately following canonical assistant entry with exactly the
-concatenated text. Only those final text occurrences become references to that
+Interrupted evidence uses the same chronology and observation projection, with
+`historyStatus: interrupted`, its unchanged `lastObservedState`, and null
+`terminalStatus`. An explicit notice distinguishes historical running/waiting
+observations from live execution and warns that missing facts do not establish
+whether work or effects occurred or completed. Historical approval requests are
+not current actionable approvals, and recorded decisions authorize no new work.
+An approval without execution, execution without an outcome, and completed turns
+followed by an unfinished model remain separate facts. Both terminal and
+interrupted evidence must match the associated Run and current Session before
+inference; there is no fallback for a mismatched association.
+
+Final-answer deduplication requires terminal evidence with a genuine completed Run
+record, its last settled answer or refusal, and an immediately following canonical
+assistant entry with exactly the concatenated text. Interrupted evidence never
+deduplicates text. Only those final text occurrences become references to that
 entry; earlier identical narration is not removed. If no matching committed entry
 exists, including after Chat SQL fails following host completion, the output stays
 in the historical record without becoming a canonical final answer. Native-only
@@ -309,10 +324,12 @@ entrypoint draft operations and generation replacement, infrastructure routing,
 terminal acknowledgement, held commits, and close/hydration races.
 `chat_historical_projection_test.dart` inspects actual strategy inference material
 through generated host transport: ordered observations, final-answer matching,
-incomplete-history notices, failure distinctions, and frozen history across live
-continuations and approval resume. The application's
+interrupted running/waiting and unresolved approval/outcome distinctions,
+incomplete-history notices, failure distinctions, and frozen terminal/interrupted
+history across live continuations and approval resume. The application's
 `durable_chat_session_integration_test.dart` uses installed Chat with real terminal
-retention and Project reopening; `normal_chatgpt_run_integration_test.dart` also
+retention and interrupted running/waiting evidence across fresh-runtime Project
+reopening; `normal_chatgpt_run_integration_test.dart` also
 checks effective provider HTTP input with deterministic responses.
 `chat_feedback_test.dart` covers complete structured roundtrip, SQL identity/CAS
 concurrency across stores, busy reads, rollback, commit-then-lost-ack recovery,
@@ -327,6 +344,7 @@ Focused backend checks after contract generation, from this package:
 
 ```sh
 dart test test/chat_durable_state_test.dart test/chat_remote_backend_test.dart
+dart test test/chat_historical_projection_test.dart
 dart test test/chat_feedback_test.dart
 dart test test/chat_session_state_test.dart
 dart analyze --fatal-infos lib bin test

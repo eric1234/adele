@@ -1984,7 +1984,11 @@ original activity, optional terminal record, and `terminal` or `interrupted`
 retention status. The last observed activity state stays unchanged; historical
 waiting does not restore an approval or an active Session claim. No provider,
 strategy, Environment, or Run identity is created by this read-only restoration.
-This seam is not yet wired into Chat, Inspection, or public historical transport.
+`KernelOrchestrationHost.readHistoricalRun` admits eligible same-Session restored
+interrupted evidence through the existing bounded public historical transport.
+Stock Chat consumes that read-only projection as model context, without replay or
+continuation authority. Chat activity rendering and Inspection remain terminal-only
+for restored history.
 The [execution evidence contract](../docs/architecture/execution-model.md#terminal-execution-history)
 owns acknowledgement, partial validation, terminal sealing, and recovery limits.
 

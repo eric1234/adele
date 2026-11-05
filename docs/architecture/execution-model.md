@@ -716,12 +716,12 @@ materialization, provider-native continuation, or workbench state. Reopening
 allocates no Run ID and performs no model/tool invocation, approval, or replay.
 There are no timestamps, cross-Run ordering guarantees, pruning,
 development-schema upgrade migrations, automatic
-resume, or live execution recovery. Chat rendering, Inspection, public historical
-transport, and stock Chat's cross-Run model-context projection do not yet consume
-interrupted evidence. The Task Browser can open retained Sessions
-without starting execution. The version-1 baseline requires coherent current
-development storage rather than legacy readers. Before the first declared storage
-compatibility commitment, further execution-schema changes rewrite/squash version 1
+resume, or live execution recovery. The bounded public historical-read interface
+and stock Chat's cross-Run model-context projection consume interrupted evidence;
+Chat rendering and Inspection do not yet display it. The Task Browser can open
+retained Sessions without starting execution. The version-1 baseline requires
+coherent current development storage rather than legacy readers. Before the first
+declared storage compatibility commitment, further execution-schema changes rewrite/squash version 1
 instead of accumulating development migrations. Incompatible same-version shapes
 fail explicitly and non-destructively; version equality does not claim compatibility
 with earlier development storage. Failed or absent acknowledgement is not evidence
@@ -729,17 +729,23 @@ of rollback: a fresh open reads and validates what SQLite actually retained.
 
 ### Strategy access to historical evidence
 
-Strategies may explicitly request retained terminal evidence by exact Run identity
-through `OrchestrationExecutionHost.readHistoricalRun`. The host derives Session
-scope from the canonical Session captured for the requesting execution, not from a
-strategy-supplied selector. Admission requires that capture's open lifecycle and
-exact live strategy binding, an active start/resume operation before terminal
-settlement, and a different Run with a matching same-Session terminal product
-record and retained `RunActivitySnapshot`. Materialization, quiescent approval waits,
-and closed executions confer no read access. A resume operation can read evidence
-without using or changing its separately captured approval authorization.
+Strategies may explicitly request retained terminal or restored interrupted
+evidence by exact Run identity through `OrchestrationExecutionHost.readHistoricalRun`.
+The host derives Session scope from the canonical Session captured for the
+requesting execution, not from a strategy-supplied selector. Admission requires
+that capture's open lifecycle and exact live strategy binding, an active
+start/resume operation before terminal
+settlement, and a different Run. Terminal evidence requires a matching same-Session
+terminal product record and retained `RunActivitySnapshot`. Without a terminal
+record, only an interrupted record restored on Project reopening is eligible: its
+canonical Session must be the requesting Session, and its activity identity and
+retention classification must agree. A running or waiting checkpoint from the
+current application process is not interrupted history. Materialization, quiescent
+approval waits, and closed executions confer no read access. A resume operation
+can read evidence without using or changing its separately captured approval
+authorization.
 
-Unknown, foreign-Session, nonterminal, missing, or inconsistent evidence cannot
+Unknown, foreign-Session, live nonterminal, missing, or inconsistent evidence cannot
 disclose historical content and shares one unavailable result. The current Run is
 explicitly ineligible. These failures are distinct from a valid retained terminal
 snapshot with empty activity, and strategies may handle them without poisoning
@@ -748,10 +754,14 @@ semantics. There is no journal fallback, arbitrary Session lookup, plugin-table
 access, or second durable transcript.
 
 `HistoricalRunEvidence` is a narrowed immutable projection over the existing
-public activity types plus its authoritative `RunRecord`. It preserves original
-Run-local identities/sequences, model text and proposals, tool identity and
-proposal correlation, policy/approval/rejection facts, progress, failure and
-incomplete observations, and model-visible outcome content with actual disposition
+public activity types, explicit `HistoricalRunStatus`, and nullable `RunRecord`.
+`terminal` requires an authoritative matching record; `interrupted` requires no
+terminal record and preserves the last observed `created`, `running`, or `waiting`
+state. Classification does not replace activity state or invent a terminal outcome.
+Both native projection and transport decoding validate these distinct shapes.
+It preserves original Run-local identities/sequences, model text and proposals,
+tool identity and proposal correlation, policy/approval/rejection facts, progress,
+failure and incomplete observations, and model-visible outcome content with actual disposition
 and effect certainty. It never upgrades a proposal to execution, a start to success,
 or absent terminal evidence to completion. Opaque native-only outputs are omitted
 without renumbering retained occurrences; native attachments, terminal model
@@ -767,8 +777,8 @@ with no partial success, implicit summarization or truncation. The
 owns precise fields, failure codes and bounds. Larger retrieval requires a later
 explicit design, not a generalized streaming framework in this boundary.
 
-This public read remains terminal-only despite private interrupted recovery. It
-grants no authorization to repeat historical operations and promises no cross-Run
+This public read grants no continuation, approval, or execution authority, including
+authorization to repeat historical operations, and promises no cross-Run
 chronology or file freshness. Core does not automatically add this evidence to
 inference context. A strategy owns its selection and semantic projection.
 
@@ -785,18 +795,27 @@ not instruction sources, new user instructions, current Environment snapshots, o
 native tool-call replay. Retained Run-local sequences interleave model, tool,
 policy, approval, and rejection observations. Actual terminal status, failures,
 incomplete observations, model-visible tool results, effect certainty, and missing
-outcomes remain distinct. No historical observation grants execution authority.
-For a completed Run, only a final settled model answer/refusal whose exact text
-matches the immediately following canonical assistant entry is replaced by an entry
-reference. Host completion alone does not establish a committed Chat answer;
-otherwise the only retained final output stays historical evidence.
+outcomes remain distinct. An interrupted observation explicitly records its
+historical classification, last observed state, and absent authoritative terminal
+outcome. Missing model terminal, proposal resolution, approval resolution, and tool
+outcome observations remain missing. An earlier approval request is not pending for
+the new Run; recorded approval does not establish execution, and execution start
+does not establish completed effects. Actual recorded outcomes and effect certainty
+survive alongside the unfinished observations. No historical observation grants
+execution authority. For a genuinely completed terminal Run, only a final settled
+model answer/refusal whose exact text matches the immediately following canonical
+assistant entry is replaced by an entry reference. Host completion alone does not
+establish a committed Chat answer; otherwise the only retained final output stays
+historical evidence. Interrupted
+model text is never deduplicated against a canonical assistant entry, even when
+the text matches exactly.
 
 Unavailable and oversized reads produce explicit incomplete-history notices at
-the same chronological position, without claiming a terminal status or successful
-empty activity. Unexpected current-Run reads are invariant failures; undeclared
-host, lifecycle, binding, and transport errors propagate. The projection changes
-neither Chat's durable schema/transcript nor generic inference preparation, tool
-materialization, instruction-source capture, or provider lowering. See the
+the same chronological position, without claiming interruption, a terminal status,
+or successful empty activity. Unexpected current-Run reads are invariant failures;
+undeclared host, lifecycle, binding, and transport errors propagate. The projection
+changes neither Chat's durable schema/transcript nor generic inference preparation,
+tool materialization, instruction-source capture, or provider lowering. See the
 [Chat backend policy](../../plugins/chat_strategy/packages/backend/README.md#historical-execution-projection)
 for representation and context limits.
 

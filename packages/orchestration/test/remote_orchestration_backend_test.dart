@@ -132,7 +132,8 @@ void main() {
           expect(host.state, RunState.running);
           fixture.host.historyFailure = null;
           final history = await host.readHistoricalRun(RunId('history'));
-          expect(history.record.id, RunId('history'));
+          expect(history.status, HistoricalRunStatus.terminal);
+          expect(history.record!.id, RunId('history'));
           expect(history.activity.models, isEmpty);
           final turn = await host.invokeModel(_material());
           expect(turn.settlement, ModelSettlement.completed);
@@ -157,6 +158,122 @@ void main() {
           fixture.calls.every((call) => call.context == 'read-token'),
           isTrue,
         );
+      },
+    );
+  }
+
+  for (final state in [RunState.running, RunState.waiting]) {
+    test(
+      'proxy reads interrupted $state evidence without advancing it',
+      () async {
+        final fixture = _Fixture();
+        addTearDown(fixture.close);
+        final history = HistoricalRunEvidence.fromActivity(
+          status: HistoricalRunStatus.interrupted,
+          record: null,
+          activity: RunActivitySnapshot(
+            runId: RunId('history'),
+            sessionId: SessionId('session'),
+            state: state,
+            sequence: 2,
+            models: [
+              ModelInvocationActivity(
+                id: ModelInvocationId('model'),
+                startSequence: 1,
+                outputs: [
+                  ModelOutputActivity(
+                    sequence: 2,
+                    item: ModelTextOutput('partial'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        );
+        fixture.host.history = history;
+        fixture.onStart = (host) async {
+          host.start();
+          final restored = await host.readHistoricalRun(RunId('history'));
+          expect(restored.status, HistoricalRunStatus.interrupted);
+          expect(restored.record, isNull);
+          expect(restored.activity.state, state);
+          expect(restored.activity.runId, RunId('history'));
+          expect(restored.activity.models.single.terminalSequence, isNull);
+          expect(restored.activity.models.single.settlement, isNull);
+          expect(restored.toJson(), history.toJson());
+          expect(restored.activity.models.clear, throwsUnsupportedError);
+          expect(host.state, RunState.running);
+          host.validateBinding();
+          host.complete();
+        };
+        final id = await fixture.materialize();
+        expect(
+          await fixture.backend.start(id, 'read-token'),
+          RemoteRunState.completed,
+        );
+        expect(fixture.host.events, ['start', 'history:history', 'complete']);
+        expect(fixture.host.handles, isEmpty);
+        expect(fixture.host.history!.activity.state, state);
+        expect(fixture.host.history!.record, isNull);
+        expect(fixture.calls[1].payload, {'runId': 'history'});
+        expect(
+          fixture.calls.every((call) => call.context == 'read-token'),
+          isTrue,
+        );
+      },
+    );
+  }
+
+  for (final mutation in [
+    'missing status',
+    'missing record',
+    'terminal without record',
+    'interrupted with terminal state',
+  ]) {
+    test(
+      'malformed history $mutation is a protocol failure, not a miss',
+      () async {
+        final fixture = _Fixture();
+        addTearDown(fixture.close);
+        final history = HistoricalRunEvidence.fromActivity(
+          status: HistoricalRunStatus.interrupted,
+          record: null,
+          activity: RunActivitySnapshot(
+            runId: RunId('history'),
+            sessionId: SessionId('session'),
+            state: RunState.waiting,
+            sequence: 0,
+          ),
+        );
+        final payload = Map<String, Object?>.from(history.toJson());
+        switch (mutation) {
+          case 'missing status':
+            payload.remove('status');
+          case 'missing record':
+            payload.remove('record');
+          case 'terminal without record':
+            payload['status'] = 'terminal';
+          case 'interrupted with terminal state':
+            payload['state'] = 'completed';
+        }
+        fixture.historyResponse = {'payload': payload};
+        fixture.onStart = (host) async {
+          host.start();
+          await expectLater(
+            host.readHistoricalRun(RunId('history')),
+            throwsA(isA<AdeleProtocolException>()),
+          );
+          expect(host.complete, throwsA(isA<AdeleProtocolException>()));
+        };
+        final id = await fixture.materialize();
+        await expectLater(
+          fixture.backend.start(id, 'read-token'),
+          throwsA(isA<AdeleProtocolException>()),
+        );
+        expect(fixture.host.events, ['start']);
+        expect(fixture.host.failure, isNull);
+        expect(fixture.backend.executionCount, 0);
+        expect(fixture.executions.single.closeCount, 1);
       },
     );
   }
@@ -967,6 +1084,7 @@ final class _Fixture {
   Object? closeFailure;
   Object? channelFailure;
   Object? rpcFailure;
+  Object? historyResponse;
   String? failMethod;
   Future<void> Function(OrchestrationExecutionHost) onStart = (host) async {
     host.start();
@@ -1027,6 +1145,7 @@ final class _Host implements RemoteOrchestrationHostService {
   RemoteRunState state = RemoteRunState.created;
   RemoteOrchestrationFailure? failure;
   RemoteHistoricalRunEvidenceFailure? historyFailure;
+  HistoricalRunEvidence? history;
   Object? modelFailure;
   bool wait = false;
   bool wrongTransition = false;
@@ -1036,19 +1155,20 @@ final class _Host implements RemoteOrchestrationHostService {
     events.add('history:$runId');
     if (historyFailure != null) throw historyFailure!;
     return RemoteHistoricalRunEvidence.fromLocal(
-      HistoricalRunEvidence.fromActivity(
-        record: RunRecord(
-          id: RunId(runId),
-          sessionId: SessionId('session'),
-          state: RunTerminalState.completed,
-        ),
-        activity: RunActivitySnapshot(
-          runId: RunId(runId),
-          sessionId: SessionId('session'),
-          state: RunState.completed,
-          sequence: 0,
-        ),
-      ),
+      history ??
+          HistoricalRunEvidence.fromActivity(
+            record: RunRecord(
+              id: RunId(runId),
+              sessionId: SessionId('session'),
+              state: RunTerminalState.completed,
+            ),
+            activity: RunActivitySnapshot(
+              runId: RunId(runId),
+              sessionId: SessionId('session'),
+              state: RunState.completed,
+              sequence: 0,
+            ),
+          ),
     );
   }
 
@@ -1141,6 +1261,10 @@ final class _Channel implements AdeleRequestChannel {
   Future<Object?> request(String method, Map<String, Object?> payload) async {
     fixture.calls.add((context: context, method: method, payload: payload));
     if (method == fixture.failMethod) throw fixture.rpcFailure!;
+    if (method == remoteOrchestrationHostServiceReadHistoricalRunId &&
+        fixture.historyResponse != null) {
+      return fixture.historyResponse;
+    }
     final response = await fixture.dispatcher.dispatch({
       'kind': 'request',
       'requestId': 1,

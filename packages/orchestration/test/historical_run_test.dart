@@ -7,15 +7,26 @@ import 'package:adele_product/adele_product.dart';
 import 'package:test/test.dart';
 
 void main() {
-  for (final state in [RunState.completed, RunState.failed]) {
+  for (final state in [
+    RunState.completed,
+    RunState.failed,
+    RunState.cancelled,
+    RunState.running,
+    RunState.waiting,
+  ]) {
     test('$state preserves semantic evidence and original provenance', () {
       final original = _richActivity(state: state);
       final history = _project(original);
       final restored = HistoricalRunEvidence.fromJson(_copy(history.toJson()));
       expect(restored.toJson(), history.toJson());
-      expect(restored.record.id, original.runId);
-      expect(restored.record.sessionId, original.sessionId);
-      expect(restored.record.state.name, state.name);
+      expect(restored.status, history.status);
+      if (history.status == HistoricalRunStatus.terminal) {
+        expect(restored.record!.id, original.runId);
+        expect(restored.record!.sessionId, original.sessionId);
+        expect(restored.record!.state.name, state.name);
+      } else {
+        expect(restored.record, isNull);
+      }
       final activity = restored.activity;
       expect(activity.state, state);
       expect(activity.sequence, 90);
@@ -207,71 +218,437 @@ void main() {
     });
   }
 
+  for (final state in [RunState.running, RunState.waiting]) {
+    test(
+      '$state interrupted prefix preserves missing outcomes and approvals',
+      () {
+        final original = _interruptedActivity(state);
+        final history = HistoricalRunEvidence.fromActivity(
+          status: HistoricalRunStatus.interrupted,
+          record: null,
+          activity: original,
+        );
+        for (final value in [
+          history,
+          HistoricalRunEvidence.fromJson(_copy(history.toJson())),
+        ]) {
+          expect(value.status, HistoricalRunStatus.interrupted);
+          expect(value.record, isNull);
+          expect(value.toJson()['status'], 'interrupted');
+          expect(value.toJson().containsKey('record'), isTrue);
+          expect(value.toJson()['record'], isNull);
+          expect(value.activity.runId, original.runId);
+          expect(value.activity.sessionId, original.sessionId);
+          expect(value.activity.state, state);
+          expect(value.activity.sequence, original.sequence);
+          expect(value.activity.lifecycle.last.state, state);
+          expect(value.activity.failure, isNull);
+          final tool = value.activity.tools.single;
+          expect(tool.outcome, isNull);
+          expect(
+            tool.changes.every((change) => change.outcome == null),
+            isTrue,
+          );
+          expect(
+            tool.changes.last.kind,
+            state == RunState.waiting
+                ? ToolActivityKind.approvalRequested
+                : ToolActivityKind.progress,
+          );
+          expect(
+            tool.changes[2].interruptionId,
+            RunInterruptionId('approval-0'),
+          );
+          if (state == RunState.waiting) {
+            expect(
+              tool.changes.every((change) => change.approved == null),
+              isTrue,
+            );
+            expect(
+              tool.changes.map((change) => change.kind),
+              isNot(contains(ToolActivityKind.executionStarted)),
+            );
+          } else {
+            expect(tool.changes[3].approved, isTrue);
+            expect(tool.changes.last.progress!.content, 'Public progress');
+          }
+          expect(
+            value.activity.models.single.outputs.map(
+              (output) => output.sequence,
+            ),
+            [3, 5, 6, 7, 8, 9, 10, 11],
+          );
+        }
+      },
+    );
+  }
+
   test(
-    'excludes native-only output, attachments, all metadata and opaque diagnostics',
+    'interrupted created and unsettled model evidence invent no terminal',
     () {
-      final original = _richActivity();
-      final history = _project(original);
-      for (final value in [
-        history,
-        HistoricalRunEvidence.fromJson(_copy(history.toJson())),
+      final source = _richActivity();
+      for (final activity in [
+        RunActivitySnapshot(
+          runId: source.runId,
+          sessionId: source.sessionId,
+          state: RunState.created,
+          sequence: 0,
+        ),
+        RunActivitySnapshot(
+          runId: source.runId,
+          sessionId: source.sessionId,
+          state: RunState.running,
+          sequence: 85,
+          lifecycle: [
+            const RunLifecycleActivity(sequence: 1, state: RunState.running),
+          ],
+          models: [source.models[2]],
+        ),
       ]) {
-        for (final model in value.activity.models) {
-          expect(model.metadata, isNull);
-          expect(model.failure?.providerDetails, anyOf(isNull, isEmpty));
-          for (final output in model.outputs) {
-            expect(output.item, isNot(isA<ModelNativeOutput>()));
-            switch (output.item) {
-              case ModelTextOutput(:final providerNativeMetadata):
-                expect(providerNativeMetadata, isNull);
-              case ModelToolProposalOutput(:final providerNativeMetadata):
-                expect(providerNativeMetadata, isNull);
-              case ModelNativeOutput():
-                fail('Historical evidence reconstructed native replay output.');
+        final history = HistoricalRunEvidence.fromJson(
+          _copy(_project(activity).toJson()),
+        );
+        expect(history.status, HistoricalRunStatus.interrupted);
+        expect(history.record, isNull);
+        expect(history.activity.state, activity.state);
+        expect(history.activity.failure, isNull);
+        expect(history.activity.tools, isEmpty);
+        for (final model in history.activity.models) {
+          expect(model.terminalSequence, isNull);
+          expect(model.settlement, isNull);
+          expect(model.failure, isNull);
+          expect(
+            (model.outputs.single.item as ModelTextOutput).content,
+            'Unsettled',
+          );
+        }
+      }
+    },
+  );
+
+  test('native and JSON status, record and activity shapes must agree', () {
+    final valid = _project(
+      RunActivitySnapshot(
+        runId: RunId('history'),
+        sessionId: SessionId('session'),
+        state: RunState.created,
+        sequence: 0,
+      ),
+    ).toJson();
+    for (final status in HistoricalRunStatus.values) {
+      for (final state in RunState.values) {
+        for (final terminalState in [null, ...RunTerminalState.values]) {
+          final record = terminalState == null
+              ? null
+              : RunRecord(
+                  id: RunId('history'),
+                  sessionId: SessionId('session'),
+                  state: terminalState,
+                );
+          final activity = RunActivitySnapshot(
+            runId: RunId('history'),
+            sessionId: SessionId('session'),
+            state: state,
+            sequence: 0,
+          );
+          final json = _copy(valid)
+            ..['status'] = status.name
+            ..['state'] = state.name
+            ..['record'] = record == null
+                ? null
+                : {
+                    'id': record.id.value,
+                    'sessionId': record.sessionId.value,
+                    'state': record.state.name,
+                  };
+          final accepts = status == HistoricalRunStatus.terminal
+              ? terminalState?.name == state.name
+              : terminalState == null &&
+                    [
+                      RunState.created,
+                      RunState.running,
+                      RunState.waiting,
+                    ].contains(state);
+          for (final construct in [
+            () => HistoricalRunEvidence.fromActivity(
+              status: status,
+              record: record,
+              activity: activity,
+            ),
+            () => HistoricalRunEvidence.fromJson(json),
+          ]) {
+            if (accepts) {
+              final history = construct();
+              expect(history.status, status);
+              expect(history.record?.state, terminalState);
+              expect(history.activity.state, state);
+            } else {
+              expect(
+                construct,
+                throwsFormatException,
+                reason: '$status / $terminalState / $state',
+              );
             }
           }
         }
-        expect(value.activity.failure!.providerDetails, isEmpty);
-        for (final tool in value.activity.tools) {
-          expect(tool.outcome?.hostData, anyOf(isNull, isEmpty));
-          for (final change in tool.changes) {
-            expect(change.outcome?.hostData, anyOf(isNull, isEmpty));
-          }
-        }
-        final encoded = jsonEncode(value.toJson());
-        for (final excluded in [
-          'private-native',
-          'private-presentation',
-          'private-host',
-          'private-provider',
-          'private-model',
-          'private-response',
-          'private-request',
-          'private-stop',
-          'providerNativeMetadata',
-          'providerNativeState',
-          'metadata',
-          'usage',
-          'inputTokens',
-          'outputTokens',
-          'cacheReadTokens',
-          'cacheWriteTokens',
-          'hostData',
-          'providerDetails',
-          'effectiveModel',
-          'providerResponseId',
-          'providerRequestId',
-          'providerStopReason',
-        ]) {
-          expect(encoded, isNot(contains(excluded)), reason: excluded);
-        }
       }
-      expect(original.models.first.metadata!.usage!.inputTokens, 13);
-      expect(original.models.first.outputs[1].item, isA<ModelNativeOutput>());
-      expect(original.tools.first.outcome!.hostData, isNotEmpty);
-      expect(original.failure!.providerDetails, isNotEmpty);
+    }
+    final terminal = _project(_richActivity());
+    expect(
+      HistoricalRunEvidence.fromActivity(
+        record: terminal.record,
+        activity: terminal.activity,
+      ).status,
+      HistoricalRunStatus.terminal,
+    );
+    expect(
+      () => HistoricalRunEvidence.fromActivity(
+        record: null,
+        activity: _interruptedActivity(RunState.running),
+      ),
+      throwsFormatException,
+    );
+  });
+
+  for (final state in [RunState.running, RunState.waiting]) {
+    test(
+      '$state interrupted contradictions fail native, JSON and remote reads',
+      () async {
+        final source = _richActivity(state: state);
+        final valid = _project(source).toJson();
+        for (final (label, lifecycle, failure)
+            in <(String, List<RunLifecycleActivity>, ActivityFailure?)>[
+              for (final terminalState in [
+                RunState.completed,
+                RunState.failed,
+                RunState.cancelled,
+              ])
+                (
+                  'hidden $terminalState',
+                  [
+                    RunLifecycleActivity(sequence: 1, state: terminalState),
+                    RunLifecycleActivity(sequence: 90, state: state),
+                  ],
+                  null,
+                ),
+              (
+                'mismatched latest sequence',
+                [
+                  RunLifecycleActivity(
+                    sequence: 90,
+                    state: state == RunState.running
+                        ? RunState.waiting
+                        : RunState.running,
+                  ),
+                  RunLifecycleActivity(sequence: 1, state: state),
+                ],
+                null,
+              ),
+              (
+                'Run failure',
+                source.lifecycle,
+                ActivityFailure(kind: 'strategy', message: 'Run failed'),
+              ),
+            ]) {
+          final activity = RunActivitySnapshot(
+            runId: source.runId,
+            sessionId: source.sessionId,
+            state: state,
+            sequence: source.sequence,
+            lifecycle: lifecycle,
+            models: source.models,
+            tools: source.tools,
+            rejectedProposals: source.rejectedProposals,
+            failure: failure,
+          );
+          final json = _copy(valid)
+            ..['lifecycle'] = [
+              for (final item in lifecycle)
+                {'sequence': item.sequence, 'state': item.state.name},
+            ]
+            ..['failure'] = failure == null
+                ? null
+                : {
+                    'kind': failure.kind,
+                    'message': failure.message,
+                    'providerCode': null,
+                  };
+          expect(
+            () => _project(activity),
+            throwsFormatException,
+            reason: label,
+          );
+          expect(
+            () => HistoricalRunEvidence.fromJson(json),
+            throwsFormatException,
+            reason: label,
+          );
+          await expectLater(
+            RemoteOrchestrationHostServiceClient(
+              _ResponseChannel({'payload': json}),
+            ).readHistoricalRun('history'),
+            throwsA(isA<AdeleProtocolException>()),
+            reason: label,
+          );
+        }
+      },
+    );
+    test(
+      '$state latest lifecycle uses occurrence sequence, not list order',
+      () async {
+        final source = _interruptedActivity(state);
+        final json = _copy(_project(source).toJson());
+        json['lifecycle'] = (json['lifecycle'] as List).reversed.toList();
+        final native = _project(
+          RunActivitySnapshot(
+            runId: source.runId,
+            sessionId: source.sessionId,
+            state: state,
+            sequence: source.sequence,
+            lifecycle: source.lifecycle.reversed,
+            models: source.models,
+            tools: source.tools,
+          ),
+        );
+        final remote = await RemoteOrchestrationHostServiceClient(
+          _ResponseChannel({'payload': json}),
+        ).readHistoricalRun('history');
+        for (final history in [
+          native,
+          HistoricalRunEvidence.fromJson(json),
+          remote.toLocal(),
+        ]) {
+          expect(history.activity.state, state);
+          expect(history.activity.lifecycle.first.state, state);
+          expect(history.activity.lifecycle.last.state, RunState.running);
+          expect(history.toJson(), json);
+        }
+      },
+    );
+  }
+
+  test(
+    'created interrupted history rejects every observed field and nonzero sequence',
+    () async {
+      final source = _richActivity();
+      final sourceJson = _project(source).toJson();
+      final empty = _project(
+        RunActivitySnapshot(
+          runId: source.runId,
+          sessionId: source.sessionId,
+          state: RunState.created,
+          sequence: 0,
+        ),
+      ).toJson();
+      for (final field in [
+        'sequence',
+        'lifecycle',
+        'models',
+        'tools',
+        'rejectedProposals',
+        'failure',
+      ]) {
+        final activity = RunActivitySnapshot(
+          runId: source.runId,
+          sessionId: source.sessionId,
+          state: RunState.created,
+          sequence: field == 'sequence' ? 1 : 0,
+          lifecycle: field == 'lifecycle'
+              ? [
+                  const RunLifecycleActivity(
+                    sequence: 0,
+                    state: RunState.created,
+                  ),
+                ]
+              : [],
+          models: field == 'models' ? source.models : [],
+          tools: field == 'tools' ? source.tools : [],
+          rejectedProposals: field == 'rejectedProposals'
+              ? source.rejectedProposals
+              : [],
+          failure: field == 'failure' ? source.failure : null,
+        );
+        final json = _copy(empty)
+          ..[field] = switch (field) {
+            'sequence' => 1,
+            'lifecycle' => [
+              {'sequence': 0, 'state': 'created'},
+            ],
+            _ => sourceJson[field],
+          };
+        expect(() => _project(activity), throwsFormatException, reason: field);
+        expect(
+          () => HistoricalRunEvidence.fromJson(json),
+          throwsFormatException,
+          reason: field,
+        );
+        await expectLater(
+          RemoteOrchestrationHostServiceClient(
+            _ResponseChannel({'payload': json}),
+          ).readHistoricalRun('history'),
+          throwsA(isA<AdeleProtocolException>()),
+          reason: field,
+        );
+      }
     },
   );
+
+  test('JSON rejects malformed status/record and contradictory identities', () {
+    final valid = _project(_richActivity()).toJson();
+    for (final (path, key, replacement) in <(List<Object>, String, Object?)>[
+      for (final status in [
+        null,
+        1,
+        true,
+        <String, Object?>{},
+        <Object?>[],
+        'running',
+        'unknown',
+      ])
+        ([], 'status', status),
+      for (final record in [
+        null,
+        1,
+        true,
+        '',
+        <String, Object?>{},
+        <Object?>[],
+      ])
+        ([], 'record', record),
+      ([], 'runId', 'other'),
+      ([], 'sessionId', 'other'),
+      ([], 'state', 'completed'),
+      (['record'], 'id', 'other'),
+      (['record'], 'sessionId', 'other'),
+      (['record'], 'state', 'completed'),
+      (['record'], 'state', 'running'),
+      (['record'], 'state', 'unknown'),
+      (['record'], 'state', null),
+      (['record'], 'id', 1),
+      (['record'], 'sessionId', null),
+    ]) {
+      final value = _copy(valid);
+      _at(value, path)[key] = replacement;
+      expect(
+        () => HistoricalRunEvidence.fromJson(value),
+        throwsFormatException,
+        reason: '$path.$key = $replacement',
+      );
+    }
+    for (final (path, fields) in <(List<Object>, List<String>)>[
+      ([], ['status', 'record', 'runId', 'sessionId', 'state']),
+      (['record'], ['id', 'sessionId', 'state']),
+    ]) {
+      for (final field in fields) {
+        final value = _copy(valid);
+        _at(value, path).remove(field);
+        expect(
+          () => HistoricalRunEvidence.fromJson(value),
+          throwsFormatException,
+        );
+      }
+    }
+  });
 
   test('empty terminal evidence is valid and differs from a failed read', () {
     for (final state in RunTerminalState.values) {
@@ -282,7 +659,8 @@ void main() {
         sequence: 0,
       );
       final history = _project(activity);
-      expect(history.record.state, state);
+      expect(history.status, HistoricalRunStatus.terminal);
+      expect(history.record!.state, state);
       expect(history.activity.models, isEmpty);
       expect(history.activity.tools, isEmpty);
       expect(history.activity.rejectedProposals, isEmpty);
@@ -326,383 +704,514 @@ void main() {
     },
   );
 
-  test(
-    'JSON input and every exposed collection are detached and deeply immutable',
-    () {
-      final input = _copy(_project(_richActivity()).toJson());
-      final history = HistoricalRunEvidence.fromJson(input);
-      final expected = _copy(history.toJson());
-      (_at(input, [
-                'models',
-                0,
-                'outputs',
-                1,
-                'proposal',
-                'arguments',
-              ])['nested']
-              as List)
-          .clear();
-      _at(input, ['tools', 0, 'canonicalArguments'])['path'] = 'changed';
-      (input['models'] as List).clear();
-      expect(history.toJson(), expected);
-      _expectFrozen(history.toJson());
-      final activity = history.activity;
-      for (final list in <List<Object?>>[
-        activity.lifecycle,
-        activity.models,
-        activity.tools,
-        activity.rejectedProposals,
-        activity.models.first.outputs,
-        activity.tools.first.changes,
-      ]) {
-        expect(list.clear, throwsUnsupportedError);
-      }
-      _expectFrozen(activity.tools.first.canonicalArguments);
-      _expectFrozen(
-        (activity.models.first.outputs[1].item as ModelToolProposalOutput)
-            .proposal
-            .arguments,
+  for (final state in [RunState.failed, RunState.running, RunState.waiting]) {
+    group('$state historical projection', () {
+      test(
+        'excludes native-only output, attachments, all metadata and opaque diagnostics',
+        () {
+          final original = _richActivity(state: state);
+          final history = _project(original);
+          expect(identical(history.activity, original), isFalse);
+          expect(
+            identical(history.activity.models.first, original.models.first),
+            isFalse,
+          );
+          expect(
+            identical(history.activity.tools.first, original.tools.first),
+            isFalse,
+          );
+          _expectFrozen(history.toJson());
+          _expectFrozen(history.activity.tools.first.canonicalArguments);
+          expect(history.activity.models.clear, throwsUnsupportedError);
+          for (final value in [
+            history,
+            HistoricalRunEvidence.fromJson(_copy(history.toJson())),
+          ]) {
+            for (final model in value.activity.models) {
+              expect(model.metadata, isNull);
+              expect(model.failure?.providerDetails, anyOf(isNull, isEmpty));
+              for (final output in model.outputs) {
+                expect(output.item, isNot(isA<ModelNativeOutput>()));
+                switch (output.item) {
+                  case ModelTextOutput(:final providerNativeMetadata):
+                    expect(providerNativeMetadata, isNull);
+                  case ModelToolProposalOutput(:final providerNativeMetadata):
+                    expect(providerNativeMetadata, isNull);
+                  case ModelNativeOutput():
+                    fail(
+                      'Historical evidence reconstructed native replay output.',
+                    );
+                }
+              }
+            }
+            expect(
+              value.activity.failure?.providerDetails,
+              anyOf(isNull, isEmpty),
+            );
+            for (final tool in value.activity.tools) {
+              expect(tool.outcome?.hostData, anyOf(isNull, isEmpty));
+              for (final change in tool.changes) {
+                expect(change.outcome?.hostData, anyOf(isNull, isEmpty));
+              }
+            }
+            final encoded = jsonEncode(value.toJson());
+            for (final excluded in [
+              'private-native',
+              'private-presentation',
+              'private-host',
+              'private-provider',
+              'private-model',
+              'private-response',
+              'private-request',
+              'private-stop',
+              'providerNativeMetadata',
+              'providerNativeState',
+              'metadata',
+              'usage',
+              'inputTokens',
+              'outputTokens',
+              'cacheReadTokens',
+              'cacheWriteTokens',
+              'hostData',
+              'providerDetails',
+              'effectiveModel',
+              'providerResponseId',
+              'providerRequestId',
+              'providerStopReason',
+            ]) {
+              expect(encoded, isNot(contains(excluded)), reason: excluded);
+            }
+          }
+          expect(original.models.first.metadata!.usage!.inputTokens, 13);
+          expect(
+            original.models.first.outputs[1].item,
+            isA<ModelNativeOutput>(),
+          );
+          expect(original.tools.first.outcome!.hostData, isNotEmpty);
+          expect(original.models.last.failure!.providerDetails, isNotEmpty);
+        },
       );
-      _expectFrozen(activity.rejectedProposals.single.proposal.arguments);
-      expect(
-        activity.tools.first.effects!.effects.clear,
-        throwsUnsupportedError,
+
+      test(
+        'JSON input and every exposed collection are detached and deeply immutable',
+        () {
+          final input = _copy(_project(_richActivity(state: state)).toJson());
+          final history = HistoricalRunEvidence.fromJson(input);
+          final expected = _copy(history.toJson());
+          (_at(input, [
+                    'models',
+                    0,
+                    'outputs',
+                    1,
+                    'proposal',
+                    'arguments',
+                  ])['nested']
+                  as List)
+              .clear();
+          _at(input, ['tools', 0, 'canonicalArguments'])['path'] = 'changed';
+          (input['models'] as List).clear();
+          expect(history.toJson(), expected);
+          _expectFrozen(history.toJson());
+          final activity = history.activity;
+          for (final list in <List<Object?>>[
+            activity.lifecycle,
+            activity.models,
+            activity.tools,
+            activity.rejectedProposals,
+            activity.models.first.outputs,
+            activity.tools.first.changes,
+          ]) {
+            expect(list.clear, throwsUnsupportedError);
+          }
+          _expectFrozen(activity.tools.first.canonicalArguments);
+          _expectFrozen(
+            (activity.models.first.outputs[1].item as ModelToolProposalOutput)
+                .proposal
+                .arguments,
+          );
+          _expectFrozen(activity.rejectedProposals.single.proposal.arguments);
+          expect(
+            activity.tools.first.effects!.effects.clear,
+            throwsUnsupportedError,
+          );
+          expect(
+            activity.tools.first.effects!.targets.clear,
+            throwsUnsupportedError,
+          );
+        },
       );
-      expect(
-        activity.tools.first.effects!.targets.clear,
-        throwsUnsupportedError,
+
+      test(
+        'strict codec rejects unknown, omitted and illicit opaque fields at every layer',
+        () {
+          final valid = _project(_richActivity(state: state)).toJson();
+          final cases = <(List<Object>, String)>[
+            ([], 'extra'),
+            if (state == RunState.failed) (['record'], 'extra'),
+            (['lifecycle', 0], 'extra'),
+            (['models', 0], 'metadata'),
+            (['models', 0, 'outputs', 0], 'providerNativeMetadata'),
+            (['models', 0, 'outputs', 1], 'providerNativeMetadata'),
+            (['models', 0, 'outputs', 1], 'proposalHandle'),
+            (['models', 0, 'outputs', 1, 'proposal'], 'extra'),
+            (['tools', 0], 'executable'),
+            (['tools', 0, 'effects'], 'extra'),
+            (['tools', 0, 'outcome'], 'hostData'),
+            (['tools', 0, 'changes', 1], 'extra'),
+            (['tools', 0, 'changes', 1, 'effects'], 'extra'),
+            (['tools', 0, 'changes', 2], 'approvalToken'),
+            (['tools', 0, 'changes', 5, 'progress'], 'extra'),
+            (['tools', 0, 'changes', 6, 'outcome'], 'hostData'),
+            (['rejectedProposals', 0], 'toolInvocationId'),
+            (['rejectedProposals', 0, 'proposal'], 'extra'),
+            (['models', 3, 'failure'], 'providerDetails'),
+            if (state == RunState.failed) (['failure'], 'providerDetails'),
+          ];
+          for (final (path, field) in cases) {
+            final value = _copy(valid);
+            _at(value, path)[field] = null;
+            expect(
+              () => HistoricalRunEvidence.fromJson(value),
+              throwsFormatException,
+              reason: '$path.$field',
+            );
+          }
+          for (final path in <List<Object>>[
+            [],
+            if (state == RunState.failed) ['record'],
+            ['models', 0],
+            ['tools', 0, 'outcome'],
+          ]) {
+            final value = _copy(valid);
+            final target = _at(value, path);
+            target.remove(target.keys.first);
+            expect(
+              () => HistoricalRunEvidence.fromJson(value),
+              throwsFormatException,
+            );
+          }
+          for (final (path, key, replacement)
+              in <(List<Object>, String, Object?)>[
+                ([], 'state', 'unknown'),
+                ([], 'sequence', '90'),
+                (['models', 0, 'outputs', 0], 'kind', 'providerNative'),
+                (['tools', 0, 'outcome'], 'effectCertainty', 'probably'),
+                (['tools', 0, 'changes', 3], 'approved', 'true'),
+              ]) {
+            final value = _copy(valid);
+            _at(value, path)[key] = replacement;
+            expect(
+              () => HistoricalRunEvidence.fromJson(value),
+              throwsFormatException,
+            );
+          }
+        },
       );
-    },
-  );
 
-  test(
-    'strict codec rejects unknown, omitted and illicit opaque fields at every layer',
-    () {
-      final valid = _project(_richActivity()).toJson();
-      final cases = <(List<Object>, String)>[
-        ([], 'extra'),
-        (['lifecycle', 0], 'extra'),
-        (['models', 0], 'metadata'),
-        (['models', 0, 'outputs', 0], 'providerNativeMetadata'),
-        (['models', 0, 'outputs', 1], 'providerNativeMetadata'),
-        (['models', 0, 'outputs', 1], 'proposalHandle'),
-        (['models', 0, 'outputs', 1, 'proposal'], 'extra'),
-        (['tools', 0], 'executable'),
-        (['tools', 0, 'effects'], 'extra'),
-        (['tools', 0, 'outcome'], 'hostData'),
-        (['tools', 0, 'changes', 1], 'extra'),
-        (['tools', 0, 'changes', 1, 'effects'], 'extra'),
-        (['tools', 0, 'changes', 2], 'approvalToken'),
-        (['tools', 0, 'changes', 5, 'progress'], 'extra'),
-        (['tools', 0, 'changes', 6, 'outcome'], 'hostData'),
-        (['rejectedProposals', 0], 'toolInvocationId'),
-        (['rejectedProposals', 0, 'proposal'], 'extra'),
-        (['models', 3, 'failure'], 'providerDetails'),
-        (['failure'], 'providerDetails'),
-      ];
-      for (final (path, field) in cases) {
-        final value = _copy(valid);
-        _at(value, path)[field] = null;
-        expect(
-          () => HistoricalRunEvidence.fromJson(value),
-          throwsFormatException,
-          reason: '$path.$field',
-        );
-      }
-      for (final path in <List<Object>>[
-        [],
-        ['models', 0],
-        ['tools', 0, 'outcome'],
-      ]) {
-        final value = _copy(valid);
-        final target = _at(value, path);
-        target.remove(target.keys.first);
-        expect(
-          () => HistoricalRunEvidence.fromJson(value),
-          throwsFormatException,
-        );
-      }
-      for (final (path, key, replacement) in <(List<Object>, String, Object?)>[
-        ([], 'state', 'running'),
-        ([], 'sequence', '90'),
-        (['models', 0, 'outputs', 0], 'kind', 'providerNative'),
-        (['tools', 0, 'outcome'], 'effectCertainty', 'probably'),
-        (['tools', 0, 'changes', 3], 'approved', 'true'),
-      ]) {
-        final value = _copy(valid);
-        _at(value, path)[key] = replacement;
-        expect(
-          () => HistoricalRunEvidence.fromJson(value),
-          throwsFormatException,
-        );
-      }
-    },
-  );
-
-  test(
-    'complete projected UTF-8 JSON accepts exactly 512 KiB, rejects one byte more',
-    () async {
-      final original = _richActivity();
-      final value = _copy(_project(original).toJson());
-      final text = _at(value, ['models', 0, 'outputs', 0]);
-      // Escaped controls and multibyte characters make character-count limits wrong.
-      text['content'] = '\u00e9\n"';
-      final overhead = utf8.encode(jsonEncode(value)).length;
-      text['content'] = '${text['content']}${'x' * (512 * 1024 - overhead)}';
-      expect(utf8.encode(jsonEncode(value)), hasLength(512 * 1024));
-      final history = HistoricalRunEvidence.fromJson(value);
-      expect(_project(history.activity).toJson(), value);
-      final dispatcher = RemoteOrchestrationHostServiceDispatcher(
-        _HistoryHost(history),
-      );
-      addTearDown(dispatcher.close);
-      final transported = await RemoteOrchestrationHostServiceClient(
-        _Channel(dispatcher),
-      ).readHistoricalRun('history');
-      expect(transported.toLocal().toJson(), value);
-      text['content'] = '${text['content']}x';
-      expect(utf8.encode(jsonEncode(value)), hasLength(512 * 1024 + 1));
-      expect(() => HistoricalRunEvidence.fromJson(value), _tooLarge);
-      final models = history.activity.models.toList();
-      final first = models.first;
-      models[0] = ModelInvocationActivity(
-        id: first.id,
-        startSequence: first.startSequence,
-        outputs: [
-          ModelOutputActivity(
-            sequence: 3,
-            item: ModelTextOutput(
-              text['content']! as String,
-              providerItemId: 'text-id',
-            ),
-          ),
-          ...first.outputs.skip(1),
-        ],
-        terminalSequence: first.terminalSequence,
-        settlement: first.settlement,
-      );
-      expect(() => _project(_withModels(history.activity, models)), _tooLarge);
-    },
-  );
-
-  test('bounds count expanded values, including repeated shared subtrees', () {
-    final value = _copy(_project(_richActivity()).toJson());
-    final arguments = _at(value, ['tools', 0, 'canonicalArguments']);
-    arguments.clear();
-    arguments['values'] = <Object?>[];
-    final remaining = 50000 - _nodes(value);
-    arguments['values'] = List<Object?>.filled(remaining, null, growable: true);
-    expect(_nodes(value), 50000);
-    expect(utf8.encode(jsonEncode(value)).length, lessThan(512 * 1024));
-    expect(HistoricalRunEvidence.fromJson(value).activity.tools, hasLength(6));
-    (arguments['values'] as List).add(null);
-    expect(() => HistoricalRunEvidence.fromJson(value), _tooLarge);
-    final shared = List<Object?>.filled(100, null);
-    arguments['values'] = List<Object?>.filled(500, shared);
-    expect(
-      identical(
-        (arguments['values'] as List).first,
-        (arguments['values'] as List).last,
-      ),
-      isTrue,
-    );
-    expect(() => HistoricalRunEvidence.fromJson(value), _tooLarge);
-  });
-
-  test('depth 48 succeeds and depth 49 fails without truncating evidence', () {
-    final value = _copy(_project(_richActivity()).toJson());
-    final arguments = _at(value, ['tools', 0, 'canonicalArguments']);
-    // Root=0, tools=1, tool=2, arguments=3, nested value=4.
-    Object? nested;
-    for (var depth = 4; depth < 48; depth++) {
-      nested = [nested];
-    }
-    arguments['deep'] = nested;
-    final history = HistoricalRunEvidence.fromJson(value);
-    expect(_project(history.activity).toJson(), value);
-    arguments['deep'] = [nested];
-    expect(() => HistoricalRunEvidence.fromJson(value), _tooLarge);
-  });
-
-  test('native activity projection enforces node and depth limits too', () {
-    Object? deep;
-    for (var index = 0; index < 48; index++) {
-      deep = [deep];
-    }
-    for (final arguments in <Map<String, Object?>>[
-      {'values': List<Object?>.filled(50000, null)},
-      {'deep': deep},
-    ]) {
-      final activity = RunActivitySnapshot(
-        runId: RunId('bounded'),
-        sessionId: SessionId('session'),
-        state: RunState.completed,
-        sequence: 4,
-        models: [
-          ModelInvocationActivity(
-            id: ModelInvocationId('model'),
-            startSequence: 1,
-            terminalSequence: 3,
-            settlement: ModelSettlement.completed,
+      test(
+        'complete projected UTF-8 JSON accepts exactly 512 KiB, rejects one byte more',
+        () async {
+          final original = _richActivity(state: state);
+          final value = _copy(_project(original).toJson());
+          final text = _at(value, ['models', 0, 'outputs', 0]);
+          // Escaped controls and multibyte characters make character-count limits wrong.
+          text['content'] = '\u00e9\n"';
+          final overhead = utf8.encode(jsonEncode(value)).length;
+          text['content'] =
+              '${text['content']}${'x' * (512 * 1024 - overhead)}';
+          expect(utf8.encode(jsonEncode(value)), hasLength(512 * 1024));
+          final history = HistoricalRunEvidence.fromJson(value);
+          expect(_project(history.activity).toJson(), value);
+          final dispatcher = RemoteOrchestrationHostServiceDispatcher(
+            _HistoryHost(history),
+          );
+          addTearDown(dispatcher.close);
+          final transported = await RemoteOrchestrationHostServiceClient(
+            _Channel(dispatcher),
+          ).readHistoricalRun('history');
+          expect(transported.toLocal().toJson(), value);
+          text['content'] = '${text['content']}x';
+          expect(utf8.encode(jsonEncode(value)), hasLength(512 * 1024 + 1));
+          expect(() => HistoricalRunEvidence.fromJson(value), _tooLarge);
+          final models = history.activity.models.toList();
+          final first = models.first;
+          models[0] = ModelInvocationActivity(
+            id: first.id,
+            startSequence: first.startSequence,
             outputs: [
               ModelOutputActivity(
-                sequence: 2,
-                item: ModelToolProposalOutput(
-                  ProviderToolProposal(
-                    providerCallId: 'call',
-                    alias: 'tool',
-                    arguments: arguments,
-                  ),
+                sequence: 3,
+                item: ModelTextOutput(
+                  text['content']! as String,
+                  providerItemId: 'text-id',
                 ),
               ),
+              ...first.outputs.skip(1),
             ],
-          ),
-        ],
+            terminalSequence: first.terminalSequence,
+            settlement: first.settlement,
+          );
+          expect(
+            () => _project(_withModels(history.activity, models)),
+            _tooLarge,
+          );
+        },
       );
-      expect(() => _project(activity), _tooLarge);
-    }
-  });
 
-  test(
-    'excluded native payload does not consume the projected byte budget',
-    () {
-      final source = _richActivity();
-      final native = ModelNativeEnvelope(
-        kind: 'opaque',
-        compatibility: {},
-        data: {'large': 'x' * (512 * 1024 + 1)},
+      test(
+        'bounds count expanded values, including repeated shared subtrees',
+        () {
+          final value = _copy(_project(_richActivity(state: state)).toJson());
+          final arguments = _at(value, ['tools', 0, 'canonicalArguments']);
+          arguments.clear();
+          arguments['values'] = <Object?>[];
+          final remaining = 50000 - _nodes(value);
+          arguments['values'] = List<Object?>.filled(
+            remaining,
+            null,
+            growable: true,
+          );
+          expect(_nodes(value), 50000);
+          expect(utf8.encode(jsonEncode(value)).length, lessThan(512 * 1024));
+          final history = HistoricalRunEvidence.fromJson(value);
+          expect(history.activity.tools, hasLength(6));
+          expect(_project(history.activity).toJson(), value);
+          (arguments['values'] as List).add(null);
+          expect(() => HistoricalRunEvidence.fromJson(value), _tooLarge);
+          final shared = List<Object?>.filled(100, null);
+          arguments['values'] = List<Object?>.filled(500, shared);
+          expect(
+            identical(
+              (arguments['values'] as List).first,
+              (arguments['values'] as List).last,
+            ),
+            isTrue,
+          );
+          expect(() => HistoricalRunEvidence.fromJson(value), _tooLarge);
+        },
       );
-      final model = source.models.first;
-      final activity = _withModels(source, [
-        ModelInvocationActivity(
-          id: model.id,
-          startSequence: model.startSequence,
-          terminalSequence: model.terminalSequence,
-          settlement: model.settlement,
-          outputs: [
-            ModelOutputActivity(
-              sequence: 3,
-              item: ModelTextOutput(
-                'Exact\r\ntext',
-                providerItemId: 'text-id',
-                providerNativeMetadata: native,
+
+      test(
+        'depth 48 succeeds and depth 49 fails without truncating evidence',
+        () {
+          final value = _copy(_project(_richActivity(state: state)).toJson());
+          final arguments = _at(value, ['tools', 0, 'canonicalArguments']);
+          // Root=0, tools=1, tool=2, arguments=3, nested value=4.
+          Object? nested;
+          for (var depth = 4; depth < 48; depth++) {
+            nested = [nested];
+          }
+          arguments['deep'] = nested;
+          final history = HistoricalRunEvidence.fromJson(value);
+          expect(_project(history.activity).toJson(), value);
+          arguments['deep'] = [nested];
+          expect(() => HistoricalRunEvidence.fromJson(value), _tooLarge);
+        },
+      );
+
+      test('native activity projection enforces node and depth limits too', () {
+        Object? deep;
+        for (var index = 0; index < 48; index++) {
+          deep = [deep];
+        }
+        for (final arguments in <Map<String, Object?>>[
+          {'values': List<Object?>.filled(50000, null)},
+          {'deep': deep},
+        ]) {
+          final activity = RunActivitySnapshot(
+            runId: RunId('bounded'),
+            sessionId: SessionId('session'),
+            state: state,
+            sequence: 4,
+            models: [
+              ModelInvocationActivity(
+                id: ModelInvocationId('model'),
+                startSequence: 1,
+                terminalSequence: 3,
+                settlement: ModelSettlement.completed,
+                outputs: [
+                  ModelOutputActivity(
+                    sequence: 2,
+                    item: ModelToolProposalOutput(
+                      ProviderToolProposal(
+                        providerCallId: 'call',
+                        alias: 'tool',
+                        arguments: arguments,
+                      ),
+                    ),
+                  ),
+                ],
               ),
-            ),
-            ModelOutputActivity(
-              sequence: 4,
-              item: ModelNativeOutput(providerNativeMetadata: native),
-            ),
-            ...model.outputs.skip(2),
-          ],
-          metadata: ModelTerminalMetadata(providerNativeState: native),
-        ),
-        ...source.models.skip(1),
-      ]);
-      expect(_project(activity).toJson(), _project(source).toJson());
-    },
-  );
+            ],
+          );
+          expect(() => _project(activity), _tooLarge);
+        }
+      });
 
-  test(
-    'generated historical client/dispatcher roundtrip contains only the Run selector',
-    () async {
-      final history = _project(_richActivity());
-      final host = _HistoryHost(history);
-      final dispatcher = RemoteOrchestrationHostServiceDispatcher(host);
-      addTearDown(dispatcher.close);
-      final channel = _Channel(dispatcher);
-      final remote = await RemoteOrchestrationHostServiceClient(
-        channel,
-      ).readHistoricalRun('history');
-      expect(channel.method, 'orchestrationExecutionHost.readHistoricalRun');
-      expect(channel.payload, {'runId': 'history'});
-      expect(host.reads, ['history']);
-      expect(remote.toLocal().toJson(), history.toJson());
-      _expectFrozen(remote.payload);
-      expect(remote.toLocal().activity.models.first.metadata, isNull);
-      expect(
-        remote.toLocal().activity.models.first.outputs.map(
-          (output) => output.sequence,
-        ),
-        [3, 5, 6, 7, 8, 9, 10, 11],
+      test(
+        'excluded native payload does not consume the projected byte budget',
+        () {
+          final source = _richActivity(state: state);
+          final native = ModelNativeEnvelope(
+            kind: 'opaque',
+            compatibility: {},
+            data: {'large': 'x' * (512 * 1024 + 1)},
+          );
+          final model = source.models.first;
+          final activity = _withModels(source, [
+            ModelInvocationActivity(
+              id: model.id,
+              startSequence: model.startSequence,
+              terminalSequence: model.terminalSequence,
+              settlement: model.settlement,
+              outputs: [
+                ModelOutputActivity(
+                  sequence: 3,
+                  item: ModelTextOutput(
+                    'Exact\r\ntext',
+                    providerItemId: 'text-id',
+                    providerNativeMetadata: native,
+                  ),
+                ),
+                ModelOutputActivity(
+                  sequence: 4,
+                  item: ModelNativeOutput(providerNativeMetadata: native),
+                ),
+                ...model.outputs.skip(2),
+              ],
+              metadata: ModelTerminalMetadata(providerNativeState: native),
+            ),
+            ...source.models.skip(1),
+          ]);
+          expect(_project(activity).toJson(), _project(source).toJson());
+        },
       );
-      for (final payload in <Map<String, Object?>>[
-        {},
-        {'runId': 1},
-        {'runId': 'history', 'sessionId': 'foreign'},
-        {'runId': 'history', 'projectId': 'foreign'},
-      ]) {
-        final response = await dispatcher.dispatch({
-          'kind': 'request',
-          'requestId': 2,
-          'method': remoteOrchestrationHostServiceReadHistoricalRunId,
-          'payload': payload,
-        });
-        expect((response['error'] as Map)['code'], 'invalid_request');
-      }
-      expect(host.reads, ['history']);
-    },
-  );
 
-  for (final code in ['unavailable', 'current_run', 'result_too_large']) {
-    test(
-      'generated client reconstructs declared $code history failure',
-      () async {
-        final failure = RemoteHistoricalRunEvidenceFailure(
-          code: code,
-          message: 'Safe read failure',
-          details: {'retryable': false},
-        );
-        final host = _HistoryHost(_project(_richActivity()))..failure = failure;
-        final dispatcher = RemoteOrchestrationHostServiceDispatcher(host);
-        addTearDown(dispatcher.close);
-        final channel = _Channel(dispatcher);
-        await expectLater(
-          RemoteOrchestrationHostServiceClient(
+      test(
+        'generated historical client/dispatcher roundtrip contains only the Run selector',
+        () async {
+          final history = _project(_richActivity(state: state));
+          final host = _HistoryHost(history);
+          final dispatcher = RemoteOrchestrationHostServiceDispatcher(host);
+          addTearDown(dispatcher.close);
+          final channel = _Channel(dispatcher);
+          final remote = await RemoteOrchestrationHostServiceClient(
             channel,
-          ).readHistoricalRun('history'),
-          throwsA(
-            isA<RemoteHistoricalRunEvidenceFailure>()
-                .having((error) => error.code, 'code', code)
-                .having(
-                  (error) => error.message,
-                  'message',
-                  'Safe read failure',
-                )
-                .having((error) => error.details, 'details', {
-                  'retryable': false,
-                }),
-          ),
-        );
-        expect(
-          channel.error!['declaredFailureType'],
-          'orchestration.historicalRunEvidenceFailure',
-        );
-      },
-    );
-  }
+          ).readHistoricalRun('history');
+          expect(
+            channel.method,
+            'orchestrationExecutionHost.readHistoricalRun',
+          );
+          expect(channel.payload, {'runId': 'history'});
+          expect(host.reads, ['history']);
+          expect(remote.toLocal().toJson(), history.toJson());
+          expect(remote.toLocal().status, history.status);
+          expect(remote.toLocal().record?.state, history.record?.state);
+          expect(remote.toLocal().activity.state, state);
+          _expectFrozen(remote.payload);
+          expect(remote.toLocal().activity.models.first.metadata, isNull);
+          expect(
+            remote.toLocal().activity.models.first.outputs.map(
+              (output) => output.sequence,
+            ),
+            [3, 5, 6, 7, 8, 9, 10, 11],
+          );
+          for (final payload in <Map<String, Object?>>[
+            {},
+            {'runId': 1},
+            {'runId': 'history', 'sessionId': 'foreign'},
+            {'runId': 'history', 'projectId': 'foreign'},
+          ]) {
+            final response = await dispatcher.dispatch({
+              'kind': 'request',
+              'requestId': 2,
+              'method': remoteOrchestrationHostServiceReadHistoricalRunId,
+              'payload': payload,
+            });
+            expect((response['error'] as Map)['code'], 'invalid_request');
+          }
+          expect(host.reads, ['history']);
+        },
+      );
 
-  test(
-    'generated decoder rejects native/unknown history payload fields',
-    () async {
-      final valid = _project(_richActivity()).toJson();
-      for (final value in [
-        {'payload': valid, 'extra': true},
-        {
-          'payload': {...valid, 'providerNativeState': null},
-        },
-        {
-          'payload': {...valid}..remove('failure'),
-        },
-      ]) {
-        await expectLater(
-          RemoteOrchestrationHostServiceClient(
-            _ResponseChannel(value),
-          ).readHistoricalRun('history'),
-          throwsA(isA<AdeleProtocolException>()),
+      for (final code in ['unavailable', 'current_run', 'result_too_large']) {
+        test(
+          'generated client reconstructs declared $code history failure',
+          () async {
+            final failure = RemoteHistoricalRunEvidenceFailure(
+              code: code,
+              message: 'Safe read failure',
+              details: {'retryable': false},
+            );
+            final host = _HistoryHost(_project(_richActivity(state: state)))
+              ..failure = failure;
+            final dispatcher = RemoteOrchestrationHostServiceDispatcher(host);
+            addTearDown(dispatcher.close);
+            final channel = _Channel(dispatcher);
+            await expectLater(
+              RemoteOrchestrationHostServiceClient(
+                channel,
+              ).readHistoricalRun('history'),
+              throwsA(
+                isA<RemoteHistoricalRunEvidenceFailure>()
+                    .having((error) => error.code, 'code', code)
+                    .having(
+                      (error) => error.message,
+                      'message',
+                      'Safe read failure',
+                    )
+                    .having((error) => error.details, 'details', {
+                      'retryable': false,
+                    }),
+              ),
+            );
+            expect(
+              channel.error!['declaredFailureType'],
+              'orchestration.historicalRunEvidenceFailure',
+            );
+          },
         );
       }
-    },
-  );
+
+      test(
+        'generated decoder rejects native/unknown history payload fields',
+        () async {
+          final valid = _project(_richActivity(state: state)).toJson();
+          for (final value in [
+            {'payload': valid, 'extra': true},
+            {
+              'payload': {...valid, 'providerNativeState': null},
+            },
+            {
+              'payload': {...valid}..remove('failure'),
+            },
+            {
+              'payload': {...valid}..remove('status'),
+            },
+            {
+              'payload': {...valid}..remove('record'),
+            },
+            {
+              'payload': {...valid, 'status': 'unknown'},
+            },
+            {
+              'payload': {
+                ...valid,
+                'status': state == RunState.failed ? 'interrupted' : 'terminal',
+              },
+            },
+          ]) {
+            await expectLater(
+              RemoteOrchestrationHostServiceClient(
+                _ResponseChannel(value),
+              ).readHistoricalRun('history'),
+              throwsA(isA<AdeleProtocolException>()),
+            );
+          }
+        },
+      );
+    });
+  }
 }
 
 final _tooLarge = throwsA(
@@ -715,13 +1224,55 @@ final _tooLarge = throwsA(
 
 HistoricalRunEvidence _project(RunActivitySnapshot activity) =>
     HistoricalRunEvidence.fromActivity(
-      record: RunRecord(
-        id: activity.runId,
-        sessionId: activity.sessionId,
-        state: RunTerminalState.values.byName(activity.state.name),
-      ),
+      status: switch (activity.state) {
+        RunState.created ||
+        RunState.running ||
+        RunState.waiting => HistoricalRunStatus.interrupted,
+        _ => HistoricalRunStatus.terminal,
+      },
+      record: switch (activity.state) {
+        RunState.created || RunState.running || RunState.waiting => null,
+        _ => RunRecord(
+          id: activity.runId,
+          sessionId: activity.sessionId,
+          state: RunTerminalState.values.byName(activity.state.name),
+        ),
+      },
       activity: activity,
     );
+
+RunActivitySnapshot _interruptedActivity(RunState state) {
+  final source = _richActivity(state: state);
+  final tool = source.tools.first;
+  final changes = tool.changes.take(state == RunState.waiting ? 3 : 6).toList();
+  return RunActivitySnapshot(
+    runId: source.runId,
+    sessionId: source.sessionId,
+    state: state,
+    sequence: changes.last.sequence,
+    lifecycle: [
+      const RunLifecycleActivity(sequence: 1, state: RunState.running),
+      const RunLifecycleActivity(sequence: 22, state: RunState.waiting),
+      if (state == RunState.running)
+        const RunLifecycleActivity(sequence: 23, state: RunState.running),
+    ],
+    models: [source.models.first],
+    tools: [
+      ToolInvocationActivity(
+        id: tool.id,
+        preparedSequence: tool.preparedSequence,
+        modelInvocationId: tool.modelInvocationId,
+        proposalSequence: tool.proposalSequence,
+        toolId: tool.toolId,
+        alias: tool.alias,
+        providerCallId: tool.providerCallId,
+        canonicalArguments: tool.canonicalArguments,
+        effects: tool.effects,
+        changes: changes,
+      ),
+    ],
+  );
+}
 
 RunActivitySnapshot _withModels(
   RunActivitySnapshot source,

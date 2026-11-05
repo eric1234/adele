@@ -30,28 +30,35 @@ final class HistoricalRunEvidenceFailure implements Exception {
   String toString() => 'HistoricalRunEvidenceFailure($code): $message';
 }
 
-/// Data-only semantic projection of retained terminal evidence, not continuation.
+/// Historical classification, distinct from the last observed [RunState].
+enum HistoricalRunStatus { terminal, interrupted }
+
+/// Data-only semantic projection of retained evidence, not continuation.
 ///
 /// Reuses public activity values but excludes native-only outputs, all native
 /// attachments/terminal metadata, provider details and outcome hostData. Original
 /// Run-local sequences remain unchanged, including gaps left by excluded output.
 /// Approval observations are facts, never approval tokens or executable handles.
 final class HistoricalRunEvidence {
-  HistoricalRunEvidence._(this.record, this.activity, this._json);
+  HistoricalRunEvidence._(this.status, this.record, this.activity, this._json);
 
   factory HistoricalRunEvidence.fromActivity({
-    required RunRecord record,
+    HistoricalRunStatus status = HistoricalRunStatus.terminal,
+    required RunRecord? record,
     required RunActivitySnapshot activity,
   }) {
-    if (record.id != activity.runId ||
-        record.sessionId != activity.sessionId ||
-        record.state.name != activity.state.name) {
-      throw const FormatException('Historical record and activity must agree.');
-    }
     return HistoricalRunEvidence.fromJson({
-      'runId': record.id.value,
-      'sessionId': record.sessionId.value,
-      'state': record.state.name,
+      'status': status.name,
+      'record': record == null
+          ? null
+          : {
+              'id': record.id.value,
+              'sessionId': record.sessionId.value,
+              'state': record.state.name,
+            },
+      'runId': activity.runId.value,
+      'sessionId': activity.sessionId.value,
+      'state': activity.state.name,
       'sequence': activity.sequence,
       'lifecycle': [
         for (final item in activity.lifecycle)
@@ -148,6 +155,8 @@ final class HistoricalRunEvidence {
     _validateBounds(json);
     final value = adeleSnapshotJsonMap(json);
     _fields(value, {
+      'status',
+      'record',
       'runId',
       'sessionId',
       'state',
@@ -158,15 +167,44 @@ final class HistoricalRunEvidence {
       'rejectedProposals',
       'failure',
     });
-    final record = RunRecord(
-      id: RunId(_read(value, 'runId')),
-      sessionId: SessionId(_read(value, 'sessionId')),
-      state: _enum(RunTerminalState.values, value['state']),
-    );
+    final status = _enum(HistoricalRunStatus.values, value['status']);
+    final recordValue = _optionalMap(value['record']);
+    RunRecord? record;
+    if (recordValue != null) {
+      _fields(recordValue, {'id', 'sessionId', 'state'});
+      record = RunRecord(
+        id: RunId(_read(recordValue, 'id')),
+        sessionId: SessionId(_read(recordValue, 'sessionId')),
+        state: _enum(RunTerminalState.values, recordValue['state']),
+      );
+    }
+    final runId = RunId(_read(value, 'runId'));
+    final sessionId = SessionId(_read(value, 'sessionId'));
+    final state = _enum(RunState.values, value['state']);
+    switch (status) {
+      case HistoricalRunStatus.terminal:
+        if (record == null ||
+            record.id != runId ||
+            record.sessionId != sessionId ||
+            record.state.name != state.name) {
+          throw const FormatException(
+            'Terminal historical record and activity must agree.',
+          );
+        }
+      case HistoricalRunStatus.interrupted:
+        if (record != null ||
+            (state != RunState.created &&
+                state != RunState.running &&
+                state != RunState.waiting)) {
+          throw const FormatException(
+            'Interrupted history requires nonterminal activity and no record.',
+          );
+        }
+    }
     final activity = RunActivitySnapshot(
-      runId: record.id,
-      sessionId: record.sessionId,
-      state: RunState.values.byName(record.state.name),
+      runId: runId,
+      sessionId: sessionId,
+      state: state,
       sequence: _read(value, 'sequence'),
       lifecycle: _list(value, 'lifecycle').map((item) {
         _fields(item, {'sequence', 'state'});
@@ -311,10 +349,47 @@ final class HistoricalRunEvidence {
       }),
       failure: _failure(value['failure']),
     );
-    return HistoricalRunEvidence._(record, activity, value);
+    if (status == HistoricalRunStatus.interrupted) {
+      RunLifecycleActivity? latestLifecycle;
+      for (final item in activity.lifecycle) {
+        if (item.state == RunState.completed ||
+            item.state == RunState.failed ||
+            item.state == RunState.cancelled) {
+          throw const FormatException(
+            'Interrupted history cannot contain terminal lifecycle observations.',
+          );
+        }
+        if (latestLifecycle == null ||
+            item.sequence > latestLifecycle.sequence) {
+          latestLifecycle = item;
+        }
+      }
+      if (activity.failure != null ||
+          (latestLifecycle != null && latestLifecycle.state != state)) {
+        throw const FormatException(
+          'Interrupted history must retain consistent nonterminal observations.',
+        );
+      }
+      if (state == RunState.created &&
+          (activity.sequence != 0 ||
+              activity.lifecycle.isNotEmpty ||
+              activity.models.isNotEmpty ||
+              activity.tools.isNotEmpty ||
+              activity.rejectedProposals.isNotEmpty)) {
+        throw const FormatException(
+          'Created interrupted history must have no observed activity.',
+        );
+      }
+    }
+    return HistoricalRunEvidence._(status, record, activity, value);
   }
 
-  final RunRecord record;
+  final HistoricalRunStatus status;
+
+  /// Authoritative terminal product record; absent for interrupted history.
+  final RunRecord? record;
+
+  /// Last retained observations, without synthesized settlement or authority.
   final RunActivitySnapshot activity;
   final Map<String, Object?> _json;
 

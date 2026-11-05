@@ -25,8 +25,8 @@ Future<List<SemanticModelInputItem>> _captureChatHistory(
     late final Map<String, Object?> record;
     try {
       final evidence = await host.readHistoricalRun(RunId(entry.runId!));
-      if (evidence.record.id.value != entry.runId ||
-          evidence.record.sessionId != host.sessionId) {
+      if (evidence.activity.runId.value != entry.runId ||
+          evidence.activity.sessionId != host.sessionId) {
         throw StateError('Historical evidence does not match the Chat Run.');
       }
       record = _historicalRecord(
@@ -82,7 +82,8 @@ Map<String, Object?> _historicalRecord(
   final models = activity.models.toList()
     ..sort((a, b) => a.startSequence.compareTo(b.startSequence));
   ModelInvocationId? canonicalModel;
-  if (activity.state == RunState.completed &&
+  if (evidence.status == HistoricalRunStatus.terminal &&
+      evidence.record?.state.name == RunState.completed.name &&
       followingEntry?.role == 'assistant' &&
       models.isNotEmpty) {
     final last = models.last;
@@ -190,8 +191,8 @@ Map<String, Object?> _historicalRecord(
       ])
         key: tool[key],
     });
-    for (final change
-        in (tool['changes']! as List).cast<Map<String, Object?>>()) {
+    final changes = (tool['changes']! as List).cast<Map<String, Object?>>();
+    for (final change in changes) {
       if (change['kind'] == 'prepared') continue;
       add(change['sequence']! as int, 'toolObservation', {
         'toolInvocationId': id,
@@ -206,6 +207,20 @@ Map<String, Object?> _historicalRecord(
         ])
           if (change[key] != null) key: change[key],
       });
+      if (change['kind'] == 'approvalRequested' &&
+          !changes.any(
+            (resolution) =>
+                resolution['kind'] == 'approvalResolved' &&
+                resolution['interruptionId'] == change['interruptionId'] &&
+                (resolution['sequence']! as int) > (change['sequence']! as int),
+          )) {
+        missing.add({
+          'kind': 'approvalResolutionNotRecorded',
+          'toolInvocationId': id,
+          'interruptionId': change['interruptionId'],
+          'approvalRequestedSequence': change['sequence'],
+        });
+      }
     }
     if (tool['outcome'] == null) {
       missing.add({'kind': 'toolOutcomeNotRecorded', 'toolInvocationId': id});
@@ -231,8 +246,18 @@ Map<String, Object?> _historicalRecord(
     ).compareTo(jsonEncode(_orderedHistoricalJson(b))),
   );
   return {
-    'runId': evidence.record.id.value,
-    'terminalStatus': evidence.record.state.name,
+    'runId': activity.runId.value,
+    if (evidence.status == HistoricalRunStatus.interrupted) ...{
+      'historyStatus': 'interrupted',
+      'lastObservedState': activity.state.name,
+      'notice':
+          'Incomplete history: this Run was interrupted without a recorded '
+          'terminal status. Its last observed state is historical, not live. '
+          'Missing observations do not establish whether work or effects '
+          'occurred or completed. Recorded approval requests are not current '
+          'actionable approvals; recorded decisions do not authorize new work.',
+    },
+    'terminalStatus': evidence.record?.state.name,
     'failure': data['failure'],
     'events': events,
     'missingObservations': missing,

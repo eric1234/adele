@@ -40,6 +40,12 @@ const _reads = [
   'oversize-bytes',
   'oversize-nodes',
   'oversize-depth',
+  'interrupted-running',
+  'interrupted-waiting',
+  'interrupted-foreign',
+  'interrupted-oversize-bytes',
+  'interrupted-oversize-nodes',
+  'interrupted-oversize-depth',
   'empty',
 ];
 
@@ -146,7 +152,7 @@ void main() {
   });
 
   test(
-    'installed AOT strategy consumes durable reopened terminal history via '
+    'installed AOT strategy consumes durable reopened terminal and interrupted history via '
     'generated host transport with scope, sanitization and recoverable bounds',
     () async {
       final source = await Directory.systemTemp.createTemp(
@@ -205,6 +211,31 @@ void main() {
         strategyId: _strategyId,
       );
       _retain(original, _empty('foreign-session', sibling.id));
+      final interrupted = [
+        _interrupted(session.id, RunState.running),
+        _interrupted(session.id, RunState.waiting),
+      ];
+      for (final activity in interrupted) {
+        original.lifecycle.checkpointRunActivity(session, activity);
+      }
+      original.lifecycle.checkpointRunActivity(
+        sibling,
+        _interrupted(sibling.id, RunState.waiting, id: 'interrupted-foreign'),
+      );
+      final liveReader = _nativeHistoryHost(original, session);
+      for (final activity in interrupted) {
+        expect(original.lifecycle.recoveredRun(activity.runId), isNull);
+        await expectLater(
+          liveReader.readHistoricalRun(activity.runId),
+          throwsA(
+            isA<HistoricalRunEvidenceFailure>().having(
+              (error) => error.code,
+              'code',
+              'unavailable',
+            ),
+          ),
+        );
+      }
       final foreignTask = await createSession(project.id);
       _retain(original, _empty('foreign-task', foreignTask.id));
       final otherSource = await Directory(
@@ -218,6 +249,10 @@ void main() {
       _retain(original, _empty('foreign-project', foreignProject.id));
       for (final dimension in ['bytes', 'nodes', 'depth']) {
         _retain(original, _oversize(session.id, dimension));
+        original.lifecycle.checkpointRunActivity(
+          session,
+          _oversize(session.id, dimension, interrupted: true),
+        );
       }
       final inspection = sqlite3.open('${source.path}/.adele/data.db');
       addTearDown(inspection.close);
@@ -230,7 +265,7 @@ void main() {
       expect(rows, hasLength(9));
       expect(
         inspection.select('SELECT * FROM adele_execution_run_activity'),
-        hasLength(rows.length),
+        hasLength(rows.length + 6),
       );
       await original.close();
 
@@ -279,6 +314,10 @@ void main() {
         ),
       );
       await startInstalled(fresh);
+      final nativeReader = _nativeHistoryHost(
+        fresh,
+        fresh.store.session(session.id)!,
+      );
       final consumed = _Model();
       final reader = await _createRun(fresh, session.id, 'reader', consumed);
       final connection = fresh.plugins.backends.single.connection!;
@@ -306,15 +345,16 @@ void main() {
         final value = HistoricalRunEvidence.fromJson(
           Map<String, Object?>.from(result['evidence'] as Map),
         );
-        expect(value.record.id, RunId(id));
-        expect(value.record.sessionId, session.id);
-        expect(result['state'], value.record.state.name);
+        expect(value.activity.runId, RunId(id));
+        expect(value.activity.sessionId, session.id);
+        expect(result['state'], value.activity.state.name);
         return value;
       }
 
       for (final run in previous) {
         final value = evidence(run.run.id.value);
-        expect(value.record.state.name, run.run.state.name);
+        expect(value.status, HistoricalRunStatus.terminal);
+        expect(value.record!.state.name, run.run.state.name);
         expect(value.activity.sequence, run.activity.snapshot.sequence);
         expect(
           value.activity.models.single.outputs.single.sequence,
@@ -327,11 +367,11 @@ void main() {
         );
       }
       expect(
-        evidence('seed-completed').record.state,
+        evidence('seed-completed').record!.state,
         RunTerminalState.completed,
       );
       final failed = evidence('seed-failed');
-      expect(failed.record.state, RunTerminalState.failed);
+      expect(failed.record!.state, RunTerminalState.failed);
       expect(
         failed.activity.models.single.failure!.message,
         contains('Seed failure'),
@@ -343,7 +383,7 @@ void main() {
       expect(failed.activity.failure, isNotNull);
       _expectRich(evidence('rich').activity);
       final empty = evidence('empty');
-      expect(empty.record.state, RunTerminalState.completed);
+      expect(empty.record!.state, RunTerminalState.completed);
       expect(empty.activity.models, isEmpty);
       expect(empty.activity.tools, isEmpty);
       expect(empty.activity.rejectedProposals, isEmpty);
@@ -353,6 +393,7 @@ void main() {
         'foreign-task',
         'foreign-project',
         'missing-activity',
+        'interrupted-foreign',
       ]) {
         expect(results.singleWhere((value) => value['id'] == id), {
           'id': id,
@@ -364,11 +405,85 @@ void main() {
         'failure': 'current_run',
       });
       for (final dimension in ['bytes', 'nodes', 'depth']) {
-        final id = 'oversize-$dimension';
-        expect(results.singleWhere((value) => value['id'] == id), {
-          'id': id,
-          'failure': 'result_too_large',
-        });
+        for (final prefix in ['', 'interrupted-']) {
+          final id = '${prefix}oversize-$dimension';
+          expect(results.singleWhere((value) => value['id'] == id), {
+            'id': id,
+            'failure': 'result_too_large',
+          });
+          await expectLater(
+            nativeReader.readHistoricalRun(RunId(id)),
+            throwsA(
+              isA<HistoricalRunEvidenceFailure>().having(
+                (error) => error.code,
+                'code',
+                'result_too_large',
+              ),
+            ),
+          );
+        }
+      }
+      for (final original in interrupted) {
+        final recovered = fresh.lifecycle.recoveredRun(original.runId)!;
+        expect(recovered.status, RecoveredRunStatus.interrupted);
+        expect(recovered.session, same(fresh.store.session(session.id)));
+        expect(recovered.terminalRecord, isNull);
+        expect(fresh.store.runRecord(original.runId), isNull);
+        expect(fresh.lifecycle.runActivity(original.runId), isNull);
+        final value = evidence(original.runId.value);
+        final native = await nativeReader.readHistoricalRun(original.runId);
+        expect(value.toJson(), native.toJson());
+        expect(value.status, HistoricalRunStatus.interrupted);
+        expect(value.record, isNull);
+        expect(value.activity.state, original.state);
+        expect(value.activity.sequence, original.sequence);
+        expect(value.activity.models.first.outputs.map((o) => o.sequence), [
+          3,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+        ]);
+        expect(
+          value.activity.tools.first.outcome!.effectCertainty,
+          EffectCertainty.knownOccurred,
+        );
+        expect(
+          value.activity.tools[2].outcome!.disposition,
+          ToolOutcomeDisposition.userRejected,
+        );
+        final unfinished = value.activity.tools.last;
+        expect(unfinished.providerCallId, 'call-5');
+        expect(unfinished.proposalSequence, 11);
+        expect(unfinished.outcome, isNull);
+        expect(unfinished.canonicalArguments, {'normalized': 5});
+        if (original.state == RunState.waiting) {
+          expect(
+            unfinished.changes.last.kind,
+            ToolActivityKind.approvalRequested,
+          );
+          expect(
+            unfinished.changes.where(
+              (c) => c.kind == ToolActivityKind.approvalResolved,
+            ),
+            isEmpty,
+          );
+        } else {
+          expect(
+            unfinished.changes.any(
+              (c) => c.kind == ToolActivityKind.executionStarted,
+            ),
+            isTrue,
+          );
+          expect(value.activity.models.last.terminalSequence, isNull);
+          expect(value.activity.models.last.settlement, isNull);
+        }
+        expect(
+          () => value.toJson()['state'] = 'completed',
+          throwsUnsupportedError,
+        );
       }
       // Exact equality proves a healthy read after every failure, not a partial
       // oversize success or a poisoned operation masked by an empty result.
@@ -412,6 +527,21 @@ Future<Object?> _control(PluginBackendConnection connection, String method) =>
         .request(method, const {})
         .timeout(_bound);
 
+KernelOrchestrationHost _nativeHistoryHost(
+  AdeleRuntime runtime,
+  Session session,
+) => KernelOrchestrationHost(
+  run: AgentRun(id: RunId('native-reader'), sessionId: session.id),
+  lifecycle: runtime.lifecycle,
+  session: session,
+  strategy: runtime.lifecycle.resolveSessionStrategy(session.id),
+  contextComposer: runtime.contextComposer,
+  sourceContextFactory: () => throw StateError('History needs no context.'),
+  model: _Model(),
+  toolCatalog: ToolCatalog(),
+  policy: const _NoTools(),
+);
+
 Future<SessionOrchestrationRun> _createRun(
   AdeleRuntime runtime,
   SessionId sessionId,
@@ -452,19 +582,24 @@ RunActivitySnapshot _empty(String id, SessionId sessionId) =>
       ],
     );
 
-RunActivitySnapshot _oversize(SessionId sessionId, String dimension) {
+RunActivitySnapshot _oversize(
+  SessionId sessionId,
+  String dimension, {
+  bool interrupted = false,
+}) {
   Object? nested;
   for (var i = 0; i < HistoricalRunEvidenceLimits.maxDepth; i++) {
     nested = {'nested': nested};
   }
   return RunActivitySnapshot(
-    runId: RunId('oversize-$dimension'),
+    runId: RunId('${interrupted ? 'interrupted-' : ''}oversize-$dimension'),
     sessionId: sessionId,
-    state: RunState.completed,
-    sequence: 5,
-    lifecycle: const [
-      RunLifecycleActivity(sequence: 0, state: RunState.running),
-      RunLifecycleActivity(sequence: 5, state: RunState.completed),
+    state: interrupted ? RunState.running : RunState.completed,
+    sequence: interrupted ? 4 : 5,
+    lifecycle: [
+      const RunLifecycleActivity(sequence: 0, state: RunState.running),
+      if (!interrupted)
+        const RunLifecycleActivity(sequence: 5, state: RunState.completed),
     ],
     models: [
       ModelInvocationActivity(
@@ -498,6 +633,92 @@ RunActivitySnapshot _oversize(SessionId sessionId, String dimension) {
         ],
       ),
     ],
+  );
+}
+
+RunActivitySnapshot _interrupted(
+  SessionId sessionId,
+  RunState state, {
+  String? id,
+}) {
+  final rich = _richActivity(sessionId);
+  final running = state == RunState.running;
+  final effects = rich.tools.first.effects!;
+  return RunActivitySnapshot(
+    runId: RunId(id ?? 'interrupted-${state.name}'),
+    sessionId: sessionId,
+    state: state,
+    sequence: running ? 85 : 79,
+    lifecycle: [
+      ...rich.lifecycle.take(rich.lifecycle.length - 1),
+      const RunLifecycleActivity(sequence: 79, state: RunState.waiting),
+      if (running)
+        const RunLifecycleActivity(sequence: 81, state: RunState.running),
+    ],
+    models: [
+      ...rich.models,
+      if (running)
+        ModelInvocationActivity(
+          id: ModelInvocationId('unfinished-model'),
+          startSequence: 84,
+          outputs: [
+            ModelOutputActivity(
+              sequence: 85,
+              item: ModelTextOutput('Unfinished model output'),
+            ),
+          ],
+        ),
+    ],
+    tools: [
+      ...rich.tools,
+      ToolInvocationActivity(
+        id: ToolInvocationId('unfinished-tool'),
+        preparedSequence: 76,
+        modelInvocationId: rich.models.first.id,
+        proposalSequence: 11,
+        toolId: ToolId('test.tool.5'),
+        alias: 'tool-5',
+        providerCallId: 'call-5',
+        canonicalArguments: {'normalized': 5},
+        effects: effects,
+        changes: [
+          const ToolActivityChange(
+            sequence: 76,
+            kind: ToolActivityKind.prepared,
+          ),
+          ToolActivityChange(
+            sequence: 77,
+            kind: ToolActivityKind.policyEvaluated,
+            effects: effects,
+            policyDecision: ToolActivityPolicyDecision.ask,
+          ),
+          ToolActivityChange(
+            sequence: 78,
+            kind: ToolActivityKind.approvalRequested,
+            effects: effects,
+            interruptionId: RunInterruptionId('unfinished-approval'),
+          ),
+          if (running) ...[
+            ToolActivityChange(
+              sequence: 80,
+              kind: ToolActivityKind.approvalResolved,
+              interruptionId: RunInterruptionId('unfinished-approval'),
+              approved: true,
+            ),
+            const ToolActivityChange(
+              sequence: 82,
+              kind: ToolActivityKind.executionStarted,
+            ),
+            ToolActivityChange(
+              sequence: 83,
+              kind: ToolActivityKind.progress,
+              progress: ToolProgress(content: 'Effects may have begun'),
+            ),
+          ],
+        ],
+      ),
+    ],
+    rejectedProposals: rich.rejectedProposals,
   );
 }
 
