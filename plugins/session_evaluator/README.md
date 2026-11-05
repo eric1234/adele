@@ -259,9 +259,10 @@ Git/worktree evidence, Environment provider state, live/waiting Run observation,
 provider replay data, Markdown reports, and evaluation questions are deliberately
 absent from the JSON evidence. Retained command captures can exist without terminal
 Run evidence; their inclusion does not add live Run observation. The desktop
-handoff's companion README supplies source-inspection guidance separately, without
-changing this schema or its collection bounds. Neither file is a source snapshot
-or a portable reproduction bundle, and neither promises reproducibility.
+handoff's companion README supplies the evaluation assignment and source-inspection
+guidance separately, without changing this schema or its collection bounds. Neither
+file is a source snapshot or a portable reproduction bundle, and neither promises
+reproducibility.
 
 <a id="desktop-export"></a>
 
@@ -292,9 +293,17 @@ Direct `app/lib/main.dart` remains plugin-neutral and does not attach the export
 3. Read the sensitive-data warning and explicitly choose **Continue**. **Cancel**
    writes nothing. There is no Save dialog, destination picker, or format selector.
 4. Wait for the completion snackbar, which displays the absolute handoff directory
-   path and offers **Copy path**. Use its `README.md` as the evaluator entrypoint
-   and `evidence.json` as the complete collected document. Failure feedback is
-   generic and never includes evidence contents or backend/SQL diagnostics.
+   path. Click **Copy README path** to copy the absolute native filesystem path to
+   its `README.md`, not the directory or file contents.
+5. Provide only that path to a separate evaluator AI with local file access. The
+   generated README contains the complete independent evaluation assignment and
+   references the adjacent `evidence.json`; no additional evaluation prompt is
+   needed. It requests a substantive report, not implementation work, and remains
+   useful with unavailable source or partial retained evidence.
+
+Clipboard access occurs only on the explicit snackbar action. The handoff does not
+open another application or submit an evaluation request. Failure feedback is
+generic and never includes evidence contents or backend/SQL diagnostics.
 
 The ordinary semantic Command ID is
 `dev.adele.session-evaluator.export-session-evidence`. The adapter registers exactly

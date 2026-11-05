@@ -947,7 +947,10 @@ void main() {
         find.text('Evaluation handoff ready: ${handoff.absolute.path}'),
         findsOneWidget,
       );
-      expect(find.widgetWithText(SnackBarAction, 'Copy path'), findsOneWidget);
+      expect(
+        find.widgetWithText(SnackBarAction, 'Copy README path'),
+        findsOneWidget,
+      );
       expect(
         find.text('Evaluation handoff could not be prepared.'),
         findsNothing,
@@ -958,6 +961,7 @@ void main() {
       'palette exports the exact v2 document from retained Chat/Run '
       'and full Command output without collecting a draft or changing storage',
       (tester) async {
+        outputRoot = Directory('${outputRoot.path} with spaces # percent%');
         final arguments = <String, Object?>{
           'program': aotRuntime,
           'arguments': ['${artifacts.path}/child.aot', 'export'],
@@ -1079,6 +1083,7 @@ void main() {
         expect(instructions, contains(task.environment.id.value));
         expect(instructions, contains(_environmentProvider.value));
         expect(instructions, contains('evidence.json'));
+        expect(instructions, contains('## Evaluation Instructions'));
         expect(instructions.toLowerCase(), contains('unavailable'));
         expect(instructions, isNot(contains('Unsubmitted private draft')));
         expect(instructions, isNot(contains('OTHER-SESSION')));
@@ -1151,12 +1156,74 @@ void main() {
         expect(_inspect(source, _snapshot), before);
         expectReady(handoff);
         expect(clipboard, isEmpty);
-        await tester.tap(find.text('Copy path'));
+        await tester.tap(find.text('Copy README path'));
         await tester.pumpAndSettle();
-        expect(clipboard.single.arguments, {'text': handoff.absolute.path});
+        final readmeFile = File(
+          '${handoff.absolute.path}${Platform.pathSeparator}README.md',
+        );
+        expect(readmeFile.isAbsolute, isTrue);
+        expect(readmeFile.readAsStringSync(), instructions);
+        expect(clipboard.single.arguments, {'text': readmeFile.path});
         expect(picker.calls, 0);
       },
     );
+
+    for (final outcome in [
+      'clipboard failure',
+      'exporter closed',
+      'window closed',
+    ]) {
+      testWidgets('README copy handles $outcome without exposing evidence', (
+        tester,
+      ) async {
+        final clipboard = <MethodCall>[];
+        tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          SystemChannels.platform,
+          (call) async {
+            if (call.method == 'Clipboard.setData') {
+              clipboard.add(call);
+              throw PlatformException(
+                code: 'clipboard-unavailable',
+                message: 'private clipboard diagnostics',
+              );
+            }
+            return null;
+          },
+        );
+        addTearDown(
+          () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+            SystemChannels.platform,
+            null,
+          ),
+        );
+        window.presentSession(session);
+        await mount(tester);
+        await invoke(tester);
+        await continueExport(tester);
+        await finish(tester);
+        final handoff = handoffs().single;
+        expectReady(handoff);
+        expect(clipboard, isEmpty);
+        if (outcome == 'exporter closed') {
+          await tester.runAsync(exporter.close);
+        } else if (outcome == 'window closed') {
+          window.close();
+        }
+        await tester.tap(find.text('Copy README path'));
+        await tester.pumpAndSettle();
+        expect(clipboard, hasLength(outcome == 'clipboard failure' ? 1 : 0));
+        expect(
+          find.text('The handoff path could not be copied.'),
+          outcome == 'clipboard failure' ? findsOneWidget : findsNothing,
+        );
+        expect(
+          find.textContaining('private clipboard diagnostics'),
+          findsNothing,
+        );
+        expect(tester.takeException(), isNull);
+        expect(handoffs().single.path, handoff.path);
+      });
+    }
 
     testWidgets('stock Git handoff uses the nonprimary Session Environment and '
         'nested source scope without changing Git or materializing a checkout', (

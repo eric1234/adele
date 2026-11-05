@@ -181,11 +181,17 @@ final class SessionEvidenceExporter {
       _notify(
         'Evaluation handoff ready: ${destination.path}',
         action: SnackBarAction(
-          label: 'Copy path',
+          label: 'Copy README path',
           onPressed: () async {
             if (_closed || !context.isActive) return;
             try {
-              await Clipboard.setData(ClipboardData(text: destination.path));
+              await Clipboard.setData(
+                ClipboardData(
+                  text: File.fromUri(
+                    destination.uri.resolve('README.md'),
+                  ).absolute.path,
+                ),
+              );
             } on Object {
               _notify('The handoff path could not be copied.');
             }
