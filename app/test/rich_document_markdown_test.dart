@@ -139,6 +139,103 @@ void main() {
     expect(decode(RichDocumentMarkdown.encode(document)).first!.delta, delta);
   });
 
+  test('identifier underscores do not need escaping in literal prompts', () {
+    final document = documentWith(
+      paragraphNode(text: markdownIdentifierPrompt),
+    );
+    final output = RichDocumentMarkdown.encode(document);
+    expect(output, literalIdentifierMarkdown);
+    expect(decode(output).toJson(), document.toJson());
+    expect(
+      decode(output).first!.delta,
+      Delta()..insert(markdownIdentifierPrompt),
+    );
+  });
+
+  for (final (text, expected) in [
+    (
+      'read_file stream_transport a_1 2_b a_b_c',
+      'read_file stream_transport a_1 2_b a_b_c',
+    ),
+    (
+      '_word_ __bold__ a__b a_ _b ___',
+      r'\_word\_ \_\_bold\_\_ a\_\_b a\_ \_b \_\_\_',
+    ),
+    (
+      'a_*b*_c [read_file](url) <read_file> &read_file;',
+      r'a\_\*b\*\_c \[read_file\](url) \<read_file\> \&read_file;',
+    ),
+    (
+      '# read_file\n___\n- stream_transport\n1. file_name',
+      '\\# read_file\n\\_\\_\\_\n\\- stream_transport\n1\\. file_name',
+    ),
+    (
+      ' read_file \n\nstream_transport\t',
+      '&#32;read_file&#32;&#10;\nstream_transport&#9;',
+    ),
+    (
+      '`read_file`\n\n**Recover**',
+      '&#96;read_file&#96;&#10;\n\\*\\*Recover\\*\\*',
+    ),
+    (
+      'https://example.invalid/read_file me_name@example.invalid www.a_b.invalid',
+      r'https\://example.invalid/read_file me_name\@example.invalid www\.a_b.invalid',
+    ),
+  ]) {
+    test('identifier spelling retains literal structure: $text', () {
+      final document = documentWith(paragraphNode(text: text));
+      expect(RichDocumentMarkdown.encode(document), expected);
+      expect(decode(expected).toJson(), document.toJson());
+    });
+  }
+
+  test('identifiers preserve neighboring marks, links and code bodies', () {
+    final delta = Delta()
+      ..insert('read_file ')
+      ..insert('bold_name', attributes: {'bold': true})
+      ..insert(' ')
+      ..insert('italic_name', attributes: {'italic': true})
+      ..insert(' ')
+      ..insert('link_name', attributes: {'href': 'https://example.invalid/a_b'})
+      ..insert(' ')
+      ..insert('`code_name`', attributes: {'code': true})
+      ..insert(' a_')
+      ..insert('b_c', attributes: {'bold': true})
+      ..insert('_d');
+    final document = Document(
+      root: pageNode(
+        children: [
+          headingNode(level: 2, text: 'read_file'),
+          paragraphNode(delta: delta),
+          quoteNode(delta: Delta()..insert('stream_transport')),
+          bulletedListNode(
+            delta: Delta()..insert('file_name'),
+            children: [
+              numberedListNode(number: 1, delta: Delta()..insert('child_name')),
+            ],
+          ),
+          RichDocumentMarkdown.codeBlockNode(
+            text: 'read_file `stream_transport` **literal**\n\tfile_name  ',
+            language: 'plain_text',
+          ),
+        ],
+      ),
+    );
+    addTearDown(document.dispose);
+    const expected =
+        '## read_file\n\n'
+        'read_file **bold_name** *italic_name* '
+        '[link_name](<https://example.invalid/a_b>) `` `code_name` `` '
+        'a\\_**b_c**\\_d\n\n'
+        '> stream_transport\n\n'
+        '- file_name\n  1. child_name\n\n'
+        '```plain_text\nread_file `stream_transport` **literal**\n\tfile_name  \n```';
+    final before = document.toJson();
+    expect(RichDocumentMarkdown.encode(document), expected);
+    expect(decode(expected).toJson(), before);
+    expect(document.toJson(), before);
+  });
+
   test('formatting toggled off does not become an unsupported attribute', () {
     final document = documentWith(
       paragraphNode(

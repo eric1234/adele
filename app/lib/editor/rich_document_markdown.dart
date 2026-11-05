@@ -506,7 +506,9 @@ String _edgeSpaces(String text) => text
 
 String _escapeText(String text) => text
     .replaceAllMapped(
-      RegExp(r'[\\`*_\[\]<>#&~|:@]'),
+      // A single underscore between ASCII letters/digits in this same run cannot
+      // delimit emphasis or a block. Keep escaping at run edges and punctuation.
+      RegExp(r'[\\`*\[\]<>#&~|:@]|(?<![A-Za-z0-9])_|_(?![A-Za-z0-9])'),
       // The pinned parser refuses to decode an entity immediately after a raw
       // backtick, even an escaped one. Entity-spell literal backticks so following
       // protected whitespace/newlines still round-trip; code spans keep fences.
