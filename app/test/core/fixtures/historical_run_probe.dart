@@ -143,15 +143,17 @@ final class _Execution implements OrchestrationExecution {
         try {
           final evidence = await host.readHistoricalRun(RunId(id));
           final activity = evidence.activity;
-          if (evidence.record.id != RunId(id) ||
-              evidence.record.sessionId != host.sessionId ||
-              activity.runId != evidence.record.id ||
-              activity.state.name != evidence.record.state.name) {
+          if (activity.runId != RunId(id) ||
+              activity.sessionId != host.sessionId ||
+              (evidence.status == HistoricalRunStatus.terminal &&
+                  activity.state.name != evidence.record!.state.name) ||
+              (evidence.status == HistoricalRunStatus.interrupted &&
+                  evidence.record != null)) {
             throw StateError('Historical read lost its canonical identity.');
           }
           results.add({
             'id': id,
-            'state': evidence.record.state.name,
+            'state': activity.state.name,
             'evidence': evidence.toJson(),
             // Inspect the typed value too, not only its transport encoder.
             'sanitized':

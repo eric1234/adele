@@ -117,10 +117,12 @@ abstract interface class OrchestrationExecutionHost {
   void complete();
   void fail(Object error);
 
-  /// Reads one retained terminal Run from this host's canonical Session, only
-  /// during an active strategy operation. The current Run is never historical.
-  /// Unknown, foreign and missing evidence share an `unavailable` failure;
-  /// valid empty evidence succeeds. Reads grant no replay or execution authority.
+  /// Reads terminal or recovered interrupted evidence from this host's canonical
+  /// Session, only during an active strategy operation. The current Run and live
+  /// nonterminal Runs are ineligible. Unknown, foreign and missing evidence share
+  /// an `unavailable` failure; valid empty evidence succeeds. Interrupted history
+  /// preserves its last observed state without a terminal record. Reads grant no
+  /// replay, approval or execution authority.
   Future<HistoricalRunEvidence> readHistoricalRun(RunId runId);
 
   Future<StrategyModelTurn> invokeModel(StrategyInferenceMaterial material);

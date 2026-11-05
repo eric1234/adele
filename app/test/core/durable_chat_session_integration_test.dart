@@ -18,7 +18,9 @@ import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/project_storage_host.dart';
 import 'package:adele_desktop/core/remote_inference_context_host.dart';
 import 'package:adele_desktop/core/remote_orchestration_host.dart';
+import 'package:adele_desktop/core/run_id_source.dart';
 import 'package:adele_desktop/core/session_feedback_host.dart';
+import 'package:adele_desktop/ui/execution/session_execution_controller.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
@@ -100,9 +102,12 @@ void main() {
   Future<AdeleRuntime> startPrepared({
     Map<SettingId, Object?> globalOverrides = const {},
     PlatformStorageRoots? roots,
+    ProductIdSource? ids,
+    RunIdSource? runIds,
   }) async {
     final runtime = AdeleRuntime(
-      ids: MonotonicProductIdSource(seed: 'global-chat-budget'),
+      ids: ids ?? MonotonicProductIdSource(seed: 'global-chat-budget'),
+      runIds: runIds,
     );
     addTearDown(runtime.close);
     runtime.plugins.configureSettingsLoader(
@@ -1024,6 +1029,284 @@ void main() {
     },
     timeout: const Timeout(Duration(minutes: 2)),
   );
+
+  for (final waiting in [false, true]) {
+    test(
+      'prepared Chat projects interrupted ${waiting ? 'waiting' : 'running'} Run after fresh runtime reopen',
+      () async {
+        const bound = Duration(seconds: 15);
+        const instructions = 'Use earlier observations without repeating work.';
+        const firstPrompt = 'Read baseline.txt and investigate further.';
+        const nextPrompt = 'Account for the interrupted attempt without tools.';
+        const narration = 'I will read the baseline first.';
+        const partial =
+            'The first read succeeded; further investigation is pending.';
+        const answer = 'The earlier observations remain incomplete.';
+        final source = await _source();
+        final original = await startPrepared();
+        final product = await _createSession(original, source);
+        final sessionId = product.session.id;
+        final chat = _chatClient(
+          original.plugins.backends
+              .singleWhere(
+                (backend) =>
+                    backend.installation.metadata.id.value == _chatPluginId,
+              )
+              .connection!,
+        );
+        await chat.configureSession(sessionId.value, instructions);
+        await chat.setDraftRequest(sessionId.value, _draftRequest);
+        await chat.appendUserMessage(sessionId.value, firstPrompt);
+        final worktree = Directory.fromUri(
+          source.uri.resolve(
+            product.environment.providerState!['worktreeRelativePath']!
+                as String,
+          ),
+        );
+        final file = File('${worktree.path}/baseline.txt');
+        final tool = _RecordingReadTool(file);
+        final policy = _LoopPolicy(askAt: {2});
+        final entered = Completer<void>();
+        final release = Completer<void>();
+        final firstModel = _RecordingModel(
+          [_readTurn('finished', narration), _readTurn('unfinished', partial)],
+          beforeLastTerminal: waiting
+              ? null
+              : () async {
+                  entered.complete();
+                  await release.future;
+                },
+        );
+        final first = await _createRun(
+          original,
+          sessionId,
+          'z-interrupted',
+          firstModel,
+          toolCatalog: _readCatalog(tool),
+          policy: policy,
+        );
+        addTearDown(() {
+          first.interruptForApplicationExit();
+          if (!release.isCompleted) release.complete();
+        });
+        final advancing = first.start();
+        final settled = waiting
+            ? advancing
+            : expectLater(advancing, throwsA(anything));
+        if (waiting) {
+          await settled.timeout(bound);
+        } else {
+          await entered.future.timeout(bound);
+        }
+        final state = waiting ? RunState.waiting : RunState.running;
+        expect(first.run.state, state);
+        expect(firstModel.requests, hasLength(2));
+        expect(tool.runIds, [first.run.id.value]);
+        expect(policy.calls, waiting ? 2 : 1);
+        final saved = await chat.snapshot(sessionId.value);
+        _expectHistory(saved, [
+          ('user', firstPrompt),
+        ], instructions: instructions);
+        expect(saved.entries.single.runId, first.run.id.value);
+        expect(saved.draftRequest, _draftRequest);
+        _expectReadContinuation(
+          firstModel.requests.last,
+          saved,
+          'finished',
+          narration,
+          'baseline.txt:\nDurable Chat fixture.\n',
+        );
+        final prefix = first.activity.snapshot;
+        expect(prefix.models, hasLength(2));
+        expect(prefix.models.last.outputs, hasLength(3));
+        expect(
+          prefix.models.last.settlement,
+          waiting ? ModelSettlement.completed : isNull,
+        );
+        expect(prefix.tools, hasLength(waiting ? 2 : 1));
+        final journal = first.run.journal.records;
+        final pending = waiting
+            ? first.run.interruptions.values.single as ToolApprovalInterruption
+            : null;
+        final coreRows = _inspect(source, _coreRows);
+        final chatRows = _inspect(source, _chatRows);
+
+        // A waiting close invents no decision. The running deadline fences the
+        // gated model before any terminal can settle or dispatch its proposal.
+        if (!waiting) first.interruptForApplicationExit();
+        await settled.timeout(bound);
+        await first.close().timeout(bound);
+        expect(first.run.state, state);
+        expect(first.run.failure, isNull);
+        expect(first.run.journal.records, orderedEquals(journal));
+        expect(first.run.interruptions, waiting ? hasLength(1) : isEmpty);
+        expect(original.store.runRecord(first.run.id), isNull);
+        expect(original.lifecycle.runActivity(first.run.id), isNull);
+        expect(
+          original.lifecycle.hasSessionExecution(product.session),
+          isFalse,
+        );
+        await original.close();
+        release.complete();
+
+        // A completely new host and installed Chat generation must load SQL,
+        // not reuse the old runtime's activity, cache, claim, or approval.
+        final ids = _NoAllocationIds();
+        final reopened = await startPrepared(ids: ids, runIds: ids);
+        final project = await reopened.lifecycle.openProject(
+          sourceLocation: source.uri,
+          provider: reopened.lifecycle.resolveProjectProvider(
+            _projectProviderId,
+          ),
+        );
+        expect(project.id, product.project.id);
+        final session = reopened.store.session(sessionId)!;
+        expect(session, isNot(same(product.session)));
+        expect(session.taskId, product.session.taskId);
+        expect(session.strategyId, chatStrategyId);
+        final recovered = reopened.lifecycle.recoveredRun(first.run.id)!;
+        expect(recovered.session, same(session));
+        expect(recovered.status, RecoveredRunStatus.interrupted);
+        expect(recovered.terminalRecord, isNull);
+        expect(recovered.activity, isNot(same(prefix)));
+        expect(recovered.activity.state, state);
+        expect(recovered.activity.sequence, prefix.sequence);
+        expect(
+          HistoricalRunEvidence.fromActivity(
+            status: HistoricalRunStatus.interrupted,
+            record: null,
+            activity: recovered.activity,
+          ).toJson(),
+          HistoricalRunEvidence.fromActivity(
+            status: HistoricalRunStatus.interrupted,
+            record: null,
+            activity: prefix,
+          ).toJson(),
+        );
+        expect(
+          recovered.activity.models.last.outputs.first.item,
+          isA<ModelNativeOutput>(),
+        );
+        expect(reopened.lifecycle.recoveredRunsForSession(sessionId), [
+          recovered,
+        ]);
+        expect(reopened.store.runRecord(first.run.id), isNull);
+        expect(reopened.store.runsForSession(sessionId), isEmpty);
+        expect(reopened.lifecycle.runActivity(first.run.id), isNull);
+        expect(reopened.lifecycle.runActivitiesForSession(sessionId), isEmpty);
+        expect(reopened.lifecycle.hasSessionExecution(session), isFalse);
+        expect(
+          reopened.lifecycle.environmentRuntime.currentMaterialization(
+            product.environment.id,
+          ),
+          isNull,
+        );
+        final controller = SessionExecutionController(
+          runtime: reopened,
+          session: session,
+          providerId: ProviderId('test.unused-model'),
+          model: 'deterministic',
+        );
+        addTearDown(controller.close);
+        expect(controller.currentRun, isNull);
+        expect(controller.activeRunFuture, isNull);
+        expect(controller.isRunning, isFalse);
+        expect(controller.isAdvancing, isFalse);
+        expect(controller.pendingApproval, isNull);
+        expect(controller.stateForRun(first.run.id), isNull);
+        final restoredChat = _chatClient(
+          reopened.plugins.backends
+              .singleWhere(
+                (backend) =>
+                    backend.installation.metadata.id.value == _chatPluginId,
+              )
+              .connection!,
+        );
+        expect(
+          _snapshot(await restoredChat.snapshot(sessionId.value)),
+          _snapshot(saved),
+        );
+        expect(_inspect(source, _coreRows), coreRows);
+        expect(_inspect(source, _chatRows), chatRows);
+        expect(ids.calls, 0);
+        expect(firstModel.requests, hasLength(2));
+        expect(tool.runIds, [first.run.id.value]);
+
+        await restoredChat.appendUserMessage(sessionId.value, nextPrompt);
+        final nextInput = await restoredChat.snapshot(sessionId.value);
+        final nextModel = _RecordingModel([
+          [ModelTextOutput(answer)],
+        ]);
+        final nextTool = _RecordingReadTool(file);
+        final nextPolicy = _LoopPolicy();
+        final next = await _createRun(
+          reopened,
+          sessionId,
+          'a-after-restart',
+          nextModel,
+          toolCatalog: _readCatalog(nextTool),
+          policy: nextPolicy,
+        );
+        expect(next.run.state, RunState.created);
+        expect(next.run.interruptions, isEmpty);
+        expect(nextModel.requests, isEmpty);
+        if (pending != null) {
+          await expectLater(
+            next.resolveApproval(
+              ToolApprovalResolution(
+                interruptionId: pending.id,
+                toolInvocationId: pending.toolInvocationId,
+                approved: true,
+              ),
+            ),
+            throwsA(isA<InvalidRunOperation>()),
+          );
+        }
+        await next.start().timeout(bound);
+        expect(next.run.state, RunState.completed);
+        expect(next.run.interruptions, isEmpty);
+        expect(nextModel.requests, hasLength(1));
+        final request = nextModel.requests.single;
+        final history = _expectInterruptedHistory(
+          request.input[1],
+          recovered.activity,
+          expectedText: [narration, partial],
+        );
+        _expectModelInput(
+          request,
+          nextInput,
+          histories: {first.run.id.value: history},
+        );
+        expect(nextTool.runIds, isEmpty);
+        expect(nextPolicy.calls, 0);
+        expect(tool.runIds, [first.run.id.value]);
+        expect(policy.calls, waiting ? 2 : 1);
+        expect(firstModel.requests, hasLength(2));
+        expect(first.run.journal.records, orderedEquals(journal));
+        expect(reopened.store.runRecord(first.run.id), isNull);
+        expect(reopened.store.runsForSession(sessionId).map((run) => run.id), [
+          next.run.id,
+        ]);
+        final completed = await restoredChat.snapshot(sessionId.value);
+        _expectHistory(completed, [
+          ('user', firstPrompt),
+          ('user', nextPrompt),
+          ('assistant', answer),
+        ], instructions: instructions);
+        expect(completed.entries.map((entry) => entry.runId), [
+          first.run.id.value,
+          next.run.id.value,
+          null,
+        ]);
+        expect(completed.draftRequest, _draftRequest);
+        expect(ids.calls, 0);
+        await next.close();
+        await controller.close();
+        await reopened.close();
+      },
+      timeout: const Timeout(Duration(minutes: 2)),
+    );
+  }
 
   test(
     'installed OpenAI retries continuation EOF without replaying approved tool work',
@@ -2610,6 +2893,155 @@ String _expectHistoricalRun(
   return message.content;
 }
 
+String _expectInterruptedHistory(
+  SemanticModelInputItem input,
+  RunActivitySnapshot activity, {
+  required List<String> expectedText,
+}) {
+  expect(input, isA<SemanticMessageInput>());
+  final message = input as SemanticMessageInput;
+  expect(message.role, SemanticMessageRole.assistant);
+  expect(message.content, startsWith(_historicalPrefix));
+  final history =
+      jsonDecode(message.content.substring(_historicalPrefix.length))
+          as Map<String, Object?>;
+  expect(history['runId'], activity.runId.value);
+  expect(history['historyStatus'], 'interrupted');
+  expect(history['lastObservedState'], activity.state.name);
+  expect(history.containsKey('terminalStatus'), isTrue);
+  expect(history['terminalStatus'], isNull);
+  expect(history['failure'], isNull);
+  final events = (history['events']! as List).cast<Map<String, Object?>>();
+  final sequences = [
+    for (final change in activity.lifecycle) change.sequence,
+    for (final model in activity.models) ...[
+      model.startSequence,
+      for (final output in model.outputs)
+        if (output.item is! ModelNativeOutput) output.sequence,
+      if (model.terminalSequence != null) model.terminalSequence!,
+    ],
+    for (final tool in activity.tools)
+      for (final change in tool.changes) change.sequence,
+  ]..sort();
+  expect(events.map((event) => event['sequence']), sequences);
+  expect(
+    events
+        .where((event) => event['kind'] == 'assistantText')
+        .map((event) => event['content']),
+    expectedText,
+  );
+  expect(
+    events.where((event) => event['kind'] == 'canonicalAssistantText'),
+    isEmpty,
+  );
+  expect(
+    events
+        .where((event) => event['kind'] == 'toolProposed')
+        .map((event) => event['proposal']),
+    [
+      for (final turn in ['finished', 'unfinished'])
+        {
+          'providerCallId': '$turn-read',
+          'alias': 'read_fixture',
+          'arguments': {'path': 'baseline.txt'},
+        },
+    ],
+  );
+  expect(
+    events
+        .where((event) => event['kind'] == 'toolPrepared')
+        .map(
+          (event) => (
+            event['toolInvocationId'],
+            event['modelInvocationId'],
+            event['proposalSequence'],
+          ),
+        ),
+    activity.tools.map(
+      (tool) =>
+          (tool.id.value, tool.modelInvocationId.value, tool.proposalSequence),
+    ),
+  );
+  expect(
+    events
+        .where((event) => event['observation'] == 'completed')
+        .single['outcome'],
+    {
+      'disposition': 'success',
+      'effectCertainty': 'knownOccurred',
+      'failureKind': null,
+      'modelContent': 'baseline.txt:\nDurable Chat fixture.\n',
+    },
+  );
+  expect(
+    events.where((event) => event['observation'] == 'approvalResolved'),
+    isEmpty,
+  );
+  final missing = (history['missingObservations']! as List)
+      .cast<Map<String, Object?>>();
+  if (activity.state == RunState.waiting) {
+    final pending = activity.tools.last;
+    expect(pending.outcome, isNull);
+    expect(pending.changes.last.kind, ToolActivityKind.approvalRequested);
+    final approval = pending.changes.last;
+    expect(
+      events.where((event) => event['observation'] == 'approvalRequested'),
+      [
+        {
+          'kind': 'toolObservation',
+          'toolInvocationId': pending.id.value,
+          'observation': 'approvalRequested',
+          'sequence': approval.sequence,
+          'interruptionId': approval.interruptionId!.value,
+          'effects': {
+            'effects': ['sourceRead'],
+            'targets': <String>[],
+            'summary': 'Read baseline.txt.',
+            'uncertainty': 'none',
+          },
+        },
+      ],
+    );
+    expect(
+      missing,
+      unorderedEquals([
+        {
+          'kind': 'toolOutcomeNotRecorded',
+          'toolInvocationId': pending.id.value,
+        },
+        {
+          'kind': 'approvalResolutionNotRecorded',
+          'toolInvocationId': pending.id.value,
+          'interruptionId': approval.interruptionId!.value,
+          'approvalRequestedSequence': approval.sequence,
+        },
+      ]),
+    );
+  } else {
+    final unfinished = activity.models.last;
+    expect(unfinished.terminalSequence, isNull);
+    expect(unfinished.failure, isNull);
+    expect(
+      missing,
+      unorderedEquals([
+        {
+          'kind': 'modelTerminalNotRecorded',
+          'modelInvocationId': unfinished.id.value,
+        },
+        {
+          'kind': 'proposalResolutionNotRecorded',
+          'modelInvocationId': unfinished.id.value,
+          'proposalSequence': unfinished.outputs.last.sequence,
+        },
+      ]),
+    );
+  }
+  for (final excluded in ['native-secret', 'provider-secret', 'host-secret']) {
+    expect(message.content, isNot(contains(excluded)));
+  }
+  return message.content;
+}
+
 List<ModelOutputItem> _readTurn(String turn, String narration) {
   final native = ModelNativeEnvelope(
     kind: 'test.continuity',
@@ -2634,9 +3066,10 @@ List<ModelOutputItem> _readTurn(String turn, String narration) {
 }
 
 final class _RecordingModel implements ModelPort {
-  _RecordingModel(this.turns, {this.failLast = false});
+  _RecordingModel(this.turns, {this.failLast = false, this.beforeLastTerminal});
   final List<List<ModelOutputItem>> turns;
   final bool failLast;
+  final Future<void> Function()? beforeLastTerminal;
   final requests = <SemanticModelRequest>[];
 
   @override
@@ -2649,6 +3082,7 @@ final class _RecordingModel implements ModelPort {
         item: item,
       );
     }
+    if (requests.length == turns.length) await beforeLastTerminal?.call();
     if (failLast && requests.length == turns.length) {
       yield ModelInvocationFailedEvent(
         invocationId: request.invocationId,
@@ -3103,12 +3537,12 @@ final class _LostFeedbackAcknowledgement implements AdeleBackendDispatcher {
   Future<void> close() => delegate.close();
 }
 
-final class _NoAllocationIds implements ProductIdSource {
+final class _NoAllocationIds implements ProductIdSource, RunIdSource {
   int calls = 0;
   Never _allocate() {
     calls++;
     throw StateError(
-      'Restoring durable Session work must not allocate product IDs.',
+      'Restoring durable Session work must not allocate product or Run IDs.',
     );
   }
 
@@ -3120,6 +3554,8 @@ final class _NoAllocationIds implements ProductIdSource {
   EnvironmentId nextEnvironmentId() => _allocate();
   @override
   SessionId nextSessionId() => _allocate();
+  @override
+  RunId nextRunId() => _allocate();
 }
 
 Future<Directory> _source() async {

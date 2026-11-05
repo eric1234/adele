@@ -54,7 +54,7 @@ void main() {
           ('user', 'Current prompt.', 'current'),
         ],
         history: {
-          'run-a': _evidence('run-a'),
+          'run-a': _evidence('run-a', state: RunState.running),
           'run-10': _evidence('run-10'),
           'run-z': _evidence('run-z'),
           'current': StateError('The current Run must never be read.'),
@@ -150,6 +150,8 @@ void main() {
     'completed proposal turn',
     'incomplete model',
     'missing model terminal',
+    'interrupted running',
+    'interrupted waiting',
   ]) {
     test('$scenario deduplicates only an exact committed final answer', () async {
       final deduplicates =
@@ -170,9 +172,12 @@ void main() {
         history: {
           'prior': _evidence(
             'prior',
-            state: scenario == 'failed Run'
-                ? RunState.failed
-                : RunState.completed,
+            state: switch (scenario) {
+              'failed Run' => RunState.failed,
+              'interrupted running' => RunState.running,
+              'interrupted waiting' => RunState.waiting,
+              _ => RunState.completed,
+            },
             models: [
               // Equal text in an earlier invocation is not the canonical answer.
               _model('earlier', 2, [ModelTextOutput('Final answer.')]),
@@ -265,6 +270,221 @@ void main() {
           ),
         );
       }
+    });
+  }
+
+  for (final stage in [
+    'waiting approval',
+    'rejected',
+    'approved without execution',
+    'execution without outcome',
+    'completed turn then unfinished model',
+  ]) {
+    test('interrupted $stage preserves only observed facts', () async {
+      final evidence = _interruptedEvidence(stage);
+      final fixture = await _Fixture.create(
+        entries: [
+          ('user', 'Earlier task.', 'prior'),
+          ('user', 'Continue.', null),
+        ],
+        history: {'prior': evidence},
+      );
+      expect(await fixture.start(), RemoteRunState.completed);
+      final material = fixture.host.materials.single;
+      final record = _records(material).single;
+      expect(record['runId'], 'prior');
+      expect(record['historyStatus'], 'interrupted');
+      expect(record['lastObservedState'], evidence.activity.state.name);
+      expect(record['terminalStatus'], isNull);
+      expect(record['failure'], isNull);
+      expect(
+        record['notice'],
+        allOf(
+          contains('without a recorded terminal status'),
+          contains('historical, not live'),
+          contains(
+            'do not establish whether work or effects occurred or completed',
+          ),
+          contains('not current actionable approvals'),
+          contains('do not authorize new work'),
+        ),
+      );
+      expect(_messages(material), [
+        (SemanticMessageRole.user, 'Earlier task.'),
+        (
+          SemanticMessageRole.assistant,
+          _historyMessages(material).single.content,
+        ),
+        (SemanticMessageRole.user, 'Continue.'),
+      ]);
+      final events = _events(record);
+      final executed =
+          stage == 'execution without outcome' ||
+          stage == 'completed turn then unfinished model';
+      final hasOutcome =
+          stage == 'rejected' ||
+          stage == 'completed turn then unfinished model';
+      expect(events.map((event) => event['sequence']), [
+        1,
+        2,
+        3,
+        5,
+        6,
+        10,
+        11,
+        12,
+        if (stage != 'waiting approval') 13,
+        if (executed) ...[14, 15],
+        if (hasOutcome) 16,
+        if (hasOutcome) ...[20, 21, 22],
+        100,
+      ]);
+      expect(
+        events.where((event) => event['kind'] == 'runState').last['state'],
+        evidence.activity.state.name,
+      );
+      expect(events.where((event) => event['kind'] == 'toolPrepared').single, {
+        'sequence': 10,
+        'kind': 'toolPrepared',
+        'toolInvocationId': 'tool',
+        'modelInvocationId': 'first',
+        'proposalSequence': 5,
+        'toolId': 'test.tool',
+        'alias': 'tool',
+        'providerCallId': 'historical-call',
+        'canonicalArguments': {'path': 'lib/source.dart'},
+      });
+      expect(events.firstWhere((event) => event['kind'] == 'toolProposed'), {
+        'sequence': 5,
+        'kind': 'toolProposed',
+        'modelInvocationId': 'first',
+        'proposal': {
+          'providerCallId': 'historical-call',
+          'alias': 'tool',
+          'arguments': _arguments(),
+        },
+      });
+      final resolutions = events.where(
+        (event) => event['observation'] == 'approvalResolved',
+      );
+      if (stage == 'waiting approval') {
+        expect(resolutions, isEmpty);
+      } else {
+        expect(resolutions.single['approved'], stage != 'rejected');
+        expect(resolutions.single['interruptionId'], 'historical-approval');
+      }
+      expect(
+        events.where((event) => event['observation'] == 'executionStarted'),
+        executed ? hasLength(1) : isEmpty,
+      );
+      final outcomes = events.where(
+        (event) => event['observation'] == 'completed',
+      );
+      if (hasOutcome) {
+        expect(outcomes.single['outcome'], {
+          'disposition': stage == 'rejected' ? 'userRejected' : 'success',
+          'effectCertainty': stage == 'rejected'
+              ? 'knownNotOccurred'
+              : 'knownOccurred',
+          'failureKind': null,
+          'modelContent': stage == 'rejected' ? 'User rejected.' : _fileContent,
+        });
+        expect(
+          events
+              .where((event) => event['kind'] == 'modelTerminal')
+              .single['modelInvocationId'],
+          'first',
+        );
+        expect(
+          events
+              .where((event) => event['kind'] == 'assistantText')
+              .map((event) => event['content']),
+          ['Before tool.', 'Unfinished answer.'],
+        );
+      } else {
+        expect(outcomes, isEmpty);
+      }
+      expect(
+        record['missingObservations'],
+        unorderedEquals([
+          if (stage == 'waiting approval')
+            {
+              'kind': 'approvalResolutionNotRecorded',
+              'toolInvocationId': 'tool',
+              'interruptionId': 'historical-approval',
+              'approvalRequestedSequence': 12,
+            },
+          if (!hasOutcome)
+            {'kind': 'toolOutcomeNotRecorded', 'toolInvocationId': 'tool'},
+          if (hasOutcome) ...[
+            {
+              'kind': 'modelTerminalNotRecorded',
+              'modelInvocationId': 'unfinished',
+            },
+            {
+              'kind': 'proposalResolutionNotRecorded',
+              'modelInvocationId': 'unfinished',
+              'proposalSequence': 22,
+            },
+          ],
+        ]),
+      );
+      expect(
+        events.where((event) => event['kind'] == 'canonicalAssistantText'),
+        isEmpty,
+      );
+      expect(fixture.host.events, [
+        'start',
+        'history-prior',
+        'model',
+        'complete',
+      ]);
+      expect(material.input, everyElement(isA<SemanticMessageInput>()));
+      for (final item in material.input.cast<SemanticMessageInput>()) {
+        expect(item.providerItemId, isNull);
+        expect(item.providerNativeMetadata, isNull);
+      }
+      final historical = _historyMessages(material).single.content;
+      for (final excluded in [
+        'private-',
+        'providerItemId',
+        'providerNativeMetadata',
+        'providerNativeState',
+        'providerDetails',
+        'hostData',
+        'inputTokens',
+        'effectiveModel',
+        'toolSnapshotHandle',
+        'proposalHandle',
+        'hostInvocationContext',
+        'approvalToken',
+      ]) {
+        expect(historical, isNot(contains(excluded)), reason: excluded);
+      }
+    });
+  }
+
+  for (final state in [
+    RunState.completed,
+    RunState.failed,
+    RunState.cancelled,
+  ]) {
+    test('terminal $state retains the existing record shape', () async {
+      final fixture = await _Fixture.create(
+        entries: [('user', 'Earlier.', 'prior'), ('user', 'Current.', null)],
+        history: {'prior': _evidence('prior', state: state)},
+      );
+      expect(await fixture.start(), RemoteRunState.completed);
+      expect(_records(fixture.host.materials.single).single, {
+        'runId': 'prior',
+        'terminalStatus': state.name,
+        'failure': null,
+        'events': [
+          {'sequence': 1, 'kind': 'runState', 'state': 'running'},
+          {'sequence': 100, 'kind': 'runState', 'state': state.name},
+        ],
+        'missingObservations': <Object?>[],
+      });
     });
   }
 
@@ -456,51 +676,61 @@ void main() {
     },
   );
 
-  test(
-    'JSON keys and events are deterministic across reversed evidence collections',
-    () async {
-      final original = _richEvidence();
-      final reordered = _reverseKeys(original.toJson()) as Map<String, Object?>;
-      for (final field in [
-        'lifecycle',
-        'models',
-        'tools',
-        'rejectedProposals',
-      ]) {
-        reordered[field] = (reordered[field] as List).reversed.toList();
-      }
-      for (final model
-          in (reordered['models'] as List).cast<Map<String, Object?>>()) {
-        model['outputs'] = (model['outputs'] as List).reversed.toList();
-      }
-      for (final tool
-          in (reordered['tools'] as List).cast<Map<String, Object?>>()) {
-        tool['changes'] = (tool['changes'] as List).reversed.toList();
-      }
-      final materials = <StrategyInferenceMaterial>[];
-      for (final evidence in [
-        original,
-        HistoricalRunEvidence.fromJson(reordered),
-      ]) {
-        final fixture = await _Fixture.create(
-          entries: [('user', 'Earlier.', 'prior'), ('user', 'Current.', null)],
-          history: {'prior': evidence},
-        );
-        expect(await fixture.start(), RemoteRunState.completed);
-        materials.add(fixture.host.materials.single);
-      }
-      expect(_messages(materials[0]), _messages(materials[1]));
-      final record = _records(materials.last).single;
-      _expectSortedKeys(record);
-      final proposal =
-          _events(record).firstWhere(
-                (event) => event['kind'] == 'toolProposed',
-              )['proposal']
-              as Map;
-      expect(proposal['arguments'], _arguments());
-      expect((proposal['arguments'] as Map)['z'], [3, 1, 2]);
-    },
-  );
+  for (final original in [
+    _richEvidence(),
+    _interruptedEvidence('waiting approval'),
+    _interruptedEvidence('completed turn then unfinished model'),
+  ]) {
+    test(
+      '${original.activity.state.name} JSON keys and events are deterministic '
+      'across reversed evidence collections',
+      () async {
+        final reordered =
+            _reverseKeys(original.toJson()) as Map<String, Object?>;
+        for (final field in [
+          'lifecycle',
+          'models',
+          'tools',
+          'rejectedProposals',
+        ]) {
+          reordered[field] = (reordered[field] as List).reversed.toList();
+        }
+        for (final model
+            in (reordered['models'] as List).cast<Map<String, Object?>>()) {
+          model['outputs'] = (model['outputs'] as List).reversed.toList();
+        }
+        for (final tool
+            in (reordered['tools'] as List).cast<Map<String, Object?>>()) {
+          tool['changes'] = (tool['changes'] as List).reversed.toList();
+        }
+        final materials = <StrategyInferenceMaterial>[];
+        for (final evidence in [
+          original,
+          HistoricalRunEvidence.fromJson(reordered),
+        ]) {
+          final fixture = await _Fixture.create(
+            entries: [
+              ('user', 'Earlier.', 'prior'),
+              ('user', 'Current.', null),
+            ],
+            history: {'prior': evidence},
+          );
+          expect(await fixture.start(), RemoteRunState.completed);
+          materials.add(fixture.host.materials.single);
+        }
+        expect(_messages(materials[0]), _messages(materials[1]));
+        final record = _records(materials.last).single;
+        _expectSortedKeys(record);
+        final proposal =
+            _events(record).firstWhere(
+                  (event) => event['kind'] == 'toolProposed',
+                )['proposal']
+                as Map;
+        expect(proposal['arguments'], _arguments());
+        expect((proposal['arguments'] as Map)['z'], [3, 1, 2]);
+      },
+    );
+  }
 
   for (final code in ['unavailable', 'result_too_large']) {
     test('$code supplies an explicit incomplete-history notice', () async {
@@ -607,139 +837,170 @@ void main() {
     });
   }
 
-  for (final mismatch in ['run', 'session']) {
-    test('$mismatch identity mismatch fails before inference', () async {
-      final fixture = await _Fixture.create(
-        entries: [('user', 'Earlier.', 'prior'), ('user', 'Current.', null)],
-        history: {
-          'prior': _evidence(
-            mismatch == 'run' ? 'wrong' : 'prior',
-            session: mismatch == 'session' ? 'other' : 'session',
-          ),
+  for (final state in [
+    RunState.completed,
+    RunState.running,
+    RunState.waiting,
+  ]) {
+    for (final mismatch in ['run', 'session']) {
+      test(
+        '$state $mismatch identity mismatch fails before inference',
+        () async {
+          final fixture = await _Fixture.create(
+            entries: [
+              ('user', 'Earlier.', 'prior'),
+              ('user', 'Current.', null),
+            ],
+            history: {
+              'prior': _evidence(
+                mismatch == 'run' ? 'wrong' : 'prior',
+                session: mismatch == 'session' ? 'other' : 'session',
+                state: state,
+              ),
+            },
+          );
+          await expectLater(fixture.start(), throwsStateError);
+          expect(fixture.host.materials, isEmpty);
+          expect(fixture.host.state, RemoteRunState.failed);
         },
       );
-      await expectLater(fixture.start(), throwsStateError);
-      expect(fixture.host.materials, isEmpty);
-      expect(fixture.host.state, RemoteRunState.failed);
-    });
+    }
   }
 
-  test(
-    'one immutable capture survives several invocations and approval resume',
-    () async {
-      final fixture = await _Fixture.create(
-        entries: [('user', 'Earlier.', 'prior'), ('user', 'Continue.', null)],
-        history: {'prior': _richEvidence()},
-        maxModelInvocations: 3,
-      );
-      fixture.host.turns = [
-        [
-          ModelNativeOutput(providerNativeMetadata: _native('live-native')),
-          ModelTextOutput('Live first step.'),
-          ModelToolProposalOutput(_proposal('live-one')),
-        ],
-        [
-          ModelTextOutput('Live approval step.'),
-          ModelToolProposalOutput(_proposal('approval')),
-        ],
-        [ModelTextOutput('Final current answer.')],
-      ];
-      fixture.host.onInvoke = (_) {
-        fixture.host.history['prior'] = _evidence(
-          'prior',
-          models: [
-            _model('changed', 2, [
-              ModelTextOutput('Must not replace the captured evidence.'),
-            ]),
+  for (final stage in [
+    'terminal',
+    'waiting approval',
+    'execution without outcome',
+    'unavailable',
+    'result_too_large',
+  ]) {
+    test(
+      '$stage capture survives several invocations and approval resume',
+      () async {
+        final fixture = await _Fixture.create(
+          entries: [('user', 'Earlier.', 'prior'), ('user', 'Continue.', null)],
+          history: {
+            'prior': switch (stage) {
+              'terminal' => _richEvidence(),
+              'unavailable' ||
+              'result_too_large' => RemoteHistoricalRunEvidenceFailure(
+                code: stage,
+                message: 'History could not be included at capture.',
+              ),
+              _ => _interruptedEvidence(stage),
+            },
+          },
+          maxModelInvocations: 3,
+        );
+        fixture.host.turns = [
+          [
+            ModelNativeOutput(providerNativeMetadata: _native('live-native')),
+            ModelTextOutput('Live first step.'),
+            ModelToolProposalOutput(_proposal('live-one')),
           ],
-        );
-      };
-      expect(await fixture.start(), RemoteRunState.waiting);
-      expect(fixture.host.materials, hasLength(2));
-      expect(fixture.host.reads, ['prior']);
-      fixture.host.history['prior'] = const RemoteHistoricalRunEvidenceFailure(
-        code: 'unavailable',
-        message: 'History disappeared while awaiting approval.',
-      );
-      expect(
-        await fixture.backend.resolveApproval(
-          fixture.execution!,
-          RemoteApprovalResolution(
-            interruptionId: 'approval',
-            toolInvocationId: 'tool',
-            approved: true,
+          [
+            ModelTextOutput('Live approval step.'),
+            ModelToolProposalOutput(_proposal('approval')),
+          ],
+          [ModelTextOutput('Final current answer.')],
+        ];
+        fixture.host.onInvoke = (_) {
+          fixture.host.history['prior'] = _evidence(
+            'prior',
+            models: [
+              _model('changed', 2, [
+                ModelTextOutput('Must not replace the captured evidence.'),
+              ]),
+            ],
+          );
+        };
+        expect(await fixture.start(), RemoteRunState.waiting);
+        expect(fixture.host.materials, hasLength(2));
+        expect(fixture.host.reads, ['prior']);
+        fixture.host.history['prior'] =
+            const RemoteHistoricalRunEvidenceFailure(
+              code: 'unavailable',
+              message: 'History disappeared while awaiting approval.',
+            );
+        expect(
+          await fixture.backend.resolveApproval(
+            fixture.execution!,
+            RemoteApprovalResolution(
+              interruptionId: 'approval',
+              toolInvocationId: 'tool',
+              approved: true,
+            ),
+            'resume-token',
           ),
-          'resume-token',
-        ),
-        RemoteRunState.completed,
-      );
-      expect(fixture.host.reads, ['prior']);
-      expect(fixture.host.materials, hasLength(3));
-      final first = fixture.host.materials.first;
-      final captured = _messages(first);
-      for (final material in fixture.host.materials) {
-        expect(material.instructions, first.instructions);
+          RemoteRunState.completed,
+        );
+        expect(fixture.host.reads, ['prior']);
+        expect(fixture.host.materials, hasLength(3));
+        final first = fixture.host.materials.first;
+        final captured = _messages(first);
+        for (final material in fixture.host.materials) {
+          expect(material.instructions, first.instructions);
+          expect(
+            material.input
+                .take(3)
+                .cast<SemanticMessageInput>()
+                .map((item) => (item.role, item.content)),
+            captured,
+          );
+          expect(
+            _historyMessages(material).single.content,
+            _historyMessages(first).single.content,
+          );
+          expect(() => material.input.clear(), throwsUnsupportedError);
+        }
         expect(
-          material.input
-              .take(3)
-              .cast<SemanticMessageInput>()
-              .map((item) => (item.role, item.content)),
-          captured,
+          fixture.host.materials.map((material) => material.input.length),
+          [3, 7, 10],
+        );
+        final last = fixture.host.materials.last;
+        expect(last.input.skip(3).map((item) => item.runtimeType), [
+          SemanticNativeInput,
+          SemanticMessageInput,
+          SemanticToolProposalInput,
+          SemanticToolOutcomeInput,
+          SemanticMessageInput,
+          SemanticToolProposalInput,
+          SemanticToolOutcomeInput,
+        ]);
+        expect(
+          last.input
+              .whereType<SemanticNativeInput>()
+              .single
+              .providerNativeMetadata
+              .kind,
+          'live-native',
         );
         expect(
-          _historyMessages(material).single.content,
-          _historyMessages(first).single.content,
+          last.input.whereType<SemanticToolOutcomeInput>().map(
+            (item) => item.providerCallId,
+          ),
+          ['live-one', 'approval'],
         );
-        expect(() => material.input.clear(), throwsUnsupportedError);
-      }
-      expect(fixture.host.materials.map((material) => material.input.length), [
-        3,
-        7,
-        10,
-      ]);
-      final last = fixture.host.materials.last;
-      expect(last.input.skip(3).map((item) => item.runtimeType), [
-        SemanticNativeInput,
-        SemanticMessageInput,
-        SemanticToolProposalInput,
-        SemanticToolOutcomeInput,
-        SemanticMessageInput,
-        SemanticToolProposalInput,
-        SemanticToolOutcomeInput,
-      ]);
-      expect(
-        last.input
-            .whereType<SemanticNativeInput>()
-            .single
-            .providerNativeMetadata
-            .kind,
-        'live-native',
-      );
-      expect(
-        last.input.whereType<SemanticToolOutcomeInput>().map(
-          (item) => item.providerCallId,
-        ),
-        ['live-one', 'approval'],
-      );
-      expect(fixture.host.events, [
-        'start',
-        'history-prior',
-        'model',
-        'proposal-live-one',
-        'model',
-        'proposal-approval',
-        'approval',
-        'model',
-        'complete',
-      ]);
-      expect(
-        (await fixture.chat.snapshot(
-          'session',
-        )).entries.map((entry) => entry.content),
-        ['Earlier.', 'Continue.', 'Final current answer.'],
-      );
-    },
-  );
+        expect(fixture.host.events, [
+          'start',
+          'history-prior',
+          'model',
+          'proposal-live-one',
+          'model',
+          'proposal-approval',
+          'approval',
+          'model',
+          'complete',
+        ]);
+        expect(
+          (await fixture.chat.snapshot(
+            'session',
+          )).entries.map((entry) => entry.content),
+          ['Earlier.', 'Continue.', 'Final current answer.'],
+        );
+      },
+    );
+  }
 }
 
 List<(SemanticMessageRole, String)> _messages(
@@ -833,27 +1094,180 @@ HistoricalRunEvidence _evidence(
   List<ToolInvocationActivity> tools = const [],
   List<RejectedToolProposalActivity> rejected = const [],
   ActivityFailure? failure,
-}) => HistoricalRunEvidence.fromActivity(
-  record: RunRecord(
-    id: RunId(run),
-    sessionId: SessionId(session),
-    state: RunTerminalState.values.byName(state.name),
-  ),
-  activity: RunActivitySnapshot(
-    runId: RunId(run),
-    sessionId: SessionId(session),
-    state: state,
-    sequence: 100,
-    lifecycle: [
-      const RunLifecycleActivity(sequence: 1, state: RunState.running),
-      RunLifecycleActivity(sequence: 100, state: state),
+}) {
+  final interrupted = [
+    RunState.created,
+    RunState.running,
+    RunState.waiting,
+  ].contains(state);
+  return HistoricalRunEvidence.fromActivity(
+    status: interrupted
+        ? HistoricalRunStatus.interrupted
+        : HistoricalRunStatus.terminal,
+    record: interrupted
+        ? null
+        : RunRecord(
+            id: RunId(run),
+            sessionId: SessionId(session),
+            state: RunTerminalState.values.byName(state.name),
+          ),
+    activity: RunActivitySnapshot(
+      runId: RunId(run),
+      sessionId: SessionId(session),
+      state: state,
+      sequence: 100,
+      lifecycle: [
+        const RunLifecycleActivity(sequence: 1, state: RunState.running),
+        RunLifecycleActivity(sequence: 100, state: state),
+      ],
+      models: models,
+      tools: tools,
+      rejectedProposals: rejected,
+      failure: failure,
+    ),
+  );
+}
+
+HistoricalRunEvidence _interruptedEvidence(String stage) {
+  final waiting = stage == 'waiting approval';
+  final rejected = stage == 'rejected';
+  final executed =
+      stage == 'execution without outcome' ||
+      stage == 'completed turn then unfinished model';
+  final outcome = rejected || stage == 'completed turn then unfinished model'
+      ? ToolOutcomeActivity(
+          disposition: rejected
+              ? ToolOutcomeDisposition.userRejected
+              : ToolOutcomeDisposition.success,
+          effectCertainty: rejected
+              ? EffectCertainty.knownNotOccurred
+              : EffectCertainty.knownOccurred,
+          modelContent: rejected ? 'User rejected.' : _fileContent,
+          hostData: {'private-host': 'not model-facing'},
+        )
+      : null;
+  return _evidence(
+    'prior',
+    state: waiting ? RunState.waiting : RunState.running,
+    models: [
+      ModelInvocationActivity(
+        id: ModelInvocationId('first'),
+        startSequence: 2,
+        terminalSequence: 6,
+        settlement: ModelSettlement.completed,
+        outputs: [
+          ModelOutputActivity(
+            sequence: 3,
+            item: ModelTextOutput(
+              'Before tool.',
+              providerItemId: 'private-item',
+              providerNativeMetadata: _native('private-native'),
+            ),
+          ),
+          ModelOutputActivity(
+            sequence: 4,
+            item: ModelNativeOutput(
+              providerNativeMetadata: _native('private-native'),
+              presentation: ModelNativePresentation(
+                kind: 'private-presentation',
+                compactText: 'private-presentation',
+                data: {'private-presentation': true},
+              ),
+            ),
+          ),
+          ModelOutputActivity(
+            sequence: 5,
+            item: ModelToolProposalOutput(
+              _proposal('historical-call'),
+              providerItemId: 'private-proposal',
+              providerNativeMetadata: _native('private-native'),
+            ),
+          ),
+        ],
+        metadata: ModelTerminalMetadata(
+          effectiveModel: 'private-model',
+          providerNativeState: _native('private-native'),
+          usage: ModelUsage(
+            inputTokens: 1,
+            outputTokens: 2,
+            providerDetails: {'private-provider': true},
+          ),
+        ),
+      ),
+      if (outcome != null)
+        _model('unfinished', 20, [
+          ModelTextOutput(
+            'Unfinished answer.',
+            providerNativeMetadata: _native('private-native'),
+          ),
+          ModelToolProposalOutput(_proposal('not-prepared')),
+        ], terminal: false),
     ],
-    models: models,
-    tools: tools,
-    rejectedProposals: rejected,
-    failure: failure,
-  ),
-);
+    tools: [
+      ToolInvocationActivity(
+        id: ToolInvocationId('tool'),
+        preparedSequence: 10,
+        modelInvocationId: ModelInvocationId('first'),
+        proposalSequence: 5,
+        toolId: ToolId('test.tool'),
+        alias: 'tool',
+        providerCallId: 'historical-call',
+        canonicalArguments: {'path': 'lib/source.dart'},
+        outcome: outcome,
+        changes: [
+          const ToolActivityChange(
+            sequence: 10,
+            kind: ToolActivityKind.prepared,
+          ),
+          ToolActivityChange(
+            sequence: 11,
+            kind: ToolActivityKind.policyEvaluated,
+            policyDecision: ToolActivityPolicyDecision.ask,
+            effects: EffectDescription(
+              effects: [ToolEffect.sourceRead],
+              targets: [
+                EffectTarget(uri: Uri.parse('file:///lib/source.dart')),
+              ],
+              summary: 'Inspect source.',
+            ),
+          ),
+          ToolActivityChange(
+            sequence: 12,
+            kind: ToolActivityKind.approvalRequested,
+            interruptionId: RunInterruptionId('historical-approval'),
+          ),
+          if (!waiting)
+            ToolActivityChange(
+              sequence: 13,
+              kind: ToolActivityKind.approvalResolved,
+              interruptionId: RunInterruptionId('historical-approval'),
+              approved: !rejected,
+            ),
+          if (executed) ...[
+            const ToolActivityChange(
+              sequence: 14,
+              kind: ToolActivityKind.executionStarted,
+            ),
+            ToolActivityChange(
+              sequence: 15,
+              kind: ToolActivityKind.progress,
+              progress: ToolProgress(
+                kind: ToolProgressKind.stdout,
+                content: 'Partial output.',
+              ),
+            ),
+          ],
+          if (outcome != null)
+            ToolActivityChange(
+              sequence: 16,
+              kind: ToolActivityKind.completed,
+              outcome: outcome,
+            ),
+        ],
+      ),
+    ],
+  );
+}
 
 HistoricalRunEvidence _richEvidence() {
   final native = _native('private-native');

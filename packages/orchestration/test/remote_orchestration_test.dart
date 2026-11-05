@@ -5,6 +5,51 @@ import 'package:adele_product/adele_product.dart';
 import 'package:test/test.dart';
 
 void main() {
+  test('historical wrapper validates and detaches both status shapes', () {
+    for (final status in HistoricalRunStatus.values) {
+      final record = status == HistoricalRunStatus.terminal
+          ? RunRecord(
+              id: RunId('history'),
+              sessionId: SessionId('session'),
+              state: RunTerminalState.completed,
+            )
+          : null;
+      final original = HistoricalRunEvidence.fromActivity(
+        status: status,
+        record: record,
+        activity: RunActivitySnapshot(
+          runId: RunId('history'),
+          sessionId: SessionId('session'),
+          state: record == null ? RunState.waiting : RunState.completed,
+          sequence: 0,
+        ),
+      );
+      final payload = Map<String, Object?>.from(original.toJson());
+      final remote = RemoteHistoricalRunEvidence(payload: payload);
+      payload['status'] = 'invalid';
+      payload['record'] = {};
+      expect(remote.toLocal().toJson(), original.toJson());
+      expect(remote.toLocal().status, status);
+      expect(remote.toLocal().record?.state, record?.state);
+      expect(remote.payload.clear, throwsUnsupportedError);
+      expect((remote.payload['models'] as List).clear, throwsUnsupportedError);
+      expect(
+        RemoteHistoricalRunEvidence.fromLocal(original).payload,
+        remote.payload,
+      );
+      expect(
+        () => RemoteHistoricalRunEvidence(payload: payload),
+        throwsFormatException,
+      );
+      expect(
+        () => RemoteHistoricalRunEvidence(
+          payload: {...original.toJson()}..remove('record'),
+        ),
+        throwsFormatException,
+      );
+    }
+  });
+
   test(
     'generated service names and authority-free materialization payload',
     () async {

@@ -140,7 +140,7 @@ The narrow host interface supplies:
 | `id`, `sessionId`, `state` | Execution identity and small lifecycle state, not the kernel Run object |
 | `start()`, `complete()`, `fail(error)`, `validateBinding()` | Host-owned lifecycle and retained-strategy validation |
 | `invokeModel(StrategyInferenceMaterial)` | Returns a `StrategyModelTurn` with ordered output, settlement/metadata or failure, and an opaque tool snapshot |
-| `readHistoricalRun(RunId)` | Reads bounded, sanitized terminal evidence for an exact previous Run in the captured canonical Session; never supplies execution authority or inserts context |
+| `readHistoricalRun(RunId)` | Reads bounded, sanitized terminal or recovered interrupted evidence for an exact previous Run in the captured canonical Session; never supplies execution authority or inserts context |
 | `processProposal(tools: ..., proposal: ...)` | Processes a `ProviderToolProposal` against its exact `StrategyToolSnapshot`, including host policy and execution |
 | `resolveApproval(resolution)` | Resolves the host-retained exact invocation and returns `SemanticToolOutcomeInput` for continuation |
 
@@ -313,8 +313,8 @@ storage lifetime.
 See [terminal execution history](../../docs/architecture/execution-model.md#terminal-execution-history)
 for the relational and commit-before-publication boundary. These mandatory core
 checkpoints are not subscriptions to `RunActivitySource.changes`; subscriber
-failures still cannot fail execution. The public historical transport below remains
-terminal-only and does not yet expose recovered interrupted evidence.
+failures still cannot fail execution. The public historical transport below exposes
+terminal and recovered interrupted evidence through the same narrowed projection.
 
 The read model retains exact model invocation identity, ordered output occurrence
 identity, and resolved tool invocation identity across lifecycle changes. Model
@@ -358,16 +358,31 @@ Reasoning deltas and nested navigation remain deferred.
 available only during the captured execution's active start/resume operation,
 before terminal settlement. It is unavailable during materialization, between
 advancements, and after close. The host derives Session scope from its canonical
-Session capture, checks the open lifecycle and exact strategy binding, and requires
-both an authoritative terminal product record and matching retained activity.
+Session capture and checks the open lifecycle and exact strategy binding. Terminal
+history requires an authoritative terminal product record and matching retained
+activity. Interrupted history requires restored same-Session evidence without a
+terminal record; a live nonterminal checkpoint is not eligible historical evidence.
 It does not enumerate Runs or infer chronology from identifiers.
 
-`HistoricalRunEvidence` contains `record` (`RunRecord`, including actual terminal
-state) and `activity` (a narrowed immutable `RunActivitySnapshot`). It adapts existing
-public evidence rather than introducing another execution event model or durable
-transcript. `fromActivity` validates record/activity agreement, projects a strict
-allowlist, and enforces bounds; `toJson`/`fromJson` are the transport projection, not
-the Project storage format or a replay codec.
+`HistoricalRunEvidence` contains `status` (`HistoricalRunStatus.terminal` or
+`.interrupted`), nullable `record` (`RunRecord?`), and `activity` (a narrowed immutable
+`RunActivitySnapshot`). Terminal status requires a real record whose Run identity,
+Session identity and terminal state match the activity. Interrupted status requires
+no record and preserves the last observed `created`, `running` or `waiting` activity
+state. Its lifecycle cannot contain terminal states, its latest lifecycle observation
+by original sequence (if any) must match that state, and it cannot carry a Run failure.
+Created interrupted history has sequence zero and no observed activity. It never
+synthesizes a terminal state, model settlement, tool outcome or approval decision.
+A recovered waiting observation is not an actionable approval.
+
+This adapts existing public evidence rather than introducing another execution
+event model or durable transcript. `fromActivity` accepts explicit `status` (default
+`terminal`), required nullable `record`, and `activity`; it validates both shapes,
+projects a strict allowlist, and enforces bounds. `toJson`/`fromJson` are the strict
+transport projection, not the Project storage format or a replay codec. The JSON
+requires `status` and nullable `record` (with exact `id`, `sessionId`, `state` fields
+when present). Existing top-level `runId`, `sessionId` and `state` describe the
+activity; contradictions with the record fail before usable evidence is returned.
 
 The projection preserves original Run-local model identities, start/terminal and
 output occurrence sequences, recorded assistant text, proposals and original
@@ -389,7 +404,7 @@ become live continuation objects. Retained storage and ordinary activity Inspect
 remain unchanged.
 
 `HistoricalRunEvidenceFailure.code` is `current_run` for this execution's Run,
-`unavailable` for unknown/foreign/nonterminal Runs or unavailable/inconsistent
+`unavailable` for unknown/foreign/live nonterminal Runs or unavailable/inconsistent
 evidence, and `result_too_large` when the complete projection exceeds a bound.
 Foreign and unknown IDs share the same safe failure without revealing membership.
 A retained terminal Run with valid empty activity succeeds; absence never becomes
@@ -415,8 +430,9 @@ text deltas, or tool-owned full command transcripts that were never in the sourc
 snapshot. It provides no cross-Run ordering or file-freshness guarantees.
 
 Core owns retention and read admission; the strategy decides whether and how these
-facts contribute to future inference. Stock Chat does not yet call this operation
-or inject historical execution context. See the canonical
+facts contribute to future inference. Stock Chat selects earlier canonical user-entry
+Run associations and owns its bounded model-facing historical projection, not this
+package. See the canonical
 [historical access boundary](../../docs/architecture/execution-model.md#strategy-access-to-historical-evidence).
 
 ## Inference Context

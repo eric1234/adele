@@ -125,9 +125,10 @@ void main() {
         execution.onStart = () async {
           // Admission follows active advancement, even before host.start().
           final evidence = await execution.host.readHistoricalRun(record.id);
-          expect(evidence.record.id, record.id);
-          expect(evidence.record.sessionId, session.id);
-          expect(evidence.record.state, state);
+          expect(evidence.status, HistoricalRunStatus.terminal);
+          expect(evidence.record!.id, record.id);
+          expect(evidence.record!.sessionId, session.id);
+          expect(evidence.record!.state, state);
           expect(evidence.activity.state.name, state.name);
           expect(evidence.activity.sequence, retained.sequence);
           final output = evidence.activity.models.single.outputs.single;
@@ -199,7 +200,7 @@ void main() {
           }
           expect(messages.toSet(), hasLength(1));
           final evidence = await execution.host.readHistoricalRun(empty.id);
-          expect(evidence.record.id, empty.id);
+          expect(evidence.record!.id, empty.id);
           expect(evidence.activity.models, isEmpty);
           expect(evidence.activity.tools, isEmpty);
           execution.host.complete();
@@ -222,6 +223,57 @@ void main() {
       expect(run.run.journal.records, isEmpty);
     });
 
+    test('a current-process checkpoint is not interrupted history', () async {
+      final live = await createSessionOrchestrationRun(
+        lifecycle: topology.lifecycle,
+        sessionId: session.id,
+        runId: RunId('live-checkpoint'),
+        contextComposer: InferenceContextComposer(extensions),
+        model: _Model(),
+        toolCatalog: _catalog(_Executable()),
+        policy: const _Policy(ToolPolicyDecision.ask),
+      );
+      addTearDown(live.close);
+      final liveExecution = execution;
+      liveExecution.onStart = () async {
+        liveExecution.host.start();
+        topology.lifecycle.checkpointRunActivity(
+          session,
+          live.activity.snapshot,
+        );
+        final reader = await create();
+        final reading = execution;
+        reading.onStart = () async {
+          await expectLater(
+            reading.host.readHistoricalRun(live.run.id),
+            failure('unavailable'),
+          );
+        };
+        await reader.start();
+        await reader.close();
+        final turn = await liveExecution.host.invokeModel(
+          StrategyInferenceMaterial(input: []),
+        );
+        await liveExecution.host.processProposal(
+          tools: turn.tools,
+          proposal: (turn.output.single as ModelToolProposalOutput).proposal,
+        );
+      };
+      await live.start();
+      expect(live.run.state, RunState.waiting);
+      topology.lifecycle.checkpointRunActivity(session, live.activity.snapshot);
+      final reader = await create();
+      execution.onStart = () => expectLater(
+        execution.host.readHistoricalRun(live.run.id),
+        failure('unavailable'),
+      );
+      await reader.start();
+      expect(topology.lifecycle.recoveredRun(live.run.id), isNull);
+      expect(topology.lifecycle.store.runRecord(live.run.id), isNull);
+      expect(live.run.state, RunState.waiting);
+      expect(live.activity.snapshot.tools.single.outcome, isNull);
+    });
+
     test(
       'oversized evidence is recoverable without truncation or mutation',
       () async {
@@ -240,7 +292,7 @@ void main() {
           );
           expect(execution.host.state, RunState.running);
           expect(
-            (await execution.host.readHistoricalRun(empty.id)).record.id,
+            (await execution.host.readHistoricalRun(empty.id)).record!.id,
             empty.id,
           );
           execution.host.complete();
@@ -264,7 +316,7 @@ void main() {
         execution.onStart = () async {
           host.start();
           expect(
-            (await host.readHistoricalRun(record.id)).record.id,
+            (await host.readHistoricalRun(record.id)).record!.id,
             record.id,
           );
           final turn = await host.invokeModel(
@@ -278,12 +330,12 @@ void main() {
         execution.onResume = (resolution) async {
           expect(host.state, RunState.waiting);
           expect(
-            (await host.readHistoricalRun(record.id)).record.id,
+            (await host.readHistoricalRun(record.id)).record!.id,
             record.id,
           );
           await host.resolveApproval(resolution);
           expect(
-            (await host.readHistoricalRun(record.id)).record.id,
+            (await host.readHistoricalRun(record.id)).record!.id,
             record.id,
           );
           host.complete();
@@ -317,7 +369,7 @@ void main() {
           );
           await invoking;
           expect(
-            (await execution.host.readHistoricalRun(record.id)).record.id,
+            (await execution.host.readHistoricalRun(record.id)).record!.id,
             record.id,
           );
           execution.host.complete();
