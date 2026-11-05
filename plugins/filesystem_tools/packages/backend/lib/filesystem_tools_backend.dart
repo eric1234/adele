@@ -14,7 +14,9 @@ final class FilesystemToolsBackend implements RemoteModelToolService {
   final AdeleHostRequestMultiplexer _hostRequests;
 
   @override
-  Future<List<RemoteToolDescriptor>> materialize(String sessionId) async => [
+  Future<List<RemoteToolDescriptor>> materialize(
+    RemoteModelToolMaterialization materialization,
+  ) async => [
     for (final registration in filesystemToolRegistrations(
       const _IdentityFacets(),
       const _IdentityFacets(),

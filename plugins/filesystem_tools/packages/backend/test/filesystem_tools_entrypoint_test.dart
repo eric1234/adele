@@ -36,7 +36,11 @@ void main() {
         },
       ]);
       backend.request(remoteModelToolServiceMaterializeId, {
-        'sessionId': 'session',
+        'materialization': {
+          'sessionId': 'session',
+          'environmentId': null,
+          'shellProfile': null,
+        },
       });
       final response = await backend.next();
       expect(response['kind'], 'response');
@@ -87,7 +91,13 @@ void main() {
       for (final (method, payload) in [
         (
           remoteModelToolServiceMaterializeId,
-          <String, Object?>{'sessionId': 'session'},
+          <String, Object?>{
+            'materialization': {
+              'sessionId': 'session',
+              'environmentId': null,
+              'shellProfile': null,
+            },
+          },
         ),
         (remoteModelToolServiceDescribeId, _descriptionPayload()),
       ]) {

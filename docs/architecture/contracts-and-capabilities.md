@@ -213,9 +213,11 @@ at execution, before launching. A changed selection fails explicitly with
 `shell_unavailable`. No mismatch or absence permits substituting an interpreter,
 provider, or host-local execution. Working-directory confinement and interpreter
 selection remain provider-owned. Calls reuse bounded foreground event/cleanup
-semantics without creating durable shell sessions. This provider surface does not
-extend authorized Environment services or model-tool execution authority, and
-direct program/argv execution remains unchanged. Exact values, validation, and
+semantics without creating durable shell sessions. Shell discovery is read-only
+model-preparation data, separate from the operation-scoped authorized shell service
+described under [remote model tools](#remote-model-tools). The provider surface and
+profile description alone grant no execution authority; direct program/argv
+execution remains unchanged. Exact values, validation, and
 adapter behavior belong to the [Environment contract](../../packages/environment/README.md#shell-commands).
 
 ## Live discovery and exact binding
@@ -973,10 +975,27 @@ Environment facets/dependencies. Declared dependencies are not permission grants
 Validation and description receive no effect authority; only execution through the
 normal host policy/approval path receives the exact required host services.
 
-Read, mutation, and process services remain separable, even when one contribution
-provides tools with different needs. Transported IDs cannot choose another
+Read, mutation, direct-process, and shell services remain separable, even when one
+contribution provides tools with different needs. Transported IDs cannot choose another
 Environment. Captured bindings are validated rather than re-resolved on execution
 or continuation, and execution authority lasts only for the enclosing operation.
+An exposure requesting shell access receives the selected Environment's immutable
+shell description during materialization, with no host invocation token. Discovery
+uses a read-only facet over the same captured authority, never the host OS. Only
+declared `shell_unavailable` yields an absent profile and allows direct tools to
+remain available; stale, infrastructure, and unexpected failures remain failures.
+
+Each host-side tool binding retains its own captured shell profile, independently
+of other Sessions and later Run catalogs using the same backend generation. Shell
+execution requires uncertain process-execution effects and normal policy/approval.
+The host verifies the request against its retained profile before forwarding to the
+captured provider, which independently checks its current selection. Profile data
+cannot select an Environment, renew a generation, or become an execution grant.
+Provider retirement revokes the shell-bound operation even while idle or paused;
+cancellation and settlement revoke its token and cancel owned reverse streams.
+Fresh catalogs may capture fresh profiles, but existing catalogs never retry or
+refresh automatically. No profile is durably persisted.
+
 Detailed contracts and adapters belong to [`model_tool`](../../packages/model_tool/)
 and [`plugin_runtime`](../../packages/plugin_runtime/README.md#operation-scoped-host-calls).
 Tool-specific declarations and behavior belong to their owning plugins, for

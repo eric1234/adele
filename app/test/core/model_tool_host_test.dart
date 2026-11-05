@@ -697,6 +697,387 @@ void main() {
     await providerStream.close();
   });
 
+  test(
+    'shell facets share capture without sharing execution authority',
+    () async {
+      final provider = _ShellProvider();
+      final fixture = await _fixture(selectedProvider: provider);
+      final context = SessionModelToolHostContext(
+        sessionId: fixture.sessionId,
+        environmentRuntime: fixture.runtime,
+      );
+      final descriptionFuture = context
+          .requireHostService<AuthorizedEnvironmentShellDescriptionFacet>();
+      final shellFuture = context
+          .requireHostService<AuthorizedEnvironmentShellFacet>();
+      final process = await context
+          .requireHostService<AuthorizedEnvironmentProcessFacet>();
+      final read = await context
+          .requireHostService<AuthorizedEnvironmentFileReadFacet>();
+      final mutation = await context
+          .requireHostService<AuthorizedEnvironmentFileMutationFacet>();
+      final authority = await context
+          .requireHostService<AuthorizedEnvironmentAuthority>();
+      final description = await descriptionFuture;
+      final shell = await shellFuture;
+      expect(description, isNot(isA<AuthorizedEnvironmentShellFacet>()));
+      expect(shell, isNot(isA<AuthorizedEnvironmentShellDescriptionFacet>()));
+      expect(description, isNot(isA<AuthorizedEnvironmentProcessFacet>()));
+      expect(shell, isNot(isA<AuthorizedEnvironmentProcessFacet>()));
+      expect(description, isNot(isA<AuthorizedEnvironmentFileReadFacet>()));
+      expect(shell, isNot(isA<AuthorizedEnvironmentFileMutationFacet>()));
+      expect(
+        await context
+            .requireHostService<AuthorizedEnvironmentShellDescriptionFacet>(),
+        same(description),
+      );
+      expect(
+        await context.requireHostService<AuthorizedEnvironmentShellFacet>(),
+        same(shell),
+      );
+      for (final facet in <AuthorizedEnvironmentAuthority>[
+        description,
+        shell,
+        process,
+        read,
+        mutation,
+        authority,
+      ]) {
+        expect(facet.sessionId, fixture.sessionId);
+        expect(facet.environmentId, fixture.environmentId);
+        expect(facet.validateBinding, returnsNormally);
+      }
+      final profile = await description.describeShell();
+      final request = _shellRequest(profile.profileId);
+      final stream = shell.runShellCommand(request);
+      expect(provider.shellRequests, isEmpty);
+      expect((await stream.single).completed!.exitCode, 7);
+      expect(provider.shellRequests.single, same(request));
+      expect(provider.shellEnvironmentIds, [fixture.environmentId]);
+      expect(provider.descriptionEnvironmentIds, [fixture.environmentId]);
+      expect(provider.processEnvironmentIds, isEmpty);
+      expect(provider.restoreCount, 0);
+      expect(() => stream.listen((_) {}), throwsStateError);
+    },
+  );
+
+  test(
+    'shell absence is declared without granting direct process fallback',
+    () async {
+      final fixture = await _fixture();
+      final context = SessionModelToolHostContext(
+        sessionId: fixture.sessionId,
+        environmentRuntime: fixture.runtime,
+      );
+      final description = await context
+          .requireHostService<AuthorizedEnvironmentShellDescriptionFacet>();
+      final shell = await context
+          .requireHostService<AuthorizedEnvironmentShellFacet>();
+      final unavailable = isA<EnvironmentFailure>().having(
+        (error) => error.code,
+        'code',
+        environmentShellUnavailableCode,
+      );
+      await expectLater(description.describeShell(), throwsA(unavailable));
+      await expectLater(
+        shell.runShellCommand(_shellRequest()).toList(),
+        throwsA(unavailable),
+      );
+      expect(fixture.provider.processEnvironmentIds, isEmpty);
+      fixture.endpoint.available = false;
+      await expectLater(
+        description.describeShell(),
+        throwsA(isA<AuthorizedEnvironmentBindingUnavailable>()),
+      );
+      await expectLater(
+        shell.runShellCommand(_shellRequest()).toList(),
+        throwsA(isA<AuthorizedEnvironmentBindingUnavailable>()),
+      );
+    },
+  );
+
+  test(
+    'shell selection drift preserves the declared failure without execution',
+    () async {
+      final provider = _ShellProvider();
+      final fixture = await _fixture(selectedProvider: provider);
+      final context = SessionModelToolHostContext(
+        sessionId: fixture.sessionId,
+        environmentRuntime: fixture.runtime,
+      );
+      final description = await context
+          .requireHostService<AuthorizedEnvironmentShellDescriptionFacet>();
+      final shell = await context
+          .requireHostService<AuthorizedEnvironmentShellFacet>();
+      final profile = await description.describeShell();
+      provider.profile = EnvironmentShellProfile(
+        profileId: 'replacement',
+        interpreter: '/other/shell',
+        dialect: 'other',
+      );
+      await expectLater(
+        shell.runShellCommand(_shellRequest(profile.profileId)).toList(),
+        throwsA(
+          isA<EnvironmentFailure>().having(
+            (error) => error.code,
+            'code',
+            environmentShellProfileChangedCode,
+          ),
+        ),
+      );
+      expect(provider.executions, 0);
+      expect(provider.descriptionEnvironmentIds, hasLength(1));
+      expect(
+        provider.shellRequests.single.expectedProfileId,
+        profile.profileId,
+      );
+      expect(provider.processEnvironmentIds, isEmpty);
+    },
+  );
+
+  for (final retired in [false, true]) {
+    for (final settlement in ['success', 'unavailable', 'transport failure']) {
+      test(
+        'shell discovery fences $settlement after ${retired ? 'retirement' : 'unavailability'}',
+        () async {
+          final provider = _ShellProvider();
+          final fixture = await _fixture(selectedProvider: provider);
+          final description = await SessionModelToolHostContext(
+            sessionId: fixture.sessionId,
+            environmentRuntime: fixture.runtime,
+          ).requireHostService<AuthorizedEnvironmentShellDescriptionFacet>();
+          final gate = Completer<EnvironmentShellProfile>();
+          provider.description = gate.future;
+          final expected = retired
+              ? isA<AuthorizedEnvironmentBindingStale>()
+              : isA<AuthorizedEnvironmentBindingUnavailable>();
+          final pending = expectLater(
+            description.describeShell(),
+            throwsA(expected),
+          );
+          expect(provider.descriptionEnvironmentIds, [fixture.environmentId]);
+          if (retired) {
+            await fixture.registration.close();
+          } else {
+            fixture.endpoint.available = false;
+          }
+          switch (settlement) {
+            case 'success':
+              gate.complete(provider.profile);
+            case 'unavailable':
+              gate.completeError(
+                const EnvironmentFailure(
+                  code: environmentShellUnavailableCode,
+                  message: 'Selection unavailable.',
+                  details: {},
+                ),
+              );
+            default:
+              gate.completeError(
+                const PluginConnectionClosed('Retired during discovery.'),
+              );
+          }
+          await pending;
+          await expectLater(description.describeShell(), throwsA(expected));
+          expect(provider.descriptionEnvironmentIds, hasLength(1));
+        },
+      );
+    }
+  }
+
+  test(
+    'live discovery preserves declared and exact binding failures',
+    () async {
+      final provider = _ShellProvider();
+      final fixture = await _fixture(selectedProvider: provider);
+      final description = await SessionModelToolHostContext(
+        sessionId: fixture.sessionId,
+        environmentRuntime: fixture.runtime,
+      ).requireHostService<AuthorizedEnvironmentShellDescriptionFacet>();
+      for (final error in <Object>[
+        const EnvironmentFailure(
+          code: environmentShellUnavailableCode,
+          message: 'Unavailable.',
+          details: {'reason': 'missing'},
+        ),
+        ProviderUnavailable(
+          capability: environmentProviderCapability,
+          providerId: fixture.providerId,
+          availableProviderIds: const [],
+          stale: true,
+        ),
+        ProviderEndpointUnavailable(fixture.providerId),
+        StateError('Unrelated discovery failure'),
+      ]) {
+        provider.description = Future<EnvironmentShellProfile>.error(error);
+        final Matcher expected = switch (error) {
+          ProviderUnavailable() =>
+            isA<AuthorizedEnvironmentBindingStale>().having(
+              (failure) => failure.cause,
+              'cause',
+              same(error),
+            ),
+          ProviderEndpointUnavailable() =>
+            isA<AuthorizedEnvironmentBindingUnavailable>().having(
+              (failure) => failure.cause,
+              'cause',
+              same(error),
+            ),
+          _ => same(error),
+        };
+        await expectLater(description.describeShell(), throwsA(expected));
+      }
+    },
+  );
+
+  for (final paused in [false, true]) {
+    test(
+      'shell cancellation reaches ${paused ? 'paused' : 'idle'} provider lazily',
+      () async {
+        final provider = _ShellProvider();
+        final fixture = await _fixture(selectedProvider: provider);
+        final shell = await SessionModelToolHostContext(
+          sessionId: fixture.sessionId,
+          environmentRuntime: fixture.runtime,
+        ).requireHostService<AuthorizedEnvironmentShellFacet>();
+        final cancelled = Completer<void>();
+        final cleanup = Completer<void>();
+        final producer = StreamController<EnvironmentProcessEvent>(
+          sync: true,
+          onCancel: () {
+            cancelled.complete();
+            return cleanup.future;
+          },
+        );
+        addTearDown(() {
+          if (!cleanup.isCompleted) cleanup.complete();
+          return producer.close();
+        });
+        provider.shellStream = producer.stream;
+        final stream = shell.runShellCommand(_shellRequest());
+        expect(provider.shellRequests, isEmpty);
+        final subscription = stream.listen((_) {});
+        expect(provider.shellEnvironmentIds, [fixture.environmentId]);
+        if (paused) {
+          subscription.pause();
+          expect(producer.isPaused, isTrue);
+        }
+        final pending = subscription.cancel();
+        expect(cancelled.isCompleted, isTrue);
+        expect(cleanup.isCompleted, isFalse);
+        cleanup.complete();
+        await pending.timeout(const Duration(seconds: 1));
+      },
+    );
+  }
+
+  test(
+    'shell facets retain old generation when a fresh context restores',
+    () async {
+      final provider = _ShellProvider();
+      final fixture = await _fixture(selectedProvider: provider);
+      final oldContext = SessionModelToolHostContext(
+        sessionId: fixture.sessionId,
+        environmentRuntime: fixture.runtime,
+      );
+      final oldDescription = await oldContext
+          .requireHostService<AuthorizedEnvironmentShellDescriptionFacet>();
+      final oldShell = await oldContext
+          .requireHostService<AuthorizedEnvironmentShellFacet>();
+      final deferred = oldShell.runShellCommand(_shellRequest());
+      await fixture.registration.close();
+      final replacement = _ShellProvider();
+      final registration = fixture.registry.register(
+        provider: ProviderDescriptor(
+          id: fixture.providerId,
+          capability: environmentProviderCapability,
+          pluginId: 'dev.adele.plugin.host-test',
+          displayName: 'Replacement',
+          serviceId: environmentProviderServiceId,
+        ),
+        endpoint: _Endpoint(replacement),
+      );
+      addTearDown(registration.close);
+      final fresh = SessionModelToolHostContext(
+        sessionId: fixture.sessionId,
+        environmentRuntime: fixture.runtime,
+      );
+      final description = await fresh
+          .requireHostService<AuthorizedEnvironmentShellDescriptionFacet>();
+      final shell = await fresh
+          .requireHostService<AuthorizedEnvironmentShellFacet>();
+      expect(
+        (await description.describeShell()).profileId,
+        replacement.profile.profileId,
+      );
+      expect(
+        (await shell.runShellCommand(_shellRequest()).single)
+            .completed!
+            .exitCode,
+        7,
+      );
+      expect(replacement.restoreCount, 1);
+      expect(description.environmentId, fixture.environmentId);
+      expect(shell.sessionId, fixture.sessionId);
+      await expectLater(
+        oldDescription.describeShell(),
+        throwsA(isA<AuthorizedEnvironmentBindingStale>()),
+      );
+      await expectLater(
+        deferred.toList(),
+        throwsA(isA<AuthorizedEnvironmentBindingStale>()),
+      );
+      expect(provider.descriptionEnvironmentIds, isEmpty);
+      expect(provider.shellRequests, isEmpty);
+      expect(
+        await oldContext.requireHostService<AuthorizedEnvironmentShellFacet>(),
+        same(oldShell),
+      );
+    },
+  );
+
+  for (final paused in [false, true]) {
+    test(
+      'exact shell provider retirement cancels ${paused ? 'paused' : 'idle'} streams',
+      () async {
+        final provider = _ShellProvider();
+        final fixture = await _fixture(selectedProvider: provider);
+        final shell = await SessionModelToolHostContext(
+          sessionId: fixture.sessionId,
+          environmentRuntime: fixture.runtime,
+        ).requireHostService<AuthorizedEnvironmentShellFacet>();
+        final cancelled = Completer<void>();
+        final producer = StreamController<EnvironmentProcessEvent>(
+          sync: true,
+          onCancel: cancelled.complete,
+        );
+        addTearDown(producer.close);
+        provider.shellStream = producer.stream;
+        final errors = <Object>[];
+        final done = Completer<void>();
+        final subscription = shell
+            .runShellCommand(_shellRequest())
+            .listen((_) {}, onError: errors.add, onDone: done.complete);
+        addTearDown(subscription.cancel);
+        if (paused) subscription.pause();
+        var retirements = 0;
+        final detach = shell.onRetire(() => retirements++);
+        await fixture.registration.close();
+        await cancelled.future.timeout(const Duration(seconds: 1));
+        expect(retirements, 1);
+        detach();
+        detach();
+        if (paused) subscription.resume();
+        await done.future.timeout(const Duration(seconds: 1));
+        expect(errors, [isA<AuthorizedEnvironmentBindingStale>()]);
+        expect(
+          () => shell.onRetire(() {}),
+          throwsA(isA<AuthorizedEnvironmentBindingStale>()),
+        );
+      },
+    );
+  }
+
   test('fresh host context receives fresh provider facet bindings', () async {
     final _Fixture fixture = await _fixture();
     final Session session = fixture.runtime.store.session(fixture.sessionId)!;
@@ -815,9 +1196,9 @@ EnvironmentForegroundProcessRequest _processRequest() =>
       timeoutSeconds: 5,
     );
 
-Future<_Fixture> _fixture() async {
+Future<_Fixture> _fixture({_Provider? selectedProvider}) async {
   final ProviderId providerId = ProviderId('dev.adele.environment.host-test');
-  final _Provider provider = _Provider(providerId);
+  final _Provider provider = selectedProvider ?? _Provider(providerId);
   final CapabilityRegistry registry = CapabilityRegistry();
   final _Endpoint endpoint = _Endpoint(provider);
   final CapabilityRegistration registration = registry.register(
@@ -901,7 +1282,7 @@ final class _Endpoint implements CapabilityEndpoint {
   String get serviceId => environmentProviderServiceId;
 }
 
-final class _Provider implements EnvironmentProvider {
+class _Provider implements EnvironmentProvider {
   _Provider(this.providerId, {this.sourceText = 'authorized source'});
 
   @override
@@ -1050,6 +1431,68 @@ final class _Provider implements EnvironmentProvider {
             completed: EnvironmentProcessCompleted(
               termination: EnvironmentProcessTermination.exited,
               exitCode: 0,
+              stdoutTruncated: false,
+              stderrTruncated: false,
+            ),
+          ),
+        );
+  }
+}
+
+EnvironmentShellCommandRequest _shellRequest([
+  String profileId = 'profile:one',
+]) => EnvironmentShellCommandRequest(
+  command: '  printf "a | b" && other\n',
+  expectedProfileId: profileId,
+  relativeWorkingDirectory: 'nested dir',
+  timeoutSeconds: 1800,
+);
+
+final class _ShellProvider extends _Provider
+    implements EnvironmentShellProvider {
+  _ShellProvider() : super(ProviderId('dev.adele.environment.host-test'));
+
+  EnvironmentShellProfile profile = EnvironmentShellProfile(
+    profileId: 'profile:one',
+    interpreter: '/selected/shell',
+    dialect: 'custom',
+  );
+  Future<EnvironmentShellProfile>? description;
+  final descriptionEnvironmentIds = <EnvironmentId>[];
+  final shellEnvironmentIds = <EnvironmentId>[];
+  final shellRequests = <EnvironmentShellCommandRequest>[];
+  Stream<EnvironmentProcessEvent>? shellStream;
+  int executions = 0;
+
+  @override
+  Future<EnvironmentShellProfile> describeShell(EnvironmentId environmentId) {
+    descriptionEnvironmentIds.add(environmentId);
+    return description ?? Future.value(profile);
+  }
+
+  @override
+  Stream<EnvironmentProcessEvent> runShellCommand(
+    EnvironmentId environmentId,
+    EnvironmentShellCommandRequest request,
+  ) {
+    shellEnvironmentIds.add(environmentId);
+    shellRequests.add(request);
+    if (request.expectedProfileId != profile.profileId) {
+      throw const EnvironmentFailure(
+        code: environmentShellProfileChangedCode,
+        message: 'Selection changed.',
+        details: {},
+      );
+    }
+    executions++;
+    return shellStream ??
+        Stream.value(
+          EnvironmentProcessEvent(
+            kind: EnvironmentProcessEventKind.completed,
+            output: null,
+            completed: EnvironmentProcessCompleted(
+              termination: EnvironmentProcessTermination.exited,
+              exitCode: 7,
               stdoutTruncated: false,
               stderrTruncated: false,
             ),

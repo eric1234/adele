@@ -71,7 +71,7 @@ host services below. Its [operation-scoped grant](../../docs/architecture/contra
 defines capture lifetime and fresh explicit-operation recovery.
 
 The package also defines one Session/Environment authority identity with
-coherent filesystem, read, mutation, and process views. Facets are operation
+coherent filesystem, read, mutation, process, and shell views. Facets are operation
 views over the same authorized provider materialization, not separately selected
 Environment identities. The mutation facet exposes create-new, conditional
 existing-file replacement, and revision-conditional deletion. Filesystem Tools
@@ -203,12 +203,32 @@ backpressure, explicit exit/timeout completion, declared failures, and cancellat
 cleanup. Cancellation abandons the execution; EOF without completion is not success.
 Calls do not establish durable shell sessions or carry shell state between commands.
 
-`EnvironmentForegroundProcessRequest`, `runForegroundProcess`, and all authorized
-Environment facets/services retain their existing APIs and semantics. This provider
-contract does not add authorized shell integration or grant Command Tools shell
-access. `test/environment_shell_test.dart` covers DTO validation, strict generated
-wire shapes and roundtrips, native/generated forwarding and cancellation, and
-declared changed/unavailable failures.
+`AuthorizedEnvironmentShellDescriptionFacet` exposes only `describeShell()` over
+the Session's captured Environment authority. Its host wrapper is distinct from
+`AuthorizedEnvironmentShellFacet`, which exposes `runShellCommand(request)` and
+exact-registration `onRetire` observation. Neither facet selects a provider or
+Environment. Discovery validates the binding before and after settlement, including
+failure; native unsupported providers report `shell_unavailable`. The execution
+facet retains foreground stream semantics and cancels idle/paused producers when
+its exact provider registration retires.
+
+The separate generated `AuthorizedEnvironmentShellService` exposes only
+`runShellCommand(EnvironmentShellCommandRequest)`. It has no discovery, identity
+selector, direct-process, filesystem, buffered-process, or terminal operations.
+The application supplies this service only inside an authorized tool execution.
+Its host binding retains the profile captured during materialization, verifies the
+wire request's `expectedProfileId` against that capture, and supplies the captured
+identity to the provider. The provider still rejects changes to its current
+selection. A transported profile never grants execution or repairs a stale binding.
+See [remote materialization](../model_tool/README.md#remote-materialization) for the
+data-only projection and [application hosting](../../app/README.md#model-tool-hosting)
+for operation admission and revocation.
+
+`EnvironmentForegroundProcessRequest`, `runForegroundProcess`, and existing
+authorized services retain their APIs and semantics. Command Tools still uses only
+direct execution. `test/environment_shell_test.dart` covers provider DTOs,
+roundtrips and failures; `test/authorized_environment_process_test.dart` also checks
+the separate shell service, strict selector rejection and timeout/failure transport.
 
 ## Buffered binary processes
 

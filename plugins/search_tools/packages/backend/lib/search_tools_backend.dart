@@ -14,7 +14,9 @@ final class SearchToolsBackend implements RemoteModelToolService {
   final AdeleHostRequestMultiplexer _hostRequests;
 
   @override
-  Future<List<RemoteToolDescriptor>> materialize(String sessionId) async {
+  Future<List<RemoteToolDescriptor>> materialize(
+    RemoteModelToolMaterialization materialization,
+  ) async {
     return [
       for (final registration in [
         const SearchExecutable.unbound().registration,

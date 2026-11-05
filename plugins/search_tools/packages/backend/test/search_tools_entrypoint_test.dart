@@ -32,7 +32,11 @@ void main() {
         },
       ]);
       backend.request(remoteModelToolServiceMaterializeId, {
-        'sessionId': 'session',
+        'materialization': {
+          'sessionId': 'session',
+          'environmentId': null,
+          'shellProfile': null,
+        },
       });
       final materialized = await backend.next();
       expect(materialized['ok'], isTrue);

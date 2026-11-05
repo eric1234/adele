@@ -23,7 +23,13 @@ void main() {
     () async {
       fixture.host.close();
       final local = commandToolRegistration(_NoEffects());
-      final descriptor = (await fixture.client.materialize('session')).single;
+      final descriptor = (await fixture.client.materialize(
+        RemoteModelToolMaterialization(
+          sessionId: 'session',
+          environmentId: null,
+          shellProfile: null,
+        ),
+      )).single;
       expect(descriptor.routeId, runCommandToolId.value);
       expect(descriptor.toolId, 'dev.adele.plugin.command-tools.run-command');
       expect(descriptor.modelAlias, 'run_command');
@@ -40,8 +46,15 @@ void main() {
   test('search materializes one separate authority-free descriptor', () async {
     fixture.host.close();
     final local = searchCommandOutputToolRegistration(fixture.search);
-    final run = (await fixture.client.materialize('session')).single;
-    final search = (await fixture.searchClient.materialize('session')).single;
+    final materialization = RemoteModelToolMaterialization(
+      sessionId: 'session',
+      environmentId: null,
+      shellProfile: null,
+    );
+    final run = (await fixture.client.materialize(materialization)).single;
+    final search = (await fixture.searchClient.materialize(
+      materialization,
+    )).single;
     expect(search.toolId, searchCommandOutputToolId.value);
     expect(search.routeId, searchCommandOutputToolId.value);
     expect(search.routeId, isNot(run.routeId));
@@ -247,7 +260,13 @@ void main() {
         searchCommandOutputToolId.value,
         {...firstArguments.snapshot, 'cursor': cursor},
       );
-      await fixture.searchClient.materialize('session');
+      await fixture.searchClient.materialize(
+        RemoteModelToolMaterialization(
+          sessionId: 'session',
+          environmentId: null,
+          shellProfile: null,
+        ),
+      );
       final next = await execute(
         fixture.searchClient,
         nextArguments,
@@ -569,7 +588,13 @@ void main() {
       for (final (method, payload) in [
         (
           remoteModelToolServiceMaterializeId,
-          <String, Object?>{'sessionId': 'session'},
+          <String, Object?>{
+            'materialization': {
+              'sessionId': 'session',
+              'environmentId': null,
+              'shellProfile': null,
+            },
+          },
         ),
         (
           remoteModelToolServiceValidateAndNormalizeId,

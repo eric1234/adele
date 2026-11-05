@@ -28,7 +28,13 @@ void main() {
     () async {
       fixture.host.close();
       final local = filesystemToolRegistrations(_NoEffects(), _NoEffects());
-      final descriptors = await fixture.client.materialize('session');
+      final descriptors = await fixture.client.materialize(
+        RemoteModelToolMaterialization(
+          sessionId: 'session',
+          environmentId: null,
+          shellProfile: null,
+        ),
+      );
       expect(descriptors.map((tool) => tool.modelAlias), _routes.keys);
       for (int index = 0; index < local.length; index++) {
         final descriptor = descriptors[index];

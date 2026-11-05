@@ -19,7 +19,13 @@ void main() {
     () async {
       final local = const SearchExecutable.unbound().registration;
       fixture.host.close();
-      final descriptors = await fixture.client.materialize('session');
+      final descriptors = await fixture.client.materialize(
+        RemoteModelToolMaterialization(
+          sessionId: 'session',
+          environmentId: null,
+          shellProfile: null,
+        ),
+      );
       expect(descriptors.map((d) => d.modelAlias), ['search', 'glob']);
       expect(descriptors.last.toolId, globToolId.value);
       expect(descriptors.last.routeId, globToolId.value);
@@ -154,7 +160,13 @@ void main() {
     'describe uses captured identity without a host channel or authority call',
     () async {
       fixture.host.close();
-      final descriptor = (await fixture.client.materialize('session')).first;
+      final descriptor = (await fixture.client.materialize(
+        RemoteModelToolMaterialization(
+          sessionId: 'session',
+          environmentId: null,
+          shellProfile: null,
+        ),
+      )).first;
       final arguments = await fixture.client.validateAndNormalize(
         descriptor.routeId,
         {'pattern': 'needle', 'path': './src//file.txt'},

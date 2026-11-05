@@ -126,7 +126,13 @@ void main() {
         final response = await request(
           context,
           remoteModelToolServiceMaterializeId,
-          {'sessionId': 'session'},
+          {
+            'materialization': {
+              'sessionId': 'session',
+              'environmentId': null,
+              'shellProfile': null,
+            },
+          },
         );
         expect(response['ok'], isTrue);
         final descriptor = (response['payload']! as List).single as Map;
@@ -183,7 +189,13 @@ void main() {
       final unknown = await request(
         'unknown-context',
         remoteModelToolServiceMaterializeId,
-        {'sessionId': 'session'},
+        {
+          'materialization': {
+            'sessionId': 'session',
+            'environmentId': null,
+            'shellProfile': null,
+          },
+        },
       );
       expect(
         (unknown['error']! as Map)['code'],

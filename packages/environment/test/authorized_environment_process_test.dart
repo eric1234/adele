@@ -209,6 +209,123 @@ void main() {
   );
 
   test(
+    'shell-only generated service preserves request, timeout and failures',
+    () async {
+      final shell = _Shell();
+      final shellDispatcher = AuthorizedEnvironmentShellServiceDispatcher(
+        shell,
+      );
+      addTearDown(shellDispatcher.close);
+      final channel = _Channel(shellDispatcher);
+      final client = AuthorizedEnvironmentShellServiceClient(channel);
+      final request = EnvironmentShellCommandRequest(
+        command: '  first | second\n',
+        expectedProfileId: 'captured:profile',
+        relativeWorkingDirectory: 'src',
+        timeoutSeconds: 1800,
+      );
+      final stream = client.runShellCommand(request);
+      expect(shell.requests, isEmpty);
+      expect(channel.payload, isNull);
+      final completion = (await stream.single).completed!;
+      expect(completion.termination, EnvironmentProcessTermination.timedOut);
+      expect(completion.exitCode, isNull);
+      expect(shell.requests.single.command, request.command);
+      expect(channel.payload, {
+        'request': {
+          'command': request.command,
+          'expectedProfileId': request.expectedProfileId,
+          'relativeWorkingDirectory': 'src',
+          'timeoutSeconds': 1800,
+        },
+      });
+      for (final code in [
+        environmentShellUnavailableCode,
+        environmentShellProfileChangedCode,
+      ]) {
+        shell.failure = EnvironmentFailure(
+          code: code,
+          message: 'Shell rejected.',
+          details: {'fact': 'preserved'},
+        );
+        await expectLater(
+          client.runShellCommand(request).toList(),
+          throwsA(
+            isA<EnvironmentFailure>()
+                .having((e) => e.code, 'code', code)
+                .having((e) => e.details, 'details', {'fact': 'preserved'}),
+          ),
+        );
+      }
+    },
+  );
+
+  test(
+    'shell dispatch rejects selectors and grants no other operations',
+    () async {
+      final shell = _Shell();
+      final dispatcher = AuthorizedEnvironmentShellServiceDispatcher(shell);
+      addTearDown(dispatcher.close);
+      final channel = _Channel(dispatcher);
+      final encoded = {
+        'command': 'x',
+        'expectedProfileId': 'profile',
+        'relativeWorkingDirectory': '',
+        'timeoutSeconds': 1,
+      };
+      for (final selector in [
+        'sessionId',
+        'environmentId',
+        'providerId',
+        'hostInvocationContext',
+      ]) {
+        for (final payload in [
+          {'request': encoded, selector: 'forged'},
+          {
+            'request': {...encoded, selector: 'forged'},
+          },
+        ]) {
+          await expectLater(
+            channel
+                .stream(
+                  authorizedEnvironmentShellServiceRunShellCommandId,
+                  payload,
+                )
+                .toList(),
+            throwsA(
+              isA<AdeleRemoteFailure>().having(
+                (e) => e.code,
+                'code',
+                'invalid_request',
+              ),
+            ),
+          );
+        }
+      }
+      for (final method in [
+        'describeShell',
+        'readFile',
+        'createTextFile',
+        'runForegroundProcess',
+        'runBufferedProcess',
+        'openTerminal',
+      ]) {
+        await expectLater(
+          channel.stream('authorizedEnvironmentShell.$method', {}).toList(),
+          throwsA(
+            isA<AdeleRemoteFailure>().having(
+              (e) => e.code,
+              'code',
+              'unknown_method',
+            ),
+          ),
+        );
+      }
+      expect(shell.requests, isEmpty);
+    },
+  );
+
+  test(
     'foreground authority does not grant unary buffered processes',
     () async {
       for (final method in [
@@ -234,6 +351,29 @@ void main() {
       expect(service.requests, isEmpty);
     },
   );
+}
+
+final class _Shell implements AuthorizedEnvironmentShellService {
+  final requests = <EnvironmentShellCommandRequest>[];
+  EnvironmentFailure? failure;
+
+  @override
+  Stream<EnvironmentProcessEvent> runShellCommand(
+    EnvironmentShellCommandRequest request,
+  ) async* {
+    requests.add(request);
+    if (failure case final error?) throw error;
+    yield EnvironmentProcessEvent(
+      kind: EnvironmentProcessEventKind.completed,
+      output: null,
+      completed: EnvironmentProcessCompleted(
+        termination: EnvironmentProcessTermination.timedOut,
+        exitCode: null,
+        stdoutTruncated: false,
+        stderrTruncated: false,
+      ),
+    );
+  }
 }
 
 final class _Process implements AuthorizedEnvironmentProcessService {
