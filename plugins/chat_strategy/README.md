@@ -288,9 +288,10 @@ pane focus, title, order, or width is not departure. Accepted navigation or fron
 retirement revokes pane access without closing an independently owned Run.
 
 The accepted entry ID anchors view-local activity to that exact occurrence. On
-hydration, a persisted user entry's `runId` can reopen retained live/waiting or terminal activity
-through `openSessionRunActivity` where no live handle is already present. The host
-validates Session scope and issues a fresh read-only handle; Chat stores no handle
+hydration, a persisted user entry's `runId` can reopen retained live/waiting,
+terminal, or interrupted activity through `openSessionRunActivity` where no live
+handle is already present. The host validates Session scope and issues a fresh
+read-only handle; Chat stores no handle
 or execution authority in canonical history.
 Semantic Session-state revisions around hydration and subscription discover late
 Run associations and terminal commits without an activity-driven history reload.
@@ -324,9 +325,10 @@ retired renderer/backend does not retarget an existing card or delete its compac
 occurrence. A new explicit opening can capture a fresh eligible generation.
 
 The host projects the Run through public `adele_orchestration`'s read-only
-`RunActivitySource`, not by passing a journal to the frontend. Chat's interpreted
-frontend counts each successfully completed model invocation's proposals and native
-`output.presentation != null` occurrences, excluding narration and opaque native
+`RunActivitySource`, not by passing a journal to the frontend. For live and terminal
+Runs, Chat's interpreted frontend counts each successfully completed model
+invocation's proposals and native `output.presentation != null` occurrences,
+excluding narration and opaque native
 items. One appears directly using plugin compact presentation or factual alias /
 safe compact-text fallback. Two or more form one lightweight group keyed by exact
 model invocation, independently of frontend activation. Group headings prefer
@@ -338,6 +340,22 @@ The interpreted timeline places activity between the initiating user message and
 the final assistant response: one direct compact body or a clickable
 `ACTIVITY: ...` group summary. These activity entries contain neither rich tool
 bodies nor execution controls.
+
+Interrupted Runs always show a historical label with their last observed Run
+state, including when no model output was recorded. Unfinished model invocations
+remain visibly unfinished; recorded model settlement or failure remains visible
+even without output. Recorded text is labeled separately from canonical assistant
+answers, including text from a completed model whose Run did not finish. Chat
+suppresses a duplicate only when its final settled answer/refusal text matches the
+immediately following canonical assistant entry, using the same exact text-item
+concatenation as canonical Chat answers. Earlier matching text or an answer after
+another user entry is not that occurrence. Tool-batch narration already used as
+a group heading is not repeated as a text body. Proposals and safe native activity
+retain the same compact/group rendering; earlier completed turns retain their
+actual tool outcomes. This classification never changes canonical message order
+or restores execution or approval authority. Inspection continues to use the
+host's exact-target admission.
+
 Terminal activity and its structured evidence are retained by the host separately
 from Chat history and can be reopened through the same compact/Inspection paths.
 The durable association supplies placement; open cards and handles remain
@@ -375,8 +393,9 @@ child Sessions, state migration, and concurrent
 conversation editing are not implemented. Canonical Chat history, configuration,
 the plain-text Draft Request, and user-entry Run associations persist for durable
 Sessions; explicitly volatile fixtures remain scoped to their supplied store.
-Host-owned terminal activity restores independently of Chat state. Live execution,
-claims, actionable approvals, replay continuation, and workbench state are not restored.
+Host-owned terminal and interrupted activity restores independently of Chat state.
+Live execution, claims, actionable approvals, replay continuation, and workbench
+state are not restored.
 Prepared frontend discovery and activation are implemented; installation/update
 management and artifact caching remain deferred. Checkout preparation stands in
 for future installation/update compilation, separate from activation consuming

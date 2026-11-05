@@ -94,12 +94,15 @@ final class PreparedSessionServices {
         (controller != null && (controller.isRunning || controller.isAdvancing)
             ? controller.capturedStrategy
             : null);
-    final strategy = descriptor.sessionExecution || owning
-        ? captured ??
-              OrchestrationStrategyResolver(
+    // Independent activity readers need no executable strategy. Owning-backend
+    // affinity still captures and validates its exact execution counterpart.
+    final strategy =
+        captured ??
+        (owning
+            ? OrchestrationStrategyResolver(
                 extensions,
               ).resolve(session.strategyId)
-        : null;
+            : null);
     strategy?.validateBinding();
     if (strategy != null &&
         !extensions
@@ -157,8 +160,10 @@ final class PreparedSessionServices {
                 ? owner.capturedStrategy
                 : null);
         pin?.validateBinding();
-        strategy!.validateBinding();
-        if (pin != null && !pin.binding.isSameRegistration(strategy.binding)) {
+        strategy?.validateBinding();
+        if (pin != null &&
+            strategy != null &&
+            !pin.binding.isSameRegistration(strategy.binding)) {
           throw StateError(
             'The Session has a different captured strategy binding.',
           );

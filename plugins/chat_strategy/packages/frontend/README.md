@@ -117,9 +117,14 @@ editing across them remains blocked; the composer displays that limitation. Edit
 within one block instead. Expanded editing, raw-Markdown editing, slash commands,
 and Agent document editing are not implemented.
 
-Chat decides which completed model activities appear between messages and whether
-to show a single compact output or a narrated group. The generic Session bridge
-supplies immutable activity and validated handles for compact widgets and
+Chat decides which model activities appear between messages and whether
+to show a single compact output or a narrated group. Live and terminal Runs retain
+completed-turn rendering; interrupted history additionally shows its last observed
+Run state, unfinished invocations, recorded settlements/failures, and explicitly
+labeled model text not already represented by canonical answers or group narration.
+The [plugin overview](../../README.md#main-content-presentation) owns this timeline
+policy. The generic Session bridge supplies immutable activity and validated
+handles for compact widgets and
 Inspection. `buildChat` owns its scroll/layout and places
 `buildSessionExecutionStatus()` below the Chat frontend. That public bridge builds
 the existing native Run status and approval controls; core retains controllers,
@@ -129,8 +134,9 @@ handles remain presentation-local. After hydration, the frontend calls
 `openSessionRunActivity` only for associated entries without an existing live
 handle. The host validates the presented Session and issues a read-only handle;
 the frontend then uses the same activity reads, compact widgets, and Inspection
-operations for retained live/waiting Runs and terminal history. A remount receives
-fresh handles; the prior view's actions and handles stay revoked. Missing evidence does not start execution or
+operations for retained live/waiting Runs, terminal history, and interrupted
+history. A remount receives fresh handles; the prior view's actions and handles
+stay revoked. Missing evidence does not start execution or
 invent activity. Fresh rendering reconstructs placement, not open cards, expansion
 state, subscriptions, or other workbench state. Historical native data is never
 continuation input, and the bridge still exposes only safe presentation data.

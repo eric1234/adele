@@ -6,6 +6,7 @@ import 'package:adele_desktop/core/approval_gated_tool_policy.dart';
 import 'package:adele_desktop/core/model_provider_host.dart';
 import 'package:adele_desktop/core/model_tool_host.dart';
 import 'package:adele_desktop/core/orchestration_host.dart';
+import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/resource_cleanup.dart';
 import 'package:adele_desktop/core/run_id_source.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
@@ -17,6 +18,9 @@ import 'package:flutter/scheduler.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
 import 'pending_tool_approval.dart';
+
+/// Presentation classification, independent of observed state and live occupancy.
+enum SessionRunActivityStatus { live, terminal, interrupted }
 
 enum SessionFeedbackRunAdmissionState {
   preparing,
@@ -108,6 +112,10 @@ final class SessionExecutionController extends ChangeNotifier {
   SessionOrchestrationRun? get currentRun => _currentRun;
   List<RunActivitySnapshot> get activitySnapshots => List.unmodifiable(
     {
+      for (final recovered in _runtime.lifecycle.recoveredRunsForSession(
+        session.id,
+      ))
+        recovered.runId: ?retainedActivityForRun(recovered.runId),
       for (final activity in _runtime.lifecycle.runActivitiesForSession(
         session.id,
       ))
@@ -123,12 +131,41 @@ final class SessionExecutionController extends ChangeNotifier {
     if (_closed) return null;
     final state = _terminalStateForRun(runId);
     final activity = _runtime.lifecycle.runActivity(runId);
-    return state != null &&
-            activity?.runId == runId &&
-            activity?.sessionId == session.id &&
-            activity?.state == state
-        ? activity
+    if (state != null) {
+      return activity?.runId == runId &&
+              activity?.sessionId == session.id &&
+              activity?.state == state
+          ? activity
+          : null;
+    }
+    final recovered = _runtime.lifecycle.recoveredRun(runId);
+    return recovered?.status == RecoveredRunStatus.interrupted &&
+            identical(recovered?.session, session) &&
+            recovered?.activity.runId == runId &&
+            recovered?.activity.sessionId == session.id
+        ? recovered!.activity
         : null;
+  }
+
+  /// Never feeds admission, pending approval, or [stateForRun]'s live semantics.
+  SessionRunActivityStatus? activityStatusForRun(RunId runId) {
+    if (_closed) return null;
+    if (_preparationStates.containsKey(runId)) {
+      return SessionRunActivityStatus.live;
+    }
+    final activity = _activity[runId];
+    if (activity != null) {
+      return switch (activity.state) {
+        RunState.completed ||
+        RunState.failed ||
+        RunState.cancelled => SessionRunActivityStatus.terminal,
+        _ => SessionRunActivityStatus.live,
+      };
+    }
+    if (retainedActivityForRun(runId) == null) return null;
+    return _terminalStateForRun(runId) != null
+        ? SessionRunActivityStatus.terminal
+        : SessionRunActivityStatus.interrupted;
   }
 
   RunState? _terminalStateForRun(RunId runId) {
@@ -309,12 +346,17 @@ final class SessionExecutionController extends ChangeNotifier {
         );
       }
     }
+    final runId = _runIds.nextRunId();
+    if (ownsScheduledRun(runId) ||
+        _runtime.store.runRecord(runId) != null ||
+        _runtime.lifecycle.recoveredRun(runId) != null) {
+      throw StateError('A fresh Run identity is required.');
+    }
     _capturedStrategy = selectedStrategy;
     _capturedProvider = _runtime.registry.resolve(
       modelProviderCapability,
       providerId: providerId,
     );
-    final runId = _runIds.nextRunId();
     final admission = expectedFeedback == null
         ? null
         : SessionFeedbackRunAdmission._(expectedFeedback, runId);

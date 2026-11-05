@@ -486,9 +486,15 @@ class OptionalBackendState extends State<OptionalBackendProbe> {
     },
   );
 
-  for (final mode in ['without hook', 'hook', 'rich editor retirement']) {
+  for (final mode in [
+    'without hook',
+    'hook',
+    'rich editor retirement',
+    'no strategy',
+  ]) {
     final hook = mode == 'hook';
     final rich = mode == 'rich editor retirement';
+    final noStrategy = mode == 'no strategy';
     testWidgets(
       'per-pane services revoke exact views, not execution; mode=$mode',
       (tester) async {
@@ -526,6 +532,7 @@ class OptionalBackendState extends State<OptionalBackendProbe> {
           taskId: task.id,
           strategyId: strategyId,
         );
+        if (noStrategy) await strategy.close();
         SessionExecutionController? controller;
         var allocations = 0;
         final services = PreparedSessionServices(
@@ -545,9 +552,11 @@ class OptionalBackendState extends State<OptionalBackendProbe> {
               providerId: ProviderId('dev.example.model'),
               model: null,
               // Model a core owner already pinned independently of its frontend.
-              strategy: OrchestrationStrategyResolver(
-                runtime.extensions,
-              ).resolve(strategyId),
+              strategy: noStrategy
+                  ? null
+                  : OrchestrationStrategyResolver(
+                      runtime.extensions,
+                    ).resolve(strategyId),
             );
           },
           lookupControllerForSession: (_) => controller,
@@ -607,6 +616,23 @@ class OptionalBackendState extends State<OptionalBackendProbe> {
         await tester.pumpWidget(mount());
         await tester.pumpAndSettle();
         expect(allocations, 1);
+        if (noStrategy) {
+          expect(
+            runtime.extensions.discover(orchestrationStrategyContributions),
+            isEmpty,
+          );
+          expect(runtime.plugins.backends, isEmpty);
+          expect(find.text('No pending state a'), findsOneWidget);
+          expect(find.text('Frontend unavailable.'), findsNothing);
+          await tester.tap(find.text('Open activity').first);
+          await tester.pumpAndSettle();
+          expect(controller!.currentRun, isNull);
+          expect(controller!.pendingApproval, isNull);
+          expect(controller!.canStart, isFalse);
+          await tester.pumpWidget(const SizedBox.shrink());
+          expect(tester.takeException(), isNull);
+          return;
+        }
         if (!hook && !rich) {
           expect(find.byType(RunExecutionStatus), findsNWidgets(2));
           expect(

@@ -701,6 +701,28 @@ actionable approvals. Native data is retained as historical evidence only, never
 future continuation input; interpreted presentation still receives only the safe
 presentation projection through existing activity/Inspection paths.
 
+Session activity presentation reads these application-owned recovery facts directly,
+not the model-facing historical-read projection. Exact canonical Session and Run
+lookup can issue fresh presentation-local opaque handles for restored interrupted
+evidence alongside current activity and terminal history. Its separate presentation
+classification (`live`, `terminal`, `interrupted`) never replaces the snapshot's last
+observed state or enters live admission, occupancy, or pending approval. A current
+process's nonterminal checkpoint is not restored interrupted history. Reading needs
+no strategy/provider resolution or Environment materialization; a presentation's
+independently requested owning-backend services still require their exact counterpart.
+
+Stock Chat places this activity through its canonical user-entry Run association,
+without adding, replacing, or reordering canonical messages. Interrupted status stays
+visible even with no model output. Recorded incomplete model observations are not
+completed assistant answers. Existing Inspection targets validate the exact model
+and original output sequence, including unfinished models on interrupted Runs, and
+reuse the ordinary tool and safe-native presenters. Missing proposal decisions,
+prepared tools without execution starts, and execution starts without outcomes are
+historical observations, never queued actions or proof of effects. Recorded outcomes
+remain authoritative facts where present. Historical cards grant no approval,
+execution, replay, or navigation authority; dismissal and frontend retirement do not
+change stored evidence.
+
 Generic execution evidence is not an authoritative command transcript. Command
 Tools retains full decoded process output in its own incremental relational store
 and supplies its own passive read/watch service; it does not forward the raw text
@@ -718,7 +740,10 @@ There are no timestamps, cross-Run ordering guarantees, pruning,
 development-schema upgrade migrations, automatic
 resume, or live execution recovery. The bounded public historical-read interface
 and stock Chat's cross-Run model-context projection consume interrupted evidence;
-Chat rendering and Inspection do not yet display it. The Task Browser can open
+Chat rendering and Inspection use the existing Session activity bridge independently.
+Only committed observations are visible, not unretained streaming deltas or an
+inferred final response. Missing presentation contributions retain their normal
+safe fallback/unavailable behavior. The Task Browser can open
 retained Sessions without starting execution. The version-1 baseline requires
 coherent current development storage rather than legacy readers. Before the first
 declared storage compatibility commitment, further execution-schema changes rewrite/squash version 1

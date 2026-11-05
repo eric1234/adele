@@ -2271,6 +2271,7 @@ void main() {
         _model('historical-opaque', [
           _native('hidden', 'Never display', safe: false),
         ]),
+        _model('historical-final', [_text('Historical answer')]),
       ];
       await tester.pumpWidget(_host(generation, source));
       await _frames(tester);
@@ -2281,6 +2282,7 @@ void main() {
       expect(find.text('COMPACT historical-tool'), findsOneWidget);
       expect(find.text('Retained tool and summary'), findsOneWidget);
       expect(find.text('Never display'), findsNothing);
+      expect(find.text('Historical answer'), findsOneWidget);
       expect(find.text('Evidence unavailable'), findsOneWidget);
       expect(find.text('Not associated'), findsOneWidget);
       expect(
@@ -2300,6 +2302,496 @@ void main() {
       expect(source.opened, ['historical-run', 'missing-run']);
       expect(find.text('COMPACT historical-tool'), findsOneWidget);
       expect(find.text('Retained tool and summary'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  for (final state in ['running', 'waiting']) {
+    for (final phase in ['empty', 'started', 'partial']) {
+      testWidgets(
+        'interrupted $state $phase activity is historical and ordered without execution',
+        (tester) async {
+          source.entries.addAll(const [
+            ChatEntry(
+              id: 'earlier-user',
+              role: 'user',
+              content: 'Earlier question',
+              runId: 'z-earlier-run',
+              feedback: null,
+            ),
+            ChatEntry(
+              id: 'earlier-answer',
+              role: 'assistant',
+              content: 'Earlier canonical answer',
+              runId: null,
+              feedback: null,
+            ),
+            ChatEntry(
+              id: 'interrupted-user',
+              role: 'user',
+              content: 'Interrupted question',
+              runId: 'a-interrupted-run',
+              feedback: null,
+            ),
+            ChatEntry(
+              id: 'later-user',
+              role: 'user',
+              content: 'Later question',
+              runId: null,
+              feedback: null,
+            ),
+          ]);
+          source.historicalHandles.addAll({
+            'z-earlier-run': 'earlier-handle',
+            'a-interrupted-run': 'interrupted-handle',
+          });
+          source.activities['earlier-handle'] = [
+            _model('earlier-final', [_text('Earlier canonical answer')]),
+          ];
+          source.activityStatuses['interrupted-handle'] = 'interrupted';
+          source.activityStates['interrupted-handle'] = state;
+          source.activities['interrupted-handle'] = [
+            if (phase == 'partial')
+              _model('completed-turn', [_tool('completed-tool', 'read_file')]),
+            if (phase != 'empty')
+              _model('unfinished-turn', [
+                if (phase == 'partial') ...[
+                  _text('Recorded prefix\u202E, not an answer'),
+                  _tool('retained-proposal', 'run_command'),
+                  _native('retained-native', 'Retained native summary'),
+                  _native('opaque', 'Private native payload', safe: false),
+                ],
+              ], settlement: null),
+          ];
+          await tester.pumpWidget(_host(generation, source));
+          await _frames(tester);
+
+          final status = find.text(
+            'Interrupted - last observed '
+            '${state == 'waiting' ? 'waiting for approval' : state}',
+          );
+          expect(status, findsOneWidget);
+          expect(
+            find.text('Historical activity; no terminal Run outcome recorded.'),
+            findsOneWidget,
+          );
+          expect(
+            find.text(
+              'Model invocation unfinished - no terminal result recorded.',
+            ),
+            phase == 'empty' ? findsNothing : findsOneWidget,
+          );
+          expect(find.text('Earlier canonical answer'), findsOneWidget);
+          expect(find.text('ADELE'), findsOneWidget);
+          expect(find.text('Allow once'), findsNothing);
+          expect(find.text('Deny'), findsNothing);
+          expect(_state(tester).editable, isTrue);
+          expect(source.opened, ['z-earlier-run', 'a-interrupted-run']);
+          expect(source.starts, 0);
+          expect(source.submitted, isEmpty);
+          expect(source.writes, isEmpty);
+          expect(source.inspected, isEmpty);
+          expect(
+            tester.getTopLeft(find.text('Earlier canonical answer')).dy,
+            lessThan(tester.getTopLeft(find.text('Interrupted question')).dy),
+          );
+          expect(
+            tester.getTopLeft(find.text('Interrupted question')).dy,
+            lessThan(tester.getTopLeft(status).dy),
+          );
+          expect(
+            tester.getTopLeft(status).dy,
+            lessThan(tester.getTopLeft(find.text('Later question')).dy),
+          );
+          if (phase == 'partial') {
+            expect(find.text('COMPACT completed-tool'), findsOneWidget);
+            expect(
+              find.text(
+                'Recorded partial model output (not a completed answer)',
+              ),
+              findsOneWidget,
+            );
+            expect(
+              find.text(r'Recorded prefix\u202E, not an answer'),
+              findsOneWidget,
+            );
+            expect(find.text('Retained native summary'), findsOneWidget);
+            expect(find.text('Private native payload'), findsNothing);
+            expect(
+              tester.getTopLeft(find.text('COMPACT completed-tool')).dy,
+              lessThan(
+                tester
+                    .getTopLeft(
+                      find.text(r'Recorded prefix\u202E, not an answer'),
+                    )
+                    .dy,
+              ),
+            );
+            expect(
+              tester.getTopLeft(find.text('Retained native summary')).dy,
+              lessThan(tester.getTopLeft(find.text('Later question')).dy),
+            );
+            await tester.ensureVisible(find.text('COMPACT completed-tool'));
+            await tester.tap(find.text('COMPACT completed-tool'));
+            expect(source.inspected, ['completed-tool']);
+          } else {
+            expect(source.built, isEmpty);
+            expect(
+              find.text(
+                'Recorded partial model output (not a completed answer)',
+              ),
+              findsNothing,
+            );
+          }
+          final reads = source.snapshotReads;
+          source.notifyListeners();
+          await _frames(tester);
+          expect(source.snapshotReads, reads);
+          expect(status, findsOneWidget);
+          expect(find.text('Earlier canonical answer'), findsOneWidget);
+          expect(tester.takeException(), isNull);
+        },
+      );
+    }
+  }
+
+  testWidgets(
+    'interrupted settled text remains recorded without duplicating tool narration',
+    (tester) async {
+      source.entries.addAll(const [
+        ChatEntry(
+          id: 'user',
+          role: 'user',
+          content: 'Interrupted request',
+          runId: 'interrupted-run',
+          feedback: null,
+        ),
+        ChatEntry(
+          id: 'later-user',
+          role: 'user',
+          content: 'Later request',
+          runId: null,
+          feedback: null,
+        ),
+      ]);
+      source.historicalHandles['interrupted-run'] = 'interrupted-handle';
+      source.activityStatuses['interrupted-handle'] = 'interrupted';
+      source.activityStates['interrupted-handle'] = 'running';
+      source.activities['interrupted-handle'] = [
+        _model('completed-tools', [
+          _text('Earlier tool narration'),
+          _tool('one', 'read_file'),
+          _tool('two', 'read_file'),
+        ]),
+        _model('settled-text', [
+          _text('Recorded settled text'),
+          _native('opaque', 'Private native payload', safe: false),
+        ]),
+      ];
+      await tester.pumpWidget(_host(generation, source));
+      await _frames(tester);
+      expect(find.text('Interrupted - last observed running'), findsOneWidget);
+      expect(
+        find.text('Recorded model settlement: completed'),
+        findsNWidgets(2),
+      );
+      expect(find.text('Earlier tool narration'), findsOneWidget);
+      expect(find.text('Recorded settled text'), findsOneWidget);
+      expect(
+        find.text('Recorded model output (not a canonical assistant answer)'),
+        findsOneWidget,
+      );
+      expect(find.text('Private native payload'), findsNothing);
+      expect(find.text('ADELE'), findsNothing);
+      expect(
+        tester.getTopLeft(find.text('Earlier tool narration')).dy,
+        lessThan(tester.getTopLeft(find.text('Recorded settled text')).dy),
+      );
+      expect(
+        tester.getTopLeft(find.text('Recorded settled text')).dy,
+        lessThan(tester.getTopLeft(find.text('Later request')).dy),
+      );
+      await tester.tap(find.text('Earlier tool narration'));
+      expect(source.inspected, ['completed-tools']);
+      expect(source.starts, 0);
+      expect(source.writes, isEmpty);
+      expect(source.submitted, isEmpty);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  for (final terminal in ['incomplete', 'refused', 'failure']) {
+    testWidgets('interrupted model $terminal with no output remains visible', (
+      tester,
+    ) async {
+      source.entries.add(
+        const ChatEntry(
+          id: 'user',
+          role: 'user',
+          content: 'Interrupted request',
+          runId: 'interrupted-run',
+          feedback: null,
+        ),
+      );
+      source.historicalHandles['interrupted-run'] = 'interrupted-handle';
+      source.activityStatuses['interrupted-handle'] = 'interrupted';
+      source.activityStates['interrupted-handle'] = 'running';
+      source.activities['interrupted-handle'] = [
+        _model(
+          'settled-model',
+          [],
+          settlement: terminal == 'failure' ? null : terminal,
+          failure: terminal == 'failure' ? 'Provider\u202E failed' : null,
+        ),
+      ];
+      await tester.pumpWidget(_host(generation, source));
+      await _frames(tester);
+      expect(find.text('Interrupted - last observed running'), findsOneWidget);
+      expect(
+        find.text('Historical activity; no terminal Run outcome recorded.'),
+        findsOneWidget,
+      );
+      expect(
+        find.text(
+          terminal == 'failure'
+              ? r'Recorded model failure: Provider\u202E failed'
+              : 'Recorded model settlement: $terminal',
+        ),
+        findsOneWidget,
+      );
+      expect(find.textContaining('Model invocation unfinished'), findsNothing);
+      expect(
+        find.textContaining('Recorded partial model output'),
+        findsNothing,
+      );
+      expect(find.text('ADELE'), findsNothing);
+      expect(source.built, isEmpty);
+      expect(source.starts, 0);
+      expect(source.writes, isEmpty);
+      expect(source.submitted, isEmpty);
+      expect(tester.takeException(), isNull);
+    });
+  }
+
+  for (final settlement in ['completed', 'refused']) {
+    testWidgets(
+      'interrupted $settlement final text matching canonical answer is not duplicated',
+      (tester) async {
+        source.entries.addAll(const [
+          ChatEntry(
+            id: 'user',
+            role: 'user',
+            content: 'Interrupted request',
+            runId: 'interrupted-run',
+            feedback: null,
+          ),
+          ChatEntry(
+            id: 'answer',
+            role: 'assistant',
+            content: 'Same canonical answer',
+            runId: null,
+            feedback: null,
+          ),
+        ]);
+        source.historicalHandles['interrupted-run'] = 'interrupted-handle';
+        source.activityStatuses['interrupted-handle'] = 'interrupted';
+        source.activityStates['interrupted-handle'] = 'running';
+        source.activities['interrupted-handle'] = [
+          _model('final-model', [
+            _text('Same canonical '),
+            _native('safe-native', 'Safe native summary'),
+            _text('answer'),
+          ], settlement: settlement),
+        ];
+        await tester.pumpWidget(_host(generation, source));
+        await _frames(tester);
+        expect(find.text('Same canonical answer'), findsOneWidget);
+        expect(find.text('Same canonical '), findsNothing);
+        expect(find.text('answer'), findsNothing);
+        expect(find.textContaining('Recorded model output ('), findsNothing);
+        expect(
+          find.textContaining('Recorded partial model output'),
+          findsNothing,
+        );
+        expect(find.text('COMPACT safe-native'), findsOneWidget);
+        expect(
+          find.text('Recorded model settlement: $settlement'),
+          findsOneWidget,
+        );
+        expect(
+          find.text('Interrupted - last observed running'),
+          findsOneWidget,
+        );
+        expect(find.text('ADELE'), findsOneWidget);
+        expect(source.starts, 0);
+        expect(source.writes, isEmpty);
+        expect(source.submitted, isEmpty);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
+  for (final match in ['earlier-model', 'later-answer', 'different-answer']) {
+    testWidgets('interrupted text matching is narrow for $match', (
+      tester,
+    ) async {
+      source.entries.add(
+        const ChatEntry(
+          id: 'user',
+          role: 'user',
+          content: 'Interrupted request',
+          runId: 'interrupted-run',
+          feedback: null,
+        ),
+      );
+      if (match == 'later-answer') {
+        source.entries.add(
+          const ChatEntry(
+            id: 'later-user',
+            role: 'user',
+            content: 'Later request',
+            runId: null,
+            feedback: null,
+          ),
+        );
+      }
+      source.entries.add(
+        ChatEntry(
+          id: 'answer',
+          role: 'assistant',
+          content: match == 'different-answer'
+              ? 'Different answer'
+              : 'Same text',
+          runId: null,
+          feedback: null,
+        ),
+      );
+      source.historicalHandles['interrupted-run'] = 'interrupted-handle';
+      source.activityStatuses['interrupted-handle'] = 'interrupted';
+      source.activityStates['interrupted-handle'] = 'running';
+      source.activities['interrupted-handle'] = [
+        _model('recorded-text', [_text('Same text')]),
+        if (match == 'earlier-model')
+          _model('final-text', [_text('Same text')]),
+      ];
+      await tester.pumpWidget(_host(generation, source));
+      await _frames(tester);
+      expect(
+        find.text('Same text'),
+        findsNWidgets(match == 'different-answer' ? 1 : 2),
+      );
+      expect(
+        find.text('Recorded model output (not a canonical assistant answer)'),
+        findsOneWidget,
+      );
+      expect(find.text('ADELE'), findsOneWidget);
+      expect(source.starts, 0);
+      expect(source.writes, isEmpty);
+      expect(source.submitted, isEmpty);
+      expect(tester.takeException(), isNull);
+    });
+  }
+
+  for (final status in ['live', 'terminal']) {
+    testWidgets(
+      'non-completed $status model output keeps existing visibility',
+      (tester) async {
+        source.entries.add(
+          const ChatEntry(
+            id: 'user',
+            role: 'user',
+            content: 'Existing request',
+            runId: 'existing-run',
+            feedback: null,
+          ),
+        );
+        source.historicalHandles['existing-run'] = 'existing-handle';
+        source.activityStatuses['existing-handle'] = status;
+        source.activityStates['existing-handle'] = status == 'live'
+            ? 'waiting'
+            : 'failed';
+        source.activities['existing-handle'] = [
+          _model('completed', [_tool('completed-output', 'read_file')]),
+          _model('unfinished', [
+            _text('Do not publish partial live or terminal text'),
+            _tool('unfinished-output', 'run_command'),
+          ], settlement: null),
+        ];
+        await tester.pumpWidget(_host(generation, source));
+        await _frames(tester);
+        expect(find.text('COMPACT completed-output'), findsOneWidget);
+        expect(find.text('COMPACT unfinished-output'), findsNothing);
+        expect(find.textContaining('Do not publish partial'), findsNothing);
+        expect(
+          find.textContaining('Interrupted - last observed'),
+          findsNothing,
+        );
+        expect(
+          find.textContaining('Model invocation unfinished'),
+          findsNothing,
+        );
+        expect(source.starts, 0);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
+  testWidgets(
+    'interrupted handles and callbacks never cross Session remounts',
+    (tester) async {
+      source.entries.add(
+        const ChatEntry(
+          id: 'same-entry-id',
+          role: 'user',
+          content: 'First Session question',
+          runId: 'first-session-run',
+          feedback: null,
+        ),
+      );
+      source.historicalHandles['first-session-run'] = 'first-session-handle';
+      source.activityStatuses['first-session-handle'] = 'interrupted';
+      source.activityStates['first-session-handle'] = 'waiting';
+      source.activities['first-session-handle'] = [
+        _model('first-session-group', [
+          _text('First Session activity'),
+          _tool('one', 'read_file'),
+          _tool('two', 'run_command'),
+        ]),
+      ];
+      await tester.pumpWidget(_host(generation, source));
+      await _frames(tester);
+      final oldAction = tester
+          .widget<TextButton>(
+            find.widgetWithText(TextButton, 'First Session activity'),
+          )
+          .onPressed!;
+
+      final other = _Source(sessionId: 'other-session');
+      other.entries.add(
+        const ChatEntry(
+          id: 'same-entry-id',
+          role: 'user',
+          content: 'Other Session question',
+          runId: 'first-session-run',
+          feedback: null,
+        ),
+      );
+      await tester.pumpWidget(_host(generation, other));
+      await _frames(tester);
+      oldAction();
+      expect(source.hasSubscriptions, isFalse);
+      expect(source.inspected, isEmpty);
+      expect(other.calls.single.$2, {'sessionId': 'other-session'});
+      expect(other.opened, ['first-session-run']);
+      expect(find.text('Other Session question'), findsOneWidget);
+      expect(find.text('First Session question'), findsNothing);
+      expect(find.text('First Session activity'), findsNothing);
+      expect(find.textContaining('Interrupted - last observed'), findsNothing);
+      expect(other.built, isEmpty);
+      expect(other.inspected, isEmpty);
+      expect(other.starts, 0);
+      expect(other.writes, isEmpty);
+      expect(other.submitted, isEmpty);
       expect(tester.takeException(), isNull);
     },
   );
@@ -2983,7 +3475,7 @@ Widget _presentation(
     if (!backendAvailable) throw StateError('Backend unavailable');
     return PreparedFrontendBridges([
       MainContentBridge(
-        context: const {'sessionId': 'session-opaque'},
+        context: {'sessionId': source.sessionId},
         isActive: () => source.active,
         inspectSessionContent: (kind, occurrence) {
           source.contentInspections.add((kind.value, occurrence.value));
@@ -3112,10 +3604,12 @@ Map<String, Object?> _model(
   String handle,
   List<Map<String, Object?>> outputs, {
   String? settlement = 'completed',
+  String? failure,
 }) => {
   'handle': handle,
   'sequence': 0,
   'settlement': settlement,
+  'failure': failure,
   'outputs': outputs,
 };
 Map<String, Object?> _tool(String handle, String alias) => {
@@ -3152,6 +3646,9 @@ class _ResponseChannel implements AdeleRequestChannel {
 
 class _Source extends ChangeNotifier
     implements SessionExecutionSource, ChatSessionService, AdeleRequestChannel {
+  _Source({this.sessionId = 'session-opaque'});
+
+  final String sessionId;
   // Match the actual backend so the frontend, not transport serialization,
   // must enforce sequential saves while history snapshots are pending.
   late final dispatcher = ChatSessionServiceDispatcher(this, concurrent: true);
@@ -3169,6 +3666,8 @@ class _Source extends ChangeNotifier
   final historicalHandles = <String, String>{};
   final calls = <(String, Map<String, Object?>)>[];
   final activities = <String, List<Map<String, Object?>>>{};
+  final activityStatuses = <String, String>{};
+  final activityStates = <String, String>{};
   List<Map<String, Object?>> get models => activities['run-$starts']!;
   Completer<void>? submitGate;
   Completer<void>? saveGate;
@@ -3280,7 +3779,7 @@ class _Source extends ChangeNotifier
   @override
   String currentSessionId() {
     executionReads++;
-    return 'session-opaque';
+    return sessionId;
   }
 
   @override
@@ -3339,7 +3838,10 @@ class _Source extends ChangeNotifier
   @override
   Map<String, Object?> readRunActivity(String handle) => {
     'runHandle': handle,
-    'state': running ? 'running' : 'completed',
+    'status': activityStatuses[handle] ?? (running ? 'live' : 'terminal'),
+    'state':
+        activityStates[handle] ??
+        (running ? (advancing ? 'running' : 'waiting') : 'completed'),
     'models': activities[handle] ?? [],
   };
   @override

@@ -705,11 +705,13 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
       return false;
     }
     final activity = execution.activityForRun(target.runId);
-    if (activity == null) return false;
+    final status = execution.activityStatusForRun(target.runId);
+    if (activity == null || status == null) return false;
     if (target is ModelOutputInspectionTarget) {
       return _inspection.inspectOutput(
         session: session,
         activity: activity,
+        status: status,
         modelInvocationId: target.modelInvocationId,
         outputSequence: target.outputSequence,
       );
@@ -717,6 +719,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     return _inspection.inspectActivity(
       session: session,
       activity: activity,
+      status: status,
       modelInvocationId: target.modelInvocationId,
     );
   }
@@ -736,10 +739,12 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
       return;
     }
     final activity = execution.activityForRun(target.runId);
-    if (activity == null) return;
+    final status = execution.activityStatusForRun(target.runId);
+    if (activity == null || status == null) return;
     _inspection.inspectOutput(
       session: session,
       activity: activity,
+      status: status,
       modelInvocationId: target.modelInvocationId,
       outputSequence: target.outputSequence,
       originCardId: originCardId,
@@ -1303,6 +1308,13 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
                         ActivityInspectionTarget(:final runId) =>
                           _execution?.activityForRun(runId),
                         SessionContentInspectionTarget() => null,
+                      },
+                      status: switch (card.target) {
+                        ActivityInspectionTarget(:final runId) =>
+                          _execution?.activityStatusForRun(runId) ??
+                              SessionRunActivityStatus.live,
+                        SessionContentInspectionTarget() =>
+                          SessionRunActivityStatus.live,
                       },
                       heading: 'Run activity',
                       extensions: _runtime.extensions,

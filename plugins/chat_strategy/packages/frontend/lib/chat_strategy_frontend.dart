@@ -418,14 +418,58 @@ class _ChatFrontendState extends State<ChatFrontend> {
     super.dispose();
   }
 
-  List<Widget> activity(String runHandle) {
+  List<Widget> activity(String runHandle, ChatEntry? followingEntry) {
     final result = <Widget>[];
     final data = readSessionRunActivity(runHandle);
+    final interrupted = (data['status'] as String) == 'interrupted';
+    if (interrupted) {
+      final state = data['state'] == 'waiting'
+          ? 'waiting for approval'
+          : data['state'] as String;
+      result.add(
+        Padding(
+          padding: EdgeInsets.only(bottom: 16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              Text(
+                'Interrupted - last observed $state',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+              Text('Historical activity; no terminal Run outcome recorded.'),
+            ],
+          ),
+        ),
+      );
+    }
     final models = data['models'] as List<Map<String, Object?>>;
     for (final model in models.where(
-      (model) => model['settlement'] == 'completed',
+      (model) => interrupted || model['settlement'] == 'completed',
     )) {
+      // The eval pin rejects null in an `as String?` cast. Narrow only after
+      // checking presence, preserving absent settlement/failure as facts.
+      final settlement = model['settlement'];
+      final failure = model['failure'];
+      final completed = settlement == 'completed';
+      if (interrupted) {
+        if (settlement != null) {
+          result.add(Text('Recorded model settlement: $settlement'));
+        }
+        if (failure != null) {
+          result.add(
+            Text(
+              'Recorded model failure: ${inspectionDisplayText(failure as String)}',
+            ),
+          );
+        } else if (settlement == null) {
+          result.add(
+            Text('Model invocation unfinished - no terminal result recorded.'),
+          );
+        }
+      }
       final visible = <Map<String, Object?>>[];
+      final texts = <String>[];
       final narration = <String>[];
       bool hasTools = false;
       String nativeText = '';
@@ -433,7 +477,10 @@ class _ChatFrontendState extends State<ChatFrontend> {
         final kind = output['kind'];
         if (kind == 'text') {
           final text = output['content'] as String;
-          if (text.trim().isNotEmpty) narration.add(text.trim());
+          texts.add(text);
+          if (completed && text.trim().isNotEmpty) {
+            narration.add(text.trim());
+          }
         } else if (kind == 'tool') {
           hasTools = true;
           visible.add(output);
@@ -443,6 +490,39 @@ class _ChatFrontendState extends State<ChatFrontend> {
           if (nativeText.isEmpty && compact.trim().isNotEmpty) {
             nativeText = compact.trim();
           }
+        }
+      }
+      // Chat commits only a final settled answer/refusal, joining its text items.
+      // Equal text elsewhere in history or an earlier turn is not that occurrence.
+      final canonicalText =
+          model == models.last &&
+          failure == null &&
+          (settlement == 'refused' || (completed && !hasTools)) &&
+          followingEntry != null &&
+          followingEntry.role == 'assistant' &&
+          texts.join('') == followingEntry.content;
+      final narrated =
+          completed && hasTools && visible.length > 1 && narration.isNotEmpty;
+      if (interrupted && !canonicalText && !narrated) {
+        for (final text in texts.where((text) => text.trim().isNotEmpty)) {
+          result.add(
+            Padding(
+              padding: EdgeInsets.only(bottom: 16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: <Widget>[
+                  Text(
+                    completed || settlement == 'refused'
+                        ? 'Recorded model output (not a canonical assistant answer)'
+                        : 'Recorded partial model output (not a completed answer)',
+                    style: TextStyle(fontSize: 12, color: Colors.grey),
+                  ),
+                  Text(inspectionDisplayText(text)),
+                ],
+              ),
+            ),
+          );
         }
       }
       if (visible.length == 1) {
@@ -543,7 +623,12 @@ class _ChatFrontendState extends State<ChatFrontend> {
       SizedBox(height: 16),
     ];
     if (current != null) {
-      for (final ChatEntry entry in current.entries) {
+      for (
+        int entryIndex = 0;
+        entryIndex < current.entries.length;
+        entryIndex++
+      ) {
+        final entry = current.entries[entryIndex];
         final feedback = entry.feedback;
         if (feedback != null) {
           children.add(feedbackOccurrence(entry, feedback));
@@ -574,7 +659,16 @@ class _ChatFrontendState extends State<ChatFrontend> {
           );
         }
         final runHandle = runs[entry.id];
-        if (runHandle != null) children.addAll(activity(runHandle));
+        if (runHandle != null) {
+          children.addAll(
+            activity(
+              runHandle,
+              entryIndex + 1 < current.entries.length
+                  ? current.entries[entryIndex + 1]
+                  : null,
+            ),
+          );
+        }
       }
     }
     if (failure.isNotEmpty) {

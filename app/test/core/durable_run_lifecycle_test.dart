@@ -185,7 +185,10 @@ void main() {
     expect(controller.isAdvancing, isFalse);
     expect(controller.pendingApproval, isNull);
     final retained = fresh.lifecycle.runActivity(run.run.id);
-    expect(controller.activityForRun(run.run.id), same(retained));
+    expect(
+      controller.activityForRun(run.run.id),
+      same(retained ?? fresh.lifecycle.recoveredRun(run.run.id)?.activity),
+    );
     expect(controller.stateForRun(run.run.id), retained?.state);
     if (retained != null) {
       _expectActivity(retained, run.activity.snapshot);
@@ -197,6 +200,13 @@ void main() {
     }
     if (recovered != null) {
       expect(recovered.session, same(restored));
+      expect(controller.activitySnapshots, [same(recovered.activity)]);
+      expect(
+        controller.activityStatusForRun(run.run.id),
+        retained == null
+            ? SessionRunActivityStatus.interrupted
+            : SessionRunActivityStatus.terminal,
+      );
       expect(recovered.runId, run.run.id);
       expect(recovered.terminalRecord, same(fresh.store.runRecord(run.run.id)));
       expect(

@@ -1,8 +1,12 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_contract/adele_contract.dart';
+import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_desktop/core/adele_runtime.dart';
+import 'package:adele_desktop/core/product_lifecycle.dart';
+import 'package:adele_desktop/core/run_id_source.dart';
 import 'package:adele_desktop/frontend/session_execution_source.dart';
 import 'package:adele_desktop/ui/execution/session_execution_controller.dart';
 import 'package:adele_desktop/ui/inspection/activity_inspection_selection.dart';
@@ -20,6 +24,292 @@ import 'package:plugin_runtime/plugin_runtime.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  for (final state in [RunState.created, RunState.running, RunState.waiting]) {
+    test('recovered ${state.name} activity is historical, scoped and '
+        'independent of execution availability', () async {
+      final directory = Directory.systemTemp.createTempSync('activity-reopen-');
+      addTearDown(() => directory.deleteSync(recursive: true));
+      final firstRuntime = AdeleRuntime();
+      addTearDown(firstRuntime.close);
+      final channel = _Channel();
+      final projectProvider = ProviderId('fixture.project');
+      void registerProject(AdeleRuntime runtime) {
+        final registration = runtime.registry.register(
+          provider: ProviderDescriptor(
+            id: projectProvider,
+            capability: projectProviderCapability,
+            pluginId: 'dev.fixture',
+            displayName: 'Project',
+            serviceId: projectProviderServiceId,
+          ),
+          endpoint: AdeleRequestChannelEndpoint(
+            channel: channel,
+            serviceId: projectProviderServiceId,
+            isAvailable: () => true,
+          ),
+        );
+        addTearDown(registration.close);
+      }
+
+      registerProject(firstRuntime);
+      final environment = firstRuntime.registry.register(
+        provider: ProviderDescriptor(
+          id: ProviderId('fixture.environment'),
+          capability: environmentProviderCapability,
+          pluginId: 'dev.fixture',
+          displayName: 'Environment',
+          serviceId: environmentProviderServiceId,
+        ),
+        endpoint: AdeleRequestChannelEndpoint(
+          channel: channel,
+          serviceId: environmentProviderServiceId,
+          isAvailable: () => true,
+        ),
+      );
+      addTearDown(environment.close);
+      final strategyId = OrchestrationStrategyId('fixture.strategy');
+      final strategy = firstRuntime.extensions.register(
+        point: orchestrationStrategyContributions,
+        id: ExtensionId('fixture.strategy'),
+        value: OrchestrationStrategyContribution(
+          strategyId: strategyId,
+          materialize: (_) => throw StateError('Recovery must not execute.'),
+        ),
+      );
+      addTearDown(strategy.close);
+      final project = await firstRuntime.lifecycle.openProject(
+        sourceLocation: directory.uri,
+        provider: firstRuntime.lifecycle.resolveProjectProvider(
+          projectProvider,
+        ),
+      );
+      final task = await firstRuntime.lifecycle.createTask(
+        projectId: project.id,
+        title: 'Recovery',
+      );
+      final session = firstRuntime.lifecycle.createSession(
+        taskId: task.task.id,
+        strategyId: strategyId,
+      );
+      final foreign = firstRuntime.lifecycle.createSession(
+        taskId: task.task.id,
+        strategyId: strategyId,
+      );
+      final runId = RunId('interrupted');
+      final snapshot = RunActivitySnapshot(
+        runId: runId,
+        sessionId: session.id,
+        state: state,
+        sequence: state == RunState.created
+            ? 0
+            : state == RunState.waiting
+            ? 8
+            : 7,
+        lifecycle: [
+          if (state != RunState.created)
+            const RunLifecycleActivity(sequence: 1, state: RunState.running),
+          if (state == RunState.waiting)
+            const RunLifecycleActivity(sequence: 8, state: RunState.waiting),
+        ],
+        models: [
+          if (state != RunState.created)
+            ModelInvocationActivity(
+              id: ModelInvocationId('original-model'),
+              startSequence: 2,
+              outputs: [
+                ModelOutputActivity(
+                  sequence: 4,
+                  item: ModelTextOutput('Recorded partial text'),
+                ),
+                ModelOutputActivity(
+                  sequence: 7,
+                  item: ModelToolProposalOutput(
+                    ProviderToolProposal(
+                      providerCallId: 'original-call',
+                      alias: 'unresolved_tool',
+                      arguments: const {'value': 42},
+                    ),
+                  ),
+                ),
+              ],
+            ),
+        ],
+      );
+      firstRuntime.lifecycle.checkpointRunActivity(session, snapshot);
+      // An in-process checkpoint is not eligible recovered history.
+      expect(firstRuntime.lifecycle.recoveredRun(runId), isNull);
+      await firstRuntime.close();
+
+      final runtime = AdeleRuntime();
+      addTearDown(runtime.close);
+      registerProject(runtime);
+      await runtime.lifecycle.openProject(
+        sourceLocation: directory.uri,
+        provider: runtime.lifecycle.resolveProjectProvider(projectProvider),
+      );
+      final restored = runtime.store.session(session.id)!;
+      final recovered = runtime.lifecycle.recoveredRun(runId)!;
+      expect(recovered.session, same(restored));
+      expect(recovered.status, RecoveredRunStatus.interrupted);
+      expect(recovered.terminalRecord, isNull);
+      final controller = SessionExecutionController(
+        runtime: runtime,
+        session: restored,
+        providerId: ProviderId('missing.model'),
+        model: 'fixture',
+        runIds: _RepeatedRunId(runId),
+      );
+      addTearDown(controller.close);
+      final otherController = SessionExecutionController(
+        runtime: runtime,
+        session: runtime.store.session(foreign.id)!,
+        providerId: ProviderId('missing.model'),
+        model: null,
+      );
+      addTearDown(otherController.close);
+      expect(
+        () => SessionExecutionController(
+          runtime: runtime,
+          session: Session(
+            id: restored.id,
+            taskId: restored.taskId,
+            strategyId: restored.strategyId,
+          ),
+          providerId: controller.providerId,
+          model: null,
+        ),
+        throwsArgumentError,
+      );
+      var active = true;
+      final inspection = WindowInspection()..presentSession(restored);
+      addTearDown(inspection.dispose);
+      SessionExecutionPresentationSource source() =>
+          SessionExecutionPresentationSource(
+            controller: controller,
+            extensions: runtime.extensions,
+            isActive: () => active,
+            inspect: (canonical, target) {
+              expect(canonical, same(restored));
+              final activity = controller.activityForRun(target.runId)!;
+              final status = controller.activityStatusForRun(target.runId)!;
+              return switch (target) {
+                ActivityGroupInspectionTarget() => inspection.inspectActivity(
+                  session: canonical,
+                  activity: activity,
+                  modelInvocationId: target.modelInvocationId,
+                  status: status,
+                ),
+                ModelOutputInspectionTarget() => inspection.inspectOutput(
+                  session: canonical,
+                  activity: activity,
+                  modelInvocationId: target.modelInvocationId,
+                  outputSequence: target.outputSequence,
+                  status: status,
+                ),
+              };
+            },
+          );
+      final view = source();
+      addTearDown(view.invalidate);
+      expect(controller.activityForRun(runId), same(recovered.activity));
+      expect(controller.activitySnapshots, [same(recovered.activity)]);
+      expect(
+        controller.activityStatusForRun(runId),
+        SessionRunActivityStatus.interrupted,
+      );
+      expect(controller.stateForRun(runId), isNull);
+      expect(controller.ownsScheduledRun(runId), isFalse);
+      expect(otherController.activityForRun(runId), isNull);
+      expect(otherController.activityStatusForRun(runId), isNull);
+      for (final invalid in ['', ' interrupted', 'interrupted ', 'unknown']) {
+        expect(view.openRunActivity(invalid), isNull);
+      }
+      final handle = view.openRunActivity(runId.value)!;
+      final data = view.readRunActivity(handle);
+      expect(data['status'], 'interrupted');
+      expect(data['state'], state.name);
+      expect(controller.currentRun, isNull);
+      expect(controller.latestRunId, isNull);
+      expect(controller.pendingApproval, isNull);
+      expect(controller.isRunning, isFalse);
+      expect(controller.isAdvancing, isFalse);
+      expect(controller.canStart, isFalse, reason: 'No executable providers.');
+      expect(runtime.lifecycle.hasSessionExecution(restored), isFalse);
+      expect(
+        runtime.lifecycle.environmentRuntime.currentMaterialization(
+          runtime.store.requireSessionAuthority(restored.id).environmentId,
+        ),
+        isNull,
+      );
+      if (state != RunState.created) {
+        final model = (data['models']! as List).single as Map;
+        expect(model['sequence'], 2);
+        expect(model['settlement'], isNull);
+        expect(model['failure'], isNull);
+        final outputs = model['outputs'] as List;
+        expect(outputs.map((output) => (output as Map)['sequence']), [4, 7]);
+        expect((outputs.first as Map)['content'], 'Recorded partial text');
+        final proposal = outputs.last as Map;
+        expect(proposal['arguments'], {'value': 42});
+        expect(proposal['tool'], isNull);
+        expect(proposal['rejection'], isNull);
+        final outputHandle = proposal['handle'] as String;
+        expect(view.inspectActivity(outputHandle), isTrue);
+        final inspected =
+            inspection.cards.single.target as ModelOutputInspectionTarget;
+        expect(inspected.modelInvocationId.value, 'original-model');
+        expect(inspected.outputSequence, 7);
+      }
+      active = false;
+      expect(() => view.readRunActivity(handle), throwsStateError);
+      active = true;
+      expect(() => view.openRunActivity(runId.value), throwsStateError);
+      final replacement = source();
+      addTearDown(replacement.invalidate);
+      final freshHandle = replacement.openRunActivity(runId.value)!;
+      expect(freshHandle, isNot(handle));
+      expect(() => replacement.readRunActivity(handle), throwsStateError);
+      final freshData = replacement.readRunActivity(freshHandle);
+      expect(freshData['status'], 'interrupted');
+
+      final freshStrategy = runtime.extensions.register(
+        point: orchestrationStrategyContributions,
+        id: ExtensionId('fixture.strategy'),
+        value: OrchestrationStrategyContribution(
+          strategyId: strategyId,
+          materialize: (_) =>
+              throw StateError('Must not reuse historical Run.'),
+        ),
+      );
+      addTearDown(freshStrategy.close);
+      final freshProvider = runtime.registry.register(
+        provider: ProviderDescriptor(
+          id: controller.providerId,
+          capability: modelProviderCapability,
+          pluginId: 'dev.fixture',
+          displayName: 'Model',
+          serviceId: modelProviderServiceId,
+        ),
+        endpoint: AdeleRequestChannelEndpoint(
+          channel: channel,
+          serviceId: modelProviderServiceId,
+          isAvailable: () => true,
+        ),
+      );
+      addTearDown(freshProvider.close);
+      expect(
+        controller.canStart,
+        isTrue,
+        reason: 'History does not occupy a Run slot.',
+      );
+      await expectLater(controller.startRun(), throwsStateError);
+      expect(controller.currentRun, isNull);
+      expect(controller.canStart, isTrue);
+      expect(replacement.readRunActivity(freshHandle), freshData);
+      expect(controller.activityForRun(runId), same(recovered.activity));
+    });
+  }
 
   testWidgets(
     'retained terminal evidence is Session-scoped read-only presentation',
@@ -202,6 +492,7 @@ void main() {
       expect(() => other.readRunActivity(handle), throwsStateError);
       expect(() => first.readRunActivity(runId.value), throwsStateError);
       final data = first.readRunActivity(handle);
+      expect(data['status'], 'terminal');
       expect(data['state'], 'completed');
       expect(data.toString(), isNot(contains('RETAINED-PRIVATE-ENVELOPE')));
       final model = (data['models']! as List).single as Map;
@@ -396,6 +687,7 @@ void main() {
       final failedAdvance = controller.activeRunFuture!;
       await preparation.entered.future;
       expect(source.readRunActivity(failedHandle)['state'], 'created');
+      expect(source.readRunActivity(failedHandle)['status'], 'live');
       final reopenedHandle = reopened.openRunActivity(failedId.value)!;
       expect(reopenedHandle, isNot(failedHandle));
       expect(reopened.readRunActivity(reopenedHandle)['state'], 'created');
@@ -406,6 +698,7 @@ void main() {
       await failedAdvance;
       final failed = source.readRunActivity(failedHandle);
       expect(failed['state'], 'failed');
+      expect(failed['status'], 'live');
       expect(failed['models'], isEmpty);
       expect(reopened.readRunActivity(reopenedHandle)['state'], 'failed');
       expect(foreign.openRunActivity(failedId.value), isNull);
@@ -425,6 +718,7 @@ void main() {
       preparation.gate.complete();
       await retryAdvance;
       expect(source.readRunActivity(retryHandle)['state'], 'completed');
+      expect(source.readRunActivity(retryHandle)['status'], 'terminal');
       expect(source.readRunActivity(failedHandle), failed);
       expect(reopened.openRunActivity(failedId.value), reopenedHandle);
       expect(reopened.readRunActivity(reopenedHandle)['state'], 'failed');
@@ -660,7 +954,12 @@ final class _Execution implements OrchestrationExecution {
 final class _Channel implements AdeleStreamChannel {
   @override
   Future<Object?> request(String method, Map<String, Object?> payload) async =>
-      {'providerState': <String, Object?>{}, 'initialState': null};
+      method == projectProviderServicePrepareSourceId
+      ? {
+          'sourceLocation': payload['sourceLocation'],
+          'databaseRelativePath': '.adele/data.db',
+        }
+      : {'providerState': <String, Object?>{}, 'initialState': null};
   @override
   Stream<Object?> stream(String method, Map<String, Object?> payload) async* {
     for (final output in [
@@ -729,4 +1028,11 @@ final class _Channel implements AdeleStreamChannel {
       },
     };
   }
+}
+
+final class _RepeatedRunId implements RunIdSource {
+  _RepeatedRunId(this.id);
+  final RunId id;
+  @override
+  RunId nextRunId() => id;
 }
