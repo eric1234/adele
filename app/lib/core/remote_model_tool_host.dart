@@ -295,16 +295,12 @@ final class _RemoteToolExecutable implements ToolExecutable {
   ) async* {
     binding.validateContext(context);
     final environment = _ModelToolEnvironmentServices(binding);
-    void Function()? detachShellRetirement;
-    try {
-      yield* binding.remote
-          .invokeStream(environment.services(descriptor.executionHostServices), (
-            invocation,
-          ) {
+    yield* binding.remote
+        .invokeStream(
+          environment.services(descriptor.executionHostServices),
+          (invocation) {
             binding.validateContext(context);
             environment.invocation = invocation;
-            // Retirement revokes even an idle/paused backend's retained token.
-            detachShellRetirement = binding.shell?.onRetire(invocation.close);
             return client
                 .execute(
                   routeId,
@@ -337,15 +333,25 @@ final class _RemoteToolExecutable implements ToolExecutable {
                     },
                   ),
                 );
-          })
-          .handleError((Object error, StackTrace stackTrace) {
-            // Recognize exact binding retirement without relabeling protocol failures.
-            validateBinding();
-            Error.throwWithStackTrace(error, stackTrace);
-          });
-    } finally {
-      detachShellRetirement?.call();
-    }
+          },
+          observeBindingInvalidation: binding.shell == null
+              ? null
+              : (invalidate) => binding.shell!.onRetire(
+                  () => invalidate(
+                    const StaleToolBindingException(
+                      'The authorized Environment provider generation retired.',
+                      cause: AuthorizedEnvironmentBindingStale(
+                        'The authorized Environment provider generation retired.',
+                      ),
+                    ),
+                  ),
+                ),
+        )
+        .handleError((Object error, StackTrace stackTrace) {
+          // Recognize exact binding retirement without relabeling protocol failures.
+          validateBinding();
+          Error.throwWithStackTrace(error, stackTrace);
+        });
   }
 }
 

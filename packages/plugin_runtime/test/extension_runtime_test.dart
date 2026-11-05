@@ -1698,6 +1698,126 @@ void main() {
       },
     );
 
+    for (final paused in [false, true]) {
+      test(
+        'captured dependency invalidation cancels ${paused ? 'paused' : 'idle'} execution and revokes authority',
+        () async {
+          late void Function(Object) invalidate;
+          late PluginHostInvocation invocation;
+          var observations = 0;
+          var detached = 0;
+          var cancellations = 0;
+          final failure = StateError('Captured binding retired');
+          final source = StreamController<int>(
+            sync: true,
+            onCancel: () {
+              expect(invocation.isClosed, isTrue);
+              cancellations++;
+            },
+          );
+          final stream = context.invokeStream<int>(
+            {},
+            (opened) {
+              invocation = opened;
+              return source.stream;
+            },
+            observeBindingInvalidation: (onInvalidate) {
+              observations++;
+              invalidate = onInvalidate;
+              return () => detached++;
+            },
+          );
+          expect(observations, 0);
+          final errors = <Object>[];
+          final done = Completer<void>();
+          final subscription = stream.listen(
+            (_) => fail('Unexpected item'),
+            onError: errors.add,
+            onDone: done.complete,
+          );
+          if (paused) subscription.pause();
+          invalidate(failure);
+          expect(invocation.isClosed, isTrue);
+          expect(detached, 1);
+          expect(cancellations, 1);
+          if (paused) subscription.resume();
+          await done.future.timeout(const Duration(seconds: 1));
+          expect(errors, [same(failure)]);
+          invalidate(StateError('Late invalidation'));
+          await subscription.cancel();
+          expect(detached, 1);
+          expectRevoked(await reverse(invocation));
+          await source.close();
+          expect(
+            await context.invokeStream({}, (_) => Stream.value(2)).single,
+            2,
+          );
+        },
+      );
+    }
+
+    test(
+      'synchronous dependency invalidation admits no operation and detaches',
+      () async {
+        final failure = StateError('Already retired');
+        var starts = 0;
+        var detached = 0;
+        final stream = context.invokeStream<int>(
+          {},
+          (_) {
+            starts++;
+            return Stream.value(1);
+          },
+          observeBindingInvalidation: (invalidate) {
+            invalidate(failure);
+            return () => detached++;
+          },
+        );
+        await expectLater(
+          stream,
+          emitsInOrder([emitsError(same(failure)), emitsDone]),
+        );
+        expect(starts, 0);
+        expect(detached, 1);
+      },
+    );
+
+    for (final settlement in ['done', 'error', 'cancel', 'setup failure']) {
+      test('dependency observer detaches on $settlement', () async {
+        var detached = 0;
+        final source = StreamController<int>();
+        final errors = <Object>[];
+        final done = Completer<void>();
+        final subscription = context
+            .invokeStream<int>(
+              {},
+              (_) {
+                if (settlement == 'setup failure') throw StateError('setup');
+                return source.stream;
+              },
+              observeBindingInvalidation: (_) =>
+                  () => detached++,
+            )
+            .listen((_) {}, onError: errors.add, onDone: done.complete);
+        switch (settlement) {
+          case 'done':
+            await source.close();
+          case 'error':
+            source.addError(StateError('source'));
+          case 'cancel':
+            await subscription.cancel();
+        }
+        if (settlement != 'cancel') await done.future;
+        expect(detached, 1);
+        await subscription.cancel();
+        if (settlement == 'setup failure') {
+          unawaited(source.close());
+        } else {
+          await source.close();
+        }
+      });
+    }
+
     test(
       'retained subscription forwards pause and resume without losing authority',
       () async {

@@ -1980,8 +1980,10 @@ uncertain `processExecution` effects, verify the wire expected profile against
 the host capture, and forward the captured identity to the selected provider.
 No service selects an Environment from payload IDs. Shell-only access grants no
 direct process, file, buffered-process, or terminal access. Provider retirement
-synchronously revokes the operation; normal stream cancellation/settlement uses
-the existing reverse transport cleanup. No host-local interpreter fallback or
+synchronously revokes the operation and fails/cancels its outer stream through
+`RemoteExtensionContext.invokeStream` dependency invalidation, even before or after
+a reverse call. Normal stream cancellation/settlement uses the existing reverse
+transport cleanup. No host-local interpreter fallback or
 automatic stale-profile retry exists. Stock `run_command` remains direct-argv.
 
 Focused native coverage is in `test/core/model_tool_host_test.dart`; the synthetic

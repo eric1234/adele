@@ -66,6 +66,13 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
         unawaited(probe.control(message));
         continue;
       }
+      if (message['kind'] == 'streamCancel' &&
+          options['cancellableHold'] == true) {
+        for (final operation in ['execute', 'done']) {
+          final hold = probe.releases[operation];
+          if (hold != null && !hold.isCompleted) hold.complete();
+        }
+      }
       unawaited(
         router.handle(message, (response) {
           // Corrupt only generated payloads, preserving the real transport envelope.

@@ -1789,6 +1789,45 @@ void main() {
     },
   );
 
+  for (final hold in ['execute', 'done']) {
+    test(
+      'shell retirement settles outer execution held at $hold without an active reverse stream',
+      () async {
+        final probe = await start(
+          options: {
+            'read': false,
+            'shell': true,
+            'hold': hold,
+            'cancellableHold': true,
+          },
+        );
+        final shell = context.shell;
+        final tool = (await materialize()).single.executable;
+        final pending = tool
+            .execute(CanonicalToolArguments({'value': 'x'}), execution)
+            .toList();
+        await _control(probe.connection, 'ready', {'operation': hold});
+        final token = (await _records(probe.connection)).last['token'];
+        final settled = expectLater(
+          pending.timeout(_bound),
+          throwsA(isA<StaleToolBindingException>()),
+        );
+        shell.retire();
+        await settled;
+        expect(shell.starts, hold == 'execute' ? 0 : 1);
+        expect(shell.observers, isEmpty);
+        _expectDenied(
+          await _control(probe.connection, 'shellReplay', {'token': token}),
+        );
+        await _control(probe.connection, 'release', {'operation': hold});
+        context.shell = _Shell();
+        final fresh = (await materialize()).single.executable;
+        expect(fresh.validateBinding, returnsNormally);
+        expect(tool.validateBinding, throwsA(isA<StaleToolBindingException>()));
+      },
+    );
+  }
+
   test('shell-only token does not grant other Environment services', () async {
     final probe = await start(
       options: {'read': false, 'shell': true, 'hold': 'done'},

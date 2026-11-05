@@ -92,20 +92,27 @@ final class RemoteExtensionContext {
   ///
   /// The stream is single-subscription and remains tied to this registration.
   /// Retirement also fails an idle or paused stream; it never selects a replacement.
+  /// Adapters may observe captured dependency invalidation through the same
+  /// failure/cancellation lifecycle. The observer is lazy and detached on settlement.
   /// Dispatchers remain caller-owned, as with [invoke].
   Stream<T> invokeStream<T>(
     Map<String, AdeleBackendDispatcher> services,
-    Stream<T> Function(PluginHostInvocation invocation) operation,
-  ) {
+    Stream<T> Function(PluginHostInvocation invocation) operation, {
+    void Function() Function(void Function(Object error) invalidate)?
+    observeBindingInvalidation,
+  }) {
     late final StreamController<T> controller;
     PluginHostInvocation? invocation;
     StreamSubscription<T>? subscription;
     Future<void>? cancellation;
+    void Function()? detachInvalidation;
     var terminated = false;
     var failed = false;
 
     void revoke() {
       terminated = true;
+      detachInvalidation?.call();
+      detachInvalidation = null;
       invocation?.close();
       _invocations.remove(invocation);
     }
@@ -135,6 +142,14 @@ final class RemoteExtensionContext {
       onListen: () {
         try {
           validate();
+          final detach = observeBindingInvalidation?.call(
+            (error) => fail(error, StackTrace.current),
+          );
+          if (terminated) {
+            detach?.call();
+            return;
+          }
+          detachInvalidation = detach;
           final opened = connection.openHostInvocation(services);
           invocation = opened;
           _invocations[opened] = () => fail(

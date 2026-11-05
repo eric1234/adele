@@ -917,6 +917,13 @@ Owned reverse streams are cancelled when their invocation is revoked. Revocation
 is immediate; bounded cleanup cannot prolong authority while producer cancellation
 is pending.
 
+Adapters can pass `observeBindingInvalidation` to connect a captured dependency's
+retirement to this same stream lifecycle. Observation starts only on listen and
+detaches on every settlement path. Invalidation supplies the adapter's typed error,
+revokes authority, cancels the outer producer, and settles even when no reverse
+host call is active. This hook carries no service or authority-selection data.
+The model-tool host uses it for exact Environment shell-provider retirement.
+
 `hostRequest`/`hostResponse` reuse the same isolate ports and framed shared host.
 Unary requests and stream openings require `hostContextKind: 'invocation'` and
 opaque `hostContext` in the generic reverse envelope. Semantic operation payloads
