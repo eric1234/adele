@@ -146,9 +146,18 @@ void main() {
   });
 
   testWidgets(
-    'normal startup accepts additional unrelated activity presentations',
+    'normal startup accepts additional unrelated frontend contributions',
     (tester) => tester.runAsync(() async {
       final fixture = await _ProductFixture.create();
+      final additionalSource = fixture.runtime.extensions.register(
+        point: displaySourceFileContributions,
+        id: ExtensionId('test.additional-source'),
+        value: DisplaySourceFileContribution(
+          display: (_) async =>
+              throw StateError('Must not select this provider.'),
+        ),
+      );
+      addTearDown(additionalSource.close);
       final root = await prepared.copyInstallations(fixture.directory);
       // Reuse compiled stock factories with distinct test-only semantic IDs.
       // Both additions activate through the ordinary prepared catalog before
@@ -162,7 +171,8 @@ void main() {
                 'package:filesystem_tools_frontend/filesystem_tools_frontend.dart',
             'toolId': 'test.additional-tool',
             'inspectionExtensionId': 'test.additional-tool.inspection',
-            'compactExtensionId': 'test.additional-tool.compact',
+            // The two roles register at independent extension points.
+            'compactExtensionId': 'test.additional-tool.inspection',
             'inspectionEntrypoint': 'buildReadFileInspection',
             'compactEntrypoint': 'buildReadFileCompact',
           },
@@ -204,6 +214,16 @@ void main() {
             extensions,
           ).resolve(ToolId('test.additional-tool')).id.value,
           'test.additional-tool.inspection',
+        );
+        expect(
+          ToolActivityCompactPresentationResolver(
+            extensions,
+          ).resolve(ToolId('test.additional-tool')).id.value,
+          'test.additional-tool.inspection',
+        );
+        expect(
+          () => DisplaySourceFileResolver(extensions).resolve(),
+          throwsA(isA<AmbiguousDisplaySourceFile>()),
         );
         expect(
           ModelNativeActivityPresentationResolver(
@@ -7958,7 +7978,12 @@ final class _ProductFixture {
       );
       if (hasSource) {
         expect(
-          DisplaySourceFileResolver(runtime.extensions).resolve().id.value,
+          DisplaySourceFileResolver(runtime.extensions)
+              .resolve(
+                select: ExtensionId('$_sourceEditorPluginId.main-content'),
+              )
+              .id
+              .value,
           '$_sourceEditorPluginId.main-content',
         );
       }

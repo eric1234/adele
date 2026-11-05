@@ -2099,7 +2099,7 @@ exit "$CLIPPY_EXIT"
           (jsonDecode(config.readAsStringSync())
                   as Map<String, dynamic>)['packages']
               as List<dynamic>;
-      final extensionIds = <String>{};
+      final registrations = <(String, String)>{};
       final toolIds = <String>{};
       final presentationKinds = <String>{};
       for (final entry in [
@@ -2116,10 +2116,41 @@ exit "$CLIPPY_EXIT"
           ]) {
             if (!descriptor.containsKey(field)) continue;
             final id = descriptor[field]! as String;
+            // Extension IDs are point-scoped. All Command descriptor kinds
+            // share one point; activity Inspection and compact roles do not.
+            final point = switch ((
+              descriptor['role'] ?? descriptor['kind'],
+              field,
+            )) {
+              ('mainContent', 'extensionId') => 'main-content',
+              ('console', 'extensionId') => 'consoles',
+              ('taskBrowser', 'extensionId') => 'task-browsers',
+              ('sessionContentInspection', 'extensionId') =>
+                'session-content-inspections',
+              ('toolActivity', 'inspectionExtensionId') =>
+                'tool-activity-inspections',
+              ('toolActivity', 'compactExtensionId') =>
+                'tool-activity-compact-presentations',
+              ('modelNativeActivity', 'inspectionExtensionId') =>
+                'model-native-activity-presentations',
+              ('modelNativeActivity', 'compactExtensionId') =>
+                'model-native-activity-compact-presentations',
+              (
+                'command' ||
+                    'consoleActionCommand' ||
+                    'mainContentActionCommand',
+                'extensionId',
+              ) =>
+                'commands',
+              ('projectSelector', 'extensionId') => 'project-selectors',
+              _ => throw StateError(
+                'Unknown registration: $descriptor ($field)',
+              ),
+            };
             expect(
-              extensionIds.add(id),
+              registrations.add((point, id)),
               isTrue,
-              reason: '${entry.key}: duplicate Extension ID $id ($field)',
+              reason: '${entry.key}: duplicate Extension ID $id at $point',
             );
           }
           if (descriptor['role'] == 'toolActivity') {
@@ -2243,18 +2274,24 @@ exit "$CLIPPY_EXIT"
         }
       }
       expect(
-        extensionIds,
+        registrations,
         containsAll([
-          'dev.adele.diff-viewer.main-content',
-          'dev.adele.source-editor.main-content',
-          'dev.adele.plugin.terminal.console',
-          'dev.adele.plugin.task-browser.task-browser',
-          'dev.adele.plugin.chat-strategy.presentation',
-          'dev.adele.plugin.chat-strategy.feedback-inspection',
-          'dev.adele.plugin.command-tools.output',
-          'dev.adele.source-editor.command.open-source',
-          'dev.adele.plugin.terminal.command.new-terminal',
-          'dev.adele.plugin.local-directory-project.project-selector',
+          ('main-content', 'dev.adele.diff-viewer.main-content'),
+          ('main-content', 'dev.adele.source-editor.main-content'),
+          ('consoles', 'dev.adele.plugin.terminal.console'),
+          ('task-browsers', 'dev.adele.plugin.task-browser.task-browser'),
+          ('main-content', 'dev.adele.plugin.chat-strategy.presentation'),
+          (
+            'session-content-inspections',
+            'dev.adele.plugin.chat-strategy.feedback-inspection',
+          ),
+          ('consoles', 'dev.adele.plugin.command-tools.output'),
+          ('commands', 'dev.adele.source-editor.command.open-source'),
+          ('commands', 'dev.adele.plugin.terminal.command.new-terminal'),
+          (
+            'project-selectors',
+            'dev.adele.plugin.local-directory-project.project-selector',
+          ),
         ]),
       );
       const requiredTools = {
