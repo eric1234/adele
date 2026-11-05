@@ -117,6 +117,36 @@ resolution occurrence.
 The actual terminal status and available failure classification are retained;
 generic `unknown` failures are not diagnosed as a specific invocation-budget cause.
 
+After ordering events, Chat factors two exactly repeated JSON values within each
+historical Run:
+
+- `toolPrepared.canonicalArgumentsRef: N` replaces `canonicalArguments` only when
+  it exactly equals `toolProposed.proposal.arguments` at sequence `N`. The earlier
+  sequence must identify a unique proposal with the prepared tool's originating
+  model invocation, proposal sequence, alias, and provider call ID. All preparation
+  identity and correlation fields remain present. Different canonical arguments,
+  including changes from tool normalization, and missing, ambiguous, forward, or
+  mismatched proposal evidence retain the full canonical value.
+- `toolObservation.effectsRef: N` replaces `effects` only when the complete
+  description exactly equals the full `effects` at earlier observation sequence
+  `N` for the same tool invocation. Equality includes effect kinds, targets,
+  summary, uncertainty, and every other projected field. The first occurrence of
+  each distinct description stays complete; later repeats reference that complete
+  occurrence directly, never another reference. Changed descriptions stay full,
+  and absent or null effects never become references to observed effects.
+
+Equality uses the deterministic JSON renderer: object key order is normalized,
+but array order, value types, null fields, and exact strings remain significant.
+References resolve only inside the same historical record, never into another Run
+or current-Run input. Replacing each reference with its identified earlier value
+reconstructs the original events without losing facts or changing their sequences.
+Separate policy, approval, execution, progress, completion, and missing-observation
+facts remain separate. Reference explanations appear in the observation framing
+only for fields actually used, with no added framing when neither is present.
+This is lossless representation factoring, not inference of approval, execution,
+or success, and grants no executable authority. Canonical Chat and retained
+execution evidence are not rewritten.
+
 Interrupted evidence uses the same chronology and observation projection, with
 `historyStatus: interrupted`, its unchanged `lastObservedState`, and null
 `terminalStatus`. An explicit notice distinguishes historical running/waiting
@@ -144,8 +174,8 @@ progress. Unexpected `current_run` is an invariant failure. Other declared codes
 and undeclared transport, lifecycle, or binding errors propagate, not absence.
 Valid terminal evidence with empty activity still retains its actual status.
 
-There is no truncation, paging, summarization, compaction, or file freshness check.
-M1's per-Run read bounds still apply; aggregate inference transport/provider bounds
+There is no truncation, paging, summarization, lossy compaction, or file freshness
+check. M1's per-Run read bounds still apply; aggregate inference transport/provider bounds
 remain explicit failures, never a reason to discard old material. Aggregate
 transport failures currently surface through the generic orchestration
 error, not a context-size-specific diagnostic. Historical tool results retain only
@@ -153,8 +183,9 @@ the model-visible content M1 supplies, not private full
 tool transcripts. The entire prefix is resent for each inference and grows across
 Runs. Semantic serialization changes the previous Run's native input shape, so
 stable ordering does not promise byte-identical native replay or provider cache
-reuse. Aggregate context management and more efficient/finer-fidelity projection
-require a later explicit design.
+reuse. Serialized UTF-8 byte reductions from exact references are not measured
+provider-token savings or prompt-cache improvements. Aggregate context management
+and further projection changes require a later explicit design.
 
 ## Draft Request
 
@@ -326,7 +357,10 @@ terminal acknowledgement, held commits, and close/hydration races.
 through generated host transport: ordered observations, final-answer matching,
 interrupted running/waiting and unresolved approval/outcome distinctions,
 incomplete-history notices, failure distinctions, and frozen terminal/interrupted
-history across live continuations and approval resume. The application's
+history across live continuations and approval resume. Exact argument/effect
+factoring is checked against independently defined unoptimized events with a
+strict test-only reference expander, reordered evidence, and large-payload UTF-8
+size comparisons including observation framing. The application's
 `durable_chat_session_integration_test.dart` uses installed Chat with real terminal
 retention and interrupted running/waiting evidence across fresh-runtime Project
 reopening; `normal_chatgpt_run_integration_test.dart` also
