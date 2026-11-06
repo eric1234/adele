@@ -229,7 +229,8 @@ void main() {
       final topology = await DevelopmentSelfHostingTopology.start(
         artifacts: artifacts,
         projectSource: git.project,
-        hostEnvironment: configuration.hostEnvironment,
+        // Select fixture capability independently of the invoking user's shell.
+        hostEnvironment: {...configuration.hostEnvironment, 'SHELL': '/bin/sh'},
         identity: 'remote-context',
         taskTitle: 'Explicit backend composition',
         maxModelInvocations: 1,
@@ -326,6 +327,11 @@ void main() {
         sessionId: topology.sessionId,
         environmentRuntime: topology.lifecycle.environmentRuntime,
       );
+      final shellDescription = await context
+          .requireHostService<AuthorizedEnvironmentShellDescriptionFacet>();
+      final shellProfile = await shellDescription.describeShell();
+      final shell = await context
+          .requireHostService<AuthorizedEnvironmentShellFacet>();
       final sourceTools = [
         const SearchExecutable.unbound().registration,
         const GlobExecutable.unbound().registration,
@@ -337,6 +343,8 @@ void main() {
         ),
         commandToolRegistration(
           await context.requireHostService<AuthorizedEnvironmentProcessFacet>(),
+          shellProfile: shellProfile,
+          shell: shell,
         ),
       ];
       expect(materialized, hasLength(8));
@@ -363,6 +371,21 @@ void main() {
           sourceModel.argumentsSchema,
         );
       }
+      final commandModel = materialized
+          .singleWhere((tool) => tool.modelDefinition.alias == 'run_command')
+          .modelDefinition;
+      expect(
+        commandModel.description,
+        contains(jsonEncode(shellProfile.interpreter)),
+      );
+      expect(
+        commandModel.description,
+        contains(jsonEncode(shellProfile.dialect)),
+      );
+      expect(
+        commandModel.argumentsSchema['properties'],
+        contains('shellCommand'),
+      );
       final search = topology.runtime.extensions
           .discover(modelToolContributions)
           .singleWhere(
@@ -451,6 +474,7 @@ void main() {
           'name': definition.alias,
           'description': definition.description,
           'parameters': definition.argumentsSchema,
+          'strict': false,
         }, reason: 'Source-to-HTTP equality for ${definition.alias}');
       }
       expect(captured['tool_choice'], 'auto');
