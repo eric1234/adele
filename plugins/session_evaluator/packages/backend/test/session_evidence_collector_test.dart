@@ -957,6 +957,161 @@ void main() {
       );
     });
 
+    for (final terminal in [false, true]) {
+      test(
+        'shell metadata preserves raw script and differs from direct argv ${terminal ? 'with' : 'without'} terminal evidence',
+        () async {
+          const script =
+              '  printf \'%s\\n\' \'literal | > && \\t\'\n'
+              'printf "second\\n" | tr a-z A-Z > "out file"\n';
+          const profile = {
+            'profileId': 'selected-shell-profile',
+            'interpreter': '/usr/bin/dash',
+            'dialect': 'posix',
+          };
+          final metadata = {
+            'executionForm': 'shell',
+            'shellCommand': script,
+            'shellProfile': profile,
+          };
+          final encoded = const JsonEncoder.withIndent('  ').convert(metadata);
+          final shell = storage.capture(
+            invocation: 'shell',
+            output: [('stdout', 'literal | > && \\t\n')],
+            overrides: {
+              'program': profile['interpreter'],
+              'arguments_json': encoded,
+            },
+          );
+          final direct = storage.capture(
+            run: 'direct-run',
+            invocation: 'direct',
+            overrides: {
+              'program': profile['interpreter'],
+              'arguments_json': jsonEncode(['-c', script]),
+            },
+          );
+          if (terminal) {
+            storage.commandRun(invocation: 'shell', header: shell);
+            storage.commandRun(
+              run: 'direct-run',
+              invocation: 'direct',
+              header: direct,
+            );
+          }
+          final document = await read();
+          expect(document['schema'], 'dev.adele.session-evidence.v2');
+          expect((document['command_tools'] as _Row)['schema_version'], 1);
+          final captures = _captures(document);
+          expect(captures.map((capture) => capture['header']), [direct, shell]);
+          final shellHeader = captures.last['header'] as _Row;
+          expect(shellHeader['arguments_json'], encoded);
+          expect(jsonDecode(shellHeader['arguments_json'] as String), metadata);
+          expect(
+            jsonDecode(
+              (captures.first['header'] as _Row)['arguments_json'] as String,
+            ),
+            ['-c', script],
+          );
+          expect(captures.last['chunks'], [
+            {'position': 1, 'stream': 'stdout', 'text': 'literal | > && \\t\n'},
+          ]);
+          expect(
+            captures.map((capture) => capture['terminal_provenance']),
+            everyElement(
+              terminal ? 'matched' : 'terminal_evidence_unavailable',
+            ),
+          );
+          expect(
+            _commandCoverage(document)['status'],
+            terminal ? 'complete_retained_captures' : 'partial',
+          );
+          if (terminal) {
+            final runs = (document['runs'] as List).cast<_Row>();
+            final evidence =
+                runs.singleWhere((run) => run['id'] == 'run')['evidence']
+                    as _Row;
+            final tool = (evidence['tool_invocations'] as List).single as _Row;
+            expect(jsonDecode(tool['canonical_arguments_json'] as String), {
+              'shellCommand': script,
+              'workingDirectory': '',
+              'timeoutSeconds': 30,
+            });
+          }
+        },
+      );
+    }
+
+    for (final corruption in <String, void Function(_Row)>{
+      'wrong execution form': (metadata) =>
+          metadata['executionForm'] = 'direct',
+      'absent execution form': (metadata) => metadata.remove('executionForm'),
+      'empty script': (metadata) => metadata['shellCommand'] = '',
+      'NUL script': (metadata) => metadata['shellCommand'] = 'printf\x00hidden',
+      'oversized script': (metadata) => metadata['shellCommand'] = 'x' * 16385,
+      'absent profile': (metadata) => metadata.remove('shellProfile'),
+      'empty profile identity': (metadata) =>
+          (metadata['shellProfile'] as _Row)['profileId'] = '',
+      'interpreter disagreement': (metadata) =>
+          (metadata['shellProfile'] as _Row)['interpreter'] = '/bin/bash',
+      'extra argv': (metadata) => metadata['arguments'] = ['-c', 'other'],
+    }.entries) {
+      test('invalid shell header ${corruption.key} is not exported', () async {
+        final metadata = <String, Object?>{
+          'executionForm': 'shell',
+          'shellCommand': 'printf "exact\\n"\n',
+          'shellProfile': <String, Object?>{
+            'profileId': 'shell-profile',
+            'interpreter': '/usr/bin/dash',
+            'dialect': 'posix',
+          },
+        };
+        corruption.value(metadata);
+        storage.capture(
+          overrides: {
+            'program': '/usr/bin/dash',
+            'arguments_json': jsonEncode(metadata),
+          },
+        );
+        await _expectUnpublishedFailure(collector, 'malformed_data');
+      });
+    }
+
+    for (final mutation in ['script', 'execution form']) {
+      test(
+        'shell $mutation mismatch does not downgrade terminal provenance',
+        () async {
+          final header = storage.capture(
+            overrides: {
+              'program': '/usr/bin/dash',
+              'arguments_json': jsonEncode({
+                'executionForm': 'shell',
+                'shellCommand': 'printf "exact\\n"\n',
+                'shellProfile': {
+                  'profileId': 'shell-profile',
+                  'interpreter': '/usr/bin/dash',
+                  'dialect': 'posix',
+                },
+              }),
+            },
+          );
+          storage.commandRun(header: header);
+          storage
+              .rows[_tools.name]!
+              .single['canonical_arguments_json'] = jsonEncode({
+            if (mutation == 'script') 'shellCommand': 'printf "changed\\n"\n',
+            if (mutation == 'execution form') ...{
+              'program': '/usr/bin/dash',
+              'arguments': ['-c', 'printf "exact\\n"\n'],
+            },
+            'workingDirectory': '',
+            'timeoutSeconds': 30,
+          });
+          await _expectUnpublishedFailure(collector, 'malformed_data');
+        },
+      );
+    }
+
     for (final (termination, exitCode) in [
       ('exited', -1),
       ('exited', 17),
@@ -2129,11 +2284,16 @@ final class _QueryFixture implements ProjectStorageService {
   }) {
     addRun(run, latest: 10);
     rows[_models.name]!.add(_model(run, 'model', 1, 3));
+    final storedArguments = jsonDecode(
+      header?['arguments_json'] as String? ?? '["hello", ""]',
+    );
     final arguments = jsonEncode({
-      'program': header?['program'] ?? 'printf',
-      'arguments': jsonDecode(
-        header?['arguments_json'] as String? ?? '["hello", ""]',
-      ),
+      if (storedArguments is Map)
+        'shellCommand': storedArguments['shellCommand']
+      else ...{
+        'program': header?['program'] ?? 'printf',
+        'arguments': storedArguments,
+      },
       'workingDirectory': header?['working_directory'] ?? '',
       'timeoutSeconds': header?['timeout_seconds'] ?? 30,
     });

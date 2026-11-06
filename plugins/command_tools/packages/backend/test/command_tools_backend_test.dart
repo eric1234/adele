@@ -447,6 +447,297 @@ void main() {
   );
 
   test(
+    'interleaved materializations retain their exact shell descriptions',
+    () async {
+      final bash = await fixture.materializeShell(
+        'bash-selection',
+        '/bin/bash',
+        'bash',
+      );
+      final powershell = await fixture.materializeShell(
+        'pwsh-selection',
+        'PowerShell',
+        'powershell',
+      );
+      final direct = (await fixture.client.materialize(
+        RemoteModelToolMaterialization(
+          sessionId: 'direct-session',
+          environmentId: 'direct-environment',
+          shellProfile: null,
+        ),
+      )).single;
+      expect({bash.routeId, powershell.routeId, direct.routeId}, hasLength(3));
+      expect(bash.toolId, direct.toolId);
+      expect(bash.modelAlias, 'run_command');
+      expect(bash.modelDescription, contains('/bin/bash'));
+      expect(powershell.modelDescription, contains('powershell'));
+      expect(bash.argumentsSchema, isNot(contains('oneOf')));
+      expect(bash.argumentsSchema, isNot(contains('anyOf')));
+      expect(bash.argumentsSchema['properties'], contains('shellCommand'));
+      expect(
+        direct.argumentsSchema['properties'],
+        isNot(contains('shellCommand')),
+      );
+      expect(bash.executionHostServices, [
+        authorizedEnvironmentProcessServiceId,
+        authorizedEnvironmentShellServiceId,
+      ]);
+      const script = '  printf "%s\\n" "quoted | text"\nprintf second\n';
+      for (final descriptor in [powershell, bash, powershell, bash]) {
+        final arguments = await fixture.client.validateAndNormalize(
+          descriptor.routeId,
+          {'shellCommand': script, 'workingDirectory': './src//.'},
+        );
+        expect(arguments.snapshot, {
+          'shellCommand': script,
+          'workingDirectory': 'src',
+          'timeoutSeconds': 120,
+        });
+        final description = await fixture.client.describe(
+          descriptor.routeId,
+          arguments,
+          'session',
+          'run',
+          'invocation',
+          'environment',
+        );
+        expect(description.effects, [RemoteToolEffect.processExecution]);
+        expect(description.uncertainty, RemoteEffectUncertainty.uncertain);
+        expect(description.targetUris, [
+          Uri.parse('adele-environment:/environment/'),
+        ]);
+        expect(
+          description.summary,
+          contains(descriptor == bash ? '/bin/bash' : 'PowerShell'),
+        );
+        expect(description.summary, isNot(contains('\n')));
+        expect(description.summary, isNot(contains(script)));
+      }
+      await expectLater(
+        fixture.client.validateAndNormalize(direct.routeId, {
+          'shellCommand': script,
+        }),
+        throwsA(isA<RemoteToolArgumentValidationFailure>()),
+      );
+      expect(fixture.messages, isEmpty);
+      expect(fixture.storage.transactions, 0);
+      for (final descriptor in [bash, powershell, bash]) {
+        final outcome = await fixture.executeShell(descriptor.routeId, script);
+        expect(outcome.disposition, RemoteToolOutcomeDisposition.success);
+        expect(outcome.hostData['shellCommand'], script);
+        expect(outcome.hostData['shellProfile'], {
+          'profileId': descriptor == bash ? 'bash-selection' : 'pwsh-selection',
+          'interpreter': descriptor == bash ? '/bin/bash' : 'PowerShell',
+          'dialect': descriptor == bash ? 'bash' : 'powershell',
+        });
+        expect(outcome.hostData, isNot(contains('program')));
+        expect(outcome.hostData, isNot(contains('arguments')));
+      }
+      expect(
+        fixture.shell.requests.map((request) => request.expectedProfileId),
+        ['bash-selection', 'pwsh-selection', 'bash-selection'],
+      );
+      expect(
+        fixture.shell.requests.map((request) => request.command),
+        everyElement(script),
+      );
+      expect(fixture.process.settled, 0);
+      expect(
+        fixture.messages
+            .where((message) => message['kind'] == 'hostStreamOpen')
+            .map((message) => message['serviceId']),
+        everyElement(authorizedEnvironmentShellServiceId),
+      );
+    },
+  );
+
+  test(
+    'shell routes are bounded versioned data, not execution authority',
+    () async {
+      final descriptor = await fixture.materializeShell(
+        'selection',
+        '/bin/bash',
+        'bash',
+      );
+      final maximal = await fixture.materializeShell(
+        'p' * 256,
+        '\u0800' * 4096,
+        'd' * 64,
+      );
+      expect(maximal.routeId.length, lessThanOrEqualTo(24 * 1024));
+      await fixture.client.validateAndNormalize(maximal.routeId, {
+        'shellCommand': 'true',
+      });
+      final prefix = '${runCommandToolId.value}/shell-v1:';
+      for (final route in [
+        '${runCommandToolId.value}/shell-v2:unknown',
+        '$prefix${'x' * (24 * 1024)}',
+        '${prefix}not-base64!',
+        '$prefix${base64Url.encode(utf8.encode(jsonEncode(['selection', '/bin/bash'])))}',
+        '$prefix${base64Url.encode(utf8.encode(jsonEncode(['selection', '/bin/bash', 'INVALID'])))}',
+        '${descriptor.routeId}\n',
+      ]) {
+        await expectLater(
+          fixture.client.validateAndNormalize(route, {'shellCommand': 'true'}),
+          throwsA(isA<AdeleRemoteFailure>()),
+        );
+      }
+      for (final invalid in <Map<String, Object?>>[
+        {},
+        {'shellCommand': 'true', 'program': 'true'},
+        {'shellCommand': 'true', 'arguments': []},
+        {'shellCommand': ''},
+        {'shellCommand': ' \n '},
+        {'shellCommand': 1},
+        {'shellCommand': 'true', 'environmentId': 'other'},
+        {
+          'shellCommand': 'true',
+          'environment': {'PATH': 'other'},
+        },
+        {'shellCommand': 'true', 'profileId': 'other'},
+        {'shellCommand': 'true', 'workingDirectory': '../other'},
+        {'shellCommand': 'true', 'timeoutSeconds': 1801},
+        {'shellCommand': 'true', 'timeoutSeconds': 1.0},
+        {'shellCommand': 'x' * 16385},
+        {'shellCommand': 'nul\u0000'},
+        {'shellCommand': '\ud800'},
+      ]) {
+        await expectLater(
+          fixture.client.validateAndNormalize(descriptor.routeId, invalid),
+          throwsA(isA<RemoteToolArgumentValidationFailure>()),
+        );
+      }
+      expect(fixture.storage.transactions, 0);
+      expect(fixture.messages, isEmpty);
+      final arguments = await fixture.client.validateAndNormalize(
+        descriptor.routeId,
+        {'shellCommand': 'true'},
+      );
+      await expectLater(
+        fixture.backend
+            .execute(
+              descriptor.routeId,
+              arguments,
+              'session',
+              'run',
+              'no-token',
+              'environment',
+              null,
+            )
+            .toList(),
+        throwsStateError,
+      );
+      expect(fixture.storage.transactions, 0);
+      final denied = await fixture.executeShell(
+        descriptor.routeId,
+        'true',
+        token: 'forged',
+      );
+      expect(denied.disposition, RemoteToolOutcomeDisposition.failure);
+      expect(fixture.shell.requests, isEmpty);
+      expect(fixture.process.settled, 0);
+    },
+  );
+
+  test(
+    'shell outcomes reuse capture, search, failures and cancellation',
+    () async {
+      final descriptor = await fixture.materializeShell(
+        'selection',
+        '/bin/bash',
+        'bash',
+      );
+      var outcome = await fixture.executeShell(descriptor.routeId, 'exit 7');
+      expect(outcome.hostData['exitCode'], 7);
+      expect(outcome.hostData['captureState'], 'complete');
+      expect(outcome.modelContent, contains('Exit code: 7'));
+      final searchArgs = await fixture.searchClient
+          .validateAndNormalize(searchCommandOutputToolId.value, {
+            'runId': outcome.hostData['runId'],
+            'toolInvocationId': outcome.hostData['toolInvocationId'],
+            'pattern': 'out',
+          });
+      final search = await fixture.searchClient
+          .execute(
+            searchCommandOutputToolId.value,
+            searchArgs,
+            'session-data',
+            'search-run',
+            'search-shell',
+            null,
+            null,
+          )
+          .single;
+      expect(search.outcome!.disposition, RemoteToolOutcomeDisposition.success);
+      expect(search.outcome!.modelContent, contains('out'));
+      fixture.shell.events.timedOut = true;
+      outcome = await fixture.executeShell(descriptor.routeId, 'wait');
+      expect(outcome.hostData['termination'], 'timedOut');
+      expect(outcome.hostData['exitCode'], isNull);
+      expect(outcome.hostData['captureState'], 'complete');
+      fixture.shell.events.timedOut = false;
+      for (final failure in [
+        const EnvironmentFailure(
+          code: environmentShellUnavailableCode,
+          message: 'Missing shell.',
+          details: {},
+        ),
+        const EnvironmentFailure(
+          code: environmentShellProfileChangedCode,
+          message: 'Selection changed.',
+          details: {},
+        ),
+        StateError('transport failure'),
+      ]) {
+        fixture.shell.events.failure = failure;
+        final before = fixture.shell.requests.length;
+        outcome = await fixture.executeShell(descriptor.routeId, 'never retry');
+        expect(outcome.disposition, RemoteToolOutcomeDisposition.failure);
+        expect(outcome.hostData['captureState'], 'failed');
+        expect(outcome.hostData['stdout'], 'out\n');
+        expect(fixture.shell.requests.length, before + 1);
+      }
+      fixture.shell.events.failure = null;
+      final listening = Completer<void>();
+      final cancelled = Completer<void>();
+      final producer = StreamController<EnvironmentProcessEvent>(
+        onListen: listening.complete,
+        onCancel: cancelled.complete,
+      );
+      addTearDown(producer.close);
+      fixture.shell.events.producer = producer.stream;
+      final arguments = await fixture.client.validateAndNormalize(
+        descriptor.routeId,
+        {'shellCommand': 'silent'},
+      );
+      final events = <RemoteToolExecutionEvent>[];
+      final subscription = fixture.backend
+          .execute(
+            descriptor.routeId,
+            arguments,
+            'session',
+            'run',
+            'cancel-shell',
+            'environment',
+            fixture.token,
+          )
+          .listen(events.add);
+      await listening.future.timeout(const Duration(seconds: 2));
+      await subscription.cancel().timeout(const Duration(seconds: 2));
+      await cancelled.future.timeout(const Duration(seconds: 2));
+      expect(events, isEmpty);
+      expect(fixture.transcripts.activeCaptureCount, 0);
+      final state = await fixture.transcripts.getState(
+        'session',
+        'run',
+        'cancel-shell',
+      );
+      expect(state.state, 'failed');
+      expect(fixture.process.settled, 0);
+    },
+  );
+
+  test(
     'timeout is a completed outcome, declared failure is domain, transport is infrastructure',
     () async {
       fixture.process.timedOut = true;
@@ -657,12 +948,14 @@ final class _NoEffects implements AuthorizedEnvironmentProcessFacet {
 final class _Fixture {
   final messages = <Map<String, Object?>>[];
   final process = _Process();
+  final shell = _Shell();
   final storage = CommandTestStorage();
   late final transcripts = CommandTranscriptStore(storage);
   int invocations = 0;
   String token = 'operation';
   final routes = <int, AdeleBackendDispatcher>{};
   late final reverse = AuthorizedEnvironmentProcessServiceDispatcher(process);
+  late final reverseShell = AuthorizedEnvironmentShellServiceDispatcher(shell);
   late final host = AdeleHostRequestMultiplexer(
     send: (message) {
       messages.add(message);
@@ -710,6 +1003,44 @@ final class _Fixture {
     );
   }
 
+  Future<RemoteToolDescriptor> materializeShell(
+    String id,
+    String interpreter,
+    String dialect,
+  ) async => (await client.materialize(
+    RemoteModelToolMaterialization(
+      sessionId: 'session-$id',
+      environmentId: 'environment-$id',
+      shellProfile: RemoteEnvironmentShellProfile(
+        profileId: id,
+        interpreter: interpreter,
+        dialect: dialect,
+      ),
+    ),
+  )).single;
+
+  Future<RemoteToolOutcome> executeShell(
+    String route,
+    String command, {
+    String token = 'operation',
+  }) async {
+    final arguments = await client.validateAndNormalize(route, {
+      'shellCommand': command,
+    });
+    return (await backend
+            .execute(
+              route,
+              arguments,
+              'session-data',
+              'run-data',
+              'invocation-${++invocations}',
+              'environment-data',
+              token,
+            )
+            .single)
+        .outcome!;
+  }
+
   Future<List<RemoteToolExecutionEvent>> execute({
     String token = 'operation',
   }) async {
@@ -737,7 +1068,10 @@ final class _Fixture {
     if (kind == 'hostStreamOpen') {
       if (message['hostContextKind'] != 'invocation' ||
           message['hostContext'] != token ||
-          message['serviceId'] != authorizedEnvironmentProcessServiceId) {
+          ![
+            authorizedEnvironmentProcessServiceId,
+            authorizedEnvironmentShellServiceId,
+          ].contains(message['serviceId'])) {
         host.handleResponse({
           'kind': 'hostStreamFailure',
           'requestId': id,
@@ -748,7 +1082,9 @@ final class _Fixture {
         });
         return;
       }
-      routes[id] = reverse;
+      routes[id] = message['serviceId'] == authorizedEnvironmentShellServiceId
+          ? reverseShell
+          : reverse;
     }
     final dispatcher = routes[id];
     if (dispatcher == null) return;
@@ -780,8 +1116,29 @@ final class _Fixture {
     await forward.close();
     await searchForward.close();
     await reverse.close();
+    await reverseShell.close();
     await transcripts.close();
     storage.close();
+  }
+}
+
+final class _Shell implements AuthorizedEnvironmentShellService {
+  final requests = <EnvironmentShellCommandRequest>[];
+  final events = _Process();
+
+  @override
+  Stream<EnvironmentProcessEvent> runShellCommand(
+    EnvironmentShellCommandRequest request,
+  ) {
+    requests.add(request);
+    return events.runForegroundProcess(
+      EnvironmentForegroundProcessRequest(
+        program: 'fixture',
+        arguments: [],
+        relativeWorkingDirectory: request.relativeWorkingDirectory,
+        timeoutSeconds: request.timeoutSeconds,
+      ),
+    );
   }
 }
 

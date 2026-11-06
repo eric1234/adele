@@ -214,6 +214,17 @@ Failed-Run presentation may show safe classification/message/code from that Run'
 last failed model invocation, explicitly labeled as such rather than claiming
 unproven causality through the remote strategy failure.
 
+## Function Tool Schemas
+
+Both API-key and experimental ChatGPT request profiles send provider-neutral
+function tools with explicit `strict: false` and their `argumentsSchema` unchanged.
+The [OpenAI strict-mode guide](https://platform.openai.com/docs/guides/function-calling#strict-mode)
+documents that Responses attempts strict normalization when `strict` is omitted,
+including making every property required. Opting out preserves omission-sensitive
+optional fields; the backend does not make them required or replace absence with
+`null`. Tool argument validation remains authoritative in the tool implementation,
+not in provider schema rewriting or model adherence to the schema.
+
 ## Reasoning Summary Requests
 
 The backend requests provider-supplied reasoning summaries with

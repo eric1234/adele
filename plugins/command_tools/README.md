@@ -3,14 +3,65 @@
 Command Tools is an independently installed stock plugin that contributes
 `run_command` (`dev.adele.plugin.command-tools.run-command`) and
 `search_command_output` (`dev.adele.plugin.command-tools.search-command-output`).
-Run Command asks the Session host only for `AuthorizedEnvironmentProcessFacet`
-and runs one foreground executable directly with verbatim arguments; it does not implicitly
-invoke a shell. The root `command_tools_plugin` package owns the semantics;
+Run Command runs either one foreground executable directly with verbatim arguments
+or a verbatim script through the selected Environment's shell. Both forms use the
+same tool identity, capture path, and conservative process authorization. It never
+detects shell syntax in direct arguments or implicitly converts them into a script.
+The root `command_tools_plugin` package owns the semantics;
 `packages/backend` (`command_tools_backend`) reuses them through public generated
 model-tool and Environment transport plus `adele_plugin_backend_support`. Its
 entrypoint is `packages/backend/bin/command_tools_backend.dart`. Validation, effect
 description, capture, and terminal output bounds are not duplicated
 in the backend adapter.
+
+## Execution forms
+
+Direct execution retains the existing canonical shape:
+
+```json
+{"program":"git","arguments":["diff","--check"],"workingDirectory":"","timeoutSeconds":30}
+```
+
+When the captured Environment advertises a shell profile, the same `run_command`
+also accepts:
+
+```json
+{"shellCommand":"git status --short && git diff --check","workingDirectory":"","timeoutSeconds":30}
+```
+
+Exactly one of `program` or `shellCommand` must be present. `arguments` is valid
+only with `program`, including when explicitly empty. Program must be a nonempty
+string; shell text must contain non-whitespace text and at most **16,384 UTF-16
+code units**. Shell text is never trimmed, split, quoted, or otherwise rewritten.
+Embedded newlines, surrounding whitespace, pipes, redirection, and quoting reach
+the provider unchanged. NUL, malformed Unicode, unknown keys, wrong field types,
+Environment selectors, and environment overrides are rejected. Direct argv entries
+remain ordered verbatim strings, with an omitted list normalized to `[]`.
+
+Both forms normalize omitted working directory to `""` (Environment root), remove
+redundant `/` and `.` segments, and reject absolute paths and parent traversal;
+the Environment provider retains filesystem confinement responsibility. Defaults
+are included in canonical arguments. The model never supplies a shell profile ID.
+The schema uses an object root, ordinary properties and `additionalProperties:
+false`, not a root-level union unsupported by some model providers. Property and
+tool descriptions explain the alternatives; semantic validation authoritatively
+enforces mutual exclusion. The OpenAI adapter forwards that schema unchanged with
+explicit `strict: false`, preventing Responses from normalizing optional sibling
+fields into an incompatible all-required shape.
+
+The model description identifies the captured interpreter and dialect and instructs
+the model to use that dialect. Shell behavior is not assumed POSIX. Command Tools
+does not inspect `SHELL`, host OS, or interpreter names to choose an invocation
+convention. The Environment owns interpreter selection, arguments, and profile
+consistency; no `set -e`, `pipefail`, login or interactive flags are added. A normal
+exit code is the interpreter's actual result, not proof every pipeline stage
+succeeded. See the [Environment contract](../../packages/environment/README.md)
+and [stock Git shell support](../git/README.md#noninteractive-shell-commands).
+
+Explicit `shell_unavailable` discovery leaves a direct-only descriptor and rejects
+`shellCommand`; it never triggers a fallback shell. Unexpected discovery failures
+remain failures. A fresh catalog can capture a new profile; an existing tool does
+not refresh its selection or automatically retry profile drift.
 
 `timeoutSeconds` defaults to 120 and can be selected per invocation from 1 through
 1800 seconds, using the public Environment foreground limit. Long-running builds
@@ -31,28 +82,46 @@ construction.
 Readiness advertises two extensions at `dev.adele.extension.model-tools` through
 the generated `modelTool` service in the same backend generation. The existing
 `dev.adele.plugin.command-tools.model-tools` contribution retains configuration
-context `default` and exactly `hostServices: ['authorizedEnvironmentProcess']`.
-Its only descriptor is `run_command`, with the same process-only
-`executionHostServices`. The separate
+context `default` and requests `authorizedEnvironmentProcess` plus
+`authorizedEnvironmentShell`. Its only descriptor is `run_command`, requesting
+both execution services when shell support was captured and only the process
+service when it was unavailable. The separate
 `dev.adele.plugin.command-tools.output-search` contribution uses
 configuration context `command-output-search`, with `hostServices: []` and
 `executionHostServices: []`, and materializes only `search_command_output`.
-There are no capability exposures, additional backend processes, or new host
-services. Exact context routing prevents duplicate aliases or accidental process
+There are no capability exposures, additional backend processes, or independent
+shell authorization policies. Exact context routing prevents duplicate aliases or accidental process
 dependencies. Materialization and validation receive no host token; description
 uses pure identity and argument data. Only approved Run Command execution receives
-operation-scoped process authority.
+operation-scoped process/shell authority.
+
+Shell-aware descriptor routes carry a versioned, canonical base64url encoding of
+the captured `[profileId, interpreter, dialect]`, bounded to 24 KiB. Direct-only
+routes retain the existing tool ID. Subsequent validation, description, and
+execution reconstruct only that immutable description; there is no mutable current
+shell or retained Session/profile registry. Routes carry neither Environment nor
+Session selectors and grant no authority. The host retains the authoritative
+captured profile and exact backend/provider bindings. Its authorized shell service
+checks the submitted expected profile before forwarding; the provider checks actual
+selection drift before launch. Retired bindings never migrate to a replacement.
 
 Generated `AuthorizedEnvironmentProcessService.runForegroundProcess` reuses the
-existing request/event DTOs with no authority-selection IDs. Reverse server
-streaming uses one-item credit and cancellation. Settlement, cancellation, or
+existing request/event DTOs with no authority-selection IDs.
+`AuthorizedEnvironmentShellService.runShellCommand` similarly carries the exact
+script and expected profile through the existing operation-scoped generated service.
+Reverse server streaming uses one-item credit and cancellation. Settlement, cancellation, or
 exact-generation retirement revokes authority immediately and cancels owned streams
 with bounded cleanup; this neither rolls back process effects nor provides an OS
 sandbox. See [remote model tools](../../docs/architecture/contracts-and-capabilities.md#remote-model-tools).
 
 The tool exposes no Environment selector. Its effect targets the authorized
 Environment as a whole and is marked as uncertain because arbitrary processes
-can have secondary effects that this first command slice does not classify.
+can have secondary effects that this tool does not classify.
+Both forms retain uncertain `processExecution` effects. Shell approval summaries
+use bounded escaped text, identify the captured shell, and include working directory
+and timeout. Full canonical script text remains available in escaped approval
+arguments without weakening the host's unsafe-authority-text checks. Rejection or
+policy denial allocates no capture and launches no process.
 Environment stdout and stderr are captured by this plugin, not forwarded into
 generic tool progress, RunJournal, or activity snapshots. The terminal model result
 independently retains at most 8,192 UTF-16 code units per stream as a deterministic
@@ -81,16 +150,30 @@ no default in-memory transcript or native application reader. Native callers ret
 the existing run-only `activate` method and explicitly call `activateSearch` for
 the independent search contribution with configured transcript storage. Each
 registration has its own ordinary exact binding and retirement lifetime.
+Native `CommandToolsPlugin(enableShell: true)` explicitly opts into the established
+authorized shell description/execution facets, captured at materialization; its
+default remains direct-only for existing in-process hosts. `commandToolRegistration`
+also accepts optional `shellProfile`/`shell` values for shared adapter use.
 
 The current v1 baseline has `adele_command_captures` headers keyed by the host's
 existing Run-local tool-invocation ID with composite key `(invocation_id, run_id)`
 and `adele_command_chunks` with composite primary key
 `(invocation_id, run_id, position)`. Headers store Session/Run association, Environment and
-direct-command metadata, capture state, committed high-water/UTF-16 extent, version,
+command metadata, capture state, committed high-water/UTF-16 extent, version,
 and known termination/exit facts. Session identity references the canonical Session
 row; Run/invocation association does not reference terminal-only core history.
 `ToolExecutionContext.toolInvocationId` is the opaque value of the existing public
 orchestration identifier, not a new command identity or authority token.
+
+Direct headers retain `program` plus a JSON argv array in `arguments_json`.
+Shell headers use the selected interpreter as `program` and a tagged object in
+`arguments_json`: `executionForm: "shell"`, exact `shellCommand`, and
+`shellProfile: {profileId, interpreter, dialect}`. This is explicit shell metadata,
+not an invented provider argv. Readers accept both shapes; historical v1 direct
+captures remain readable without a migration or a second retention system. Shell
+model results and structured host data identify shell execution and the captured
+profile, with the same lifecycle, output previews, and retained-output reference;
+they do not expose `program`/`arguments` as though this were direct execution.
 
 Schema and unique header admission commit before listening to the lazy process
 stream. Neither validation, denied approval, description nor passive reads create
@@ -112,6 +195,11 @@ invalidation happens only after acknowledgement of readable state.
 | Metadata | At most 128 KiB encoded JSON at admission, ensuring individual headers remain readable within shared storage limits. |
 | Model result | 8,192 UTF-16 code units per stream, independent head/tail calculation over all received output. |
 | Watcher | One in-flight bounded state read, one admitted notification, and a dirty bit; paused changes coalesce rather than queue per append. |
+
+The shell-script bound allows worst-case JSON escaping with ordinary profile and
+identity metadata. The combined 128 KiB admission budget still applies: unusually
+large interpreter, identity, or working-directory metadata can cause an otherwise
+valid invocation to fail capture admission before any process is launched.
 
 No transcript text, per-chunk index, snapshots, or append Future chain is retained
 in plugin memory. There is one writer per active command, one schema Future per
@@ -420,7 +508,7 @@ A paid opt-in OpenAI API-key application smoke proves that a real model can use
 the direct `program` plus `arguments` interface for `git diff --check`, consume
 the terminal model result, and continue after an existing-file source mutation.
 
-Shell classification, background processes, stdin, signals, environment
+Command-specific shell classification, background processes, stdin, signals, environment
 overrides, and network policy remain outside this plugin.
 
 ## Live Inspection and console output
@@ -445,11 +533,20 @@ denied, absent capture, admitted empty output, process outcome, capture failure,
 reader failure, and replay state remain distinct. Nonzero exit can have complete
 capture; partial failed captures still offer **Show more**.
 
-The compact entrypoint remains a separate bounded program/argv summary. It does
+The compact entrypoint remains a separate bounded direct-argv or shell summary. It does
 not create an output reader, replay history, or request a terminal projection.
 Common hosting owns inspect interaction and exact-invocation approval controls.
 The card cannot execute, approve, rerun, send input, or materialize an Environment.
 Opening it does not open the console.
+
+Rich Inspection shows direct Program and individual argv entries, or shell text
+with readable multiline layout. Control/bidirectional characters and literal
+backslashes use safe display escapes; canonical execution text is unchanged.
+Captured interpreter/dialect are shown only when available in outcome host data,
+never fabricated for a pending invocation. Both forms retain working directory,
+timeout, lifecycle, exact historical invocation selection, and the same output
+projection and **Show more** behavior. Shell execution creates no interactive
+Terminal resource or input controls.
 
 Show more calls the generic declared-console bridge for
 `dev.adele.plugin.command-tools.output`. Its opaque content key length-delimits

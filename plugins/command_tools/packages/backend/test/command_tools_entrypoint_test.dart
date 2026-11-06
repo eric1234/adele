@@ -51,7 +51,10 @@ void main() {
           'serviceId': 'modelTool',
           'configurationContext': 'configured-default',
           'metadata': {
-            'hostServices': ['authorizedEnvironmentProcess'],
+            'hostServices': [
+              'authorizedEnvironmentProcess',
+              'authorizedEnvironmentShell',
+            ],
           },
         },
         {

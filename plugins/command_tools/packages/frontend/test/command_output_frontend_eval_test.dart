@@ -72,11 +72,13 @@ void main() {
   Widget presentation({
     bool preview = false,
     ConsolePresentationAccess? access,
+    _InspectionSource? inspectionSource,
+    Future<void> Function(String, ConsoleContentDescriptor)? open,
   }) {
     final standalone = access == null ? _StandalonePresentationAccess() : null;
     if (standalone != null) addTearDown(standalone.dispose);
     final resident = access ?? standalone!;
-    final source = preview ? _InspectionSource() : null;
+    final source = preview ? inspectionSource ?? _InspectionSource() : null;
     if (source != null) addTearDown(source.dispose);
     return frontend.createPresentation(
       library: preview
@@ -98,6 +100,7 @@ void main() {
         ),
         ConsoleBridge(
           isActive: () => resident.isActive,
+          open: open,
           content: content,
           presentation: resident,
         ),
@@ -115,6 +118,8 @@ void main() {
     WidgetTester tester, {
     bool preview = false,
     bool both = false,
+    _InspectionSource? inspectionSource,
+    Future<void> Function(String, ConsoleContentDescriptor)? open,
   }) {
     // Failed assertions must still detach generated watches before dispatcher
     // teardown; otherwise a useful failure can wait on an unrelated subscription.
@@ -144,7 +149,13 @@ void main() {
                     ],
                   )
                 : preview
-                ? SingleChildScrollView(child: presentation(preview: true))
+                ? SingleChildScrollView(
+                    child: presentation(
+                      preview: true,
+                      inspectionSource: inspectionSource,
+                      open: open,
+                    ),
+                  )
                 : presentation(),
           ),
         ),
@@ -236,6 +247,194 @@ void main() {
     );
     return (controller, tab, other);
   }
+
+  testWidgets(
+    'shell Inspection keeps its read-only projection when completion adds profile metadata',
+    (tester) async {
+      const script = 'printf "first\\n"\nprintf second';
+      final source = _InspectionSource(
+        shellCommand: script,
+        kind: ToolActivityKind.approvalRequested,
+      );
+      final opened = <ConsoleContentDescriptor>[];
+      await mount(
+        tester,
+        preview: true,
+        inspectionSource: source,
+        open: (extension, descriptor) async {
+          expect(extension, 'dev.adele.plugin.command-tools.output');
+          opened.add(descriptor);
+        },
+      );
+      await _until(
+        tester,
+        () => find
+            .text('No output capture has been admitted.')
+            .evaluate()
+            .isNotEmpty,
+        'pending shell has no fabricated capture',
+      );
+      expect(find.text('Status: Waiting for approval'), findsOneWidget);
+      expect(find.textContaining('Interpreter:'), findsNothing);
+      expect(find.byType(TerminalView), findsNothing);
+      expect(find.text('Show more'), findsNothing);
+      expect(opened, isEmpty);
+      output.program = '/bin/sh';
+      output.argumentsJson = jsonEncode({
+        'executionForm': 'shell',
+        'shellCommand': script,
+        'shellProfile': {
+          'profileId': 'selected-shell',
+          'interpreter': '/bin/sh',
+          'dialect': 'posix',
+        },
+      });
+      output.publish('capturing');
+      output.append('first\n\u001b[31msecond\u001b[0m\n');
+      await _until(
+        tester,
+        () =>
+            find.byType(TerminalView).evaluate().isNotEmpty &&
+            _text(_view(tester).terminal).contains('second'),
+        'shell output reaches the normal terminal projection',
+      );
+      final view = _view(tester);
+      final terminal = view.terminal;
+      final element = tester.state(find.byType(TerminalView));
+      expect(view.readOnly, isTrue);
+      expect(view.autoResize, isFalse);
+      expect(terminal.viewHeight, 6);
+      expect(terminal.buffer.lines[0].getText().trimRight(), 'first');
+      expect(terminal.buffer.lines[1].getText().trimRight(), 'second');
+      expect(find.text('first'), findsNothing);
+      expect(find.text('second'), findsNothing);
+      expect(opened, isEmpty);
+      final reads = List<int>.of(output.cursors);
+      source.kind = ToolActivityKind.completed;
+      source.notifyListeners();
+      output.publish('complete', exitCode: 7);
+      await _until(
+        tester,
+        () =>
+            find.text('Interpreter: "/bin/sh"').evaluate().isNotEmpty &&
+            find.textContaining('Capture: complete').evaluate().isNotEmpty,
+        'reported shell profile and process result appear',
+      );
+      expect(find.text('Status: Completed'), findsOneWidget);
+      expect(find.text('Exit code: 7'), findsOneWidget);
+      expect(_view(tester).terminal, same(terminal));
+      expect(tester.state(find.byType(TerminalView)), same(element));
+      expect(output.cursors, reads);
+      expect(output.watches, 1);
+      await tester.ensureVisible(find.text('Show more'));
+      await tester.tap(find.text('Show more'));
+      await _until(
+        tester,
+        () => opened.length == 1,
+        'shell Show more admission',
+      );
+      expect(opened.single.data, {
+        'sessionId': 'session',
+        'runId': 'run',
+        'toolInvocationId': 'invocation',
+        'title': r'Shell: printf "first\\n"\nprintf second',
+      });
+      expect(opened.single.key, '3:run10:invocation');
+      expect(channel.methods.toSet(), {
+        commandOutputServiceWatchId,
+        commandOutputServiceReadAfterId,
+      });
+      expect(output.status, 'complete');
+      await unmount(tester);
+    },
+  );
+
+  testWidgets(
+    'historical shell and direct commands keep exact Show more identity and expanded output',
+    (tester) async {
+      output.publish('complete', exitCode: 7);
+      output.append('retained history\n');
+      final opened = <ConsoleContentDescriptor>[];
+      for (final (run, shell) in [
+        ('direct-run', false),
+        ('shell-run-one', true),
+        ('shell-run-two', true),
+      ]) {
+        output.runId = run;
+        final source = _InspectionSource(
+          run: run,
+          shellCommand: shell ? 'fixture' : null,
+          kind: ToolActivityKind.completed,
+        );
+        output.program = shell ? '/bin/sh' : 'fixture';
+        output.argumentsJson = shell
+            ? jsonEncode({
+                'executionForm': 'shell',
+                'shellCommand': 'fixture',
+                'shellProfile':
+                    source.snapshot.outcome!.hostData['shellProfile'],
+              })
+            : '[]';
+        await mount(
+          tester,
+          preview: true,
+          inspectionSource: source,
+          open: (extension, descriptor) async => opened.add(descriptor),
+        );
+        await _until(
+          tester,
+          () =>
+              find.byType(TerminalView).evaluate().isNotEmpty &&
+              _text(_view(tester).terminal).contains('retained history'),
+          'historical ${shell ? 'shell' : 'direct'} output',
+        );
+        expect(
+          find.text('Program: "fixture"'),
+          shell ? findsNothing : findsOneWidget,
+        );
+        expect(
+          find.text('Shell command (display escapes):'),
+          shell ? findsOneWidget : findsNothing,
+        );
+        expect(find.text('Status: Completed'), findsOneWidget);
+        await tester.ensureVisible(find.text('Show more'));
+        await tester.tap(find.text('Show more'));
+        await _until(
+          tester,
+          () => opened.lastOrNull?.data['runId'] == run,
+          'historical Show more',
+        );
+        expect(
+          opened.last.key,
+          '${run.length}:$run${'invocation'.length}:invocation',
+        );
+        expect(opened.last.data['toolInvocationId'], 'invocation');
+        expect(opened.last.data['sessionId'], 'session');
+        await unmount(tester);
+        // Mount the actual expanded entrypoint from precisely that descriptor.
+        content = ConsoleContentState(opened.last);
+        await mount(tester);
+        await caughtUp(tester);
+        expect(_text(_view(tester).terminal), contains('retained history'));
+        expect(_view(tester).readOnly, isTrue);
+        expect(_view(tester).terminal.viewHeight, 20);
+        expect(find.text('Beginning'), findsOneWidget);
+        expect(find.byTooltip('Follow output'), findsOneWidget);
+        await unmount(tester);
+      }
+      expect(opened.map((descriptor) => descriptor.key).toSet(), hasLength(3));
+      expect(opened.map((descriptor) => descriptor.metadata.title), [
+        'Command: fixture',
+        'Shell: fixture',
+        'Shell: fixture',
+      ]);
+      expect(output.watches, 6);
+      expect(channel.methods.toSet(), {
+        commandOutputServiceWatchId,
+        commandOutputServiceReadAfterId,
+      });
+    },
+  );
 
   testWidgets(
     'resident historical replay keeps its page and exact goal across switches',
@@ -1536,12 +1735,22 @@ final class _StandaloneInteractionAccess implements ConsoleInteractionAccess {
 
 final class _InspectionSource extends ChangeNotifier
     implements ToolActivityInspectionSource {
+  _InspectionSource({
+    this.run = 'run',
+    this.shellCommand,
+    this.kind = ToolActivityKind.executionStarted,
+  });
+
+  final String run;
+  final String? shellCommand;
+  ToolActivityKind kind;
+
   @override
   final SessionId sessionId = SessionId('session');
   @override
-  final RunId runId = RunId('run');
+  RunId get runId => RunId(run);
   @override
-  final ToolInvocationActivity snapshot = ToolInvocationActivity(
+  ToolInvocationActivity get snapshot => ToolInvocationActivity(
     id: ToolInvocationId('invocation'),
     preparedSequence: 2,
     modelInvocationId: ModelInvocationId('model'),
@@ -1549,15 +1758,36 @@ final class _InspectionSource extends ChangeNotifier
     toolId: ToolId('dev.adele.plugin.command-tools.run-command'),
     alias: 'run_command',
     providerCallId: 'provider-call',
-    canonicalArguments: const {
-      'program': 'fixture',
-      'arguments': <String>[],
+    canonicalArguments: {
+      if (shellCommand == null) ...{
+        'program': 'fixture',
+        'arguments': <String>[],
+      } else
+        'shellCommand': shellCommand,
       'workingDirectory': '',
       'timeoutSeconds': 30,
     },
-    changes: const [
-      ToolActivityChange(sequence: 3, kind: ToolActivityKind.executionStarted),
-    ],
+    changes: [ToolActivityChange(sequence: 3, kind: kind)],
+    outcome: kind != ToolActivityKind.completed
+        ? null
+        : ToolOutcomeActivity(
+            disposition: ToolOutcomeDisposition.success,
+            effectCertainty: EffectCertainty.uncertain,
+            modelContent: 'Bounded result not duplicated in the frontend.',
+            hostData: {
+              if (shellCommand != null) ...{
+                'executionForm': 'shell',
+                'shellCommand': shellCommand,
+                'shellProfile': {
+                  'profileId': 'selected-shell',
+                  'interpreter': '/bin/sh',
+                  'dialect': 'posix',
+                },
+              },
+              'termination': 'exited',
+              'exitCode': 7,
+            },
+          ),
   );
 }
 
@@ -1606,6 +1836,9 @@ final class _Output implements CommandOutputService {
   final observers = <StreamController<CommandCaptureState>>{};
   final cursors = <int>[];
   String status = 'absent';
+  String runId = 'run';
+  String program = 'fixture';
+  String argumentsJson = '[]';
   int version = 0;
   int units = 0;
   int? exit;
@@ -1623,14 +1856,14 @@ final class _Output implements CommandOutputService {
 
   CommandCaptureState captureState(String sessionId) => CommandCaptureState(
     sessionId: sessionId,
-    runId: 'run',
+    runId: runId,
     toolInvocationId: 'invocation',
     state: status,
     version: version,
     highWater: chunks.length,
     totalCodeUnits: units,
-    program: status == 'absent' ? null : 'fixture',
-    argumentsJson: status == 'absent' ? null : '[]',
+    program: status == 'absent' ? null : program,
+    argumentsJson: status == 'absent' ? null : argumentsJson,
     workingDirectory: status == 'absent' ? null : '',
     environmentId: status == 'absent' ? null : 'environment',
     timeoutSeconds: status == 'absent' ? null : 30,
@@ -1670,7 +1903,7 @@ final class _Output implements CommandOutputService {
   }
 
   void identity(String session, String run, String invocation) {
-    expectSync((session, run, invocation), ('session', 'run', 'invocation'));
+    expectSync((session, run, invocation), ('session', runId, 'invocation'));
   }
 
   @override

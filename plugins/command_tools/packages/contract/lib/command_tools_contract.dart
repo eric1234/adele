@@ -41,7 +41,13 @@ final class CommandCaptureState {
   /// Last committed chunk ordinal; zero means no output, not absent capture.
   final int highWater;
   final int totalCodeUnits;
+
+  /// Direct executable, or the provider-selected interpreter for shell captures.
   final String? program;
+
+  /// Direct captures contain a JSON argv array. Shell captures contain a tagged
+  /// object with executionForm: shell, shellCommand, and shellProfile metadata;
+  /// it is not a reconstructed provider-specific argument vector.
   final String? argumentsJson;
   final String? workingDirectory;
   final String? environmentId;

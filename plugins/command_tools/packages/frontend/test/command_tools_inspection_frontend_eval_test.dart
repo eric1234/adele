@@ -323,6 +323,194 @@ void main() {
   );
 
   testWidgets(
+    'actual shell EVC keeps multiline pending evidence and adds only reported profile facts',
+    (tester) async {
+      const script =
+          '  printf "%s\\n" "a && b"\n\n'
+          'printf done | wc -c > result.txt\n';
+      const arguments = <String, Object?>{
+        'shellCommand': script,
+        'workingDirectory': 'lib',
+        'timeoutSeconds': 75,
+      };
+      const displayed =
+          '  printf "%s\\\\n" "a && b"\n\n'
+          'printf done | wc -c > result.txt\n';
+      final source = _Source(_activity(arguments: arguments));
+      await tester.pumpWidget(
+        _host(Column(children: [compact(source), presentation(source)])),
+      );
+      final summary = find.text(
+        'Run Command (shell): ${compactDisplayText(script, maximumCharacters: 240, quoted: true)}',
+      );
+      expect(summary, findsOneWidget);
+      expect(find.text('Shell command (display escapes):'), findsOneWidget);
+      expect(find.text(displayed), findsOneWidget);
+      expect(find.textContaining('Program:'), findsNothing);
+      expect(find.textContaining('Arguments (direct argv)'), findsNothing);
+      expect(find.text('Working directory: "lib"'), findsOneWidget);
+      expect(find.text('Timeout seconds: 75'), findsOneWidget);
+      expect(source.subscriptions, 2);
+      final summaryElement = tester.element(summary);
+      final scriptElement = tester.element(find.text(displayed));
+      for (final stage in const [
+        (kind: ToolActivityKind.prepared, label: 'Prepared'),
+        (
+          kind: ToolActivityKind.approvalRequested,
+          label: 'Waiting for approval',
+        ),
+        (kind: ToolActivityKind.executionStarted, label: 'Running'),
+      ]) {
+        source.value = _activity(arguments: arguments, kind: stage.kind);
+        source.notifyListeners();
+        await tester.pumpAndSettle();
+        expect(find.text('Status: ${stage.label}'), findsOneWidget);
+        expect(find.text('Tool delivery: Pending'), findsOneWidget);
+        expect(find.text('Process termination: Not reported'), findsOneWidget);
+        expect(find.textContaining('Shell profile:'), findsNothing);
+        expect(find.textContaining('Interpreter:'), findsNothing);
+        expect(find.textContaining('Dialect:'), findsNothing);
+        expect(tester.element(summary), same(summaryElement));
+        expect(tester.element(find.text(displayed)), same(scriptElement));
+      }
+      source.value = _activity(
+        arguments: arguments,
+        kind: ToolActivityKind.completed,
+        disposition: ToolOutcomeDisposition.success,
+        data: {
+          'executionForm': 'shell',
+          ...arguments,
+          'shellProfile': {
+            'profileId': 'selected-profile',
+            'interpreter': '/usr/bin/bash',
+            'dialect': 'posix',
+          },
+          'termination': 'exited',
+          'exitCode': 7,
+          'stdout': 'PRIVATE-OUTPUT',
+          'stderr': '',
+          'stdoutTruncated': false,
+          'stderrTruncated': false,
+          'captureState': 'complete',
+        },
+      );
+      source.notifyListeners();
+      await tester.pumpAndSettle();
+      expect(find.text('Status: Completed'), findsOneWidget);
+      expect(find.text('Tool delivery: success'), findsOneWidget);
+      expect(find.text('Process termination: exited'), findsOneWidget);
+      expect(find.text('Exit code: 7'), findsOneWidget);
+      expect(find.text('Shell profile: "selected-profile"'), findsOneWidget);
+      expect(find.text('Interpreter: "/usr/bin/bash"'), findsOneWidget);
+      expect(find.text('Dialect: "posix"'), findsOneWidget);
+      expect(find.textContaining('PRIVATE'), findsNothing);
+      expect(find.textContaining('Succeeded'), findsNothing);
+      expect(tester.element(summary), same(summaryElement));
+      expect(tester.element(find.text(displayed)), same(scriptElement));
+      expect(source.value.canonicalArguments, arguments);
+      expect(source.value.outcome!.hostData['shellCommand'], script);
+      expect(source.subscriptions, 2);
+      expect(find.byType(TextButton), findsNothing);
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(source.listening, isFalse);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'compact shell summary is bounded and escaped without requiring program',
+    (tester) async {
+      final script =
+          'printf "a"\\n\n\r\t\u001b[31m\u202E\u200B'
+          '${'x' * 1000}PRIVATE-SUFFIX';
+      final source = _Source(
+        _activity(
+          arguments: {
+            'shellCommand': script,
+            'workingDirectory': '',
+            'timeoutSeconds': 120,
+          },
+        ),
+      );
+      await tester.binding.setSurfaceSize(const Size(360, 640));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.pumpWidget(_host(compact(source)));
+      expect(find.byType(Text), findsOneWidget);
+      final text = tester.widget<Text>(find.byType(Text)).data!;
+      expect(
+        text,
+        startsWith(
+          r'Run Command (shell): "printf \"a\"\\n\n\r\t\u001B[31m\u202E\u200B',
+        ),
+      );
+      expect(text, endsWith('..."'));
+      expect(text.length, lessThanOrEqualTo(261));
+      expect(text, isNot(contains('PRIVATE-SUFFIX')));
+      for (final control in ['\n', '\r', '\t', '\u001b', '\u202E', '\u200B']) {
+        expect(text, isNot(contains(control)));
+      }
+      expect(find.textContaining('Program:'), findsNothing);
+      expect(find.text('Factual tool fallback'), findsNothing);
+      expect(source.value.canonicalArguments['shellCommand'], script);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'rich shell display preserves lines and visibly distinguishes unsafe controls from literals',
+    (tester) async {
+      const script =
+          '  echo "quoted"\n\t\u001b[31m\u202E\u200B\\n\r\n'
+          '\nlast \u0004';
+      const displayed =
+          '  echo "quoted"\n'
+          r'\t\u001B[31m\u202E\u200B\\n\r'
+          '\n\nlast \\u0004';
+      const profile = 'selected\n\u202E';
+      final source = _Source(
+        _activity(
+          arguments: {
+            'shellCommand': script,
+            'workingDirectory': '',
+            'timeoutSeconds': 30,
+          },
+          kind: ToolActivityKind.completed,
+          disposition: ToolOutcomeDisposition.success,
+          data: {
+            'executionForm': 'shell',
+            'shellCommand': script,
+            'shellProfile': {
+              'profileId': profile,
+              'interpreter': '/bin/sh\u001b',
+              'dialect': 'posix\r',
+            },
+            'termination': 'timedOut',
+            'exitCode': null,
+          },
+        ),
+      );
+      await tester.binding.setSurfaceSize(const Size(360, 640));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.pumpWidget(_host(presentation(source)));
+      expect(find.text(displayed), findsOneWidget);
+      expect(find.text(r'Shell profile: "selected\n\u202E"'), findsOneWidget);
+      expect(find.text(r'Interpreter: "/bin/sh\u001B"'), findsOneWidget);
+      expect(find.text(r'Dialect: "posix\r"'), findsOneWidget);
+      expect(find.text('Process termination: timedOut'), findsOneWidget);
+      expect(find.text('Exit code: Not reported'), findsOneWidget);
+      for (final Text text in tester.widgetList<Text>(find.byType(Text))) {
+        expect(text.data, isNot(contains('\u001b')));
+        expect(text.data, isNot(contains('\u202E')));
+        expect(text.data, isNot(contains('\u200B')));
+        expect(text.data, isNot(contains('\r')));
+      }
+      expect(source.value.canonicalArguments['shellCommand'], script);
+      expect(source.value.outcome!.hostData['shellCommand'], script);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
     'actual EVC escapes metadata and omits duplicate plaintext model output',
     (tester) async {
       const String unsafe = 'a\n\r\t\u001b[31m\u202E\u200B\\n';

@@ -1,6 +1,8 @@
 /// Remote Command Tools and read-only retained-output search.
 library;
 
+import 'dart:convert';
+
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_model_tool/adele_model_tool.dart';
 import 'package:adele_model_tool/remote_model_tool.dart';
@@ -116,9 +118,16 @@ final class CommandToolsBackend implements RemoteModelToolService {
     RemoteModelToolMaterialization materialization,
   ) async => [
     RemoteToolDescriptor.fromLocal(
-      commandToolRegistration(const _IdentityProcessFacet()),
-      routeId: runCommandToolId.value,
-      executionHostServices: const [authorizedEnvironmentProcessServiceId],
+      commandToolRegistration(
+        const _IdentityProcessFacet(),
+        shellProfile: materialization.shellProfile?.toLocal(),
+      ),
+      routeId: _routeForProfile(materialization.shellProfile?.toLocal()),
+      executionHostServices: [
+        authorizedEnvironmentProcessServiceId,
+        if (materialization.shellProfile != null)
+          authorizedEnvironmentShellServiceId,
+      ],
     ),
   ];
 
@@ -127,11 +136,12 @@ final class CommandToolsBackend implements RemoteModelToolService {
     String routeId,
     Map<String, Object?> proposedArguments,
   ) async {
-    _requireRoute(routeId);
+    final profile = _profileForRoute(routeId);
     final CanonicalToolArguments arguments;
     try {
       arguments = await commandToolRegistration(
         const _IdentityProcessFacet(),
+        shellProfile: profile,
       ).executable.validateAndNormalize(proposedArguments);
     } on ToolArgumentValidationException catch (error) {
       throw RemoteToolArgumentValidationFailure(
@@ -152,13 +162,16 @@ final class CommandToolsBackend implements RemoteModelToolService {
     String toolInvocationId,
     String? environmentId,
   ) async {
-    _requireRoute(routeId);
+    final profile = _profileForRoute(routeId);
     final facet = _IdentityProcessFacet(
       sessionId: SessionId(sessionId),
       environmentId: _requireEnvironment(environmentId),
     );
     return RemoteEffectDescription.fromLocal(
-      await commandToolRegistration(facet).executable.describe(
+      await commandToolRegistration(
+        facet,
+        shellProfile: profile,
+      ).executable.describe(
         arguments.toLocal(),
         ToolExecutionContext(
           sessionId: facet.sessionId,
@@ -179,7 +192,7 @@ final class CommandToolsBackend implements RemoteModelToolService {
     String? environmentId,
     String? hostInvocationContext,
   ) async* {
-    _requireRoute(routeId);
+    final profile = _profileForRoute(routeId);
     if (hostInvocationContext == null) {
       throw StateError(
         'Command Tools requires an authorized host invocation context.',
@@ -195,7 +208,24 @@ final class CommandToolsBackend implements RemoteModelToolService {
         ),
       ),
     );
-    yield* commandToolRegistration(facet, transcripts: transcripts).executable
+    final shell = profile == null
+        ? null
+        : _OperationShellFacet(
+            sessionId: facet.sessionId,
+            environmentId: facet.environmentId,
+            client: AuthorizedEnvironmentShellServiceClient(
+              _hostRequests.bind(
+                hostInvocationContext: hostInvocationContext,
+                serviceId: authorizedEnvironmentShellServiceId,
+              ),
+            ),
+          );
+    yield* commandToolRegistration(
+          facet,
+          transcripts: transcripts,
+          shellProfile: profile,
+          shell: shell,
+        ).executable
         .execute(
           arguments.toLocal(),
           ToolExecutionContext(
@@ -207,22 +237,47 @@ final class CommandToolsBackend implements RemoteModelToolService {
         .map(RemoteToolExecutionEvent.fromLocal);
   }
 
-  void _requireRoute(String routeId) {
-    if (routeId != runCommandToolId.value) {
-      throw ArgumentError.value(
-        routeId,
-        'routeId',
-        'Unknown Command tool route.',
-      );
-    }
-  }
-
   EnvironmentId _requireEnvironment(String? environmentId) {
     if (environmentId == null) {
       throw StateError('Command Tools requires Environment identity data.');
     }
     return EnvironmentId(environmentId);
   }
+}
+
+// A route carries only the captured description, not Session/Environment selectors
+// or authority. The host owns the exact generation and checks the profile again
+// on the operation-scoped service. No generation-global profile registry is kept.
+String get _shellRoutePrefix => '${runCommandToolId.value}/shell-v1:';
+const _maximumShellRouteLength = 24 * 1024;
+
+String _routeForProfile(EnvironmentShellProfile? profile) => profile == null
+    ? runCommandToolId.value
+    : '$_shellRoutePrefix${base64Url.encode(utf8.encode(jsonEncode([profile.profileId, profile.interpreter, profile.dialect])))}';
+
+EnvironmentShellProfile? _profileForRoute(String routeId) {
+  if (routeId == runCommandToolId.value) return null;
+  if (routeId.length > _maximumShellRouteLength ||
+      !routeId.startsWith(_shellRoutePrefix)) {
+    throw const FormatException('Unknown Command tool route.');
+  }
+  final value = jsonDecode(
+    utf8.decode(base64Url.decode(routeId.substring(_shellRoutePrefix.length))),
+  );
+  if (value is! List ||
+      value.length != 3 ||
+      value.any((item) => item is! String)) {
+    throw const FormatException('Invalid Command shell route.');
+  }
+  final profile = EnvironmentShellProfile(
+    profileId: value[0] as String,
+    interpreter: value[1] as String,
+    dialect: value[2] as String,
+  );
+  if (_routeForProfile(profile) != routeId) {
+    throw const FormatException('Noncanonical Command shell route.');
+  }
+  return profile;
 }
 
 // Description identity is data, not authority. Only execute binds a client.
@@ -273,4 +328,31 @@ final class _OperationProcessFacet extends _IdentityProcessFacet {
     // The host validates exact authority around every event and settlement.
     // Transported identities never select or renew an execution binding.
   }
+}
+
+final class _OperationShellFacet implements AuthorizedEnvironmentShellFacet {
+  const _OperationShellFacet({
+    required this.sessionId,
+    required this.environmentId,
+    required this.client,
+  });
+
+  @override
+  final SessionId sessionId;
+  @override
+  final EnvironmentId environmentId;
+  final AuthorizedEnvironmentShellServiceClient client;
+
+  @override
+  Stream<EnvironmentProcessEvent> runShellCommand(
+    EnvironmentShellCommandRequest request,
+  ) => client.runShellCommand(request);
+
+  @override
+  void validateBinding() {
+    // The host owns exact binding validation and operation retirement.
+  }
+
+  @override
+  void Function() onRetire(void Function() observer) => () {};
 }

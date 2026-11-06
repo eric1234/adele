@@ -2602,6 +2602,552 @@ void main() {
   );
 
   testWidgets(
+    'S2b normal Chat approves raw shell execution, searches capture, preserves direct argv and denies shell',
+    (tester) => tester.runAsync(() async {
+      await tester.binding.setSurfaceSize(const Size(1600, 1200));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final fixture = await _ProductFixture.create();
+      final interpreter = await File('/bin/sh').resolveSymbolicLinks();
+      final processServer = await ServerSocket.bind(
+        InternetAddress.loopbackIPv4,
+        0,
+      );
+      final children = <_PresentationProcess>[];
+      final processSubscription = processServer.listen((socket) {
+        children.add(_PresentationProcess(socket));
+      });
+      final childCommand =
+          '${_shellQuote(prepared.dartaotruntime)} '
+          '${_shellQuote(prepared.commandProcess.path)} '
+          '${processServer.port} concurrent';
+      const quotedOutput = r'S2B quoted $HOME ; | > && "text"';
+      final shellCommand =
+          '  : > "shell started.txt"\n'
+          '$childCommand S2B &&\n'
+          r'''printf '%s\n' 'S2B quoted $HOME ; | > && "text"' > 'shell result.txt' &&
+printf '%s\n' 's2b piped value' | tr '[:lower:]' '[:upper:]' >> 'shell result.txt' &&
+cat 'shell result.txt'
+printf '%s\n' 'S2B_SHELL_STDERR' >&2
+printf '%s\n' 'S2B_SHELL_DONE'
+'''
+          '  \n';
+      final shellProposal = <String, Object?>{
+        'shellCommand': shellCommand,
+        'workingDirectory': 'lib//./',
+      };
+      final shellArguments = <String, Object?>{
+        'shellCommand': shellCommand,
+        'workingDirectory': 'lib',
+        'timeoutSeconds': 120,
+      };
+      const directText = r'S2B_DIRECT $HOME ; | > && "literal"';
+      const directProposal = <String, Object?>{
+        'program': '/usr/bin/printf',
+        'arguments': ['%s\n', directText],
+        'workingDirectory': '.',
+        'timeoutSeconds': 5,
+      };
+      final directArguments = <String, Object?>{
+        ...directProposal,
+        'workingDirectory': '',
+      };
+      final deniedArguments = <String, Object?>{
+        'shellCommand': ': > "denied shell.txt"\n$childCommand DENIED\n',
+        'workingDirectory': 'lib',
+        'timeoutSeconds': 5,
+      };
+      const answer =
+          'Shell and direct commands completed; the last shell was denied.';
+      final outbound = <Map<String, Object?>>[];
+      final endpointFailures = <(Object, StackTrace)>[];
+      late Map<String, Object?> captureReference;
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final subscription = server.listen((request) async {
+        try {
+          expect(request.method, 'POST');
+          expect(request.uri.path, '/backend-api/codex/responses');
+          final body =
+              jsonDecode(await utf8.decoder.bind(request).join())
+                  as Map<String, Object?>;
+          outbound.add(body);
+          final tools = (body['tools']! as List<Object?>)
+              .cast<Map<String, Object?>>();
+          final command = tools.singleWhere(
+            (tool) => tool['name'] == 'run_command',
+          );
+          expect(command['description'], contains(interpreter));
+          expect(command['description'], contains('posix'));
+          expect(command['strict'], isFalse);
+          final schema = command['parameters']! as Map<String, Object?>;
+          expect(schema['type'], 'object');
+          expect(schema['additionalProperties'], isFalse);
+          expect(schema.containsKey('oneOf'), isFalse);
+          expect(schema.containsKey('anyOf'), isFalse);
+          expect(schema['required'] ?? const [], isNot(contains('program')));
+          final properties = schema['properties']! as Map<String, Object?>;
+          expect(
+            properties.keys,
+            unorderedEquals([
+              'program',
+              'arguments',
+              'shellCommand',
+              'workingDirectory',
+              'timeoutSeconds',
+            ]),
+          );
+          final shellSchema =
+              properties['shellCommand']! as Map<String, Object?>;
+          expect(shellSchema['type'], 'string');
+          expect(shellSchema['maxLength'], 16384);
+          expect((properties['program']! as Map)['type'], 'string');
+          expect((properties['arguments']! as Map)['type'], 'array');
+          expect(
+            tools.where((tool) => tool['name'] == 'search_command_output'),
+            hasLength(1),
+          );
+          request.response.headers.contentType = ContentType(
+            'text',
+            'event-stream',
+            charset: 'utf-8',
+          );
+          switch (outbound.length) {
+            case 1:
+              _output(
+                request.response,
+                _call('shell', 'run_command', shellProposal),
+              );
+            case 2:
+              final output = _toolOutput(body, 'shell');
+              expect(output, contains('Exit code: 0'));
+              expect(output, contains('Termination: exited'));
+              expect(output, contains('S2B_SHELL_DONE'));
+              expect(output, contains('S2B_SHELL_STDERR'));
+              final referenceLine = const LineSplitter()
+                  .convert(output)
+                  .singleWhere(
+                    (line) => line.startsWith('Retained command output: '),
+                  );
+              captureReference =
+                  jsonDecode(
+                        referenceLine.substring(
+                          'Retained command output: '.length,
+                        ),
+                      )
+                      as Map<String, Object?>;
+              _output(
+                request.response,
+                _call('search-shell', 'search_command_output', {
+                  ...captureReference,
+                  'pattern': '^S2B quoted',
+                  'before': 0,
+                  'after': 0,
+                }),
+              );
+            case 3:
+              final search =
+                  jsonDecode(_toolOutput(body, 'search-shell')) as Map;
+              expect(search['captureState'], 'complete');
+              expect(search['matchCount'], 1);
+              expect(search['exhaustive'], isTrue);
+              expect(search['reachedEnd'], isTrue);
+              final line = (search['lines'] as List).single as Map;
+              expect(line['stream'], 'stdout');
+              expect(line['text'], quotedOutput);
+              expect(line['isMatch'], isTrue);
+              _output(
+                request.response,
+                _call('direct', 'run_command', directProposal),
+              );
+            case 4:
+              final output = _toolOutput(body, 'direct');
+              expect(output, contains('Program: "/usr/bin/printf"'));
+              expect(output, contains('Exit code: 0'));
+              expect(output, contains(directText));
+              _output(
+                request.response,
+                _call('denied-shell', 'run_command', deniedArguments),
+              );
+            case 5:
+              final rejected = _toolOutput(body, 'denied-shell');
+              expect(rejected, contains('rejected'));
+              expect(rejected, isNot(contains('Exit code:')));
+              expect(rejected, isNot(contains('Retained command output:')));
+              _output(request.response, _message('s2b-final', answer));
+            default:
+              fail('Unexpected shell model invocation ${outbound.length}.');
+          }
+          _sse(request.response, {
+            'type': 'response.completed',
+            'response': {
+              'id': 's2b-${outbound.length}',
+              'model': 'gpt-6-astra',
+            },
+          });
+        } on Object catch (error, stack) {
+          endpointFailures.add((error, stack));
+        } finally {
+          await request.response.close();
+        }
+      });
+      addTearDown(() async {
+        await server.close(force: true);
+        await subscription.cancel();
+        await processSubscription.cancel();
+        await processServer.close();
+      });
+      await fixture.launch(
+        tester,
+        prepared,
+        dartaotruntimeExecutable: await fixture.isolatedRuntime(prepared),
+        endpoint: server,
+      );
+      addTearDown(() async {
+        for (final child in children) {
+          if (!child.exited && child.pid != null) {
+            Process.killPid(child.pid!, ProcessSignal.sigterm);
+          }
+          child.socket.destroy();
+          await child.lines.cancel();
+        }
+      });
+      final runtime = fixture.runtime;
+      expect(runtime.plugins.catalog!.issues, isEmpty);
+      expect(runtime.plugins.host, isA<PluginBackendHost>());
+      final commandBackend = runtime.plugins.backends.singleWhere(
+        (backend) => backend.installation.metadata.id.value == _commandPluginId,
+      );
+      expect(commandBackend.state, InstalledBackendState.active);
+      final command = CommandOutputServiceClient(
+        commandBackend.connection!.channelFor(
+          commandBackend.connection!.defaultConfigurationContext,
+          commandOutputServiceId,
+        ),
+      );
+      await fixture.openTask(tester);
+      final environment = fixture.shell(tester).environment!;
+      final worktree = Directory(
+        developmentGitWorktreePath(fixture.shell(tester).project!, environment),
+      );
+      expect(worktree.path, isNot(fixture.source.path));
+      expect(
+        runtime.lifecycle.environmentRuntime
+            .currentMaterialization(environment.id)!
+            .provider,
+        isA<GeneratedEnvironmentProvider>(),
+      );
+      final sourceBefore = await _sourceSnapshot(
+        fixture.source,
+        taskWorktree: worktree,
+      );
+      await _tap(tester, 'New Chat Session');
+      await _pumpUntil(tester, () => _composer().evaluate().isNotEmpty);
+      final session = _session(tester);
+      expect(
+        runtime.store.requireSessionAuthority(session.id).environmentId,
+        environment.id,
+      );
+      await _send(
+        tester,
+        'Run the shell, search its output, run direct argv, and deny the last shell.',
+      );
+      await _terminalUntil(
+        tester,
+        () => fixture.status(tester).pendingApproval != null,
+        'ordinary shell approval',
+      );
+      _rethrowEndpointFailure(endpointFailures);
+      final shellApproval = fixture.status(tester).pendingApproval!;
+      expect(shellApproval.toolId, '$_commandPluginId.run-command');
+      expect(shellApproval.toolAlias, 'run_command');
+      expect(jsonDecode(shellApproval.canonicalArgumentsJson), shellArguments);
+      expect(shellApproval.effects, {ToolEffect.processExecution});
+      expect(shellApproval.uncertainty, EffectUncertainty.uncertain);
+      expect(shellApproval.targets, [
+        'adele-environment:/${environment.id.value}/',
+      ]);
+      expect(shellApproval.summary, contains(interpreter));
+      expect(shellApproval.summary, contains('posix'));
+      expect(shellApproval.summary, contains(r'\n'));
+      expect(shellApproval.summary, isNot(contains('\n')));
+      expect(shellApproval.hasUnsafeAuthorityText, isFalse);
+      expect(
+        tester
+            .widget<FilledButton>(
+              find.widgetWithText(FilledButton, 'Allow once'),
+            )
+            .onPressed,
+        isNotNull,
+      );
+      final approvalView = find.byType(RunExecutionStatus);
+      await _terminalTap(
+        tester,
+        find.descendant(of: approvalView, matching: find.text('Details')),
+      );
+      expect(
+        find.descendant(
+          of: approvalView,
+          matching: find.text(shellApproval.canonicalArgumentsJson),
+        ),
+        findsOneWidget,
+      );
+      await _terminalTap(
+        tester,
+        find.descendant(of: approvalView, matching: find.text('Details')),
+      );
+      final compact = find
+          .ancestor(
+            of: find
+                .descendant(
+                  of: _chatView(),
+                  matching: find.textContaining('Run Command (shell):'),
+                )
+                .last,
+            matching: find.byType(TextButton),
+          )
+          .first;
+      await _terminalTap(tester, compact);
+      final inspection = find.byType(ToolActivityInspectionHost);
+      await _terminalUntil(
+        tester,
+        () => inspection.evaluate().isNotEmpty,
+        'stock shell Inspection',
+      );
+      final activitySource = tester
+          .widget<ToolActivityInspectionHost>(inspection)
+          .source;
+      final runId = fixture.runIds.values.single;
+      final capture = _PresentedCapture(
+        command,
+        session.id.value,
+        runId.value,
+        activitySource.snapshot.id.value,
+      );
+      expect(activitySource.snapshot.canonicalArguments, shellArguments);
+      expect(
+        activitySource.snapshot.changes.map((change) => change.kind),
+        isNot(contains(ToolActivityKind.executionStarted)),
+      );
+      expect((await capture.state()).state, 'absent');
+      await _terminalUntil(
+        tester,
+        () => find
+            .text('No output capture has been admitted.')
+            .evaluate()
+            .isNotEmpty,
+        'stock shell reader observes absent capture',
+      );
+      expect(children, isEmpty);
+      expect(
+        await File('${worktree.path}/lib/shell started.txt').exists(),
+        isFalse,
+      );
+      expect(
+        await File('${worktree.path}/lib/shell result.txt').exists(),
+        isFalse,
+      );
+      expect(outbound, hasLength(1));
+
+      await _terminalTap(tester, find.text('Allow once'));
+      await _terminalUntil(
+        tester,
+        () => children.length == 1,
+        'approved shell process',
+      );
+      final child = children.single;
+      await child.stage('connected');
+      expect(
+        child.workingDirectory,
+        await Directory('${worktree.path}/lib').resolveSymbolicLinks(),
+      );
+      expect(
+        await File('${worktree.path}/lib/shell started.txt').exists(),
+        isTrue,
+      );
+      expect((await capture.state()).state, 'capturing');
+      child.release('produce');
+      await child.stage('started');
+      await _projectionText(tester, inspection, 'CONCURRENT_S2B_START');
+      child.release('progress');
+      await child.stage('progress');
+      await _projectionText(tester, inspection, 'CONCURRENT_S2B_PROGRESS');
+      expect(await child.isAlive(), isTrue);
+      child.release('exit');
+      await _terminalUntil(
+        tester,
+        () =>
+            fixture.status(tester).pendingApproval != null &&
+            !identical(fixture.status(tester).pendingApproval, shellApproval),
+        'direct argv approval after retained shell search',
+      );
+      _rethrowEndpointFailure(endpointFailures);
+      expect(outbound, hasLength(3));
+      expect(await child.isAlive(), isFalse);
+      child.exited = true;
+      expect(captureReference, {
+        'runId': runId.value,
+        'toolInvocationId': capture.invocationId,
+      });
+      expect(
+        await File('${worktree.path}/lib/shell result.txt').readAsString(),
+        '$quotedOutput\nS2B PIPED VALUE\n',
+      );
+      final shellCapture = await capture.state();
+      expect(shellCapture.state, 'complete');
+      expect(shellCapture.termination, 'exited');
+      expect(shellCapture.exitCode, 0);
+      expect(shellCapture.program, interpreter);
+      expect(shellCapture.workingDirectory, 'lib');
+      expect(shellCapture.environmentId, environment.id.value);
+      expect(shellCapture.timeoutSeconds, 120);
+      final metadata = jsonDecode(shellCapture.argumentsJson!) as Map;
+      expect(metadata['executionForm'], 'shell');
+      expect(metadata['shellCommand'], shellCommand);
+      final profile = metadata['shellProfile'] as Map;
+      expect(profile['interpreter'], interpreter);
+      expect(profile['dialect'], 'posix');
+      expect(profile['profileId'], startsWith('git-shell-v1:'));
+      expect(await capture.tail(), contains(quotedOutput));
+      await _projectionText(tester, inspection, 'S2B_SHELL_DONE');
+      await _terminalTap(tester, find.byTooltip('Dismiss Inspection').first);
+
+      final directApproval = fixture.status(tester).pendingApproval!;
+      expect(
+        jsonDecode(directApproval.canonicalArgumentsJson),
+        directArguments,
+      );
+      expect(directApproval.effects, {ToolEffect.processExecution});
+      await _terminalTap(tester, find.text('Allow once'));
+      await _terminalUntil(
+        tester,
+        () =>
+            fixture.status(tester).pendingApproval != null &&
+            !identical(fixture.status(tester).pendingApproval, directApproval),
+        'denied shell approval',
+      );
+      _rethrowEndpointFailure(endpointFailures);
+      expect(
+        jsonDecode(
+          fixture.status(tester).pendingApproval!.canonicalArgumentsJson,
+        ),
+        deniedArguments,
+      );
+      expect(outbound, hasLength(4));
+      expect(children, hasLength(1));
+      expect(
+        await File('${worktree.path}/lib/denied shell.txt').exists(),
+        isFalse,
+      );
+      await _terminalTap(tester, find.text('Deny'));
+      await _terminalUntil(
+        tester,
+        () => find.text(answer).evaluate().isNotEmpty,
+        'shell Run settlement',
+      );
+      _rethrowEndpointFailure(endpointFailures);
+      expect(outbound, hasLength(5));
+      expect(fixture.status(tester).failureMessage, isNull);
+      expect(fixture.status(tester).pendingApproval, isNull);
+      expect(children, hasLength(1));
+      expect(
+        await File('${worktree.path}/lib/denied shell.txt').exists(),
+        isFalse,
+      );
+      expect(
+        await _sourceSnapshot(fixture.source, taskWorktree: worktree),
+        sourceBefore,
+      );
+
+      final activity = runtime.lifecycle.runActivity(runId)!;
+      expect(activity.state, RunState.completed);
+      expect(activity.tools.map((tool) => tool.providerCallId), [
+        'shell',
+        'search-shell',
+        'direct',
+        'denied-shell',
+      ]);
+      final shell = activity.tools[0];
+      expect(shell.canonicalArguments, shellArguments);
+      expect(shell.outcome!.effectCertainty, EffectCertainty.knownOccurred);
+      expect(shell.outcome!.hostData['executionForm'], 'shell');
+      expect(shell.outcome!.hostData['shellCommand'], shellCommand);
+      expect(shell.outcome!.hostData['shellProfile'], profile);
+      expect(shell.outcome!.hostData.containsKey('program'), isFalse);
+      expect(shell.outcome!.hostData.containsKey('arguments'), isFalse);
+      expect(shell.outcome!.hostData['captureState'], 'complete');
+      expect(shell.outcome!.hostData['stdout'], contains(quotedOutput));
+      expect(shell.outcome!.hostData['stderr'], contains('S2B_SHELL_STDERR'));
+      final search = activity.tools[1];
+      expect(search.effects!.effects, {ToolEffect.resourceInspection});
+      expect(search.effects!.uncertainty, EffectUncertainty.none);
+      expect(
+        search.changes.map((change) => change.kind),
+        isNot(contains(ToolActivityKind.approvalRequested)),
+      );
+      final direct = activity.tools[2];
+      expect(direct.canonicalArguments, directArguments);
+      expect(direct.outcome!.hostData['stdout'], '$directText\n');
+      expect(direct.outcome!.hostData['exitCode'], 0);
+      for (final approved in [shell, direct]) {
+        final decision = approved.changes.singleWhere(
+          (change) => change.kind == ToolActivityKind.approvalResolved,
+        );
+        final execution = approved.changes.singleWhere(
+          (change) => change.kind == ToolActivityKind.executionStarted,
+        );
+        expect(decision.approved, isTrue);
+        expect(execution.sequence, greaterThan(decision.sequence));
+      }
+      final directCapture = await command.getState(
+        session.id.value,
+        runId.value,
+        direct.id.value,
+      );
+      expect(directCapture.state, 'complete');
+      expect(directCapture.program, '/usr/bin/printf');
+      expect(
+        jsonDecode(directCapture.argumentsJson!),
+        directArguments['arguments'],
+      );
+      final denied = activity.tools[3];
+      expect(denied.outcome!.disposition, ToolOutcomeDisposition.userRejected);
+      expect(denied.outcome!.effectCertainty, EffectCertainty.knownNotOccurred);
+      expect(
+        denied.changes
+            .singleWhere(
+              (change) => change.kind == ToolActivityKind.approvalResolved,
+            )
+            .approved,
+        isFalse,
+      );
+      expect(
+        denied.changes.map((change) => change.kind),
+        isNot(contains(ToolActivityKind.executionStarted)),
+      );
+      expect(
+        (await command.getState(
+          session.id.value,
+          runId.value,
+          denied.id.value,
+        )).state,
+        'absent',
+      );
+      expect((await capture.state()).version, shellCapture.version);
+      expect(fixture.runIds.values, hasLength(1));
+      expect(tester.takeException(), isNull);
+      // Native/backend shutdown needs real async work, not fake-async teardown.
+      expect(
+        await tester.binding.handleRequestAppExit().timeout(
+          const Duration(seconds: 30),
+        ),
+        AppExitResponse.exit,
+      );
+      await tester.pumpWidget(const SizedBox.shrink());
+    }),
+    skip: !Platform.isLinux || Abi.current() != Abi.linuxX64,
+    timeout: const Timeout(Duration(minutes: 3)),
+  );
+
+  testWidgets(
     'T3b normal Chat keeps stock output tabs warm and restores cold Session history',
     (tester) => tester.runAsync(() async {
       await tester.binding.setSurfaceSize(const Size(1600, 1200));

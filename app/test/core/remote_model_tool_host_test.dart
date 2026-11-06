@@ -1313,7 +1313,11 @@ void main() {
       final tools = await compose();
       final captured = context.process;
       context.process = _Files();
-      expect(context.requested, [AuthorizedEnvironmentProcessFacet]);
+      expect(context.requested, [
+        AuthorizedEnvironmentProcessFacet,
+        AuthorizedEnvironmentShellDescriptionFacet,
+        AuthorizedEnvironmentShellFacet,
+      ]);
       final resolved =
           await const ToolInvocationResolver().resolve(
                 invocationId: ToolInvocationId('process-invocation'),
@@ -1363,7 +1367,11 @@ void main() {
       expect(observed.outcome.hostData['environmentId'], 'tool-environment');
       expect(captured.processRequests.single.arguments, ['diff', '--check']);
       expect(context.process.processRequests, isEmpty);
-      expect(context.requested, [AuthorizedEnvironmentProcessFacet]);
+      expect(context.requested, [
+        AuthorizedEnvironmentProcessFacet,
+        AuthorizedEnvironmentShellDescriptionFacet,
+        AuthorizedEnvironmentShellFacet,
+      ]);
       captured.bindingFailure = const AuthorizedEnvironmentBindingStale(
         'Retired process',
       );
