@@ -22,11 +22,19 @@ void main() {
   test(
     'materialize preserves descriptor fields and opaque executable route',
     () async {
-      final descriptors = await client.materialize('session-1');
+      final descriptors = await client.materialize(
+        _materialization('session-1'),
+      );
       expect(remoteModelToolServiceId, 'modelTool');
       expect(channel.method, 'modelTool.materialize');
-      expect(channel.payload, {'sessionId': 'session-1'});
-      expect(service.materialization, 'session-1');
+      expect(channel.payload, {
+        'materialization': {
+          'sessionId': 'session-1',
+          'environmentId': null,
+          'shellProfile': null,
+        },
+      });
+      expect(service.materialization!.sessionId, 'session-1');
       final descriptor = descriptors.single;
       expect(descriptor.toolId, 'dev.adele.tool.test');
       expect(descriptor.toolDescription, 'Semantic tool description');
@@ -47,6 +55,83 @@ void main() {
       );
       expect(descriptor, isNot(same(service.descriptor)));
       expect(() => descriptors.clear(), throwsUnsupportedError);
+    },
+  );
+
+  test(
+    'materialization carries bounded shell data without authority',
+    () async {
+      final profile = RemoteEnvironmentShellProfile(
+        profileId: 'opaque:profile',
+        interpreter: '/remote/bash',
+        dialect: 'bash',
+      );
+      final materialization = RemoteModelToolMaterialization(
+        sessionId: 'session',
+        environmentId: 'environment',
+        shellProfile: profile,
+      );
+      await client.materialize(materialization);
+      expect(service.materialization, isNot(same(materialization)));
+      expect(service.materialization!.shellProfile, isNot(same(profile)));
+      expect(
+        service.materialization!.shellProfile!.toLocal().profileId,
+        'opaque:profile',
+      );
+      expect(channel.payload, {
+        'materialization': {
+          'sessionId': 'session',
+          'environmentId': 'environment',
+          'shellProfile': {
+            'profileId': 'opaque:profile',
+            'interpreter': '/remote/bash',
+            'dialect': 'bash',
+          },
+        },
+      });
+      final encoded = Map<String, Object?>.from(
+        channel.payload!['materialization']! as Map,
+      );
+      final shell = Map<String, Object?>.from(encoded['shellProfile']! as Map);
+      for (final invalid in [
+        {...encoded}..remove('shellProfile'),
+        {...encoded, 'environmentId': null},
+        {...encoded, 'sessionId': ''},
+        {...encoded, 'hostInvocationContext': 'forged'},
+        {
+          ...encoded,
+          'shellProfile': {...shell, 'dialect': 'BASH'},
+        },
+        {
+          ...encoded,
+          'shellProfile': {...shell, 'profileId': 'p' * 257},
+        },
+        {
+          ...encoded,
+          'shellProfile': {...shell, 'interpreter': 'x' * 4097},
+        },
+        {
+          ...encoded,
+          'shellProfile': {...shell, 'authority': 'forged'},
+        },
+      ]) {
+        service.materialization = null;
+        final response = await dispatcher.dispatch(
+          _request(remoteModelToolServiceMaterializeId, {
+            'materialization': invalid,
+          }),
+        );
+        expect((response['error']! as Map)['code'], 'invalid_request');
+        expect(service.materialization, isNull);
+      }
+      expect(
+        () => RemoteModelToolMaterialization(
+          sessionId: 'session',
+          environmentId: null,
+          shellProfile: profile,
+        ),
+        throwsFormatException,
+      );
     },
   );
 
@@ -321,7 +406,11 @@ void main() {
     expect(service.validationRoute, isNull);
     final forbiddenContext = await dispatcher.dispatch(
       _request(remoteModelToolServiceMaterializeId, {
-        'sessionId': 'session',
+        'materialization': {
+          'sessionId': 'session',
+          'environmentId': null,
+          'shellProfile': null,
+        },
         'hostInvocationContext': null,
       }),
     );
@@ -636,7 +725,7 @@ void main() {
   test(
     'generated decoders enforce constructor rules, enums and exact fields',
     () async {
-      await client.materialize('session');
+      await client.materialize(_materialization('session'));
       final descriptor = Map<String, Object?>.from(
         (channel.response!['payload']! as List).single as Map,
       );
@@ -654,7 +743,7 @@ void main() {
         await expectLater(
           RemoteModelToolServiceClient(
             _ResponseChannel(response: [invalid]),
-          ).materialize('session'),
+          ).materialize(_materialization('session')),
           throwsA(isA<AdeleProtocolException>()),
         );
       }
@@ -721,6 +810,13 @@ void main() {
   );
 }
 
+RemoteModelToolMaterialization _materialization(String sessionId) =>
+    RemoteModelToolMaterialization(
+      sessionId: sessionId,
+      environmentId: null,
+      shellProfile: null,
+    );
+
 RemoteToolDescriptor _descriptor({
   Map<String, Object?> schema = const {'type': 'object'},
   List<String> executionHostServices = const ['authorizedEnvironmentRead'],
@@ -751,7 +847,7 @@ RemoteToolOutcome _outcome({
 
 final class _Service implements RemoteModelToolService {
   final descriptor = _descriptor();
-  String? materialization;
+  RemoteModelToolMaterialization? materialization;
   String? validationRoute;
   (String, String, String, String, String?, String?)? invocation;
   RemoteCanonicalToolArguments? arguments;
@@ -785,8 +881,10 @@ final class _Service implements RemoteModelToolService {
   ];
 
   @override
-  Future<List<RemoteToolDescriptor>> materialize(String sessionId) async {
-    materialization = sessionId;
+  Future<List<RemoteToolDescriptor>> materialize(
+    RemoteModelToolMaterialization materialization,
+  ) async {
+    this.materialization = materialization;
     return [descriptor];
   }
 

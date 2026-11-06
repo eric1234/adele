@@ -45,6 +45,7 @@ const _knownHostServices = {
   authorizedEnvironmentReadServiceId,
   authorizedEnvironmentMutationServiceId,
   authorizedEnvironmentProcessServiceId,
+  authorizedEnvironmentShellServiceId,
 };
 
 final class _RemoteModelTools implements ModelToolContribution {
@@ -69,10 +70,22 @@ final class _RemoteModelTools implements ModelToolContribution {
     final process = hostServices.contains(authorizedEnvironmentProcessServiceId)
         ? await context.requireHostService<AuthorizedEnvironmentProcessFacet>()
         : null;
+    final wantsShell = hostServices.contains(
+      authorizedEnvironmentShellServiceId,
+    );
+    final shellDescription = wantsShell
+        ? await context
+              .requireHostService<AuthorizedEnvironmentShellDescriptionFacet>()
+        : null;
+    final shell = wantsShell
+        ? await context.requireHostService<AuthorizedEnvironmentShellFacet>()
+        : null;
     final authorities = <AuthorizedEnvironmentAuthority>[
       ?files,
       ?mutations,
       ?process,
+      ?shellDescription,
+      ?shell,
     ];
     if (authorities.any(
       (authority) => authority.sessionId != context.sessionId,
@@ -82,8 +95,22 @@ final class _RemoteModelTools implements ModelToolContribution {
     if (authorities.map((authority) => authority.environmentId).toSet().length >
         1) {
       throw StateError(
-        'Read, mutation and process authority must share an Environment.',
+        'Captured Environment facets must share an Environment.',
       );
+    }
+    EnvironmentShellProfile? shellProfile;
+    if (shellDescription != null) {
+      // Discovery is read-only; no reverse host invocation exists here.
+      try {
+        shellDescription.validateBinding();
+        shellProfile = await shellDescription.describeShell();
+      } on EnvironmentFailure catch (error) {
+        if (error.code != environmentShellUnavailableCode) rethrow;
+      } finally {
+        shellDescription.validateBinding();
+        shell!.validateBinding();
+        remote.validate();
+      }
     }
     final binding = _ModelToolBinding(
       remote,
@@ -91,12 +118,20 @@ final class _RemoteModelTools implements ModelToolContribution {
       files,
       mutations,
       process,
+      shell,
+      shellProfile,
     );
     // Capturing host dependencies does not grant the backend invocation authority.
     final descriptors = await binding.invoke(
-      () => RemoteModelToolServiceClient(
-        remote.channel,
-      ).materialize(context.sessionId.value),
+      () => RemoteModelToolServiceClient(remote.channel).materialize(
+        RemoteModelToolMaterialization(
+          sessionId: context.sessionId.value,
+          environmentId: binding.environmentId?.value,
+          shellProfile: shellProfile == null
+              ? null
+              : RemoteEnvironmentShellProfile.fromLocal(shellProfile),
+        ),
+      ),
     );
     for (final descriptor in descriptors) {
       final services = descriptor.executionHostServices;
@@ -130,6 +165,8 @@ final class _ModelToolBinding {
     this.files,
     this.mutations,
     this.process,
+    this.shell,
+    this.shellProfile,
   );
 
   final RemoteExtensionContext remote;
@@ -137,11 +174,14 @@ final class _ModelToolBinding {
   final AuthorizedEnvironmentFileReadFacet? files;
   final AuthorizedEnvironmentFileMutationFacet? mutations;
   final AuthorizedEnvironmentProcessFacet? process;
+  final AuthorizedEnvironmentShellFacet? shell;
+  final EnvironmentShellProfile? shellProfile;
 
   EnvironmentId? get environmentId =>
       files?.environmentId ??
       mutations?.environmentId ??
-      process?.environmentId;
+      process?.environmentId ??
+      shell?.environmentId;
 
   void validate() {
     try {
@@ -149,6 +189,7 @@ final class _ModelToolBinding {
       files?.validateBinding();
       mutations?.validateBinding();
       process?.validateBinding();
+      shell?.validateBinding();
     } on StaleExtensionBinding catch (error) {
       throw StaleToolBindingException(
         'The remote model-tool contributor generation is stale.',
@@ -233,6 +274,16 @@ final class _RemoteToolExecutable implements ToolExecutable {
         context.toolInvocationId,
         binding.environmentId?.value,
       );
+      if (descriptor.executionHostServices.contains(
+            authorizedEnvironmentShellServiceId,
+          ) &&
+          (result.effects.length != 1 ||
+              result.effects.single != RemoteToolEffect.processExecution ||
+              result.uncertainty != RemoteEffectUncertainty.uncertain)) {
+        throw const ExtensionContractException(
+          'Shell execution requires uncertain process-execution effects.',
+        );
+      }
       return result.toLocal();
     });
   }
@@ -245,42 +296,57 @@ final class _RemoteToolExecutable implements ToolExecutable {
     binding.validateContext(context);
     final environment = _ModelToolEnvironmentServices(binding);
     yield* binding.remote
-        .invokeStream(environment.services(descriptor.executionHostServices), (
-          invocation,
-        ) {
-          binding.validateContext(context);
-          environment.invocation = invocation;
-          return client
-              .execute(
-                routeId,
-                RemoteCanonicalToolArguments(snapshot: arguments.snapshot),
-                context.sessionId.value,
-                context.runId.value,
-                context.toolInvocationId,
-                binding.environmentId?.value,
-                descriptor.executionHostServices.isEmpty ? null : invocation.id,
-              )
-              .map((event) {
-                validateBinding();
-                return event.toLocal();
-              })
-              .transform(
-                StreamTransformer<
-                  ToolExecutionEvent,
-                  ToolExecutionEvent
-                >.fromHandlers(
-                  handleDone: (sink) {
-                    try {
-                      validateBinding();
-                    } on Object catch (error, stackTrace) {
-                      sink.addError(error, stackTrace);
-                    } finally {
-                      sink.close();
-                    }
-                  },
+        .invokeStream(
+          environment.services(descriptor.executionHostServices),
+          (invocation) {
+            binding.validateContext(context);
+            environment.invocation = invocation;
+            return client
+                .execute(
+                  routeId,
+                  RemoteCanonicalToolArguments(snapshot: arguments.snapshot),
+                  context.sessionId.value,
+                  context.runId.value,
+                  context.toolInvocationId,
+                  binding.environmentId?.value,
+                  descriptor.executionHostServices.isEmpty
+                      ? null
+                      : invocation.id,
+                )
+                .map((event) {
+                  validateBinding();
+                  return event.toLocal();
+                })
+                .transform(
+                  StreamTransformer<
+                    ToolExecutionEvent,
+                    ToolExecutionEvent
+                  >.fromHandlers(
+                    handleDone: (sink) {
+                      try {
+                        validateBinding();
+                      } on Object catch (error, stackTrace) {
+                        sink.addError(error, stackTrace);
+                      } finally {
+                        sink.close();
+                      }
+                    },
+                  ),
+                );
+          },
+          observeBindingInvalidation: binding.shell == null
+              ? null
+              : (invalidate) => binding.shell!.onRetire(
+                  () => invalidate(
+                    const StaleToolBindingException(
+                      'The authorized Environment provider generation retired.',
+                      cause: AuthorizedEnvironmentBindingStale(
+                        'The authorized Environment provider generation retired.',
+                      ),
+                    ),
+                  ),
                 ),
-              );
-        })
+        )
         .handleError((Object error, StackTrace stackTrace) {
           // Recognize exact binding retirement without relabeling protocol failures.
           validateBinding();
@@ -294,7 +360,8 @@ final class _ModelToolEnvironmentServices
     implements
         AuthorizedEnvironmentReadService,
         AuthorizedEnvironmentMutationService,
-        AuthorizedEnvironmentProcessService {
+        AuthorizedEnvironmentProcessService,
+        AuthorizedEnvironmentShellService {
   _ModelToolEnvironmentServices(this.binding);
 
   final _ModelToolBinding binding;
@@ -310,6 +377,9 @@ final class _ModelToolEnvironmentServices
     if (allowed.contains(authorizedEnvironmentProcessServiceId))
       authorizedEnvironmentProcessServiceId:
           AuthorizedEnvironmentProcessServiceDispatcher(this),
+    if (allowed.contains(authorizedEnvironmentShellServiceId))
+      authorizedEnvironmentShellServiceId:
+          AuthorizedEnvironmentShellServiceDispatcher(this),
   };
 
   void validate() {
@@ -378,6 +448,39 @@ final class _ModelToolEnvironmentServices
   @override
   Stream<EnvironmentProcessEvent> runForegroundProcess(
     EnvironmentForegroundProcessRequest request,
+  ) => _performProcess(() => binding.process!.runForegroundProcess(request));
+
+  @override
+  Stream<EnvironmentProcessEvent> runShellCommand(
+    EnvironmentShellCommandRequest request,
+  ) => _performProcess(() {
+    final profile = binding.shellProfile;
+    if (profile == null) {
+      throw const EnvironmentFailure(
+        code: environmentShellUnavailableCode,
+        message: 'No shell profile was captured for this tool materialization.',
+        details: {},
+      );
+    }
+    if (request.expectedProfileId != profile.profileId) {
+      throw const EnvironmentFailure(
+        code: environmentShellProfileChangedCode,
+        message: 'The request does not match the captured shell profile.',
+        details: {},
+      );
+    }
+    return binding.shell!.runShellCommand(
+      EnvironmentShellCommandRequest(
+        command: request.command,
+        expectedProfileId: profile.profileId,
+        relativeWorkingDirectory: request.relativeWorkingDirectory,
+        timeoutSeconds: request.timeoutSeconds,
+      ),
+    );
+  });
+
+  Stream<EnvironmentProcessEvent> _performProcess(
+    Stream<EnvironmentProcessEvent> Function() operation,
   ) {
     late final StreamController<EnvironmentProcessEvent> controller;
     StreamSubscription<EnvironmentProcessEvent>? subscription;
@@ -416,30 +519,28 @@ final class _ModelToolEnvironmentServices
       onListen: () {
         try {
           validate();
-          subscription = binding.process!
-              .runForegroundProcess(request)
-              .listen(
-                (event) {
-                  if (terminated) return;
-                  try {
-                    validate();
-                    controller.add(event);
-                  } on Object catch (error, stackTrace) {
-                    fail(error, stackTrace);
-                  }
-                },
-                onError: fail,
-                onDone: () {
-                  if (terminated) return;
-                  try {
-                    validate();
-                    terminated = true;
-                    unawaited(controller.close());
-                  } on Object catch (error, stackTrace) {
-                    fail(error, stackTrace);
-                  }
-                },
-              );
+          subscription = operation().listen(
+            (event) {
+              if (terminated) return;
+              try {
+                validate();
+                controller.add(event);
+              } on Object catch (error, stackTrace) {
+                fail(error, stackTrace);
+              }
+            },
+            onError: fail,
+            onDone: () {
+              if (terminated) return;
+              try {
+                validate();
+                terminated = true;
+                unawaited(controller.close());
+              } on Object catch (error, stackTrace) {
+                fail(error, stackTrace);
+              }
+            },
+          );
           if (terminated) {
             unawaited(cancel().catchError((Object _) {}));
           } else if (controller.isPaused) {

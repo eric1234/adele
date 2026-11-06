@@ -789,6 +789,24 @@ abstract interface class AuthorizedEnvironmentProcessFacet
   );
 }
 
+/// Shell selection discovery without shell execution authority.
+abstract interface class AuthorizedEnvironmentShellDescriptionFacet
+    implements AuthorizedEnvironmentAuthority {
+  Future<EnvironmentShellProfile> describeShell();
+}
+
+/// Bounded shell execution over the same authorized Environment.
+abstract interface class AuthorizedEnvironmentShellFacet
+    implements AuthorizedEnvironmentAuthority {
+  /// Observes retirement of this exact provider registration, not a replacement.
+  /// Returns an idempotent detach callback; stale bindings reject subscription.
+  void Function() onRetire(void Function() observer);
+
+  Stream<EnvironmentProcessEvent> runShellCommand(
+    EnvironmentShellCommandRequest request,
+  );
+}
+
 sealed class AuthorizedEnvironmentBindingException implements Exception {
   const AuthorizedEnvironmentBindingException(this.message, {this.cause});
 
@@ -984,6 +1002,16 @@ abstract interface class AuthorizedEnvironmentProcessService {
   @AdeleMethod('runForegroundProcess')
   Stream<EnvironmentProcessEvent> runForegroundProcess(
     EnvironmentForegroundProcessRequest request,
+  );
+}
+
+/// Shell execution over authority already bound by the host invocation context.
+/// No discovery, product identities, or provider selectors cross this service.
+@AdeleService('authorizedEnvironmentShell')
+abstract interface class AuthorizedEnvironmentShellService {
+  @AdeleMethod('runShellCommand')
+  Stream<EnvironmentProcessEvent> runShellCommand(
+    EnvironmentShellCommandRequest request,
   );
 }
 

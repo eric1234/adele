@@ -30,6 +30,10 @@ import 'package:agent_kernel/agent_kernel.dart'
         ToolInvocationResolver,
         ToolMaterializationException,
         ToolPolicyGate,
+        ToolPolicy,
+        ToolPolicyInput,
+        ToolPolicyDecision,
+        ToolExecutionDenied,
         ToolProposalFailureKind,
         ToolProposalResolution;
 import 'package:chat_strategy_backend/chat_strategy_backend.dart';
@@ -1489,6 +1493,469 @@ void main() {
     );
   }
 
+  test(
+    'shell materialization sends isolated pure profiles through one backend',
+    () async {
+      final probe = await start(options: {'read': false, 'shell': true});
+      final first = (await materialize()).single;
+      final secondContext = _Context(_Files(), _Files())
+        ..sessionId = SessionId('second-session');
+      secondContext.shell
+        ..sessionId = secondContext.sessionId
+        ..environmentId = EnvironmentId('selected-second-environment')
+        ..profile = EnvironmentShellProfile(
+          profileId: 'profile:two',
+          interpreter: '/remote/fish',
+          dialect: 'fish',
+        );
+      final second =
+          (await extensions
+                  .discover(modelToolContributions)
+                  .single
+                  .value
+                  .materialize(secondContext))
+              .single;
+      final records = await _records(probe.connection);
+      expect(records.map((r) => r['sessionId']), [
+        'tool-session',
+        'second-session',
+      ]);
+      expect(records.map((r) => r['environmentId']), [
+        'tool-environment',
+        'selected-second-environment',
+      ]);
+      expect(records.map((r) => (r['shellProfile']! as Map)['profileId']), [
+        'profile:one',
+        'profile:two',
+      ]);
+      expect(
+        (records.last['shellProfile']! as Map)['interpreter'],
+        '/remote/fish',
+      );
+      expect((records.last['shellProfile']! as Map)['dialect'], 'fish');
+      for (final record in records) {
+        _expectPrePolicyDenied(record);
+        _expectDenied((record['attempts']! as Map)['shell']);
+      }
+      expect(context.shell.requests, isEmpty);
+      expect(secondContext.shell.requests, isEmpty);
+      final arguments = CanonicalToolArguments({'value': 'first && second'});
+      await expectLater(
+        second.executable.execute(arguments, execution).toList(),
+        throwsStateError,
+      );
+      await collectToolExecution(
+        first.executable.execute(arguments, execution),
+      );
+      expect(context.shell.requests.single.expectedProfileId, 'profile:one');
+      expect(secondContext.shell.requests, isEmpty);
+      await collectToolExecution(
+        second.executable.execute(
+          arguments,
+          ToolExecutionContext(
+            sessionId: secondContext.sessionId,
+            runId: RunId('second-run'),
+            toolInvocationId: 'second-invocation',
+          ),
+        ),
+      );
+      expect(
+        secondContext.shell.requests.single.expectedProfileId,
+        'profile:two',
+      );
+    },
+  );
+
+  test(
+    'only declared shell unavailability preserves direct tool materialization',
+    () async {
+      final probe = await start(
+        options: {
+          'read': false,
+          'shell': true,
+          'metadata': {
+            'hostServices': [
+              authorizedEnvironmentShellServiceId,
+              authorizedEnvironmentProcessServiceId,
+            ],
+          },
+          'executionServices': [
+            [authorizedEnvironmentProcessServiceId],
+          ],
+        },
+      );
+      context.shell.discoveryFailure = const EnvironmentFailure(
+        code: environmentShellUnavailableCode,
+        message: 'No selected shell.',
+        details: {},
+      );
+      final direct = (await materialize()).single;
+      expect(direct.modelDefinition.alias, 'probe_0');
+      expect((await _records(probe.connection)).single['shellProfile'], isNull);
+      expect(context.process.validateBinding, returnsNormally);
+      final recordCount = (await _records(probe.connection)).length;
+      for (final failure in <Object>[
+        const EnvironmentFailure(
+          code: 'unexpected_discovery_failure',
+          message: 'Not unavailable.',
+          details: {},
+        ),
+        const AuthorizedEnvironmentBindingStale('Retired'),
+        const AuthorizedEnvironmentBindingUnavailable('Offline'),
+        StateError('Infrastructure failure'),
+      ]) {
+        context.shell.discoveryFailure = failure;
+        await expectLater(materialize(), throwsA(same(failure)));
+      }
+      expect(await _records(probe.connection), hasLength(recordCount));
+      expect(context.shell.requests, isEmpty);
+      expect(context.process.processRequests, isEmpty);
+    },
+  );
+
+  test(
+    'shell facets reject foreign Session and Environment before discovery',
+    () async {
+      final probe = await start(options: {'shell': true});
+      context.shell.sessionId = SessionId('foreign');
+      await expectLater(materialize(), throwsStateError);
+      context.shell.sessionId = context.sessionId;
+      context.shell.environmentId = EnvironmentId('foreign');
+      await expectLater(materialize(), throwsStateError);
+      expect(context.shell.descriptions, 0);
+      expect(await _records(probe.connection), isEmpty);
+    },
+  );
+
+  test(
+    'shell policy denial and pending approval never reach the provider',
+    () async {
+      final probe = await start(options: {'read': false, 'shell': true});
+      final tools = await compose();
+      final resolved =
+          await const ToolInvocationResolver().resolve(
+                invocationId: ToolInvocationId('shell-invocation'),
+                proposal: ProviderToolProposal(
+                  providerCallId: 'shell-call',
+                  alias: 'probe_0',
+                  arguments: {'value': 'echo one && echo two'},
+                ),
+                tools: tools,
+                runId: execution.runId,
+                sessionId: execution.sessionId,
+              )
+              as ResolvedToolProposal;
+      final denied =
+          await const ToolPolicyGate().evaluate(
+                invocation: resolved.invocation,
+                policy: _DenyPolicy(),
+                interruptionId: RunInterruptionId('denied'),
+              )
+              as ToolExecutionDenied;
+      expect(denied.outcome.disposition, ToolOutcomeDisposition.policyDenied);
+      expect(context.shell.requests, isEmpty);
+      final required =
+          await const ToolPolicyGate().evaluate(
+                invocation: resolved.invocation,
+                policy: const ApprovalGatedToolPolicy(),
+                interruptionId: RunInterruptionId('shell-approval'),
+              )
+              as ToolApprovalRequired;
+      expect(required.effects.effects, {ToolEffect.processExecution});
+      expect(required.effects.uncertainty, EffectUncertainty.uncertain);
+      final run = AgentRun(id: execution.runId, sessionId: execution.sessionId)
+        ..start();
+      run.interrupt(required.interruption);
+      expect(context.shell.requests, isEmpty);
+      for (final record in await _records(probe.connection)) {
+        _expectPrePolicyDenied(record);
+        _expectDenied((record['attempts']! as Map)['shell']);
+      }
+      final allowed = const ToolPolicyGate().approve(
+        run.resolveInterruption(
+          ToolApprovalResolution(
+            interruptionId: required.interruption.id,
+            toolInvocationId: resolved.invocation.id,
+            approved: true,
+          ),
+        ),
+      );
+      final events = run.startToolExecution(allowed).events();
+      expect(context.shell.requests, isEmpty);
+      final result = await collectToolExecution(events);
+      expect(result.progress.map((p) => p.kind), [
+        ToolProgressKind.stdout,
+        ToolProgressKind.stderr,
+      ]);
+      expect(result.progress.map((p) => p.content), ['out\n', 'err\n']);
+      expect(result.outcome.hostData, {'termination': 'exited', 'exitCode': 7});
+      expect(context.shell.requests.single.command, 'echo one && echo two');
+      expect(context.shell.requests.single.relativeWorkingDirectory, 'nested');
+      expect(context.shell.requests.single.timeoutSeconds, 5);
+      final token = (await _records(probe.connection)).last['token'];
+      _expectDenied(
+        await _control(probe.connection, 'shellReplay', {'token': token}),
+      );
+      expect(context.process.processRequests, isEmpty);
+      expect(files.reads, isEmpty);
+      expect(mutations.mutations, isEmpty);
+    },
+  );
+
+  test('shell cannot claim read-only effects', () async {
+    await start(options: {'read': false, 'shell': true, 'falseRead': true});
+    final tool = (await materialize()).single.executable;
+    await expectLater(
+      tool.describe(CanonicalToolArguments({'value': 'x'}), execution),
+      throwsA(isA<ExtensionContractException>()),
+    );
+    expect(context.shell.requests, isEmpty);
+  });
+
+  for (final tamper in [false, true]) {
+    test(
+      'shell ${tamper ? 'caller profile forgery' : 'provider profile drift'} never launches',
+      () async {
+        await start(
+          options: {
+            'read': false,
+            'shell': true,
+            if (tamper) 'expectedProfileId': 'forged',
+          },
+        );
+        final tool = (await materialize()).single.executable;
+        if (!tamper) {
+          context.shell.profile = EnvironmentShellProfile(
+            profileId: 'changed',
+            interpreter: '/changed',
+            dialect: 'sh',
+          );
+        }
+        final result = await collectToolExecution(
+          tool.execute(CanonicalToolArguments({'value': 'x'}), execution),
+        );
+        expect(
+          result.outcome.hostData['code'],
+          environmentShellProfileChangedCode,
+        );
+        expect(context.shell.starts, 0);
+        expect(context.shell.requests, hasLength(tamper ? 0 : 1));
+        if (!tamper) {
+          expect(
+            context.shell.requests.single.expectedProfileId,
+            'profile:one',
+          );
+        }
+      },
+    );
+  }
+
+  test(
+    'new Run catalog captures fresh profile without repairing the old catalog',
+    () async {
+      await start(options: {'read': false, 'shell': true});
+      final old = (await materialize()).single.executable;
+      context.shell.profile = EnvironmentShellProfile(
+        profileId: 'next-run',
+        interpreter: '/next',
+        dialect: 'sh',
+      );
+      final fresh = (await materialize()).single.executable;
+      final arguments = CanonicalToolArguments({'value': 'x'});
+      expect(
+        (await collectToolExecution(
+          old.execute(arguments, execution),
+        )).outcome.hostData['code'],
+        environmentShellProfileChangedCode,
+      );
+      expect(
+        (await collectToolExecution(
+          fresh.execute(arguments, execution),
+        )).outcome.disposition,
+        ToolOutcomeDisposition.success,
+      );
+      expect(context.shell.requests.map((r) => r.expectedProfileId), [
+        'profile:one',
+        'next-run',
+      ]);
+      context.shell.retire();
+      context.shell = _Shell();
+      expect(old.validateBinding, throwsA(isA<StaleToolBindingException>()));
+      expect(fresh.validateBinding, throwsA(isA<StaleToolBindingException>()));
+      expect(
+        (await materialize()).single.executable.validateBinding,
+        returnsNormally,
+      );
+    },
+  );
+
+  for (final hold in ['execute', 'done']) {
+    test(
+      'shell retirement settles outer execution held at $hold without an active reverse stream',
+      () async {
+        final probe = await start(
+          options: {
+            'read': false,
+            'shell': true,
+            'hold': hold,
+            'cancellableHold': true,
+          },
+        );
+        final shell = context.shell;
+        final tool = (await materialize()).single.executable;
+        final pending = tool
+            .execute(CanonicalToolArguments({'value': 'x'}), execution)
+            .toList();
+        await _control(probe.connection, 'ready', {'operation': hold});
+        final token = (await _records(probe.connection)).last['token'];
+        final settled = expectLater(
+          pending.timeout(_bound),
+          throwsA(isA<StaleToolBindingException>()),
+        );
+        shell.retire();
+        await settled;
+        expect(shell.starts, hold == 'execute' ? 0 : 1);
+        expect(shell.observers, isEmpty);
+        _expectDenied(
+          await _control(probe.connection, 'shellReplay', {'token': token}),
+        );
+        await _control(probe.connection, 'release', {'operation': hold});
+        context.shell = _Shell();
+        final fresh = (await materialize()).single.executable;
+        expect(fresh.validateBinding, returnsNormally);
+        expect(tool.validateBinding, throwsA(isA<StaleToolBindingException>()));
+      },
+    );
+  }
+
+  test('shell-only token does not grant other Environment services', () async {
+    final probe = await start(
+      options: {'read': false, 'shell': true, 'hold': 'done'},
+    );
+    final tool = (await materialize()).single.executable;
+    final pending = tool
+        .execute(CanonicalToolArguments({'value': 'x'}), execution)
+        .toList();
+    await _control(probe.connection, 'ready', {'operation': 'done'});
+    final token = (await _records(probe.connection)).last['token'];
+    _expectDenied(
+      await _control(probe.connection, 'replay', {'token': token}),
+      'service_unavailable',
+    );
+    _expectDenied(
+      await _mutationReplay(probe.connection, token),
+      'service_unavailable',
+    );
+    _expectDenied(
+      await _processReplay(probe.connection, token),
+      'service_unavailable',
+    );
+    final foreign = await start(
+      pluginId: 'dev.adele.test.foreign-shell',
+      extensionId: 'dev.adele.test.foreign-shell.tools',
+      options: {'read': false, 'shell': true},
+    );
+    _expectDenied(
+      await _control(foreign.connection, 'shellReplay', {'token': token}),
+    );
+    await _control(probe.connection, 'release', {'operation': 'done'});
+    await pending;
+    _expectDenied(
+      await _control(probe.connection, 'shellReplay', {'token': token}),
+    );
+    expect(context.shell.starts, 1);
+  });
+
+  test(
+    'shell generated streams preserve pause and cancellation while paused',
+    () async {
+      final probe = await start(options: {'read': false, 'shell': true});
+      final started = Completer<void>();
+      final cancelled = Completer<void>();
+      final observed = Completer<void>();
+      final producer = StreamController<EnvironmentProcessEvent>(
+        sync: true,
+        onListen: started.complete,
+        onCancel: cancelled.complete,
+      );
+      addTearDown(producer.close);
+      context.shell.stream = producer.stream;
+      final tool = (await materialize()).single.executable;
+      late StreamSubscription<ToolExecutionEvent> subscription;
+      subscription = tool
+          .execute(CanonicalToolArguments({'value': 'x'}), execution)
+          .listen((_) {
+            subscription.pause();
+            observed.complete();
+          });
+      addTearDown(subscription.cancel);
+      await started.future.timeout(_bound);
+      producer.add(
+        EnvironmentProcessEvent(
+          kind: EnvironmentProcessEventKind.output,
+          completed: null,
+          output: EnvironmentProcessOutput(
+            stream: EnvironmentProcessOutputStream.stdout,
+            text: 'first',
+          ),
+        ),
+      );
+      await observed.future.timeout(_bound);
+      expect(producer.isPaused, isTrue);
+      final token = (await _records(probe.connection)).last['token'];
+      await subscription.cancel().timeout(_bound);
+      await cancelled.future.timeout(_bound);
+      _expectDenied(
+        await _control(probe.connection, 'shellReplay', {'token': token}),
+      );
+    },
+  );
+
+  for (final retirement in [
+    'consumer cancellation',
+    'provider retirement',
+    'tool retirement',
+  ]) {
+    test('shell $retirement cancels idle producer and revokes token', () async {
+      final probe = await start(options: {'read': false, 'shell': true});
+      final started = Completer<void>();
+      final cancelled = Completer<void>();
+      final producer = StreamController<EnvironmentProcessEvent>(
+        sync: true,
+        onListen: started.complete,
+        onCancel: cancelled.complete,
+      );
+      addTearDown(producer.close);
+      context.shell.stream = producer.stream;
+      final tool = (await materialize()).single.executable;
+      final errors = <Object>[];
+      final done = Completer<void>();
+      final subscription = tool
+          .execute(CanonicalToolArguments({'value': 'idle'}), execution)
+          .listen((_) {}, onError: errors.add, onDone: done.complete);
+      addTearDown(subscription.cancel);
+      await started.future.timeout(_bound);
+      final token = (await _records(probe.connection)).last['token'];
+      switch (retirement) {
+        case 'provider retirement':
+          context.shell.retire();
+        case 'tool retirement':
+          await probe.retire();
+        default:
+          await subscription.cancel().timeout(_bound);
+      }
+      await cancelled.future.timeout(_bound);
+      if (retirement != 'consumer cancellation') {
+        await done.future.timeout(_bound);
+        expect(errors, [isA<StaleToolBindingException>()]);
+      }
+      _expectDenied(
+        await _control(probe.connection, 'shellReplay', {'token': token}),
+      );
+      expect(context.shell.starts, 1);
+    });
+  }
+
   for (final terminate in [false, true]) {
     test(
       '${terminate ? 'connection termination' : 'exact retirement'} makes '
@@ -1632,11 +2099,12 @@ final class _Context implements ModelToolHostContext {
   _Files files;
   _Files mutations;
   _Files process = _Files();
+  _Shell shell = _Shell();
   Type? unavailable;
   final requested = <Type>[];
 
   @override
-  final sessionId = SessionId('tool-session');
+  SessionId sessionId = SessionId('tool-session');
 
   @override
   Future<T> requireHostService<T extends Object>() async {
@@ -1645,8 +2113,105 @@ final class _Context implements ModelToolHostContext {
       if (T == AuthorizedEnvironmentFileReadFacet) return files as T;
       if (T == AuthorizedEnvironmentFileMutationFacet) return mutations as T;
       if (T == AuthorizedEnvironmentProcessFacet) return process as T;
+      if (T == AuthorizedEnvironmentShellDescriptionFacet ||
+          T == AuthorizedEnvironmentShellFacet) {
+        return shell as T;
+      }
     }
     throw StateError('No authority granted for $T.');
+  }
+}
+
+final class _DenyPolicy implements ToolPolicy {
+  @override
+  ToolPolicyDecision evaluate(ToolPolicyInput input) => ToolPolicyDecision.deny;
+}
+
+final class _Shell
+    implements
+        AuthorizedEnvironmentShellDescriptionFacet,
+        AuthorizedEnvironmentShellFacet {
+  @override
+  SessionId sessionId = SessionId('tool-session');
+  @override
+  EnvironmentId environmentId = EnvironmentId('tool-environment');
+  EnvironmentShellProfile profile = EnvironmentShellProfile(
+    profileId: 'profile:one',
+    interpreter: '/selected/bash',
+    dialect: 'bash',
+  );
+  Object? discoveryFailure;
+  bool retired = false;
+  int descriptions = 0;
+  int starts = 0;
+  final requests = <EnvironmentShellCommandRequest>[];
+  final observers = <void Function()>{};
+  Stream<EnvironmentProcessEvent>? stream;
+
+  @override
+  void validateBinding() {
+    if (retired) throw const AuthorizedEnvironmentBindingStale('Retired shell');
+  }
+
+  @override
+  Future<EnvironmentShellProfile> describeShell() async {
+    descriptions++;
+    if (discoveryFailure case final failure?) throw failure;
+    return profile;
+  }
+
+  @override
+  void Function() onRetire(void Function() observer) {
+    validateBinding();
+    observers.add(observer);
+    return () => observers.remove(observer);
+  }
+
+  void retire() {
+    retired = true;
+    for (final observer in observers.toList()) {
+      observer();
+    }
+  }
+
+  @override
+  Stream<EnvironmentProcessEvent> runShellCommand(
+    EnvironmentShellCommandRequest request,
+  ) {
+    validateBinding();
+    requests.add(request);
+    if (request.expectedProfileId != profile.profileId) {
+      throw const EnvironmentFailure(
+        code: environmentShellProfileChangedCode,
+        message: 'Profile changed.',
+        details: {},
+      );
+    }
+    starts++;
+    return stream ??
+        Stream.fromIterable([
+          for (final output in EnvironmentProcessOutputStream.values)
+            EnvironmentProcessEvent(
+              kind: EnvironmentProcessEventKind.output,
+              completed: null,
+              output: EnvironmentProcessOutput(
+                stream: output,
+                text: output == EnvironmentProcessOutputStream.stdout
+                    ? 'out\n'
+                    : 'err\n',
+              ),
+            ),
+          EnvironmentProcessEvent(
+            kind: EnvironmentProcessEventKind.completed,
+            output: null,
+            completed: EnvironmentProcessCompleted(
+              termination: EnvironmentProcessTermination.exited,
+              exitCode: 7,
+              stdoutTruncated: false,
+              stderrTruncated: false,
+            ),
+          ),
+        ]);
   }
 }
 

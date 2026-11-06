@@ -18,7 +18,9 @@ final class CommandOutputSearchBackend implements RemoteModelToolService {
   final ToolRegistration _registration;
 
   @override
-  Future<List<RemoteToolDescriptor>> materialize(String sessionId) async => [
+  Future<List<RemoteToolDescriptor>> materialize(
+    RemoteModelToolMaterialization materialization,
+  ) async => [
     RemoteToolDescriptor.fromLocal(
       _registration,
       routeId: searchCommandOutputToolId.value,
@@ -110,7 +112,9 @@ final class CommandToolsBackend implements RemoteModelToolService {
   final CommandTranscriptStore transcripts;
 
   @override
-  Future<List<RemoteToolDescriptor>> materialize(String sessionId) async => [
+  Future<List<RemoteToolDescriptor>> materialize(
+    RemoteModelToolMaterialization materialization,
+  ) async => [
     RemoteToolDescriptor.fromLocal(
       commandToolRegistration(const _IdentityProcessFacet()),
       routeId: runCommandToolId.value,

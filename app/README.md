@@ -1957,6 +1957,40 @@ This does not restore live Runs/approvals or introduce a Profile system.
 [Durable Chat integration](test/core/durable_chat_session_integration_test.dart)
 exercises the persistence boundary without a paid model.
 
+## Model-tool hosting
+
+`SessionModelToolHostContext` in `lib/core/model_tool_host.dart` lazily captures
+coherent facets from the canonical Session's selected Environment materialization.
+Shell description and shell execution use distinct native wrapper objects over
+that same authority. Description is read-only and checks exact binding liveness
+through settlement; it does not create a reverse invocation grant.
+
+`RemoteModelToolAdapter` in `lib/core/remote_model_tool_host.dart` captures only
+declared dependencies. An exposure declaring `authorizedEnvironmentShellServiceId`
+opts into shell discovery; the backend receives the bounded
+[`RemoteModelToolMaterialization`](../packages/model_tool/README.md#remote-materialization)
+snapshot before returning tool descriptors. Only declared `shell_unavailable`
+becomes a null profile. The host retains the actual profile and shell facet in each
+materialized binding, not a Session-global/backend-global registry. Normal Run
+composition captures a new catalog; continuations retain their original binding.
+
+Only an approved execute stream creates an operation token and a dispatcher for
+the descriptor's exact `executionHostServices` subset. Shell services require
+uncertain `processExecution` effects, verify the wire expected profile against
+the host capture, and forward the captured identity to the selected provider.
+No service selects an Environment from payload IDs. Shell-only access grants no
+direct process, file, buffered-process, or terminal access. Provider retirement
+synchronously revokes the operation and fails/cancels its outer stream through
+`RemoteExtensionContext.invokeStream` dependency invalidation, even before or after
+a reverse call. Normal stream cancellation/settlement uses the existing reverse
+transport cleanup. No host-local interpreter fallback or
+automatic stale-profile retry exists. Stock `run_command` remains direct-argv.
+
+Focused native coverage is in `test/core/model_tool_host_test.dart`; the synthetic
+backend in `test/core/remote_model_tool_host_test.dart` uses the actual generated
+services and shared AOT backend host for preparation, approval and revocation.
+`test/core/remote_model_tool_integration_test.dart` retains stock-tool regressions.
+
 ## Orchestration hosting
 
 `createSessionOrchestrationRun` looks up the canonical Session, resolves its stored

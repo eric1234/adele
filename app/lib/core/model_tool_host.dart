@@ -49,6 +49,12 @@ final class SessionModelToolHostContext implements ModelToolHostContext {
     if (T == AuthorizedEnvironmentProcessFacet) {
       return (await _requireEnvironmentFacets()).process as T;
     }
+    if (T == AuthorizedEnvironmentShellDescriptionFacet) {
+      return (await _requireEnvironmentFacets()).shellDescription as T;
+    }
+    if (T == AuthorizedEnvironmentShellFacet) {
+      return (await _requireEnvironmentFacets()).shell as T;
+    }
     throw StateError('No Session host service is registered for $T.');
   }
 
@@ -78,12 +84,16 @@ final class _SessionEnvironmentFacets {
   _SessionEnvironmentFacets(this.authority)
     : read = _SessionEnvironmentFileReadFacet(authority),
       mutation = _SessionEnvironmentFileMutationFacet(authority),
-      process = _SessionEnvironmentProcessFacet(authority);
+      process = _SessionEnvironmentProcessFacet(authority),
+      shellDescription = _SessionEnvironmentShellDescriptionFacet(authority),
+      shell = _SessionEnvironmentShellFacet(authority);
 
   final _SessionEnvironmentAuthority authority;
   final AuthorizedEnvironmentFileReadFacet read;
   final AuthorizedEnvironmentFileMutationFacet mutation;
   final AuthorizedEnvironmentProcessFacet process;
+  final AuthorizedEnvironmentShellDescriptionFacet shellDescription;
+  final AuthorizedEnvironmentShellFacet shell;
 }
 
 final class _SessionEnvironmentAuthority
@@ -187,6 +197,39 @@ final class _SessionEnvironmentAuthority
     ),
   );
 
+  EnvironmentShellProvider get _shellProvider {
+    final provider = _materialization.provider;
+    if (provider is EnvironmentShellProvider) {
+      return provider as EnvironmentShellProvider;
+    }
+    throw const EnvironmentFailure(
+      code: environmentShellUnavailableCode,
+      message: 'This Environment provider does not support shell commands.',
+      details: <String, Object?>{},
+    );
+  }
+
+  Future<EnvironmentShellProfile> describeShell() => _perform(() async {
+    try {
+      return await _shellProvider.describeShell(_authority.environmentId);
+    } finally {
+      // Retirement must fence both successful discovery and unavailable results.
+      validateBinding();
+    }
+  });
+
+  Stream<EnvironmentProcessEvent> runShellCommand(
+    EnvironmentShellCommandRequest request,
+  ) => _performStream(
+    () => _shellProvider.runShellCommand(_authority.environmentId, request),
+    observeRetirement: onShellRetire,
+  );
+
+  void Function() onShellRetire(void Function() observer) {
+    validateBinding();
+    return _materialization.binding.onRetire(observer);
+  }
+
   Future<T> _perform<T>(Future<T> Function() operation) async {
     validateBinding();
     try {
@@ -210,7 +253,10 @@ final class _SessionEnvironmentAuthority
     }
   }
 
-  Stream<T> _performStream<T>(Stream<T> Function() operation) {
+  Stream<T> _performStream<T>(
+    Stream<T> Function() operation, {
+    void Function() Function(void Function())? observeRetirement,
+  }) {
     Object mapError(Object error) {
       if (error is ProviderUnavailable) {
         return error.stale
@@ -253,11 +299,13 @@ final class _SessionEnvironmentAuthority
     late final StreamController<T> controller;
     StreamSubscription<T>? subscription;
     Future<void>? cancellation;
+    void Function()? detachRetirement;
     var terminated = false;
     var failed = false;
 
     Future<void> cancel() {
       terminated = true;
+      detachRetirement?.call();
       final current = subscription;
       if (current == null) return Future<void>.value();
       final pending = cancellation ??= Future<void>.sync(current.cancel);
@@ -286,6 +334,14 @@ final class _SessionEnvironmentAuthority
           return;
         }
         try {
+          detachRetirement = observeRetirement?.call(() {
+            fail(
+              const AuthorizedEnvironmentBindingStale(
+                'The authorized Environment provider generation retired.',
+              ),
+              StackTrace.current,
+            );
+          });
           subscription = operation().listen(
             (event) {
               if (!terminated) controller.add(event);
@@ -295,6 +351,7 @@ final class _SessionEnvironmentAuthority
             onDone: () {
               if (terminated) return;
               terminated = true;
+              detachRetirement?.call();
               unawaited(controller.close());
             },
           );
@@ -397,4 +454,48 @@ final class _SessionEnvironmentProcessFacet
   Stream<EnvironmentProcessEvent> runForegroundProcess(
     EnvironmentForegroundProcessRequest request,
   ) => _authority.runForegroundProcess(request);
+}
+
+final class _SessionEnvironmentShellDescriptionFacet
+    implements AuthorizedEnvironmentShellDescriptionFacet {
+  const _SessionEnvironmentShellDescriptionFacet(this._authority);
+
+  final _SessionEnvironmentAuthority _authority;
+
+  @override
+  SessionId get sessionId => _authority.sessionId;
+
+  @override
+  EnvironmentId get environmentId => _authority.environmentId;
+
+  @override
+  void validateBinding() => _authority.validateBinding();
+
+  @override
+  Future<EnvironmentShellProfile> describeShell() => _authority.describeShell();
+}
+
+final class _SessionEnvironmentShellFacet
+    implements AuthorizedEnvironmentShellFacet {
+  const _SessionEnvironmentShellFacet(this._authority);
+
+  final _SessionEnvironmentAuthority _authority;
+
+  @override
+  SessionId get sessionId => _authority.sessionId;
+
+  @override
+  EnvironmentId get environmentId => _authority.environmentId;
+
+  @override
+  void validateBinding() => _authority.validateBinding();
+
+  @override
+  void Function() onRetire(void Function() observer) =>
+      _authority.onShellRetire(observer);
+
+  @override
+  Stream<EnvironmentProcessEvent> runShellCommand(
+    EnvironmentShellCommandRequest request,
+  ) => _authority.runShellCommand(request);
 }

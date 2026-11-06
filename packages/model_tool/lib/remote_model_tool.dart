@@ -2,7 +2,9 @@
 library;
 
 import 'package:adele_contract/adele_contract.dart';
+import 'package:adele_environment/adele_environment.dart' as environment;
 import 'package:adele_model_tool/adele_model_tool.dart' as local;
+import 'package:adele_product/adele_product.dart' as product;
 
 part 'remote_model_tool.g.dart';
 
@@ -31,6 +33,69 @@ enum RemoteEffectCertainty { knownNotOccurred, knownOccurred, uncertain }
 enum RemoteToolProgressKind { status, stdout, stderr }
 
 enum RemoteToolExecutionEventKind { progress, terminal }
+
+/// Immutable data scoped to the exact host-captured Session, Environment and
+/// tool materialization. Neither identity nor shell metadata grants authority;
+/// this snapshot contains no invocation token and must not select a new binding.
+@AdeleValue('modelTool.materialization')
+final class RemoteModelToolMaterialization {
+  RemoteModelToolMaterialization({
+    required this.sessionId,
+    required this.environmentId,
+    required this.shellProfile,
+  }) {
+    product.SessionId(sessionId);
+    if (environmentId case final String value) product.EnvironmentId(value);
+    if (shellProfile != null && environmentId == null) {
+      throw const FormatException(
+        'A shell profile requires an Environment ID.',
+      );
+    }
+  }
+
+  final String sessionId;
+  final String? environmentId;
+
+  /// Null only when the exposure requested no shell description or its captured
+  /// Environment explicitly reported `shell_unavailable`, never on an unexpected
+  /// discovery failure. Only exposures declaring the authorized Environment shell
+  /// service request discovery; this data does not grant that service.
+  final RemoteEnvironmentShellProfile? shellProfile;
+}
+
+/// Local wire projection of the canonical Environment shell profile.
+/// Its opaque identity is scoped to the captured Environment/provider generation,
+/// not a credential, execution authority, or permission to choose an interpreter.
+@AdeleValue('modelTool.environmentShellProfile')
+final class RemoteEnvironmentShellProfile {
+  RemoteEnvironmentShellProfile({
+    required this.profileId,
+    required this.interpreter,
+    required this.dialect,
+  }) {
+    // Keep semantic validation with the Environment contract owner.
+    toLocal();
+  }
+
+  final String profileId;
+  final String interpreter;
+  final String dialect;
+
+  static RemoteEnvironmentShellProfile fromLocal(
+    environment.EnvironmentShellProfile value,
+  ) => RemoteEnvironmentShellProfile(
+    profileId: value.profileId,
+    interpreter: value.interpreter,
+    dialect: value.dialect,
+  );
+
+  environment.EnvironmentShellProfile toLocal() =>
+      environment.EnvironmentShellProfile(
+        profileId: profileId,
+        interpreter: interpreter,
+        dialect: dialect,
+      );
+}
 
 @AdeleValue('modelTool.descriptor')
 final class RemoteToolDescriptor {
@@ -283,7 +348,9 @@ final class RemoteToolExecutionEvent {
 @AdeleService('modelTool')
 abstract interface class RemoteModelToolService {
   @AdeleMethod('materialize')
-  Future<List<RemoteToolDescriptor>> materialize(String sessionId);
+  Future<List<RemoteToolDescriptor>> materialize(
+    RemoteModelToolMaterialization materialization,
+  );
 
   @AdeleMethod('validateAndNormalize')
   Future<RemoteCanonicalToolArguments> validateAndNormalize(

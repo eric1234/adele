@@ -6,6 +6,7 @@ import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_model_tool/adele_model_tool.dart';
 import 'package:adele_model_tool/remote_model_tool.dart';
+import 'package:adele_plugin_backend_support/adele_plugin_backend_support.dart';
 
 Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
   final bootstrap = bootstrapMessage! as Map;
@@ -37,6 +38,8 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
                     authorizedEnvironmentReadServiceId,
                   if (options['mutation'] == true)
                     authorizedEnvironmentMutationServiceId,
+                  if (options['shell'] == true)
+                    authorizedEnvironmentShellServiceId,
                 ],
               },
       ).toMap(),
@@ -45,12 +48,7 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
   try {
     await for (final Object? message in commands) {
       if (message is! Map) continue;
-      if (message['kind'] == 'hostResponse') {
-        probe.pending
-            .remove(message['requestId'])
-            ?.complete(Map<String, Object?>.from(message));
-        continue;
-      }
+      if (probe.hostRequests.handleResponse(message)) continue;
       if (message['kind'] == 'request' && message['method'] == 'shutdown') {
         probe.close();
         await router.close();
@@ -67,6 +65,13 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
         if (message['method'] == 'terminate') Isolate.exit();
         unawaited(probe.control(message));
         continue;
+      }
+      if (message['kind'] == 'streamCancel' &&
+          options['cancellableHold'] == true) {
+        for (final operation in ['execute', 'done']) {
+          final hold = probe.releases[operation];
+          if (hold != null && !hold.isCompleted) hold.complete();
+        }
       }
       unawaited(
         router.handle(message, (response) {
@@ -130,16 +135,16 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
 }
 
 final class _Probe implements RemoteModelToolService {
-  _Probe(this.responses, this.options);
+  _Probe(this.responses, this.options)
+    : hostRequests = AdeleHostRequestMultiplexer(send: responses.send);
 
   final SendPort responses;
   final Map<String, Object?> options;
   final records = <Map<String, Object?>>[];
-  final pending = <int, Completer<Map<String, Object?>>>{};
+  final AdeleHostRequestMultiplexer hostRequests;
   final ready = <String, Completer<void>>{};
   final releases = <String, Completer<void>>{};
   final routes = <String, List<String>>{};
-  int nextRequest = 0;
   int nextMaterialization = 0;
   String? malformed;
   String? lastExecutionToken;
@@ -149,20 +154,18 @@ final class _Probe implements RemoteModelToolService {
     String service = authorizedEnvironmentReadServiceId,
     String method = authorizedEnvironmentReadServiceReadFileId,
     Map<String, Object?> payload = const {'relativePath': 'probe.txt'},
-  }) {
-    final id = nextRequest++;
-    final result = Completer<Map<String, Object?>>();
-    pending[id] = result;
-    responses.send({
-      'kind': 'hostRequest',
-      'requestId': id,
-      'hostContextKind': 'invocation',
-      'hostContext': token,
-      'serviceId': service,
-      'method': method,
-      'payload': payload,
-    });
-    return result.future;
+  }) async {
+    try {
+      final result = await hostRequests
+          .bind(hostInvocationContext: token, serviceId: service)
+          .request(method, payload);
+      return {'ok': true, 'payload': result};
+    } on AdeleRemoteFailure catch (error) {
+      return {
+        'ok': false,
+        'error': {'code': error.code, 'message': error.message},
+      };
+    }
   }
 
   Future<void> control(Map<Object?, Object?> request) async {
@@ -194,6 +197,7 @@ final class _Probe implements RemoteModelToolService {
             ? Map<String, Object?>.from(payload['payload'] as Map)
             : const {'relativePath': 'probe.txt'},
       ),
+      'shellReplay' => await shellReplay(payload),
       _ => throw StateError('Unknown probe command ${request['method']}'),
     };
     responses.send({
@@ -203,6 +207,41 @@ final class _Probe implements RemoteModelToolService {
       // Contract snapshots may contain views that spawnUri ports cannot send.
       'payload': jsonDecode(jsonEncode(result)),
     });
+  }
+
+  Future<Map<String, Object?>> shellReplay(Map<String, Object?> payload) async {
+    try {
+      await AuthorizedEnvironmentShellServiceClient(
+            hostRequests.bind(
+              hostInvocationContext:
+                  payload['token'] as String? ?? 'invented-pre-policy',
+              serviceId:
+                  payload['service'] as String? ??
+                  authorizedEnvironmentShellServiceId,
+            ),
+          )
+          .runShellCommand(
+            EnvironmentShellCommandRequest(
+              command: 'probe',
+              expectedProfileId:
+                  payload['profileId'] as String? ?? 'profile:one',
+              relativeWorkingDirectory: '',
+              timeoutSeconds: 5,
+            ),
+          )
+          .toList();
+      return {'ok': true};
+    } on EnvironmentFailure catch (error) {
+      return {
+        'ok': false,
+        'error': {'code': error.code},
+      };
+    } on AdeleRemoteFailure catch (error) {
+      return {
+        'ok': false,
+        'error': {'code': error.code},
+      };
+    }
   }
 
   Future<void> operation(Map<String, Object?> record) async {
@@ -217,6 +256,8 @@ final class _Probe implements RemoteModelToolService {
           method: authorizedEnvironmentMutationServiceCreateTextFileId,
           payload: const {'relativePath': 'premature.txt', 'text': 'forbidden'},
         ),
+        if (options['shell'] == true)
+          'shell': await shellReplay({'token': lastExecutionToken}),
       };
     }
     final services = routes[record['routeId']] ?? const <String>[];
@@ -269,7 +310,9 @@ final class _Probe implements RemoteModelToolService {
   }
 
   @override
-  Future<List<RemoteToolDescriptor>> materialize(String sessionId) async {
+  Future<List<RemoteToolDescriptor>> materialize(
+    RemoteModelToolMaterialization materialization,
+  ) async {
     final generation = nextMaterialization++;
     final descriptors = [
       for (var index = 0; index < (options['count'] as int? ?? 1); index++)
@@ -286,7 +329,8 @@ final class _Probe implements RemoteModelToolService {
             'required': ['value'],
             'additionalProperties': false,
           },
-          routeId: 'route-$generation-$index',
+          routeId:
+              'route-$generation-$index${options['shell'] == true ? '|${materialization.shellProfile?.profileId ?? 'unavailable'}' : ''}',
           executionHostServices: options.containsKey('executionServices')
               ? List<String>.from(
                   (options['executionServices']! as List)[index] as List,
@@ -296,6 +340,9 @@ final class _Probe implements RemoteModelToolService {
                     authorizedEnvironmentReadServiceId,
                   if (options['mutation'] == true)
                     authorizedEnvironmentMutationServiceId,
+                  if (options['shell'] == true &&
+                      materialization.shellProfile != null)
+                    authorizedEnvironmentShellServiceId,
                 ],
         ),
     ];
@@ -307,7 +354,15 @@ final class _Probe implements RemoteModelToolService {
     );
     await operation({
       'operation': 'materialize',
-      'sessionId': sessionId,
+      'sessionId': materialization.sessionId,
+      'environmentId': materialization.environmentId,
+      'shellProfile': materialization.shellProfile == null
+          ? null
+          : {
+              'profileId': materialization.shellProfile!.profileId,
+              'interpreter': materialization.shellProfile!.interpreter,
+              'dialect': materialization.shellProfile!.dialect,
+            },
       'routes': descriptors.map((descriptor) => descriptor.routeId).toList(),
     });
     return descriptors;
@@ -365,7 +420,9 @@ final class _Probe implements RemoteModelToolService {
     });
     return RemoteEffectDescription.fromLocal(
       EffectDescription(
-        effects: options['mutation'] == true
+        effects: options['shell'] == true && options['falseRead'] != true
+            ? [ToolEffect.processExecution]
+            : options['mutation'] == true
             ? [ToolEffect.sourceMutation]
             : [ToolEffect.resourceInspection, ToolEffect.sourceRead],
         targets: [
@@ -406,6 +463,99 @@ final class _Probe implements RemoteModelToolService {
       'environmentId': environmentId,
       'token': hostInvocationContext,
     });
+    if (options['shell'] == true &&
+        routes[routeId]!.contains(authorizedEnvironmentShellServiceId)) {
+      var completed = false;
+      yield* AuthorizedEnvironmentShellServiceClient(
+            hostRequests.bind(
+              hostInvocationContext: hostInvocationContext!,
+              serviceId: authorizedEnvironmentShellServiceId,
+            ),
+          )
+          .runShellCommand(
+            EnvironmentShellCommandRequest(
+              command: arguments.snapshot['value']! as String,
+              expectedProfileId:
+                  options['expectedProfileId'] as String? ??
+                  routeId.split('|').last,
+              relativeWorkingDirectory: 'nested',
+              timeoutSeconds: 5,
+            ),
+          )
+          .transform(
+            StreamTransformer<
+              EnvironmentProcessEvent,
+              RemoteToolExecutionEvent
+            >.fromHandlers(
+              handleData: (event, sink) {
+                if (completed) {
+                  throw StateError('Process emitted after completion.');
+                }
+                if (event.output case final output?) {
+                  sink.add(
+                    RemoteToolExecutionEvent.fromLocal(
+                      ToolExecutionProgress(
+                        ToolProgress(
+                          kind:
+                              output.stream ==
+                                  EnvironmentProcessOutputStream.stdout
+                              ? ToolProgressKind.stdout
+                              : ToolProgressKind.stderr,
+                          content: output.text,
+                        ),
+                      ),
+                    ),
+                  );
+                } else {
+                  completed = true;
+                  sink.add(
+                    RemoteToolExecutionEvent.fromLocal(
+                      ToolExecutionTerminal(
+                        ToolOutcome(
+                          disposition: ToolOutcomeDisposition.success,
+                          effectCertainty: EffectCertainty.knownOccurred,
+                          modelContent: 'Shell completed',
+                          hostData: {
+                            'termination': event.completed!.termination.name,
+                            'exitCode': event.completed!.exitCode,
+                          },
+                        ),
+                      ),
+                    ),
+                  );
+                }
+              },
+              handleError: (Object error, StackTrace stack, sink) {
+                if (error is! EnvironmentFailure) {
+                  sink.addError(error, stack);
+                  return;
+                }
+                completed = true;
+                sink.add(
+                  RemoteToolExecutionEvent.fromLocal(
+                    ToolExecutionTerminal(
+                      ToolOutcome(
+                        disposition: ToolOutcomeDisposition.failure,
+                        failureKind: ToolFailureKind.domain,
+                        effectCertainty: EffectCertainty.uncertain,
+                        modelContent: error.message,
+                        hostData: {'code': error.code},
+                      ),
+                    ),
+                  ),
+                );
+              },
+              handleDone: (sink) {
+                if (!completed) {
+                  sink.addError(StateError('Missing process completion.'));
+                }
+                sink.close();
+              },
+            ),
+          );
+      await hold('done');
+      return;
+    }
     for (final progress in [
       ToolProgress(content: 'Working'),
       ToolProgress(kind: ToolProgressKind.stdout, content: 'out\n'),
@@ -437,14 +587,7 @@ final class _Probe implements RemoteModelToolService {
     for (final release in releases.values) {
       if (!release.isCompleted) release.complete();
     }
-    for (final request in pending.values) {
-      request.complete({
-        'kind': 'hostResponse',
-        'ok': false,
-        'error': {'code': 'probe_closed', 'message': 'Probe shutdown.'},
-      });
-    }
-    pending.clear();
+    hostRequests.close();
   }
 }
 
