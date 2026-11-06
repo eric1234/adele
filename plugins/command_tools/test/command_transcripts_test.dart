@@ -74,6 +74,123 @@ void main() {
     },
   );
 
+  const shellMetadata = <String, Object?>{
+    'executionForm': 'shell',
+    'shellCommand': 'printf "hello"\n',
+    'shellProfile': {
+      'profileId': 'shell-profile',
+      'interpreter': 'shell',
+      'dialect': 'posix',
+    },
+  };
+  for (final (label, metadata) in <(String, Map<String, Object?>)>[
+    ('wrong tag', {...shellMetadata, 'executionForm': 'direct'}),
+    ('extra field', {...shellMetadata, 'argv': []}),
+    ('missing script', {...shellMetadata}..remove('shellCommand')),
+    ('null script', {...shellMetadata, 'shellCommand': null}),
+    ('non-string script', {...shellMetadata, 'shellCommand': 3}),
+    ('blank script', {...shellMetadata, 'shellCommand': ' \n\t'}),
+    ('oversized script', {...shellMetadata, 'shellCommand': 'x' * 16385}),
+    ('NUL script', {...shellMetadata, 'shellCommand': 'bad\u0000script'}),
+    (
+      'malformed script',
+      {...shellMetadata, 'shellCommand': String.fromCharCode(0xd800)},
+    ),
+    ('non-object profile', {...shellMetadata, 'shellProfile': []}),
+    (
+      'missing profile identity',
+      {
+        ...shellMetadata,
+        'shellProfile': {'interpreter': 'shell', 'dialect': 'posix'},
+      },
+    ),
+    (
+      'extra profile field',
+      {
+        ...shellMetadata,
+        'shellProfile': {
+          'profileId': 'p',
+          'interpreter': 'shell',
+          'dialect': 'posix',
+          'argv': <Object?>[],
+        },
+      },
+    ),
+    (
+      'invalid profile identity',
+      {
+        ...shellMetadata,
+        'shellProfile': {
+          'profileId': 'bad profile',
+          'interpreter': 'shell',
+          'dialect': 'posix',
+        },
+      },
+    ),
+    (
+      'interpreter mismatch',
+      {
+        ...shellMetadata,
+        'shellProfile': {
+          'profileId': 'p',
+          'interpreter': 'other',
+          'dialect': 'posix',
+        },
+      },
+    ),
+    (
+      'invalid dialect',
+      {
+        ...shellMetadata,
+        'shellProfile': {
+          'profileId': 'p',
+          'interpreter': 'shell',
+          'dialect': 'POSIX',
+        },
+      },
+    ),
+  ]) {
+    test('rejects corrupt persisted shell metadata: $label', () async {
+      final writer = await _begin(store);
+      await writer.seal(_completed());
+      storage.database.execute(
+        'UPDATE adele_command_captures SET program=?, arguments_json=? WHERE invocation_id=?',
+        ['shell', jsonEncode(metadata), 'invocation'],
+      );
+      await expectLater(_state(store), throwsA(_failure('corrupt_capture')));
+      final fresh = CommandTranscriptStore(storage);
+      addTearDown(fresh.close);
+      await expectLater(_after(fresh), throwsA(_failure('corrupt_capture')));
+    });
+  }
+
+  test('shell capture rejects mismatched profile before storage admission', () {
+    expect(
+      () => store.beginShell(
+        context: ToolExecutionContext(
+          sessionId: SessionId('session'),
+          runId: RunId('run'),
+          toolInvocationId: 'invocation',
+        ),
+        environmentId: 'environment',
+        profile: EnvironmentShellProfile(
+          profileId: 'expected',
+          interpreter: 'shell',
+          dialect: 'posix',
+        ),
+        request: EnvironmentShellCommandRequest(
+          command: 'script',
+          expectedProfileId: 'different',
+          relativeWorkingDirectory: '',
+          timeoutSeconds: 120,
+        ),
+      ),
+      throwsArgumentError,
+    );
+    expect(storage.schemaChecks, 0);
+    expect(storage.transactions, 0);
+  });
+
   for (final reusedId in [false, true]) {
     test(
       'watch observes absence then admission${reusedId ? ' with the same invocation ID in another Run' : ''}',

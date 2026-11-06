@@ -49,7 +49,13 @@ class _RunCommandInspectionState extends State<RunCommandInspection> {
   Widget build(BuildContext context) {
     final ToolActivityInspectionSnapshot snapshot = readToolActivitySnapshot();
     final Map<String, dynamic> arguments = snapshot.canonicalArguments;
+    final dynamic shellCommand = arguments['shellCommand'];
     if (compact) {
+      if (shellCommand is String) {
+        return Text(
+          'Run Command (shell): ${compactDisplayText(shellCommand, maximumCharacters: 240, quoted: true)}',
+        );
+      }
       final dynamic program = arguments['program'];
       final dynamic argv = arguments['arguments'];
       if (program is! String || argv is! List<dynamic>) {
@@ -90,17 +96,46 @@ class _RunCommandInspectionState extends State<RunCommandInspection> {
     final List<Widget> children = <Widget>[
       Text('Run Command', style: TextStyle(fontWeight: FontWeight.bold)),
       SizedBox(height: 8),
-      Text('Program: ${_quoted("${arguments['program'] ?? 'Unavailable'}")}'),
-      Text('Arguments (direct argv):'),
     ];
-    final dynamic argv = arguments['arguments'];
-    if (argv is List<dynamic>) {
-      if (argv.isEmpty) children.add(Text('No arguments.'));
-      for (int index = 0; index < argv.length; index++) {
-        children.add(Text('[$index]: ${_quoted("${argv[index]}")}'));
+    if (shellCommand is String) {
+      children.add(Text('Shell command (display escapes):'));
+      final List<String> lines = <String>[];
+      for (final String line in shellCommand.split('\n')) {
+        lines.add(inspectionDisplayText(line));
+      }
+      children.add(Text(lines.join('\n')));
+      final dynamic profile = data['shellProfile'];
+      if (profile is Map<String, dynamic>) {
+        if (profile['profileId'] is String) {
+          children.add(
+            Text('Shell profile: ${_quoted(profile['profileId'] as String)}'),
+          );
+        }
+        if (profile['interpreter'] is String) {
+          children.add(
+            Text('Interpreter: ${_quoted(profile['interpreter'] as String)}'),
+          );
+        }
+        if (profile['dialect'] is String) {
+          children.add(
+            Text('Dialect: ${_quoted(profile['dialect'] as String)}'),
+          );
+        }
       }
     } else {
-      children.add(Text('Arguments unavailable.'));
+      children.add(
+        Text('Program: ${_quoted("${arguments['program'] ?? 'Unavailable'}")}'),
+      );
+      children.add(Text('Arguments (direct argv):'));
+      final dynamic argv = arguments['arguments'];
+      if (argv is List<dynamic>) {
+        if (argv.isEmpty) children.add(Text('No arguments.'));
+        for (int index = 0; index < argv.length; index++) {
+          children.add(Text('[$index]: ${_quoted("${argv[index]}")}'));
+        }
+      } else {
+        children.add(Text('Arguments unavailable.'));
+      }
     }
     final dynamic cwd = arguments['workingDirectory'];
     String location = _quoted("${cwd ?? 'Unavailable'}");
@@ -155,8 +190,9 @@ class _RunCommandInspectionState extends State<RunCommandInspection> {
         sessionId: snapshot.sessionId,
         runId: snapshot.runId,
         invocationId: snapshot.toolInvocationId,
-        title:
-            'Command: ${compactDisplayText("${arguments['program'] ?? 'Unavailable'}", maximumCharacters: 64)}',
+        title: shellCommand is String
+            ? 'Shell: ${compactDisplayText(shellCommand, maximumCharacters: 64)}'
+            : 'Command: ${compactDisplayText("${arguments['program'] ?? 'Unavailable'}", maximumCharacters: 64)}',
       ),
     );
     return Column(

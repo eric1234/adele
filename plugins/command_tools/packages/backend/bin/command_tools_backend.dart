@@ -71,7 +71,10 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
           serviceId: remoteModelToolServiceId,
           configurationContext: defaultConfigurationContext,
           metadata: const <String, Object?>{
-            'hostServices': [authorizedEnvironmentProcessServiceId],
+            'hostServices': [
+              authorizedEnvironmentProcessServiceId,
+              authorizedEnvironmentShellServiceId,
+            ],
           },
         ).toMap(),
         AdeleExtensionExposure(

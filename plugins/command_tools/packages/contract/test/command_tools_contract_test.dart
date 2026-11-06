@@ -102,6 +102,36 @@ void main() {
     },
   );
 
+  test(
+    'generated reader preserves tagged shell metadata without inventing argv',
+    () async {
+      await client.getState('session', 'run', 'invocation');
+      final state = Map<String, Object?>.from(channel.responses.last! as Map);
+      const script = '  printf "%s\\n" "two words"\nprintf second\n';
+      final metadata = jsonEncode({
+        'executionForm': 'shell',
+        'shellCommand': script,
+        'shellProfile': {
+          'profileId': 'selected-profile',
+          'interpreter': '/bin/bash',
+          'dialect': 'bash',
+        },
+      });
+      final shell = await CommandOutputServiceClient(
+        _Response({
+          ...state,
+          'program': '/bin/bash',
+          'argumentsJson': metadata,
+        }),
+      ).getState('session', 'run', 'invocation');
+      expect(shell.program, '/bin/bash');
+      expect(shell.argumentsJson, metadata);
+      expect(jsonDecode(shell.argumentsJson!)['shellCommand'], script);
+      expect(shell.state, 'complete');
+      expect(shell.toolInvocationId, 'invocation');
+    },
+  );
+
   test('page detaches its immutable chunk list from caller ownership', () {
     final source = <CommandOutputChunk>[
       const CommandOutputChunk(cursor: 1, stream: 'stdout', text: 'one'),

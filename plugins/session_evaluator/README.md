@@ -66,8 +66,16 @@ upgrade of an older document.
 
 Evidence maps retain selected SQL column names and values. Structured `*_json`
 columns remain exact source JSON text, validated against their expected shape
-rather than normalized or interpreted; command `arguments_json` must decode to
-an array of strings. Model metadata/usage presence flags and nullable input,
+rather than normalized or interpreted. Command `arguments_json` is either the
+historical direct argv string array or Command Tools' explicit shell object:
+`executionForm: "shell"`, exact `shellCommand`, and
+`shellProfile: {profileId, interpreter, dialect}`. Shell headers retain the selected
+interpreter in `program`, not a reconstructed provider argv. Validation checks the
+tagged shape/profile, script bound and exact canonical invocation form, script,
+working directory and timeout when terminal provenance is available; it does not
+invent a profile ID in canonical arguments or infer individual pipeline outcomes.
+Both forms retain the v1 storage schema and existing completeness rules.
+Model metadata/usage presence flags and nullable input,
 output, cache-read, and cache-write counters are preserved. Null is unreported,
 not zero; no totals, prices, cache-efficiency claims, or guessed effective models
 are added.

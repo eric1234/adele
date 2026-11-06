@@ -978,11 +978,34 @@ void main() {
         await tester.runAsync(() async {
           await chat.configureSession(session.id.value, _instructions);
           await chat.appendUserMessage(session.id.value, '  Exact question.\n');
+          final beforeMaterialization = _inspect(source, _snapshot);
+          expect(processes.shellDescriptions, 0);
           final catalog = await buildModelToolCatalogForSession(
             sessionId: session.id,
             environmentRuntime: runtime.lifecycle.environmentRuntime,
             extensions: runtime.extensions,
           );
+          final command = catalog.materialize().byAlias('run_command')!;
+          expect(command.modelDefinition.argumentsSchema['required'], [
+            'program',
+          ]);
+          expect(
+            (command.modelDefinition.argumentsSchema['properties']! as Map)
+                .keys,
+            unorderedEquals([
+              'program',
+              'arguments',
+              'workingDirectory',
+              'timeoutSeconds',
+            ]),
+          );
+          await expectLater(
+            command.executable.validateAndNormalize({'shellCommand': 'exit 0'}),
+            throwsA(isA<ToolArgumentValidationException>()),
+          );
+          expect(processes.shellDescriptions, 1);
+          expect(processes.calls, 0);
+          expect(_inspect(source, _snapshot), beforeMaterialization);
           final run = await createRun(
             session,
             'native-export-run',
@@ -2328,9 +2351,18 @@ final class _EnvironmentChannel implements AdeleStreamChannel {
   _EnvironmentChannel(this.source);
   final Directory source;
   int calls = 0;
+  int shellDescriptions = 0;
 
   @override
   Future<Object?> request(String method, Map<String, Object?> payload) async {
+    if (method == environmentProviderServiceDescribeShellId) {
+      shellDescriptions++;
+      throw const PluginRemoteFailure(
+        code: environmentShellUnavailableCode,
+        message: 'This fixture supports direct processes, not shell commands.',
+        declaredFailureType: environmentFailureTypeId,
+      );
+    }
     expect(method, environmentProviderServiceEstablishId);
     return {'providerState': <String, Object?>{}, 'initialState': null};
   }

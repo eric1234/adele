@@ -717,6 +717,8 @@ void main() {
       final PluginBackendHost host = await PluginBackendHost.start(
         dartaotruntimeExecutable: dartaotruntime,
         hostArtifactPath: hostArtifact.path,
+        // Select fixture capability independently of the invoking user's shell.
+        environment: const {'SHELL': '/bin/sh'},
       );
       addTearDown(() async {
         if (!host.isClosed) await host.close(graceful: false);
@@ -802,12 +804,26 @@ void main() {
       );
       expect(await storage.isDurableSession(sessionId.value), isFalse);
       expect(lifecycle.databaseForSession(sessionId), isNull);
+      final shellDescription = await SessionModelToolHostContext(
+        sessionId: sessionId,
+        environmentRuntime: lifecycle.environmentRuntime,
+      ).requireHostService<AuthorizedEnvironmentShellDescriptionFacet>();
+      final shellProfile = await shellDescription.describeShell();
       final ToolCatalog catalog = await buildModelToolCatalogForSession(
         sessionId: sessionId,
         environmentRuntime: lifecycle.environmentRuntime,
         extensions: extensions,
       );
       final MaterializedToolSet tools = catalog.materialize();
+      final commandModel = tools.byAlias('run_command')!.modelDefinition;
+      expect(
+        commandModel.description,
+        contains(jsonEncode(shellProfile.interpreter)),
+      );
+      expect(
+        commandModel.description,
+        contains(jsonEncode(shellProfile.dialect)),
+      );
       final _ReadPatchCommandModel model = _ReadPatchCommandModel();
       final ChatSessionState history = chat.sessions.obtain(sessionId)
         ..instructions =
@@ -1493,6 +1509,7 @@ final class _ReadPatchCommandModel implements ModelPort {
         expectedProperties: const <String>{
           'program',
           'arguments',
+          'shellCommand',
           'workingDirectory',
           'timeoutSeconds',
         },

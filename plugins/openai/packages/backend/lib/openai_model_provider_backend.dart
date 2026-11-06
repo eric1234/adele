@@ -884,6 +884,8 @@ Map<String, Object?> _lowerRequest(
             'name': tool.name,
             'description': tool.description,
             'parameters': tool.argumentsSchema,
+            // Omitted strict lets Responses normalize optional fields to required.
+            'strict': false,
           },
         )
         .toList(growable: false),

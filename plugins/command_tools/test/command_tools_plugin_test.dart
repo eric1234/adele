@@ -335,6 +335,340 @@ void main() {
     });
   });
 
+  group('shell semantics', () {
+    test(
+      'in-process opt-in and shared registration publish identical schemas',
+      () async {
+        final process = _ProcessFacet();
+        final shell = _ShellFacet();
+        final tool = await _tool(process, shell: shell);
+        final registration = commandToolRegistration(
+          process,
+          shellProfile: shell.profile,
+        );
+        final schema = tool.modelDefinition.argumentsSchema;
+        expect(tool.definition.id, runCommandToolId);
+        expect(tool.modelDefinition.alias, 'run_command');
+        expect(schema, registration.modelDefinition.argumentsSchema);
+        expect(
+          tool.modelDefinition.description,
+          registration.modelDefinition.description,
+        );
+        expect(schema['type'], 'object');
+        expect(schema['additionalProperties'], isFalse);
+        for (final key in ['oneOf', 'anyOf', 'allOf', 'required']) {
+          expect(schema, isNot(contains(key)));
+        }
+        final properties = schema['properties']! as Map<String, Object?>;
+        expect(properties.keys, [
+          'program',
+          'shellCommand',
+          'arguments',
+          'workingDirectory',
+          'timeoutSeconds',
+        ]);
+        expect(properties['shellCommand'], containsPair('maxLength', 16384));
+        expect(
+          tool.modelDefinition.description,
+          allOf([
+            contains('"/provider/custom-shell"'),
+            contains('"custom-dialect"'),
+            contains('Use this dialect for shellCommand'),
+            contains('not necessarily POSIX'),
+            contains('Shell text is passed verbatim'),
+            contains('not inferred success for every pipeline component'),
+            contains('exactly one of program or shellCommand'),
+            contains('omit arguments entirely'),
+            contains('passed verbatim'),
+            contains('Prefer an available dedicated'),
+            contains('timeoutSeconds up to 1800'),
+            contains('search_command_output'),
+            contains('Do not use nohup'),
+          ]),
+        );
+        expect(shell.descriptions, 1);
+        expect(shell.requests, isEmpty);
+        expect(process.requests, isEmpty);
+      },
+    );
+
+    test(
+      'preserves raw shell script and canonical cwd/defaults without execution',
+      () async {
+        final process = _ProcessFacet();
+        final shell = _ShellFacet();
+        final tool = await _tool(process, shell: shell);
+        const raw = '  printf "two words" | cat > out\n# comment\r\n  ';
+        final canonical = await _canonical(tool, {
+          'shellCommand': raw,
+          'workingDirectory': './lib//./',
+        });
+        expect(canonical.snapshot, {
+          'shellCommand': raw,
+          'workingDirectory': 'lib',
+          'timeoutSeconds': 120,
+        });
+        final description = await tool.executable.describe(
+          canonical,
+          _executionContext(),
+        );
+        expect(description.effects, {ToolEffect.processExecution});
+        expect(description.uncertainty, EffectUncertainty.uncertain);
+        expect(
+          description.targets.single.uri.toString(),
+          'adele-environment:/environment-command/',
+        );
+        expect(description.summary, contains(r'\n# comment\r\n'));
+        expect(description.summary, contains('profile "shell-profile"'));
+        expect(process.executions, 0);
+        expect(shell.requests, isEmpty);
+      },
+    );
+
+    test('rejects shell validity matrix before effects', () async {
+      final process = _ProcessFacet();
+      final shell = _ShellFacet();
+      final tool = await _tool(process, shell: shell);
+      for (final invalid in <Map<String, Object?>>[
+        {},
+        {'shellCommand': null},
+        {'shellCommand': 3},
+        {'shellCommand': []},
+        {'shellCommand': ''},
+        {'shellCommand': ' \t\r\n'},
+        {'shellCommand': 'x', 'program': 'git'},
+        {'shellCommand': 'x', 'program': null},
+        {'shellCommand': 'x', 'arguments': []},
+        {'shellCommand': 'x', 'arguments': null},
+        {
+          'shellCommand': 'x',
+          'arguments': ['ignored'],
+        },
+        {'shellCommand': 'x', 'extra': false},
+        {'shellCommand': 'x', 'profileId': 'chosen'},
+        {'shellCommand': 'x', 'environmentId': 'chosen'},
+        {'shellCommand': 'bad\u0000text'},
+        {'shellCommand': String.fromCharCode(0xd800)},
+        {'shellCommand': String.fromCharCode(0xdc00)},
+        {'shellCommand': 'x' * 16385},
+        {'shellCommand': '\u{1f600}' * 8193},
+        {'shellCommand': 'x', 'timeoutSeconds': 0},
+        {'shellCommand': 'x', 'timeoutSeconds': 1801},
+        {'shellCommand': 'x', 'timeoutSeconds': 1.0},
+        {'shellCommand': 'x', 'timeoutSeconds': null},
+        {'shellCommand': 'x', 'workingDirectory': null},
+        {'shellCommand': 'x', 'workingDirectory': 1},
+        {'shellCommand': 'x', 'workingDirectory': '../lib'},
+        {'shellCommand': 'x', 'workingDirectory': '/lib'},
+        {'shellCommand': 'x', 'workingDirectory': 'a/../lib'},
+        {'shellCommand': 'x', 'workingDirectory': 'bad\u0000path'},
+        {'shellCommand': 'x', 'workingDirectory': String.fromCharCode(0xd800)},
+      ]) {
+        await expectLater(
+          () => _canonical(tool, invalid),
+          throwsA(isA<ToolArgumentValidationException>()),
+          reason: invalid.keys.join(','),
+        );
+      }
+      for (final valid in ['x', 'x' * 16384, '\u{1f600}' * 8192, ' \nx\t ']) {
+        expect(
+          (await _canonical(tool, {
+            'shellCommand': valid,
+          })).snapshot['shellCommand'],
+          valid,
+        );
+      }
+      final direct = commandToolRegistration(process);
+      expect(
+        () => direct.executable.validateAndNormalize({'shellCommand': 'x'}),
+        throwsA(isA<ToolArgumentValidationException>()),
+      );
+      expect(shell.requests, isEmpty);
+      expect(process.executions, 0);
+    });
+
+    test(
+      'approval summary is bounded ASCII with exact script only in arguments',
+      () async {
+        final shell = _ShellFacet(
+          profile: EnvironmentShellProfile(
+            profileId: 'p' * 256,
+            interpreter: '/shell/\u202e${'z' * 4000}',
+            dialect: 'custom',
+          ),
+        );
+        final tool = await _tool(_ProcessFacet(), shell: shell);
+        final raw = 'first\n\u001b[31m\u202e\u0085\u2028${'a' * 16360}';
+        final canonical = await _canonical(tool, {
+          'shellCommand': raw,
+          'workingDirectory': 'a\u202e${'b' * 1000}',
+        });
+        final description = await tool.executable.describe(
+          canonical,
+          _executionContext(),
+        );
+        expect(canonical.snapshot['shellCommand'], raw);
+        expect(description.summary.length, lessThan(3200));
+        expect(
+          description.summary.codeUnits.every(
+            (unit) => unit >= 0x20 && unit <= 0x7e,
+          ),
+          isTrue,
+        );
+        expect(
+          description.summary,
+          allOf(
+            contains(r'\n'),
+            contains(r'\u001b'),
+            contains(r'\u202e'),
+            contains('(truncated)'),
+            contains('full script'),
+          ),
+        );
+        expect(description.summary, isNot(contains(raw)));
+        expect(shell.requests, isEmpty);
+      },
+    );
+
+    test(
+      'only explicit shell_unavailable discovery retains direct-only support',
+      () async {
+        final shell = _ShellFacet()
+          ..descriptionFailure = const EnvironmentFailure(
+            code: 'shell_unavailable',
+            message: 'No selection.',
+            details: {},
+          );
+        final tool = await _tool(_ProcessFacet(), shell: shell);
+        expect(tool.modelDefinition.argumentsSchema['required'], ['program']);
+        expect(
+          (tool.modelDefinition.argumentsSchema['properties']! as Map),
+          isNot(contains('shellCommand')),
+        );
+        expect(
+          (await _execute(tool, {'program': 'fixture'})).outcome.disposition,
+          ToolOutcomeDisposition.success,
+        );
+        expect(shell.requests, isEmpty);
+      },
+    );
+
+    for (final failure in <Object>[
+      const EnvironmentFailure(
+        code: 'shell_profile_changed',
+        message: 'Changed.',
+        details: {},
+      ),
+      const AuthorizedEnvironmentBindingStale('stale'),
+      const AuthorizedEnvironmentBindingUnavailable('offline'),
+      StateError('transport failure'),
+    ]) {
+      test(
+        'does not hide ${failure.runtimeType} during shell discovery',
+        () async {
+          final shell = _ShellFacet()..descriptionFailure = failure;
+          await expectLater(
+            _tool(_ProcessFacet(), shell: shell),
+            throwsA(same(failure)),
+          );
+          expect(shell.requests, isEmpty);
+        },
+      );
+    }
+
+    test(
+      'requires coherent Session and Environment shell identities',
+      () async {
+        for (final shell in [
+          _ShellFacet(sessionId: SessionId('another-session')),
+          _ShellFacet(environmentId: EnvironmentId('another-environment')),
+        ]) {
+          await expectLater(
+            _tool(_ProcessFacet(), shell: shell),
+            throwsStateError,
+          );
+          expect(
+            () => commandToolRegistration(
+              _ProcessFacet(),
+              shell: shell,
+              shellProfile: shell.profile,
+            ),
+            throwsArgumentError,
+          );
+          expect(shell.descriptions, 0);
+          expect(shell.requests, isEmpty);
+        }
+      },
+    );
+
+    test(
+      'checks binding after discovery and retains exact shell facet',
+      () async {
+        final shell = _ShellFacet();
+        final tool = await _tool(_ProcessFacet(), shell: shell);
+        shell.bindingFailure = const AuthorizedEnvironmentBindingStale('stale');
+        expect(
+          tool.executable.validateBinding,
+          throwsA(isA<StaleToolBindingException>()),
+        );
+        shell.bindingFailure = const AuthorizedEnvironmentBindingUnavailable(
+          'offline',
+        );
+        expect(
+          tool.executable.validateBinding,
+          throwsA(isA<ToolBindingUnavailableException>()),
+        );
+        final retiring = _ShellFacet();
+        retiring.afterDescribe = () {
+          retiring.bindingFailure = const AuthorizedEnvironmentBindingStale(
+            'retired during discovery',
+          );
+        };
+        await expectLater(
+          _tool(_ProcessFacet(), shell: retiring),
+          throwsA(isA<AuthorizedEnvironmentBindingStale>()),
+        );
+        expect(shell.requests, isEmpty);
+      },
+    );
+
+    test('opted-in context does not hide missing shell services', () async {
+      final extensions = ExtensionRegistry();
+      final activation = const CommandToolsPlugin(
+        enableShell: true,
+      ).activate(extensions);
+      addTearDown(activation.close);
+      final process = _ProcessFacet();
+      await expectLater(
+        ModelToolComposer(extensions).materialize(_Context(process)),
+        throwsStateError,
+      );
+      expect(process.executions, 0);
+    });
+
+    test(
+      'shell support does not change direct argv or host metadata',
+      () async {
+        final process = _ProcessFacet();
+        final shell = _ShellFacet();
+        final tool = await _tool(process, shell: shell);
+        final outcome = (await _execute(tool, {
+          'program': 'sh',
+          'arguments': ['-c', 'printf "%s" "\$HOME" | cat'],
+        })).outcome;
+        expect(process.requests.single.program, 'sh');
+        expect(process.requests.single.arguments, [
+          '-c',
+          'printf "%s" "\$HOME" | cat',
+        ]);
+        expect(outcome.hostData, isNot(contains('executionForm')));
+        expect(outcome.hostData, isNot(contains('shellProfile')));
+        expect(outcome.hostData, isNot(contains('shellCommand')));
+        expect(shell.requests, isEmpty);
+      },
+    );
+  });
+
   group('effect description', () {
     test(
       'targets the whole Environment with uncertain process execution',
@@ -927,6 +1261,396 @@ void main() {
       expect(denied.outcome.effectCertainty, EffectCertainty.knownNotOccurred);
       expect(process.executions, 0);
     });
+  });
+
+  group('shell capture', () {
+    late CommandTestStorage storage;
+    late CommandTranscriptStore transcripts;
+    setUp(() {
+      storage = CommandTestStorage();
+      transcripts = CommandTranscriptStore(storage);
+    });
+    tearDown(() async {
+      await transcripts.close();
+      storage.close();
+    });
+
+    test(
+      'captures exact shell metadata without fabricated provider argv',
+      () async {
+        final process = _ProcessFacet();
+        final output = 'H' * 4096 + 'M' * 2048 + 'T' * 4096;
+        final shell = _ShellFacet(
+          events: () => Stream.fromIterable([
+            _output(EnvironmentProcessOutputStream.stdout, output),
+            _output(EnvironmentProcessOutputStream.stderr, 'warning\n'),
+            _completed(exitCode: 17),
+          ]),
+        );
+        final tool = await _tool(
+          process,
+          transcripts: transcripts,
+          shell: shell,
+        );
+        const raw = '  printf "two words" | cat\n# preserve me\n  ';
+        final observation = await _execute(tool, {
+          'shellCommand': raw,
+          'workingDirectory': './lib//',
+          'timeoutSeconds': 1800,
+        });
+        final outcome = observation.outcome;
+        expect(observation.progress, isEmpty);
+        expect(outcome.disposition, ToolOutcomeDisposition.success);
+        expect(outcome.effectCertainty, EffectCertainty.knownOccurred);
+        expect(outcome.hostData, containsPair('executionForm', 'shell'));
+        expect(outcome.hostData['shellCommand'], raw);
+        expect(outcome.hostData['shellProfile'], {
+          'profileId': 'shell-profile',
+          'interpreter': '/provider/custom-shell',
+          'dialect': 'custom-dialect',
+        });
+        expect(outcome.hostData, isNot(contains('program')));
+        expect(outcome.hostData, isNot(contains('arguments')));
+        expect(outcome.hostData['stdout'], 'H' * 4096 + 'T' * 4096);
+        expect(outcome.hostData['stdoutTruncated'], isTrue);
+        expect(outcome.hostData['stderr'], 'warning\n');
+        expect(outcome.hostData['stderrTruncated'], isFalse);
+        expect(outcome.hostData['captureState'], 'complete');
+        expect(outcome.hostData['exitCode'], 17);
+        expect(_modelCaptureReference(outcome), {
+          'runId': 'run-command',
+          'toolInvocationId': 'tool-command',
+        });
+        expect(
+          outcome.modelContent,
+          allOf(
+            contains('Shell interpreter:'),
+            contains('Shell dialect:'),
+            contains('Shell command: ${jsonEncode(raw)}'),
+            contains('Exit code: 17'),
+          ),
+        );
+        expect(outcome.modelContent, isNot(contains('Arguments:')));
+        expect(process.executions, 0);
+        final request = shell.requests.single;
+        expect(request.command, raw);
+        expect(request.expectedProfileId, shell.profile.profileId);
+        expect(request.relativeWorkingDirectory, 'lib');
+        expect(request.timeoutSeconds, 1800);
+
+        final fresh = CommandTranscriptStore(storage);
+        addTearDown(fresh.close);
+        final page = await fresh.readAfter(
+          'session-command',
+          'run-command',
+          'tool-command',
+          0,
+          16,
+          65536,
+        );
+        expect(page.state.state, 'complete');
+        expect(page.state.program, shell.profile.interpreter);
+        expect(jsonDecode(page.state.argumentsJson!), {
+          'executionForm': 'shell',
+          'shellCommand': raw,
+          'shellProfile': outcome.hostData['shellProfile'],
+        });
+        expect(
+          page.chunks
+              .where((chunk) => chunk.stream == 'stdout')
+              .map((chunk) => chunk.text)
+              .join(),
+          output,
+        );
+        expect(page.chunks.last.stream, 'stderr');
+        final search = await CommandOutputSearch(fresh).search(
+          CommandOutputSearchRequest(
+            sessionId: 'session-command',
+            runId: 'run-command',
+            toolInvocationId: 'tool-command',
+            pattern: 'warning',
+          ),
+        );
+        expect(search.matchCount, 1);
+      },
+    );
+
+    test(
+      'maximum escaped script admits and remains readable under metadata limit',
+      () async {
+        var encodedBytes = 0;
+        storage.beforeTransaction = (statements) {
+          if (CommandTestStorage.kindOf(statements) == 'setup') {
+            encodedBytes = utf8
+                .encode(jsonEncode(statements.single.parameters))
+                .length;
+          }
+        };
+        final shell = _ShellFacet();
+        final tool = await _tool(
+          _ProcessFacet(),
+          transcripts: transcripts,
+          shell: shell,
+        );
+        final raw = '\u0001' * maximumShellCommandCodeUnits;
+        final outcome = (await _execute(tool, {'shellCommand': raw})).outcome;
+        expect(outcome.disposition, ToolOutcomeDisposition.success);
+        expect(encodedBytes, greaterThan(7 * 16384));
+        expect(encodedBytes, lessThanOrEqualTo(128 * 1024));
+        expect(shell.requests.single.command, raw);
+        final state = await transcripts.getState(
+          'session-command',
+          'run-command',
+          'tool-command',
+        );
+        expect((jsonDecode(state.argumentsJson!) as Map)['shellCommand'], raw);
+      },
+    );
+
+    test('combined oversize shell metadata fails before launch', () async {
+      final shell = _ShellFacet(
+        profile: EnvironmentShellProfile(
+          profileId: 'p' * 256,
+          interpreter: '\u0800' * 4096,
+          dialect: 'd' * 64,
+        ),
+      );
+      final tool = await _tool(
+        _ProcessFacet(),
+        transcripts: transcripts,
+        shell: shell,
+      );
+      final outcome = (await _execute(tool, {
+        'shellCommand': '\u0001' * 16384,
+      })).outcome;
+      expect(outcome.disposition, ToolOutcomeDisposition.failure);
+      expect(outcome.effectCertainty, EffectCertainty.knownNotOccurred);
+      expect(shell.requests, isEmpty);
+      expect(storage.transactions, 0);
+      expect(transcripts.activeCaptureCount, 0);
+    });
+
+    for (final termination in EnvironmentProcessTermination.values) {
+      test(
+        '${termination.name} preserves shell output and completion facts',
+        () async {
+          final shell = _ShellFacet(
+            events: () => Stream.fromIterable([
+              _output(EnvironmentProcessOutputStream.stdout, 'partial'),
+              _completed(termination: termination),
+            ]),
+          );
+          final tool = await _tool(
+            _ProcessFacet(),
+            transcripts: transcripts,
+            shell: shell,
+          );
+          final outcome = (await _execute(tool, {
+            'shellCommand': 'script',
+            'timeoutSeconds': 1,
+          })).outcome;
+          expect(outcome.disposition, ToolOutcomeDisposition.success);
+          expect(outcome.hostData['termination'], termination.name);
+          expect(
+            outcome.hostData['exitCode'],
+            termination == EnvironmentProcessTermination.exited ? 0 : null,
+          );
+          expect(outcome.hostData['stdout'], 'partial');
+          expect(outcome.hostData['captureState'], 'complete');
+          expect(shell.requests.single.timeoutSeconds, 1);
+          if (termination == EnvironmentProcessTermination.timedOut) {
+            expect(outcome.modelContent, contains('did not complete normally'));
+          }
+        },
+      );
+    }
+
+    for (final failure in <Object>[
+      const EnvironmentFailure(
+        code: 'shell_profile_changed',
+        message: 'Selection changed.',
+        details: {},
+      ),
+      const EnvironmentFailure(
+        code: 'shell_unavailable',
+        message: 'Unavailable.',
+        details: {},
+      ),
+      const AuthorizedEnvironmentBindingStale('retired'),
+      StateError('transport failed'),
+    ]) {
+      test(
+        '${failure.runtimeType} preserves failed capture without direct fallback',
+        () async {
+          final process = _ProcessFacet();
+          final shell = _ShellFacet(events: () => _eventsThenError(failure));
+          final tool = await _tool(
+            process,
+            transcripts: transcripts,
+            shell: shell,
+          );
+          final outcome = (await _execute(tool, {
+            'shellCommand': 'script',
+          })).outcome;
+          expect(outcome.disposition, ToolOutcomeDisposition.failure);
+          expect(outcome.effectCertainty, EffectCertainty.uncertain);
+          expect(outcome.hostData['executionForm'], 'shell');
+          expect(outcome.hostData['shellCommand'], 'script');
+          expect(outcome.hostData['captureState'], 'failed');
+          expect(outcome.modelContent, contains('Shell command: "script"'));
+          expect(outcome.modelContent, contains('Shell interpreter:'));
+          expect(outcome.modelContent, contains('Shell dialect:'));
+          expect(outcome.modelContent, contains('Working directory: ""'));
+          expect(outcome.modelContent, contains('Timeout seconds: 120'));
+          expect(outcome.hostData['stdout'], 'before failure');
+          expect(outcome.hostData, isNot(contains('termination')));
+          expect(process.executions, 0);
+          expect(shell.requests, hasLength(1));
+          final state = await transcripts.getState(
+            'session-command',
+            'run-command',
+            'tool-command',
+          );
+          expect(state.state, 'failed');
+          expect(state.highWater, 1);
+        },
+      );
+    }
+
+    for (final phase in ['setup', 'append', 'complete']) {
+      test('$phase failure has truthful shell capture and effects', () async {
+        storage.beforeTransaction = (statements) {
+          if (CommandTestStorage.kindOf(statements) == phase) {
+            throw StateError('$phase failed');
+          }
+        };
+        final shell = _ShellFacet(
+          events: () => Stream.fromIterable([
+            _output(EnvironmentProcessOutputStream.stdout, 'text'),
+            _completed(exitCode: 17),
+          ]),
+        );
+        final tool = await _tool(
+          _ProcessFacet(),
+          transcripts: transcripts,
+          shell: shell,
+        );
+        final outcome = (await _execute(tool, {
+          'shellCommand': 'script',
+        })).outcome;
+        expect(outcome.disposition, ToolOutcomeDisposition.failure);
+        expect(outcome.failureKind, ToolFailureKind.infrastructure);
+        expect(
+          outcome.effectCertainty,
+          phase == 'setup'
+              ? EffectCertainty.knownNotOccurred
+              : EffectCertainty.uncertain,
+        );
+        expect(shell.requests.length, phase == 'setup' ? 0 : 1);
+        expect(transcripts.activeCaptureCount, 0);
+        if (phase == 'complete') expect(outcome.hostData['exitCode'], 17);
+      });
+    }
+
+    test(
+      'silent shell cancellation drains shared producer and fails capture',
+      () async {
+        final listening = Completer<void>();
+        final cancelled = Completer<void>();
+        final producer = StreamController<EnvironmentProcessEvent>(
+          onListen: listening.complete,
+          onCancel: cancelled.complete,
+        );
+        addTearDown(producer.close);
+        final shell = _ShellFacet(events: () => producer.stream);
+        final tool = await _tool(
+          _ProcessFacet(),
+          transcripts: transcripts,
+          shell: shell,
+        );
+        final events = <ToolExecutionEvent>[];
+        final subscription = tool.executable
+            .execute(
+              await _canonical(tool, {'shellCommand': 'script'}),
+              _executionContext(),
+            )
+            .listen(events.add);
+        await listening.future;
+        await subscription.cancel().timeout(const Duration(seconds: 2));
+        await cancelled.future.timeout(const Duration(seconds: 2));
+        expect(events, isEmpty);
+        expect(transcripts.activeCaptureCount, 0);
+        expect(
+          (await transcripts.getState(
+            'session-command',
+            'run-command',
+            'tool-command',
+          )).state,
+          'failed',
+        );
+      },
+    );
+
+    test(
+      'validation description and rejected approval create no shell capture',
+      () async {
+        final process = _ProcessFacet();
+        final shell = _ShellFacet();
+        final tool = await _tool(
+          process,
+          transcripts: transcripts,
+          shell: shell,
+        );
+        const raw = 'printf "one"\nprintf "two"';
+        final invocation = await _resolveInvocation(tool, {
+          'shellCommand': raw,
+        });
+        final required =
+            await const ToolPolicyGate().evaluate(
+                  invocation: invocation,
+                  policy: const _DecisionPolicy(ToolPolicyDecision.ask),
+                  interruptionId: RunInterruptionId('shell-approval'),
+                )
+                as ToolApprovalRequired;
+        expect(required.invocation.canonicalArguments['shellCommand'], raw);
+        expect(storage.schemaChecks, 0);
+        expect(storage.transactions, 0);
+        final denied =
+            await const ToolPolicyGate().evaluate(
+                  invocation: invocation,
+                  policy: const _DecisionPolicy(ToolPolicyDecision.deny),
+                  interruptionId: RunInterruptionId('unused'),
+                )
+                as ToolExecutionDenied;
+        expect(denied.outcome.disposition, ToolOutcomeDisposition.policyDenied);
+        expect(shell.requests, isEmpty);
+        expect(process.executions, 0);
+        expect(storage.transactions, 0);
+      },
+    );
+
+    test(
+      'profile-only registration cannot execute without authorized shell facet',
+      () async {
+        final process = _ProcessFacet();
+        final executable = commandToolRegistration(
+          process,
+          shellProfile: _ShellFacet().profile,
+          transcripts: transcripts,
+        ).executable;
+        final args = await executable.validateAndNormalize({
+          'shellCommand': 'script',
+        });
+        await executable.describe(args, _executionContext());
+        final outcome = (await collectToolExecution(
+          executable.execute(args, _executionContext()),
+        )).outcome;
+        expect(outcome.disposition, ToolOutcomeDisposition.failure);
+        expect(outcome.effectCertainty, EffectCertainty.knownNotOccurred);
+        expect(storage.transactions, 0);
+        expect(process.executions, 0);
+      },
+    );
   });
 
   group('capture lifecycle', () {
@@ -1539,6 +2263,7 @@ void main() {
 Future<MaterializedTool> _tool(
   _ProcessFacet process, {
   CommandTranscriptStore? transcripts,
+  _ShellFacet? shell,
 }) async {
   final ExtensionRegistry extensions = ExtensionRegistry();
   if (transcripts == null) {
@@ -1552,17 +2277,19 @@ Future<MaterializedTool> _tool(
   }
   final ExtensionRegistration activation = CommandToolsPlugin(
     transcripts: transcripts,
+    enableShell: shell != null,
   ).activate(extensions);
   addTearDown(activation.close);
-  return _materializedTool(extensions, process);
+  return _materializedTool(extensions, process, shell: shell);
 }
 
 Future<MaterializedTool> _materializedTool(
   ExtensionRegistry extensions,
-  _ProcessFacet process,
-) async => (await ModelToolComposer(
+  _ProcessFacet process, {
+  _ShellFacet? shell,
+}) async => (await ModelToolComposer(
   extensions,
-).materialize(_Context(process))).materialize().tools.single;
+).materialize(_Context(process, shell: shell))).materialize().tools.single;
 
 FutureOr<CanonicalToolArguments> _canonical(
   MaterializedTool tool,
@@ -1656,9 +2383,10 @@ EnvironmentProcessEvent _completed({
 );
 
 final class _Context implements ModelToolHostContext {
-  _Context(this.process);
+  _Context(this.process, {this.shell});
 
   final _ProcessFacet process;
+  final _ShellFacet? shell;
   final List<Type> requestedServices = <Type>[];
 
   @override
@@ -1668,7 +2396,74 @@ final class _Context implements ModelToolHostContext {
   Future<T> requireHostService<T extends Object>() async {
     requestedServices.add(T);
     if (T == AuthorizedEnvironmentProcessFacet) return process as T;
+    if (shell != null &&
+        (T == AuthorizedEnvironmentShellDescriptionFacet ||
+            T == AuthorizedEnvironmentShellFacet)) {
+      return shell as T;
+    }
     throw StateError('Unexpected host service request: $T.');
+  }
+}
+
+final class _ShellFacet
+    implements
+        AuthorizedEnvironmentShellDescriptionFacet,
+        AuthorizedEnvironmentShellFacet {
+  _ShellFacet({
+    this.events,
+    EnvironmentShellProfile? profile,
+    SessionId? sessionId,
+    EnvironmentId? environmentId,
+  }) : profile =
+           profile ??
+           EnvironmentShellProfile(
+             profileId: 'shell-profile',
+             interpreter: '/provider/custom-shell',
+             dialect: 'custom-dialect',
+           ),
+       sessionId = sessionId ?? SessionId('session-command'),
+       environmentId = environmentId ?? EnvironmentId('environment-command');
+
+  final EnvironmentShellProfile profile;
+  final Stream<EnvironmentProcessEvent> Function()? events;
+  final requests = <EnvironmentShellCommandRequest>[];
+  Object? bindingFailure;
+  Object? descriptionFailure;
+  void Function()? afterDescribe;
+  int descriptions = 0;
+
+  @override
+  final SessionId sessionId;
+  @override
+  final EnvironmentId environmentId;
+
+  @override
+  void validateBinding() {
+    final failure = bindingFailure;
+    if (failure != null) throw failure;
+  }
+
+  @override
+  Future<EnvironmentShellProfile> describeShell() async {
+    descriptions++;
+    final failure = descriptionFailure;
+    if (failure != null) throw failure;
+    afterDescribe?.call();
+    return profile;
+  }
+
+  @override
+  void Function() onRetire(void Function() observer) {
+    validateBinding();
+    return () {};
+  }
+
+  @override
+  Stream<EnvironmentProcessEvent> runShellCommand(
+    EnvironmentShellCommandRequest request,
+  ) {
+    requests.add(request);
+    return events?.call() ?? Stream.value(_completed());
   }
 }
 

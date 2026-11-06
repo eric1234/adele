@@ -38,16 +38,48 @@ void validateCommandHeader(Map<String, Object?> row) {
   }
   try {
     final arguments = jsonDecode(row['arguments_json'] as String);
-    evidenceRequire(
-      arguments is List && arguments.every((value) => value is String),
-      'Invalid command argv.',
-    );
-    EnvironmentForegroundProcessRequest(
-      program: row['program'] as String,
-      arguments: List<String>.from(arguments as List),
-      relativeWorkingDirectory: row['working_directory'] as String,
-      timeoutSeconds: row['timeout_seconds'] as int,
-    );
+    if (arguments is Map) {
+      final profile = arguments['shellProfile'];
+      evidenceRequire(
+        arguments.length == 3 &&
+            arguments['executionForm'] == 'shell' &&
+            arguments['shellCommand'] is String &&
+            (arguments['shellCommand'] as String).length <= 16384 &&
+            profile is Map &&
+            profile.length == 3 &&
+            profile['profileId'] is String &&
+            profile['interpreter'] is String &&
+            profile['dialect'] is String,
+        'Invalid shell command metadata.',
+      );
+      final values = profile as Map;
+      final shell = EnvironmentShellProfile(
+        profileId: values['profileId'] as String,
+        interpreter: values['interpreter'] as String,
+        dialect: values['dialect'] as String,
+      );
+      evidenceRequire(
+        row['program'] == shell.interpreter,
+        'Shell capture interpreter disagrees with its profile.',
+      );
+      EnvironmentShellCommandRequest(
+        command: arguments['shellCommand'] as String,
+        expectedProfileId: shell.profileId,
+        relativeWorkingDirectory: row['working_directory'] as String,
+        timeoutSeconds: row['timeout_seconds'] as int,
+      );
+    } else {
+      evidenceRequire(
+        arguments is List && arguments.every((value) => value is String),
+        'Invalid command argv.',
+      );
+      EnvironmentForegroundProcessRequest(
+        program: row['program'] as String,
+        arguments: List<String>.from(arguments as List),
+        relativeWorkingDirectory: row['working_directory'] as String,
+        timeoutSeconds: row['timeout_seconds'] as int,
+      );
+    }
   } on FormatException {
     evidenceRequire(false, 'Malformed command metadata.');
   }

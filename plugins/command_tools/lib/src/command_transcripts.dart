@@ -9,6 +9,9 @@ import 'package:command_tools_contract/command_tools_contract.dart';
 
 import 'process_outcome.dart';
 
+/// Tighter than the Environment request bound to allow escaped capture metadata.
+const int maximumShellCommandCodeUnits = 16384;
+
 /// Plugin-owned SQL and observation. No output history is retained in RAM.
 final class CommandTranscriptStore implements CommandOutputService {
   CommandTranscriptStore(this.storage);
@@ -52,6 +55,54 @@ final class CommandTranscriptStore implements CommandOutputService {
     required ToolExecutionContext context,
     required String environmentId,
     required EnvironmentForegroundProcessRequest request,
+  }) => _begin(
+    context: context,
+    environmentId: environmentId,
+    program: request.program,
+    argumentsJson: jsonEncode(request.arguments),
+    workingDirectory: request.relativeWorkingDirectory,
+    timeoutSeconds: request.timeoutSeconds,
+  );
+
+  /// Reuses the v1 header with a tagged JSON object, not fabricated provider argv.
+  /// The interpreter column is descriptive; the actual invocation is provider-owned.
+  Future<CommandCaptureWriter> beginShell({
+    required ToolExecutionContext context,
+    required String environmentId,
+    required EnvironmentShellProfile profile,
+    required EnvironmentShellCommandRequest request,
+  }) {
+    if (profile.profileId != request.expectedProfileId) {
+      throw ArgumentError('Shell capture profile must match the request.');
+    }
+    if (request.command.length > maximumShellCommandCodeUnits) {
+      throw ArgumentError('Shell capture command exceeds the script limit.');
+    }
+    return _begin(
+      context: context,
+      environmentId: environmentId,
+      program: profile.interpreter,
+      argumentsJson: jsonEncode({
+        'executionForm': 'shell',
+        'shellCommand': request.command,
+        'shellProfile': {
+          'profileId': profile.profileId,
+          'interpreter': profile.interpreter,
+          'dialect': profile.dialect,
+        },
+      }),
+      workingDirectory: request.relativeWorkingDirectory,
+      timeoutSeconds: request.timeoutSeconds,
+    );
+  }
+
+  Future<CommandCaptureWriter> _begin({
+    required ToolExecutionContext context,
+    required String environmentId,
+    required String program,
+    required String argumentsJson,
+    required String workingDirectory,
+    required int timeoutSeconds,
   }) async {
     _requireOpen();
     final id = context.toolInvocationId;
@@ -69,10 +120,10 @@ final class CommandTranscriptStore implements CommandOutputService {
         ':session': context.sessionId.value,
         ':run': context.runId.value,
         ':environment': environmentId,
-        ':program': request.program,
-        ':arguments': jsonEncode(request.arguments),
-        ':directory': request.relativeWorkingDirectory,
-        ':timeout': request.timeoutSeconds,
+        ':program': program,
+        ':arguments': argumentsJson,
+        ':directory': workingDirectory,
+        ':timeout': timeoutSeconds,
       };
       // Keep every accepted header individually readable under the host bound.
       if (utf8.encode(jsonEncode(metadata)).length > 128 * 1024) {
@@ -171,16 +222,39 @@ final class CommandTranscriptStore implements CommandOutputService {
     }
     try {
       final arguments = jsonDecode(row['arguments_json']! as String);
-      if (arguments is! List<Object?> ||
-          arguments.any((Object? value) => value is! String)) {
-        throw const FormatException('Invalid stored argv.');
+      if (arguments is List<Object?> &&
+          arguments.every((Object? value) => value is String)) {
+        EnvironmentForegroundProcessRequest(
+          program: row['program']! as String,
+          arguments: List<String>.from(arguments),
+          relativeWorkingDirectory: row['working_directory']! as String,
+          timeoutSeconds: row['timeout_seconds']! as int,
+        );
+      } else if (arguments is Map<String, Object?> &&
+          arguments.length == 3 &&
+          arguments['executionForm'] == 'shell' &&
+          arguments['shellCommand'] is String &&
+          (arguments['shellCommand']! as String).length <=
+              maximumShellCommandCodeUnits &&
+          arguments['shellProfile'] is Map<String, Object?>) {
+        final metadata = arguments['shellProfile']! as Map<String, Object?>;
+        if (metadata.length != 3 || metadata['interpreter'] != row['program']) {
+          throw const FormatException('Invalid stored shell profile.');
+        }
+        final profile = EnvironmentShellProfile(
+          profileId: metadata['profileId']! as String,
+          interpreter: metadata['interpreter']! as String,
+          dialect: metadata['dialect']! as String,
+        );
+        EnvironmentShellCommandRequest(
+          command: arguments['shellCommand']! as String,
+          expectedProfileId: profile.profileId,
+          relativeWorkingDirectory: row['working_directory']! as String,
+          timeoutSeconds: row['timeout_seconds']! as int,
+        );
+      } else {
+        throw const FormatException('Invalid stored command arguments.');
       }
-      EnvironmentForegroundProcessRequest(
-        program: row['program']! as String,
-        arguments: List<String>.from(arguments),
-        relativeWorkingDirectory: row['working_directory']! as String,
-        timeoutSeconds: row['timeout_seconds']! as int,
-      );
       final directory = row['working_directory']! as String;
       if ((row['high_water'] == 0) != (row['total_code_units'] == 0) ||
           (row['total_code_units']! as int) < (row['high_water']! as int) ||

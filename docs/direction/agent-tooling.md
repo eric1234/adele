@@ -154,7 +154,15 @@ Execution
 
 `run_command` is the minimum useful coding-agent tool because it enables the agent to bootstrap nearly all other operations.
 
-The initial model-visible schema takes one executable `program`, optional verbatim `arguments`, an optional Environment-relative `workingDirectory`, and an optional bounded timeout. It preserves the distinction between direct process execution and shell interpretation: no shell is invoked implicitly. Real-model use may pressure this provisional schema later without changing the underlying Environment process distinction.
+The model-visible schema keeps direct executable `program` with optional verbatim
+`arguments` and adds mutually exclusive `shellCommand` when the selected Environment
+advertises shell support. Both share Environment-relative `workingDirectory` and a
+bounded timeout. The provider-selected interpreter and dialect are described to the
+model; shell text is passed verbatim rather than inferred from direct arguments.
+The Environment owns interpreter invocation and selection consistency. Both forms
+remain uncertain arbitrary process execution under the same authorization policy.
+The implemented schema, limits, and capture/presentation behavior belong to the
+[Command Tools README](../../plugins/command_tools/README.md#execution-forms).
 
 For example, direct argument-vector execution avoids quoting ambiguity:
 
@@ -165,7 +173,9 @@ arguments: ["diff", "--", "some file.dart"]
 
 while some operations genuinely require shell syntax such as pipelines, redirection, expansion, or compound commands.
 
-ADELE should not prematurely freeze whether those become separate model-visible forms.
+Those operations use the shell form of the existing `run_command`, not a separate
+model tool. Environments without shell support retain the direct form without a
+host-selected fallback.
 
 ## 4.2 Layer 1 — high-value structured coding primitives
 

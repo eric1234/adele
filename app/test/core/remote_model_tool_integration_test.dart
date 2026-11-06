@@ -101,11 +101,23 @@ void main() {
   late ExtensionRegistry extensions;
   late _Files files;
   late _Context context;
+  late Link selectedShell;
 
   setUp(() async {
+    final home = await Directory.systemTemp.createTemp('adele-remote-home-');
+    addTearDown(() => home.delete(recursive: true));
+    selectedShell = Link('${home.path}/selected-shell');
+    if (Platform.isLinux) await selectedShell.create('/bin/sh');
     host = await PluginBackendHost.start(
       dartaotruntimeExecutable: aotRuntime,
       hostArtifactPath: hostArtifact.path,
+      environment: Platform.isLinux
+          ? {
+              'HOME': home.path,
+              'SHELL': selectedShell.path,
+              'PATH': '/usr/bin:/bin',
+            }
+          : null,
     );
     addTearDown(host.close);
     capabilities = CapabilityRegistry();
@@ -204,6 +216,7 @@ void main() {
       environmentRuntime: lifecycle.environmentRuntime,
     );
     final process = _ObservedProcess(
+      context,
       await context.requireHostService<AuthorizedEnvironmentProcessFacet>(),
     );
     final tools = (await ModelToolComposer(
@@ -236,7 +249,10 @@ void main() {
           .singleWhere((item) => item.extensionId == '$_commandId.model-tools');
       expect(exposure.extensionId, '$_commandId.model-tools');
       expect(exposure.metadata, {
-        'hostServices': [authorizedEnvironmentProcessServiceId],
+        'hostServices': [
+          authorizedEnvironmentProcessServiceId,
+          authorizedEnvironmentShellServiceId,
+        ],
       });
       expect(
         fixture.tools.tools.map((tool) => tool.modelDefinition.alias),
@@ -318,7 +334,288 @@ void main() {
       final observation = await collectToolExecution(events).timeout(_bound);
       expect(observation.outcome.disposition, ToolOutcomeDisposition.success);
       expect(process.opens, 1);
-      expect(process.requested, [AuthorizedEnvironmentProcessFacet]);
+      expect(process.requested, [
+        AuthorizedEnvironmentProcessFacet,
+        AuthorizedEnvironmentShellDescriptionFacet,
+        AuthorizedEnvironmentShellFacet,
+      ]);
+    },
+    skip: !Platform.isLinux ? 'Foreground execution is Linux-only.' : false,
+  );
+
+  test(
+    'real Command shell denial and approval preserve raw metadata without preapproval capture',
+    () async {
+      final fixture = await commandFixture();
+      final process = fixture.process;
+      final description = await fixture.context
+          .requireHostService<AuthorizedEnvironmentShellDescriptionFacet>();
+      final profile = await description.describeShell();
+      const script = "  printf '%s\\n' 'literal | > &&'\npwd\n";
+      final invocation = await _commandInvocation(
+        fixture.tools,
+        process.sessionId,
+        {'shellCommand': script, 'workingDirectory': './nested//'},
+      );
+      expect(invocation.canonicalArguments, {
+        'shellCommand': script,
+        'workingDirectory': 'nested',
+        'timeoutSeconds': 120,
+      });
+      final output = CommandOutputServiceClient(
+        fixture.command.connection.channelFor(
+          fixture.command.connection.defaultConfigurationContext,
+          commandOutputServiceId,
+        ),
+      );
+      Future<void> expectNotStarted() async {
+        expect(process.opens, 0);
+        expect(process.shellOpens, 0);
+        expect(process.events, isEmpty);
+        expect(
+          (await output.getState(
+            process.sessionId.value,
+            invocation.context.runId.value,
+            invocation.id.value,
+          )).state,
+          'absent',
+        );
+      }
+
+      await expectNotStarted();
+      final denied =
+          await const ToolPolicyGate().evaluate(
+                invocation: invocation,
+                policy: const _DecisionPolicy(ToolPolicyDecision.deny),
+                interruptionId: RunInterruptionId('shell-denied'),
+              )
+              as ToolExecutionDenied;
+      expect(denied.outcome.disposition, ToolOutcomeDisposition.policyDenied);
+      await expectNotStarted();
+      final pending =
+          await const ToolPolicyGate().evaluate(
+                invocation: invocation,
+                policy: const ApprovalGatedToolPolicy(),
+                interruptionId: RunInterruptionId('shell-approval'),
+              )
+              as ToolApprovalRequired;
+      expect(pending.effects.effects, {ToolEffect.processExecution});
+      expect(pending.effects.uncertainty, EffectUncertainty.uncertain);
+      expect(pending.effects.summary, contains(profile.interpreter));
+      expect(pending.effects.summary, isNot(contains('\n')));
+      final run = AgentRun(
+        id: invocation.context.runId,
+        sessionId: process.sessionId,
+      )..start();
+      run.interrupt(pending.interruption);
+      await expectNotStarted();
+      final approved = const ToolPolicyGate().approve(
+        run.resolveInterruption(
+          ToolApprovalResolution(
+            interruptionId: pending.interruption.id,
+            toolInvocationId: invocation.id,
+            approved: true,
+          ),
+        ),
+      );
+      final events = run.startToolExecution(approved).events();
+      await expectNotStarted();
+      final result = await collectToolExecution(events).timeout(_bound);
+      expect(result.outcome.disposition, ToolOutcomeDisposition.success);
+      expect(result.progress, isEmpty);
+      expect(result.outcome.hostData['executionForm'], 'shell');
+      expect(result.outcome.hostData['shellCommand'], script);
+      final shellProfile = {
+        'profileId': profile.profileId,
+        'interpreter': profile.interpreter,
+        'dialect': profile.dialect,
+      };
+      expect(result.outcome.hostData['shellProfile'], shellProfile);
+      expect(result.outcome.hostData, isNot(contains('program')));
+      expect(result.outcome.hostData, isNot(contains('arguments')));
+      expect(
+        result.outcome.hostData['stdout'],
+        'literal | > &&\n${fixture.worktree.path}/nested\n',
+      );
+      expect(process.opens, 0);
+      expect(process.shellOpens, 1);
+      final snapshot = await _commandOutputSnapshot(
+        fixture.command.connection,
+        process.sessionId,
+        _commandOutputReference(result.outcome.modelContent),
+      );
+      final state = snapshot['state']! as Map<String, Object?>;
+      expect(state['program'], profile.interpreter);
+      expect(jsonDecode(state['argumentsJson']! as String), {
+        'executionForm': 'shell',
+        'shellCommand': script,
+        'shellProfile': shellProfile,
+      });
+      expect(state['workingDirectory'], 'nested');
+      expect(state['timeoutSeconds'], 120);
+      run.complete();
+    },
+    skip: !Platform.isLinux ? 'Foreground execution is Linux-only.' : false,
+  );
+
+  test(
+    'real Command shell profile drift fails closed and retirement never repairs old catalogs',
+    () async {
+      final fixture = await commandFixture();
+      final old = await _commandInvocation(
+        fixture.tools,
+        fixture.process.sessionId,
+        {'shellCommand': 'printf started > drift-marker'},
+      );
+      await selectedShell.delete();
+      await selectedShell.create('/bin/bash');
+      final failed = await collectToolExecution(
+        old.tool.executable.execute(old.arguments, old.context),
+      ).timeout(_bound);
+      expect(failed.outcome.disposition, ToolOutcomeDisposition.failure);
+      expect(
+        failed.outcome.hostData['code'],
+        environmentShellProfileChangedCode,
+      );
+      expect(
+        await File('${fixture.worktree.path}/drift-marker').exists(),
+        isFalse,
+      );
+      expect(fixture.process.opens, 0);
+      expect(fixture.process.events, isEmpty);
+      final capturedProfile = failed.outcome.hostData['shellProfile'] as Map;
+
+      final fresh = (await ModelToolComposer(
+        extensions,
+      ).materialize(fixture.process)).materialize();
+      final next = await _commandInvocation(fresh, fixture.process.sessionId, {
+        'shellCommand': 'printf fresh',
+      });
+      final executed = await collectToolExecution(
+        next.tool.executable.execute(next.arguments, next.context),
+      ).timeout(_bound);
+      expect(executed.outcome.hostData['stdout'], 'fresh');
+      expect(
+        (executed.outcome.hostData['shellProfile'] as Map)['profileId'],
+        isNot(capturedProfile['profileId']),
+      );
+      expect(executed.outcome.disposition, ToolOutcomeDisposition.success);
+      await fixture.git.close();
+      await start(gitArtifact, _gitId, lifecycle: fixture.lifecycle);
+      for (final invocation in [old, next]) {
+        expect(
+          invocation.tool.executable.validateBinding,
+          throwsA(isA<StaleToolBindingException>()),
+        );
+        await expectLater(
+          invocation.tool.executable
+              .execute(invocation.arguments, invocation.context)
+              .toList(),
+          throwsA(isA<StaleToolBindingException>()),
+        );
+      }
+      final replacement = (await ModelToolComposer(
+        extensions,
+      ).materialize(fixture.context)).materialize();
+      final restored = await _commandInvocation(
+        replacement,
+        fixture.process.sessionId,
+        {'shellCommand': 'printf replacement'},
+      );
+      final result = await collectToolExecution(
+        restored.tool.executable.execute(restored.arguments, restored.context),
+      ).timeout(_bound);
+      expect(result.outcome.hostData['stdout'], 'replacement');
+      expect(result.outcome.disposition, ToolOutcomeDisposition.success);
+      expect(
+        await File('${fixture.worktree.path}/drift-marker').exists(),
+        isFalse,
+      );
+    },
+    skip: !Platform.isLinux ? 'Foreground execution is Linux-only.' : false,
+  );
+
+  test(
+    'real Command shell descriptors and forged routes carry no execution authority',
+    () async {
+      final fixture = await commandFixture();
+      final client = RemoteModelToolServiceClient(
+        fixture.command.connection.channelFor(
+          fixture.command.connection.defaultConfigurationContext,
+          remoteModelToolServiceId,
+        ),
+      );
+      final direct = (await client.materialize(
+        RemoteModelToolMaterialization(
+          sessionId: fixture.process.sessionId.value,
+          environmentId: fixture.process.environmentId.value,
+          shellProfile: null,
+        ),
+      )).single;
+      expect(direct.executionHostServices, [
+        authorizedEnvironmentProcessServiceId,
+      ]);
+      expect(
+        direct.argumentsSchema['properties'],
+        isNot(contains('shellCommand')),
+      );
+      final forged = (await client.materialize(
+        RemoteModelToolMaterialization(
+          sessionId: fixture.process.sessionId.value,
+          environmentId: fixture.process.environmentId.value,
+          shellProfile: RemoteEnvironmentShellProfile(
+            profileId: 'forged-profile',
+            interpreter: '/forged/interpreter',
+            dialect: 'posix',
+          ),
+        ),
+      )).single;
+      expect(forged.routeId, isNot(direct.routeId));
+      expect(forged.executionHostServices, [
+        authorizedEnvironmentProcessServiceId,
+        authorizedEnvironmentShellServiceId,
+      ]);
+      final arguments = await client.validateAndNormalize(forged.routeId, {
+        'shellCommand': 'printf forbidden > forged-marker',
+      });
+      for (final route in [forged.routeId, '${forged.routeId}tampered']) {
+        await expectLater(
+          client
+              .execute(
+                route,
+                arguments,
+                fixture.process.sessionId.value,
+                'forged-run',
+                'forged-invocation',
+                fixture.process.environmentId.value,
+                null,
+              )
+              .toList()
+              .timeout(_bound),
+          throwsA(isA<AdeleRemoteFailure>()),
+        );
+      }
+      expect(fixture.process.opens, 0);
+      expect(fixture.process.shellOpens, 0);
+      expect(
+        await File('${fixture.worktree.path}/forged-marker').exists(),
+        isFalse,
+      );
+      final output = CommandOutputServiceClient(
+        fixture.command.connection.channelFor(
+          fixture.command.connection.defaultConfigurationContext,
+          commandOutputServiceId,
+        ),
+      );
+      expect(
+        (await output.getState(
+          fixture.process.sessionId.value,
+          'forged-run',
+          'forged-invocation',
+        )).state,
+        'absent',
+      );
+      expect(fixture.command.connection.isClosed, isFalse);
     },
     skip: !Platform.isLinux ? 'Foreground execution is Linux-only.' : false,
   );
@@ -471,7 +768,11 @@ void main() {
             'Search must not alter retained text, metadata, or capture state.',
       );
       expect(fixture.process.opens, 1);
-      expect(fixture.process.requested, [AuthorizedEnvironmentProcessFacet]);
+      expect(fixture.process.requested, [
+        AuthorizedEnvironmentProcessFacet,
+        AuthorizedEnvironmentShellDescriptionFacet,
+        AuthorizedEnvironmentShellFacet,
+      ]);
     },
     skip: !Platform.isLinux ? 'Foreground execution is Linux-only.' : false,
   );
@@ -2066,13 +2367,19 @@ final class _DecisionPolicy implements ToolPolicy {
 }
 
 final class _ObservedProcess
-    implements ModelToolHostContext, AuthorizedEnvironmentProcessFacet {
-  _ObservedProcess(this.delegate);
+    implements
+        ModelToolHostContext,
+        AuthorizedEnvironmentProcessFacet,
+        AuthorizedEnvironmentShellFacet {
+  _ObservedProcess(this.context, this.delegate);
+  final SessionModelToolHostContext context;
   final AuthorizedEnvironmentProcessFacet delegate;
+  AuthorizedEnvironmentShellFacet? _shell;
   final requested = <Type>[];
   final events = <EnvironmentProcessEvent>[];
   void Function(EnvironmentProcessEvent)? onEvent;
   int opens = 0;
+  int shellOpens = 0;
   @override
   SessionId get sessionId => delegate.sessionId;
   @override
@@ -2083,7 +2390,31 @@ final class _ObservedProcess
   Future<T> requireHostService<T extends Object>() async {
     requested.add(T);
     if (T == AuthorizedEnvironmentProcessFacet) return this as T;
+    if (T == AuthorizedEnvironmentShellDescriptionFacet) {
+      return context.requireHostService<T>();
+    }
+    if (T == AuthorizedEnvironmentShellFacet) {
+      _shell ??= await context
+          .requireHostService<AuthorizedEnvironmentShellFacet>();
+      return this as T;
+    }
     throw StateError('Command requested unrelated authority $T.');
+  }
+
+  @override
+  void Function() onRetire(void Function() observer) =>
+      _shell!.onRetire(observer);
+
+  @override
+  Stream<EnvironmentProcessEvent> runShellCommand(
+    EnvironmentShellCommandRequest request,
+  ) {
+    shellOpens++;
+    return _shell!.runShellCommand(request).map((event) {
+      events.add(event);
+      onEvent?.call(event);
+      return event;
+    });
   }
 
   @override

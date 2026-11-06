@@ -127,18 +127,24 @@ ${commandCaptures.columns.map((column) => 'h.$column').join(', ')},
         final arguments =
             jsonDecode(tools.single['canonical_arguments_json'] as String)
                 as Map<String, dynamic>;
-        final argv = jsonDecode(header['arguments_json'] as String) as List;
+        final metadata = jsonDecode(header['arguments_json'] as String);
         final toolArgv = arguments['arguments'];
+        final formMatches = metadata is Map
+            ? !arguments.containsKey('program') &&
+                  !arguments.containsKey('arguments') &&
+                  arguments['shellCommand'] == metadata['shellCommand']
+            : !arguments.containsKey('shellCommand') &&
+                  arguments['program'] == header['program'] &&
+                  toolArgv is List &&
+                  toolArgv.length == (metadata as List).length &&
+                  List.generate(
+                    metadata.length,
+                    (i) => i,
+                  ).every((i) => metadata[i] == toolArgv[i]);
         evidenceRequire(
-          arguments['program'] == header['program'] &&
+          formMatches &&
               arguments['workingDirectory'] == header['working_directory'] &&
-              arguments['timeoutSeconds'] == header['timeout_seconds'] &&
-              toolArgv is List &&
-              toolArgv.length == argv.length &&
-              List.generate(
-                argv.length,
-                (i) => i,
-              ).every((i) => argv[i] == toolArgv[i]),
+              arguments['timeoutSeconds'] == header['timeout_seconds'],
           'Command metadata disagrees with its exact terminal invocation.',
         );
       }

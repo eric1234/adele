@@ -33,19 +33,38 @@ final ExtensionId commandToolsExtensionId = ExtensionId(
 ToolRegistration commandToolRegistration(
   AuthorizedEnvironmentProcessFacet process, {
   CommandTranscriptStore? transcripts,
-}) => _RunCommandExecutable(process, transcripts).registration;
+  EnvironmentShellProfile? shellProfile,
+  AuthorizedEnvironmentShellFacet? shell,
+}) {
+  if (shell != null &&
+      (shellProfile == null ||
+          shell.sessionId != process.sessionId ||
+          shell.environmentId != process.environmentId)) {
+    throw ArgumentError('Shell and process must describe the same authority.');
+  }
+  return _RunCommandExecutable(
+    process,
+    transcripts,
+    shellProfile,
+    shell,
+  ).registration;
+}
 
 final class CommandToolsPlugin {
-  const CommandToolsPlugin({this.transcripts});
+  const CommandToolsPlugin({this.transcripts, this.enableShell = false});
 
   /// Required for execution; description/validation never allocate capture.
   final CommandTranscriptStore? transcripts;
+
+  /// Opts into contexts supplying both authorized shell facets. Existing
+  /// process-only contexts need not implement shell service discovery.
+  final bool enableShell;
 
   ExtensionRegistration activate(ExtensionRegistry extensions) =>
       extensions.register(
         point: modelToolContributions,
         id: commandToolsExtensionId,
-        value: _CommandModelTools(transcripts),
+        value: _CommandModelTools(transcripts, enableShell),
       );
 
   /// Independent read-only contribution; does not request a process facet.
@@ -75,9 +94,10 @@ final class _CommandOutputSearchTools implements ModelToolContribution {
 }
 
 final class _CommandModelTools implements ModelToolContribution {
-  const _CommandModelTools(this.transcripts);
+  const _CommandModelTools(this.transcripts, this.enableShell);
 
   final CommandTranscriptStore? transcripts;
+  final bool enableShell;
 
   @override
   Future<Iterable<ToolRegistration>> materialize(
@@ -88,78 +108,142 @@ final class _CommandModelTools implements ModelToolContribution {
     if (process.sessionId != context.sessionId) {
       throw StateError('The process authority belongs to another Session.');
     }
+    EnvironmentShellProfile? shellProfile;
+    AuthorizedEnvironmentShellFacet? shell;
+    if (enableShell) {
+      final description = await context
+          .requireHostService<AuthorizedEnvironmentShellDescriptionFacet>();
+      shell = await context
+          .requireHostService<AuthorizedEnvironmentShellFacet>();
+      for (final authority in [description, shell]) {
+        if (authority.sessionId != process.sessionId ||
+            authority.environmentId != process.environmentId) {
+          throw StateError(
+            'Shell and process must describe the same authority.',
+          );
+        }
+        authority.validateBinding();
+      }
+      try {
+        shellProfile = await description.describeShell();
+      } on EnvironmentFailure catch (error) {
+        if (error.code != environmentShellUnavailableCode) rethrow;
+      }
+      // Discovery may have awaited a provider that retired in the meantime.
+      description.validateBinding();
+      shell.validateBinding();
+      process.validateBinding();
+      if (shellProfile == null) shell = null;
+    }
     return <ToolRegistration>[
-      commandToolRegistration(process, transcripts: transcripts),
+      commandToolRegistration(
+        process,
+        transcripts: transcripts,
+        shellProfile: shellProfile,
+        shell: shell,
+      ),
     ];
   }
 }
 
 final class _RunCommandExecutable implements ToolExecutable {
-  const _RunCommandExecutable(this._process, this._transcripts);
+  const _RunCommandExecutable(
+    this._process,
+    this._transcripts,
+    this._shellProfile,
+    this._shell,
+  );
 
   static const int _defaultTimeoutSeconds = 120;
 
   final AuthorizedEnvironmentProcessFacet _process;
   final CommandTranscriptStore? _transcripts;
+  final EnvironmentShellProfile? _shellProfile;
+  final AuthorizedEnvironmentShellFacet? _shell;
 
-  ToolRegistration get registration => ToolRegistration(
-    definition: ToolDefinition(
-      id: runCommandToolId,
-      description:
-          'Run one foreground program in the current Session Environment.',
-    ),
-    modelDefinition: ModelToolDefinition(
-      alias: 'run_command',
-      description:
-          'Use for builds, tests, Git, and other operations requiring program '
-          'execution. Prefer an available dedicated file-reading, content-search, '
-          'or file-editing tool when it adequately supports the operation, rather '
-          'than recreating it with shell commands or scripts. Commands remain '
-          'available when those tools are absent or unsuitable, including path '
-          'or file discovery unsupported by available tools, as well as '
-          'generators, formatters, and other transformations. Runs one foreground '
-          'executable directly in the current Session Environment: program is '
-          'one executable name or path and arguments '
-          'are passed verbatim. This tool does not implicitly invoke a shell '
-          'or interpret pipes, redirects, command chaining, or variable expansion; '
-          'shell syntax requires explicitly invoking an available shell. '
-          'workingDirectory is Environment-relative; omitted or empty means the '
-          'Environment root. The default timeout is $_defaultTimeoutSeconds '
-          'seconds; long-running foreground operations can explicitly request '
-          'timeoutSeconds up to '
-          '$environmentForegroundProcessTimeoutLimitSeconds seconds per invocation. '
-          'Do not use nohup, setsid, detached shells, or redirected temporary log '
-          'files merely to bypass command timeouts or obtain normal command '
-          'output. Inspect returned termination, exit code, output, and capture '
-          'status: tool completion alone does not prove program or validation '
-          'success. termination: timedOut means the program did not complete '
-          'normally. A nonzero exit code is a process result, not necessarily a '
-          'tool-infrastructure failure. Model-preview truncation is distinct '
-          'from incomplete capture; full captured output remains available to '
-          'the user through Command Output. Use search_command_output with the '
-          'returned exact runId/toolInvocationId to search retained output '
-          'without rerunning the command, including text omitted from previews.',
-      argumentsSchema: const <String, Object?>{
-        'type': 'object',
-        'required': <Object?>['program'],
-        'properties': <String, Object?>{
-          'program': <String, Object?>{'type': 'string', 'minLength': 1},
-          'arguments': <String, Object?>{
-            'type': 'array',
-            'items': <String, Object?>{'type': 'string'},
+  ToolRegistration get registration {
+    final shellDescription = _shellProfile == null
+        ? 'shell syntax requires explicitly invoking an available shell. '
+        : 'Alternatively, provide shellCommand as one raw script for the '
+              'Environment-selected interpreter '
+              '${_summaryQuote(_shellProfile.interpreter, maximumCodeUnits: 4096)} '
+              'with dialect ${_summaryQuote(_shellProfile.dialect)}. '
+              'Use this dialect for shellCommand; shell behavior is not necessarily '
+              'POSIX. Shell text is passed verbatim to the selected Environment '
+              'shell, without implicit script options. A normal shell exit code '
+              'is the interpreter process exit code, not inferred success for '
+              'every pipeline component. '
+              'Use exactly one of program or shellCommand. With shellCommand, '
+              'omit arguments entirely, even an empty array. Shell text is '
+              'preserved verbatim, must contain non-whitespace text, and is '
+              'limited to $maximumShellCommandCodeUnits UTF-16 code units. ';
+    return ToolRegistration(
+      definition: ToolDefinition(
+        id: runCommandToolId,
+        description:
+            'Run one foreground command in the current Session Environment.',
+      ),
+      modelDefinition: ModelToolDefinition(
+        alias: 'run_command',
+        description:
+            'Use for builds, tests, Git, and other operations requiring program '
+            'execution. Prefer an available dedicated file-reading, content-search, '
+            'or file-editing tool when it adequately supports the operation, rather '
+            'than recreating it with shell commands or scripts. Commands remain '
+            'available when those tools are absent or unsuitable, including path '
+            'or file discovery unsupported by available tools, as well as '
+            'generators, formatters, and other transformations. Runs one foreground '
+            'executable directly in the current Session Environment: program is '
+            'one executable name or path and arguments '
+            'are passed verbatim. This tool does not implicitly invoke a shell '
+            'or interpret pipes, redirects, command chaining, or variable expansion; '
+            '$shellDescription'
+            'workingDirectory is Environment-relative; omitted or empty means the '
+            'Environment root. The default timeout is $_defaultTimeoutSeconds '
+            'seconds; long-running foreground operations can explicitly request '
+            'timeoutSeconds up to '
+            '$environmentForegroundProcessTimeoutLimitSeconds seconds per invocation. '
+            'Do not use nohup, setsid, detached shells, or redirected temporary log '
+            'files merely to bypass command timeouts or obtain normal command '
+            'output. Inspect returned termination, exit code, output, and capture '
+            'status: tool completion alone does not prove program or validation '
+            'success. termination: timedOut means the program did not complete '
+            'normally. A nonzero exit code is a process result, not necessarily a '
+            'tool-infrastructure failure. Model-preview truncation is distinct '
+            'from incomplete capture; full captured output remains available to '
+            'the user through Command Output. Use search_command_output with the '
+            'returned exact runId/toolInvocationId to search retained output '
+            'without rerunning the command, including text omitted from previews.',
+        argumentsSchema: <String, Object?>{
+          'type': 'object',
+          if (_shellProfile == null) 'required': <Object?>['program'],
+          'properties': <String, Object?>{
+            'program': <String, Object?>{'type': 'string', 'minLength': 1},
+            if (_shellProfile != null)
+              'shellCommand': <String, Object?>{
+                'type': 'string',
+                'minLength': 1,
+                'maxLength': maximumShellCommandCodeUnits,
+                'description':
+                    'Raw script; mutually exclusive with program and arguments.',
+              },
+            'arguments': <String, Object?>{
+              'type': 'array',
+              'items': <String, Object?>{'type': 'string'},
+            },
+            'workingDirectory': <String, Object?>{'type': 'string'},
+            'timeoutSeconds': <String, Object?>{
+              'type': 'integer',
+              'minimum': 1,
+              'maximum': environmentForegroundProcessTimeoutLimitSeconds,
+            },
           },
-          'workingDirectory': <String, Object?>{'type': 'string'},
-          'timeoutSeconds': <String, Object?>{
-            'type': 'integer',
-            'minimum': 1,
-            'maximum': environmentForegroundProcessTimeoutLimitSeconds,
-          },
+          'additionalProperties': false,
         },
-        'additionalProperties': false,
-      },
-    ),
-    executable: this,
-  );
+      ),
+      executable: this,
+    );
+  }
 
   @override
   CanonicalToolArguments validateAndNormalize(
@@ -167,16 +251,38 @@ final class _RunCommandExecutable implements ToolExecutable {
   ) {
     const Set<String> fields = <String>{
       'program',
+      'shellCommand',
       'arguments',
       'workingDirectory',
       'timeoutSeconds',
     };
+    final isShell = proposedArguments.containsKey('shellCommand');
     if (proposedArguments.keys.any((String key) => !fields.contains(key)) ||
-        proposedArguments['program'] is! String ||
+        isShell == proposedArguments.containsKey('program')) {
+      throw const ToolArgumentValidationException(
+        'run_command requires exactly one of program or shellCommand and accepts '
+        'only arguments, workingDirectory, and timeoutSeconds as optional fields.',
+      );
+    }
+    if (isShell) {
+      if (_shellProfile == null) {
+        throw const ToolArgumentValidationException(
+          'shellCommand is unavailable in this Environment.',
+        );
+      }
+      final command = proposedArguments['shellCommand'];
+      if (command is! String ||
+          command.length > maximumShellCommandCodeUnits ||
+          proposedArguments.containsKey('arguments')) {
+        throw const ToolArgumentValidationException(
+          'shellCommand must be a string of at most '
+          '$maximumShellCommandCodeUnits UTF-16 code units; arguments must be omitted.',
+        );
+      }
+    } else if (proposedArguments['program'] is! String ||
         (proposedArguments['program']! as String).isEmpty) {
       throw const ToolArgumentValidationException(
-        'run_command requires a non-empty string program and accepts only '
-        'arguments, workingDirectory, and timeoutSeconds as optional fields.',
+        'run_command program must be a non-empty string.',
       );
     }
     final Object? proposedArgumentList = proposedArguments['arguments'];
@@ -203,7 +309,6 @@ final class _RunCommandExecutable implements ToolExecutable {
       );
     }
 
-    final String program = proposedArguments['program']! as String;
     final List<String> arguments = proposedArgumentList == null
         ? <String>[]
         : List<String>.from(proposedArgumentList as List<Object?>);
@@ -213,9 +318,22 @@ final class _RunCommandExecutable implements ToolExecutable {
     final int timeoutSeconds =
         proposedTimeout as int? ?? _defaultTimeoutSeconds;
     try {
+      if (isShell) {
+        final request = EnvironmentShellCommandRequest(
+          command: proposedArguments['shellCommand']! as String,
+          expectedProfileId: _shellProfile!.profileId,
+          relativeWorkingDirectory: workingDirectory,
+          timeoutSeconds: timeoutSeconds,
+        );
+        return CanonicalToolArguments(<String, Object?>{
+          'shellCommand': request.command,
+          'workingDirectory': request.relativeWorkingDirectory,
+          'timeoutSeconds': request.timeoutSeconds,
+        });
+      }
       final EnvironmentForegroundProcessRequest request =
           EnvironmentForegroundProcessRequest(
-            program: program,
+            program: proposedArguments['program']! as String,
             arguments: arguments,
             relativeWorkingDirectory: workingDirectory,
             timeoutSeconds: timeoutSeconds,
@@ -237,15 +355,13 @@ final class _RunCommandExecutable implements ToolExecutable {
     ToolExecutionContext context,
   ) async {
     _requireAuthorizedSession(context);
-    final String program = arguments.snapshot['program']! as String;
-    final List<Object?> programArguments =
-        arguments.snapshot['arguments']! as List<Object?>;
     final String workingDirectory =
         arguments.snapshot['workingDirectory']! as String;
     final int timeoutSeconds = arguments.snapshot['timeoutSeconds']! as int;
     final String location = workingDirectory.isEmpty
         ? 'Environment root'
-        : 'Environment directory ${jsonEncode(workingDirectory)}';
+        : 'Environment directory ${arguments.snapshot.containsKey('shellCommand') ? _summaryQuote(workingDirectory) : jsonEncode(workingDirectory)}';
+    final shellCommand = arguments.snapshot['shellCommand'] as String?;
     return EffectDescription(
       effects: const <ToolEffect>[ToolEffect.processExecution],
       targets: <EffectTarget>[
@@ -256,10 +372,16 @@ final class _RunCommandExecutable implements ToolExecutable {
           ),
         ),
       ],
-      summary:
-          'Run program ${jsonEncode(program)} with arguments '
-          '${jsonEncode(programArguments)} from $location with a '
-          '$timeoutSeconds-second timeout.',
+      summary: shellCommand == null
+          ? 'Run program ${jsonEncode(arguments.snapshot['program'])} with arguments '
+                '${jsonEncode(arguments.snapshot['arguments'])} from $location with a '
+                '$timeoutSeconds-second timeout.'
+          : 'Run shell command ${_summaryQuote(shellCommand, maximumCodeUnits: 160)} '
+                'using interpreter ${_summaryQuote(_shellProfile!.interpreter)}, '
+                'dialect ${_summaryQuote(_shellProfile.dialect)}, '
+                'profile ${_summaryQuote(_shellProfile.profileId, maximumCodeUnits: 256)} from $location '
+                'with a $timeoutSeconds-second timeout. '
+                'The full script is preserved in the canonical arguments.',
       uncertainty: EffectUncertainty.uncertain,
     );
   }
@@ -268,6 +390,7 @@ final class _RunCommandExecutable implements ToolExecutable {
   void validateBinding() {
     try {
       _process.validateBinding();
+      _shell?.validateBinding();
     } on AuthorizedEnvironmentBindingStale catch (error) {
       throw StaleToolBindingException(
         error.message,
@@ -294,9 +417,6 @@ final class _RunCommandExecutable implements ToolExecutable {
         cancellation ??= producer?.cancel() ?? Future<void>.value();
     late final StreamController<ToolExecutionEvent> controller;
     Future<ToolOutcome> run() async {
-      final EnvironmentForegroundProcessRequest request = _requestFromCanonical(
-        arguments,
-      );
       final _BoundedCommandOutput stdout = _BoundedCommandOutput();
       final _BoundedCommandOutput stderr = _BoundedCommandOutput();
       CommandCaptureWriter? capture;
@@ -310,16 +430,43 @@ final class _RunCommandExecutable implements ToolExecutable {
             'Command execution requires a transcript storage service.',
           );
         }
-        capture = await transcripts.begin(
-          context: context,
-          environmentId: _process.environmentId.value,
-          request: request,
-        );
+        final shellCommand = arguments.snapshot['shellCommand'] as String?;
+        EnvironmentShellCommandRequest? shellRequest;
+        EnvironmentForegroundProcessRequest? directRequest;
+        if (shellCommand != null) {
+          if (_shell == null || _shellProfile == null) {
+            throw StateError('Command execution requires a shell authority.');
+          }
+          shellRequest = EnvironmentShellCommandRequest(
+            command: shellCommand,
+            expectedProfileId: _shellProfile.profileId,
+            relativeWorkingDirectory:
+                arguments.snapshot['workingDirectory']! as String,
+            timeoutSeconds: arguments.snapshot['timeoutSeconds']! as int,
+          );
+          capture = await transcripts.beginShell(
+            context: context,
+            environmentId: _process.environmentId.value,
+            profile: _shellProfile,
+            request: shellRequest,
+          );
+        } else {
+          directRequest = _requestFromCanonical(arguments);
+          capture = await transcripts.begin(
+            context: context,
+            environmentId: _process.environmentId.value,
+            request: directRequest,
+          );
+        }
         if (cancelled) throw StateError('Command execution was cancelled.');
         // Storage and the unique header commit precede listening to the lazy
         // process stream. Invocation identity does not grant process authority.
         executionAdmitted = true;
-        producer = StreamIterator(_process.runForegroundProcess(request));
+        producer = StreamIterator(
+          shellRequest == null
+              ? _process.runForegroundProcess(directRequest!)
+              : _shell!.runShellCommand(shellRequest),
+        );
         capture.cancelProducer = stopProducer;
         while (!cancelled && await producer!.moveNext()) {
           final event = producer!.current;
@@ -352,7 +499,7 @@ final class _RunCommandExecutable implements ToolExecutable {
         if (completed.stdoutTruncated || completed.stderrTruncated) {
           throw StateError('The Environment did not deliver complete output.');
         }
-        return _success(request, completed, stdout, stderr, context);
+        return _success(arguments, completed, stdout, stderr, context);
       } on Object catch (error) {
         Object? cleanupFailure;
         try {
@@ -382,7 +529,7 @@ final class _RunCommandExecutable implements ToolExecutable {
           exitCode: exitCode,
         );
         return _failure(
-          request,
+          arguments,
           stdout,
           stderr,
           modelContent: error is _SessionAuthorityViolation
@@ -483,7 +630,7 @@ final class _RunCommandExecutable implements ToolExecutable {
   );
 
   ToolOutcome _success(
-    EnvironmentForegroundProcessRequest request,
+    CanonicalToolArguments arguments,
     EnvironmentProcessCompleted completed,
     _BoundedCommandOutput stdout,
     _BoundedCommandOutput stderr,
@@ -495,7 +642,8 @@ final class _RunCommandExecutable implements ToolExecutable {
       disposition: ToolOutcomeDisposition.success,
       effectCertainty: EffectCertainty.knownOccurred,
       modelContent: _modelResult(
-        request,
+        arguments,
+        shellProfile: _shellProfile,
         termination: completed.termination.name,
         exitCode: completed.exitCode,
         stdout: stdout.value,
@@ -505,7 +653,7 @@ final class _RunCommandExecutable implements ToolExecutable {
         captureReference: _captureReference(context),
       ),
       hostData: <String, Object?>{
-        ..._baseHostData(request, stdout, stderr),
+        ..._baseHostData(arguments, stdout, stderr),
         ..._captureReference(context),
         'termination': completed.termination.name,
         'exitCode': completed.exitCode,
@@ -517,7 +665,7 @@ final class _RunCommandExecutable implements ToolExecutable {
   }
 
   ToolOutcome _failure(
-    EnvironmentForegroundProcessRequest request,
+    CanonicalToolArguments arguments,
     _BoundedCommandOutput stdout,
     _BoundedCommandOutput stderr, {
     required String modelContent,
@@ -532,6 +680,7 @@ final class _RunCommandExecutable implements ToolExecutable {
     effectCertainty: certainty,
     modelContent:
         '$modelContent\n\n'
+        '${arguments.snapshot.containsKey('shellCommand') ? _modelCommand(arguments, _shellProfile) : ''}'
         '${certainty == EffectCertainty.knownNotOccurred ? 'The process was not launched.' : 'External effects may have occurred; capture completeness is unconfirmed.'}\n'
         '${diagnostics['termination'] == null ? '' : 'Known termination: ${diagnostics['termination']}\n'}'
         '${diagnostics['exitCode'] == null ? '' : 'Known exit code: ${diagnostics['exitCode']}\n'}'
@@ -541,7 +690,7 @@ final class _RunCommandExecutable implements ToolExecutable {
         'Partial STDOUT preview (truncated: ${stdout.truncated}):\n${stdout.value}\n\n'
         'Partial STDERR preview (truncated: ${stderr.truncated}):\n${stderr.value}',
     hostData: <String, Object?>{
-      ..._baseHostData(request, stdout, stderr),
+      ..._baseHostData(arguments, stdout, stderr),
       ...?captureReference,
       'stdoutTruncated': stdout.truncated,
       'stderrTruncated': stderr.truncated,
@@ -552,15 +701,25 @@ final class _RunCommandExecutable implements ToolExecutable {
   );
 
   Map<String, Object?> _baseHostData(
-    EnvironmentForegroundProcessRequest request,
+    CanonicalToolArguments arguments,
     _BoundedCommandOutput stdout,
     _BoundedCommandOutput stderr,
   ) => <String, Object?>{
     'environmentId': _process.environmentId.value,
-    'program': request.program,
-    'arguments': request.arguments,
-    'workingDirectory': request.relativeWorkingDirectory,
-    'timeoutSeconds': request.timeoutSeconds,
+    if (arguments.snapshot.containsKey('shellCommand')) ...{
+      'executionForm': 'shell',
+      'shellCommand': arguments.snapshot['shellCommand'],
+      'shellProfile': {
+        'profileId': _shellProfile!.profileId,
+        'interpreter': _shellProfile.interpreter,
+        'dialect': _shellProfile.dialect,
+      },
+    } else ...{
+      'program': arguments.snapshot['program'],
+      'arguments': arguments.snapshot['arguments'],
+    },
+    'workingDirectory': arguments.snapshot['workingDirectory'],
+    'timeoutSeconds': arguments.snapshot['timeoutSeconds'],
     'stdout': stdout.value,
     'stderr': stderr.value,
   };
@@ -574,6 +733,7 @@ final class _RunCommandExecutable implements ToolExecutable {
 
 /// Model-preview bound per stream in UTF-16 code units, not a capture limit.
 const int maximumRetainedCommandOutputCharacters = 8 * 1024;
+
 const int _retainedCommandOutputHeadCharacters =
     maximumRetainedCommandOutputCharacters ~/ 2;
 
@@ -646,7 +806,8 @@ String _canonicalWorkingDirectory(String workingDirectory) {
 }
 
 String _modelResult(
-  EnvironmentForegroundProcessRequest request, {
+  CanonicalToolArguments arguments, {
+  required EnvironmentShellProfile? shellProfile,
   required String termination,
   required int? exitCode,
   required String stdout,
@@ -654,21 +815,34 @@ String _modelResult(
   required bool stdoutTruncated,
   required bool stderrTruncated,
   required Map<String, Object?> captureReference,
-}) =>
-    'Program: ${jsonEncode(request.program)}\n'
-    'Arguments: ${jsonEncode(request.arguments)}\n'
-    'Working directory: ${jsonEncode(request.relativeWorkingDirectory)}\n'
-    'Timeout seconds: ${request.timeoutSeconds}\n'
-    'Termination: $termination\n'
-    'Exit code: ${exitCode ?? '<not applicable>'}\n'
-    '${termination == 'timedOut' ? 'The program did not complete normally.\n' : ''}'
-    'Capture: complete. Full captured output is available to the user through Command Output.\n'
-    '${_modelCaptureReference(captureReference)}'
-    'Stdout preview truncated: $stdoutTruncated\n'
-    'Stderr preview truncated: $stderrTruncated\n'
-    'Preview truncation does not imply full-capture loss.\n\n'
-    'STDOUT:\n$stdout\n\n'
-    'STDERR:\n$stderr';
+}) {
+  return '${_modelCommand(arguments, shellProfile)}'
+      'Termination: $termination\n'
+      'Exit code: ${exitCode ?? '<not applicable>'}\n'
+      '${termination == 'timedOut' ? 'The program did not complete normally.\n' : ''}'
+      'Capture: complete. Full captured output is available to the user through Command Output.\n'
+      '${_modelCaptureReference(captureReference)}'
+      'Stdout preview truncated: $stdoutTruncated\n'
+      'Stderr preview truncated: $stderrTruncated\n'
+      'Preview truncation does not imply full-capture loss.\n\n'
+      'STDOUT:\n$stdout\n\n'
+      'STDERR:\n$stderr';
+}
+
+String _modelCommand(
+  CanonicalToolArguments arguments,
+  EnvironmentShellProfile? shellProfile,
+) {
+  final command = arguments.snapshot.containsKey('shellCommand')
+      ? 'Shell interpreter: ${jsonEncode(shellProfile!.interpreter)}\n'
+            'Shell dialect: ${jsonEncode(shellProfile.dialect)}\n'
+            'Shell command: ${jsonEncode(arguments.snapshot['shellCommand'])}\n'
+      : 'Program: ${jsonEncode(arguments.snapshot['program'])}\n'
+            'Arguments: ${jsonEncode(arguments.snapshot['arguments'])}\n';
+  return '$command'
+      'Working directory: ${jsonEncode(arguments.snapshot['workingDirectory'])}\n'
+      'Timeout seconds: ${arguments.snapshot['timeoutSeconds']}\n';
+}
 
 Map<String, Object?> _captureReference(ToolExecutionContext context) => {
   'runId': context.runId.value,
@@ -682,6 +856,23 @@ String _modelCaptureReference(Map<String, Object?> reference) =>
 
 bool _isHighSurrogate(int codeUnit) => codeUnit >= 0xd800 && codeUnit <= 0xdbff;
 bool _isLowSurrogate(int codeUnit) => codeUnit >= 0xdc00 && codeUnit <= 0xdfff;
+
+// Approval summaries are bounded single-line ASCII, including provider labels.
+// Canonical arguments and capture metadata retain the exact original text.
+String _summaryQuote(String value, {int maximumCodeUnits = 80}) {
+  var end = value.length < maximumCodeUnits ? value.length : maximumCodeUnits;
+  if (end < value.length &&
+      end > 0 &&
+      _isHighSurrogate(value.codeUnitAt(end - 1))) {
+    end--;
+  }
+  final quoted = jsonEncode(value.substring(0, end)).replaceAllMapped(
+    RegExp(r'[^\x20-\x7e]'),
+    (match) =>
+        '\\u${match[0]!.codeUnitAt(0).toRadixString(16).padLeft(4, '0')}',
+  );
+  return end < value.length ? '$quoted (truncated)' : quoted;
+}
 
 final class _SessionAuthorityViolation implements Exception {
   const _SessionAuthorityViolation(this.message);

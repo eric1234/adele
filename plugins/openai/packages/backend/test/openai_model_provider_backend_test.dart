@@ -48,6 +48,84 @@ void main() {
 
     for (final bool chatGpt in <bool>[false, true]) {
       final String profile = chatGpt ? 'ChatGPT' : 'API key';
+      test(
+        '$profile disables strict normalization and preserves optional tool fields',
+        () async {
+          const Map<String, Object?> schema = <String, Object?>{
+            'type': 'object',
+            'properties': <String, Object?>{
+              'kind': <String, Object?>{'type': 'string'},
+              'uri': <String, Object?>{'type': 'string'},
+              'inlineText': <String, Object?>{'type': 'string'},
+            },
+            'required': <String>['kind'],
+            'additionalProperties': false,
+          };
+          final ModelProviderTool tool = ModelProviderTool(
+            name: 'inspect_resource',
+            description: 'Inspect exactly one of uri or inlineText.',
+            argumentsSchema: schema,
+          );
+          const List<Map<String, Object?>> arguments = <Map<String, Object?>>[
+            <String, Object?>{
+              'kind': 'text',
+              'uri': 'file:///tmp/resource.txt',
+            },
+            <String, Object?>{
+              'kind': 'text',
+              'inlineText': 'Resource content.',
+            },
+          ];
+          late Map<String, Object?> captured;
+          final _FakeServer server = await _FakeServer.start((request) async {
+            captured = await _jsonBody(request);
+            for (var index = 0; index < arguments.length; index++) {
+              _sse(
+                request.response,
+                _outputDone(<String, Object?>{
+                  'type': 'function_call',
+                  'id': 'fc_$index',
+                  'call_id': 'call_$index',
+                  'name': tool.name,
+                  'arguments': jsonEncode(arguments[index]),
+                }),
+              );
+            }
+            _sse(request.response, _completed('resp_optional'));
+            await request.response.close();
+          });
+          addTearDown(server.close);
+          final OpenAiModelProvider provider = await _testProvider(
+            server,
+            chatGpt: chatGpt,
+          );
+          final List<ModelProviderEvent> events = await provider
+              .invoke(_request(tools: <ModelProviderTool>[tool]))
+              .toList();
+
+          expect(captured['tools'], <Object?>[
+            <String, Object?>{
+              'type': 'function',
+              'name': tool.name,
+              'description': tool.description,
+              'parameters': schema,
+              'strict': false,
+            },
+          ]);
+          expect(tool.argumentsSchema, schema);
+          expect(
+            events
+                .map((event) => event.output?.toolProposal)
+                .whereType<ModelProviderToolProposal>()
+                .map((proposal) => proposal.arguments),
+            arguments,
+          );
+          expect(
+            events.last.terminal?.settlement,
+            ModelProviderSettlement.completed,
+          );
+        },
+      );
       for (final ModelProviderSettlement settlement
           in <ModelProviderSettlement>[
             ModelProviderSettlement.completed,
@@ -2530,6 +2608,7 @@ void main() {
           'name': 'inspect_resource',
           'description': 'Inspect a resource.',
           'parameters': <String, Object?>{'type': 'object'},
+          'strict': false,
         },
       ]);
       expect(captured['input'], <Object?>[
@@ -4674,6 +4753,7 @@ void main() {
 ModelProviderRequest _request({
   String model = 'test-model',
   List<ModelProviderInput>? input,
+  List<ModelProviderTool>? tools,
   int? maxOutputTokens,
   Map<String, Object?> providerOptions = const <String, Object?>{},
   ModelProviderToolChoice toolChoice = ModelProviderToolChoice.auto,
@@ -4682,13 +4762,15 @@ ModelProviderRequest _request({
   model: model,
   instructions: 'Follow test instructions.',
   input: input ?? <ModelProviderInput>[_userInput()],
-  tools: <ModelProviderTool>[
-    ModelProviderTool(
-      name: 'inspect_resource',
-      description: 'Inspect a resource.',
-      argumentsSchema: const <String, Object?>{'type': 'object'},
-    ),
-  ],
+  tools:
+      tools ??
+      <ModelProviderTool>[
+        ModelProviderTool(
+          name: 'inspect_resource',
+          description: 'Inspect a resource.',
+          argumentsSchema: const <String, Object?>{'type': 'object'},
+        ),
+      ],
   toolChoice: toolChoice,
   maxOutputTokens: maxOutputTokens,
   providerOptions: providerOptions,
