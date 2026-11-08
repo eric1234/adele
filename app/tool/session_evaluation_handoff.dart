@@ -213,7 +213,43 @@ does not grant authority to repeat operations. If the worktree is unavailable or
 coverage is partial, evaluate what is available and state what cannot be verified;
 do not let missing evidence prevent a qualified report.
 
-Address these areas in proportion to the available evidence:
+Apply progressive disclosure: conclusions first, relevant detail second, extensive
+supporting evidence last. Use the following report sections in this order, with
+explicit limitations rather than a rigid scoring framework.
+
+### A. Executive Summary
+
+Start with the overall verdict. Target approximately 200-300 words, including a
+compact Markdown table of headline metrics or assessments: task outcome/delivery,
+execution reliability, tool-use effectiveness, context efficiency/cache performance,
+and implementation/validation quality, where supported. Include no more than three
+principal strengths and three principal concerns; do not manufacture findings to
+fill slots. State whether immediate follow-up is warranted and the most important
+actions. The Session's overall outcome must be understandable from this section alone.
+
+### B. Prioritized Findings
+
+Immediately follow the summary with a concise table, generally no more than five
+to seven significant findings. One or two may suffice for an uneventful success.
+Use columns for finding and practical impact, category, likely owner, priority,
+recommended action, and evidence references.
+
+Classify each as a **confirmed defect**, **observed inefficiency**, **improvement
+opportunity**, or **untested capability**. Separate genuine problems from speculative
+improvements; an untested capability is not a demonstrated failure. Attribute likely
+ownership to **ADELE harness**, **agent behavior**, **repository-specific issue**,
+**external provider**, or **environment**; state uncertainty or mixed responsibility.
+Prioritize by likely impact, urgency, and implementation complexity, distinguishing
+immediate action from later improvements. Distinguish small ergonomic improvements
+from larger architectural changes. The objective is actionable improvement, not
+merely a score.
+
+### C. Detailed Analysis
+
+Use clear Markdown headings for the relevant areas below, with depth proportional
+to material findings. Do not repeat the whole summary or findings table in each
+section, or narrate routine successful operations unless they reveal something
+important about the harness.
 
 - **Task outcome and implementation quality:** Establish what the agent was asked
   to do, what it delivered, whether requirements were satisfied, and whether the
@@ -222,8 +258,7 @@ Address these areas in proportion to the available evidence:
 - **Execution reliability and recovery:** Reconstruct significant Runs and
   operations. Look for stalled or failed model requests, tool failures, timeouts,
   interruptions, incomplete Runs, repeated work, and recovery behavior. Assess
-  whether continuations correctly understood earlier outcomes. Run list order is
-  lexical ID order, not chronology; use recorded relationships and sequences.
+  whether continuations correctly understood earlier outcomes.
 - **Tool selection and efficiency:** Assess use of available tools, unnecessary
   shell invocations, repeated reads, avoidable command execution, output redirection,
   redundant operations, excessive approvals, and process-management workarounds.
@@ -235,36 +270,66 @@ Address these areas in proportion to the available evidence:
   values from zero. Do not infer usage for invocations without complete metadata;
   identify the covered subset and denominators for totals and rates. Consider
   command output, source reads, Git diffs, and historical execution replay as
-  potential contributors. High cache reuse does not necessarily mean efficient
-  overall context construction. Avoid unsupported monetary cost or performance
-  claims.
+  potential contributors. Large intervening tool results may contribute to input
+  growth, but do not provide precisely measured token attribution. High cache reuse
+  does not necessarily mean efficient overall context construction. Avoid unsupported
+  monetary cost, latency, or performance claims. Do not infer approval-wait duration
+  or request timing from sequence numbers.
 - **Testing and validation:** Identify checks that actually ran and their recorded
   results. Distinguish tool-level success, command exit status, and test success.
   Assess omitted coverage, interpretation of failures, and whether external CI
   revealed predictable problems. Separate checks you run during evaluation from
   the Session's recorded validation.
-- **Causes of failures and friction:** Where supported, distinguish agent/model
+- **Failure causes and attribution:** Where supported, distinguish agent/model
   decisions, ADELE harness or tool limitations, external model-provider or transport
   problems, repository tests and CI infrastructure, and local environment issues.
   Consider whether a comparable coding-agent harness would likely experience the
   same problem; do not assume every failure is attributable to ADELE.
-- **Recommendations:** Propose specific, actionable improvements to future ADELE
-  Sessions, prioritized by likely impact, urgency, and implementation complexity.
-  Distinguish small ergonomic improvements from larger architectural changes.
-  The objective is actionable improvement, not merely a score.
+
+### D. Evidence Appendix
+
+Place significant Run chronology, detailed command/validation results, token usage
+and context-growth calculations, relevant source references and Git provenance,
+coverage limitations, and untested scenarios here. Include as much supporting detail
+as necessary without obscuring the overall assessment; reference it from findings.
+
+### Evidence And Attribution
+
+Across all report sections, distinguish these categories when they materially
+affect a finding:
+
+- **Recorded facts:** Structured events, outcomes, exit codes, and usage fields
+  actually present in retained evidence.
+- **Agent-reported claims:** The implementing agent's statements, such as its final
+  assertion that tests passed; these are not independent verification.
+- **Extracted observations:** Information independently identified in captured
+  command output, such as a test runner's reported pass count. Cite the capture and
+  relevant chunk positions, not just the agent's summary.
+- **Evaluator judgments:** Conclusions about quality, sufficiency, effectiveness,
+  causation, or recommended improvements; explain the supporting evidence and uncertainty.
+
+Keep later observations separate from actions or knowledge established during the
+Session. For example, CI completing after the agent opened a PR may be useful later
+verification, but is not CI verification performed by the agent. Identify the timing
+and provenance of evaluator checks and later external results.
 
 Support findings with concrete Run IDs, tool invocations, commands, recorded
 outcomes, and source changes. Distinguish confirmed observations, reasonable
 inferences, and unavailable evidence. Tool proposals are not tool executions; a
 successful tool invocation is not proof that its command exited successfully.
 Complete command output capture is distinct from a successful process outcome.
+Tool delivery, process exit status, capture completeness, and Run terminal state
+are separate observations, not interchangeable success signals.
 Missing terminal Run evidence does not prove that no work occurred. Current
 worktree contents cannot automatically be attributed to the evaluated Session.
 
-The report should cover an overall assessment, what worked, what did not,
-execution/recovery, tool use, caching/context, testing, root causes, and prioritized
-recommendations. Make the assessment substantive and evidence-based, with explicit
-limitations rather than a rigid scoring framework.
+Inspect selectively: start with Session identity, coverage, Run summaries, and
+exception-relevant records. Identify significant operations before reading full
+transcripts; retrieve only relevant command output and source sections, expanding
+where uncertainty or a potentially significant problem warrants it. Avoid flooding
+your context with complete documentation, JSON arrays, or lengthy progress output.
+Keep authoritative raw records available for verification; do not replace or discard
+them with summaries.
 
 ## Session Identity
 
@@ -340,11 +405,104 @@ the commands, working directory, results and any checks not run.
 
 Use evidence.json to assess decisions, failures and validation: conversation,
 terminal Run/model/tool evidence and reported model usage (when available).
-Inspect full retained decoded stdout/stderr in command_tools.captures, not the
-bounded model-facing result. Respect partial/unavailable coverage, capture
-completeness/provenance and committed high-water extent; no liveness is implied.
+For significant commands, inspect relevant full retained decoded stdout/stderr in
+command_tools.captures, not just the bounded model-facing result. Respect
+partial/unavailable coverage, capture completeness/provenance and committed
+high-water extent; no liveness is implied.
 Distinguish proposals from execution and outcomes from transcript completeness.
 Existing collection/document bounds fail on excess, never silently truncate.
+
+## Evidence Navigation
+
+`evidence.json` uses `dev.adele.session-evidence.v2` and may be a single long line.
+Use a JSON reader and narrow projections rather than dumping it into your context.
+This is a navigation map, not a replacement for the raw evidence or the versioned
+format in `plugins/session_evaluator/README.md` when that source is available.
+
+| JSON path | What to inspect |
+| --- | --- |
+| `identity` | Project, Task, Session, strategy, and canonical Environment identities. |
+| `conversation.entries` | `entry_id`, `role`, `content`, Session-local `sequence`, nullable `run_id`; assistant entries are unassociated. Check `conversation.status`; current configuration is not historical per-Run configuration. |
+| `runs[]` | Terminal records: `id`, `session_id`, `terminal_state`, and `evidence` (including `root` and `lifecycle`). Run list order is lexical ID order, not chronology. |
+| `runs[].evidence.model_invocations` | Model `invocation_id`, `start_sequence`/nullable `terminal_sequence`, settlement/failure, `metadata_present`/`usage_present`, and nullable `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`. |
+| `runs[].evidence.tool_invocations` | Prepared tool `invocation_id`, `tool_id`, `model_invocation_id`, `proposal_sequence`, `prepared_sequence`, and `canonical_arguments_json`. Counts are prepared invocations, not execution counts. |
+| `runs[].evidence.tool_changes` | Lifecycle, policy/approval, progress and outcome observations; join `tool_invocation_id` to the tool's `invocation_id` within the same Run. |
+| `runs[].evidence.model_outputs` | Output occurrences by `model_invocation_id` and Run-local `sequence`, including text and `toolProposal` records. |
+| `runs[].evidence.rejected_proposals` | Proposals rejected before preparation, with `model_invocation_id`, `proposal_sequence`, and failure details; not executed tools. |
+| `command_tools.captures` | `header` contains `run_id`, tool `invocation_id`, process `termination`, nullable `exit_code`/`failure`, and capture extent/state. Check `completeness`, `terminal_provenance`, and `consistency` separately. |
+| `coverage` | `status`, `retained_session_evidence`, `command_transcripts` (including `invocations_without_capture`), `associated_runs_without_terminal_evidence`, consistency, exclusions, and limitations. |
+
+Correlate with exact Run IDs (`runs[].id` versus child `run_id`) and tool-invocation
+IDs, never command text or array position. A capture's identity is the pair
+`(header.run_id, header.invocation_id)`; it can exist without an exported terminal
+Run. Model invocation IDs and tool invocation IDs are distinct: a tool's
+`model_invocation_id` links to its model invocation, and its `proposal_sequence`
+links to a `model_outputs[].sequence` with kind `toolProposal` in that same Run.
+Rejected proposals use the same model/proposal relationship. Sequences establish
+Run-local relationships, not timestamps or a global ordering across Runs.
+
+Capture `chunks` retain decoded stdout/stderr as `{position, stream, text}` in
+recorded combined pipe-arrival order through `header.high_water`, not original bytes
+or a stronger cross-pipe ordering guarantee. Inspect selected chunks with their
+positions and streams intact. Structured `*_json` fields are JSON-encoded strings:
+explicitly decode, for example, `canonical_arguments_json` or non-null
+`arguments_json`/`effects_json` for deeper inspection. Do not decode ordinary text
+as structured data. Empty arrays do not prove no work occurred: check coverage and
+`command_tools.status` (unavailable storage differs from available empty storage).
+
+### Read-Only Inspection Examples
+
+Use any JSON reader; `jq` is optional, not required. These four narrow projections
+use only Dart's SDK. To execute them, place this snippet in a scratch `inspect.dart`
+outside the source/handoff and run `dart /path/to/inspect.dart /path/to/evidence.json`.
+Optionally append an exact Run ID and tool-invocation ID as two quoted arguments
+for the fourth projection. It prints four labeled JSON results without modifying
+the evidence or printing command transcripts. Counts cover exported records only;
+nonzero exits are a starting point, not a complete failure scan (timeouts may have
+null exits). Missing selections return empty lists, not invented records.
+
+```dart
+import 'dart:convert';
+import 'dart:io';
+
+void main(List<String> args) {
+  final e = jsonDecode(File(args[0]).readAsStringSync());
+  final runs = e['runs'] as List;
+  final captures = e['command_tools']['captures'] as List;
+
+  // 1. Terminal Run identities and states (lexical, not chronological).
+  print(jsonEncode({'runs': [for (final r in runs)
+    {'id': r['id'], 'terminal_state': r['terminal_state']}]}));
+
+  // 2. Model and prepared-tool counts per exported Run.
+  print(jsonEncode({'counts': [for (final r in runs) {
+    'id': r['id'],
+    'models': (r['evidence']['model_invocations'] as List).length,
+    'prepared_tools': (r['evidence']['tool_invocations'] as List).length,
+  }]}));
+
+  // 3. Captures with known nonzero process exit codes, without transcripts.
+  print(jsonEncode({'nonzero_exits': [for (final c in captures)
+    if (c['header']['exit_code'] != null && c['header']['exit_code'] != 0)
+      {'run_id': c['header']['run_id'], 'invocation_id': c['header']['invocation_id'],
+       'termination': c['header']['termination'], 'exit_code': c['header']['exit_code'],
+       'completeness': c['completeness'], 'terminal_provenance': c['terminal_provenance']}]}));
+
+  // 4. Exact tool/capture pair; no chunks or progress content by default.
+  final runId = args.length > 1 ? args[1] : null;
+  final toolId = args.length > 2 ? args[2] : null;
+  print(jsonEncode({'selection': {
+    'tools': [for (final r in runs) if (r['id'] == runId)
+      for (final t in r['evidence']['tool_invocations']) if (t['invocation_id'] == toolId)
+        {'run_id': r['id'], 'invocation_id': t['invocation_id'], 'tool_id': t['tool_id'],
+         'model_invocation_id': t['model_invocation_id'], 'proposal_sequence': t['proposal_sequence']}],
+    'captures': [for (final c in captures)
+      if (c['header']['run_id'] == runId && c['header']['invocation_id'] == toolId)
+        {'header': c['header'], 'completeness': c['completeness'],
+         'terminal_provenance': c['terminal_provenance'], 'consistency': c['consistency']}],
+  }}));
+}
+```
 
 ## Limitations
 
