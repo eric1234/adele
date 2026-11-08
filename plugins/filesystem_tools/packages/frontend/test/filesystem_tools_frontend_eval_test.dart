@@ -16,6 +16,9 @@ import '../../../../../app/tool/tool_inspection_frontend_compiler.dart';
 import '../../../../../tools/stock_frontend_descriptors.dart';
 
 final readFileToolId = ToolId('dev.adele.plugin.filesystem-tools.read-file');
+final createFileToolId = ToolId(
+  'dev.adele.plugin.filesystem-tools.create-file',
+);
 
 void main() {
   late Directory temporary;
@@ -67,6 +70,280 @@ void main() {
         source: source,
         fallback: Text(fallback),
       );
+
+  test('create descriptors register independent read-only roles', () {
+    final descriptors =
+        stockFrontendDescriptors['dev.adele.plugin.filesystem-tools']!;
+    final descriptor = descriptors.singleWhere(
+      (entry) => entry['toolId'] == createFileToolId.value,
+    );
+    expect(
+      descriptor.keys,
+      unorderedEquals([
+        'role',
+        'library',
+        'inspectionExtensionId',
+        'compactExtensionId',
+        'toolId',
+        'inspectionEntrypoint',
+        'compactEntrypoint',
+      ]),
+    );
+    expect(descriptor['role'], 'toolActivity');
+    expect(
+      descriptor['library'],
+      'package:filesystem_tools_frontend/filesystem_tools_frontend.dart',
+    );
+    expect(descriptor['inspectionEntrypoint'], 'buildCreateFileInspection');
+    expect(descriptor['compactEntrypoint'], 'buildCreateFileCompact');
+    final ids = descriptors
+        .expand(
+          (entry) => [
+            entry['inspectionExtensionId'],
+            entry['compactExtensionId'],
+          ],
+        )
+        .toList();
+    expect(ids.toSet().length, ids.length);
+    for (final id in [createFileToolId, readFileToolId, applyPatchToolId]) {
+      ToolActivityInspectionResolver(extensions).resolve(id).validate();
+      ToolActivityCompactPresentationResolver(
+        extensions,
+      ).resolve(id).validate();
+    }
+  });
+
+  for (final content in [
+    'ordinary content',
+    '',
+    'a"\\\n\r\t\u0000\u001b\u202E\u200B😀',
+    'long content ' * 1000,
+  ]) {
+    testWidgets('create requested preview case ${content.length}', (
+      tester,
+    ) async {
+      final source = _Source(
+        _activity(
+          createFile: true,
+          arguments: {'relativePath': 'lib/new.dart', 'content': content},
+        ),
+      );
+      await tester.pumpWidget(
+        _host(Column(children: [compact(source), presentation(source)])),
+      );
+      expect(find.text('Create File'), findsOneWidget);
+      expect(find.text('Relative path: "lib/new.dart"'), findsOneWidget);
+      expect(find.textContaining('Requested content preview'), findsOneWidget);
+      final preview = content.isEmpty
+          ? 'Empty requested content ("").'
+          : compactDisplayText(content, maximumCharacters: 2000, quoted: true);
+      expect(find.text(preview), findsOneWidget);
+      if (content.length > 2000) {
+        expect(preview.length, lessThanOrEqualTo(2000));
+        expect(preview, endsWith('..."'));
+        expect(find.textContaining('... indicates truncation'), findsOneWidget);
+      }
+      final summary = find.descendant(
+        of: find.byType(ToolActivityCompactHost),
+        matching: find.byType(Text),
+      );
+      expect(summary, findsOneWidget);
+      expect(tester.widget<Text>(summary).data, 'Create File: "lib/new.dart"');
+      expect(find.textContaining('New revision:'), findsNothing);
+      expect(find.text('Creation succeeded.'), findsNothing);
+      expect(find.byType(TextButton), findsNothing);
+      expect(tester.takeException(), isNull);
+    });
+  }
+
+  testWidgets('create live lifecycle and recorded outcomes', (tester) async {
+    final source = _Source(_activity(createFile: true));
+    await tester.pumpWidget(
+      _host(Column(children: [compact(source), presentation(source)])),
+    );
+    final title = find.text('Create File: "lib/main.dart"');
+    final element = tester.element(title);
+    expect(source.subscriptions, 2);
+    for (final stage in const [
+      (ToolActivityKind.prepared, 'Prepared'),
+      (ToolActivityKind.approvalRequested, 'Waiting for approval'),
+      (ToolActivityKind.executionStarted, 'Running'),
+    ]) {
+      source.value = _activity(
+        createFile: true,
+        kind: stage.$1,
+        data: {'revision': 'premature'},
+      );
+      source.notifyListeners();
+      source.notifyListeners();
+      await tester.pumpAndSettle();
+      expect(find.text('Status: ${stage.$2}'), findsOneWidget);
+      expect(find.textContaining('New revision:'), findsNothing);
+      expect(find.text('Creation succeeded.'), findsNothing);
+      expect(tester.element(title), same(element));
+    }
+    for (final outcome in const [
+      (ToolOutcomeDisposition.success, 'Succeeded'),
+      (ToolOutcomeDisposition.failure, 'Failed'),
+      (ToolOutcomeDisposition.userRejected, 'User rejected'),
+      (ToolOutcomeDisposition.policyDenied, 'Policy denied'),
+      (ToolOutcomeDisposition.cancelled, 'Cancelled'),
+      (ToolOutcomeDisposition.indeterminate, 'Indeterminate'),
+    ]) {
+      source.value = _activity(
+        createFile: true,
+        kind: ToolActivityKind.completed,
+        disposition: outcome.$1,
+        data: {
+          'revision': 'r-new',
+          if (outcome.$1 == ToolOutcomeDisposition.failure)
+            'code': 'file_already_exists',
+        },
+        content: 'Recorded outcome; effects uncertain.',
+      );
+      source.notifyListeners();
+      await tester.pumpAndSettle();
+      expect(find.text('Status: ${outcome.$2}'), findsOneWidget);
+      expect(find.text('Tool delivery: ${outcome.$1.name}'), findsOneWidget);
+      expect(
+        find.text('New revision: r-new'),
+        outcome.$1 == ToolOutcomeDisposition.success
+            ? findsOneWidget
+            : findsNothing,
+      );
+      expect(
+        find.text('Creation succeeded.'),
+        outcome.$1 == ToolOutcomeDisposition.success
+            ? findsOneWidget
+            : findsNothing,
+      );
+      if (outcome.$1 == ToolOutcomeDisposition.failure) {
+        expect(find.text('Failure code: file_already_exists'), findsOneWidget);
+        expect(find.text('Failure kind: domain'), findsOneWidget);
+      }
+      expect(tester.element(title), same(element));
+      expect(find.textContaining('File size'), findsNothing);
+    }
+    expect(source.subscriptions, 2);
+    await tester.pumpWidget(const SizedBox.shrink());
+    expect(source.listening, isFalse);
+    final reads = source.reads;
+    source.notifyListeners();
+    await tester.pump();
+    expect(source.reads, reads);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('create bounded narrow identity and safe failure diagnostics', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(360, 640));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final unsafe = 'a"\\\n\u202E\u200B' * 1000;
+    final source = _Source(
+      _activity(
+        createFile: true,
+        arguments: {'relativePath': unsafe, 'content': 'PRIVATE CONTENT'},
+        kind: ToolActivityKind.completed,
+        disposition: ToolOutcomeDisposition.failure,
+        data: {
+          'code': unsafe,
+          'revision': 'not-success',
+          'diagnostics': {'secret': 'UNBOUNDED STRUCTURE'},
+        },
+        content: unsafe,
+      ),
+    );
+    await tester.pumpWidget(_host(compact(source)));
+    final title = tester
+        .widget<Text>(find.textContaining('Create File:'))
+        .data!;
+    expect(
+      title,
+      'Create File: ${compactDisplayText(unsafe, maximumCharacters: 120, quoted: true)}',
+    );
+    expect(title.length, lessThanOrEqualTo(133));
+    expect(find.textContaining('PRIVATE'), findsNothing);
+    await tester.pumpWidget(_host(presentation(source)));
+    expect(
+      find.text(
+        'Failure code: ${compactDisplayText(unsafe, maximumCharacters: 256)}',
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.text(
+        'Outcome: ${compactDisplayText(unsafe, maximumCharacters: 2000)}',
+      ),
+      findsOneWidget,
+    );
+    expect(find.textContaining('UNBOUNDED STRUCTURE'), findsNothing);
+    expect(find.textContaining('New revision:'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  for (final rich in [true, false]) {
+    testWidgets('create independent retirement rich=$rich', (tester) async {
+      final source = _Source(_activity(createFile: true));
+      final richBinding = ToolActivityInspectionResolver(
+        extensions,
+      ).resolve(createFileToolId);
+      final compactBinding = ToolActivityCompactPresentationResolver(
+        extensions,
+      ).resolve(createFileToolId);
+      final richFactory = richBinding.value.createPresentation;
+      final compactFactory = compactBinding.value.createPresentation;
+      await tester.pumpWidget(
+        _host(Column(children: [compact(source), presentation(source)])),
+      );
+      await filesystem.retire(
+        rich
+            ? toolActivityInspectionContributions
+            : toolActivityCompactPresentationContributions,
+        rich ? richBinding.id : compactBinding.id,
+      );
+      source.notifyListeners();
+      await tester.pumpAndSettle();
+      if (rich) {
+        expect(richBinding.validate, throwsA(isA<StaleExtensionBinding>()));
+        expect(() => richFactory(source), throwsStateError);
+        compactBinding.validate();
+        expect(find.text('Create File: "lib/main.dart"'), findsOneWidget);
+      } else {
+        expect(compactBinding.validate, throwsA(isA<StaleExtensionBinding>()));
+        expect(() => compactFactory(source), throwsStateError);
+        richBinding.validate();
+        expect(find.text('Create File'), findsOneWidget);
+        expect(find.text('Factual tool fallback'), findsOneWidget);
+      }
+      final read = _Source(_activity(readFile: true));
+      final patch = _Source(_activity());
+      await tester.pumpWidget(
+        _host(
+          Column(
+            children: [
+              compact(read),
+              presentation(read),
+              compact(patch),
+              presentation(patch),
+            ],
+          ),
+        ),
+      );
+      expect(find.text('Read File'), findsOneWidget);
+      expect(find.text('Apply Patch'), findsOneWidget);
+      expect(find.text('Read File: "lib/main.dart"'), findsOneWidget);
+      expect(
+        find.text('Apply Patch: "lib/main.dart" / 2 edits'),
+        findsOneWidget,
+      );
+      expect(source.listening, isFalse);
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(read.listening, isFalse);
+      expect(patch.listening, isFalse);
+      expect(tester.takeException(), isNull);
+    });
+  }
 
   for (final range in <Map<String, Object?>>[
     {},
@@ -602,6 +879,7 @@ Widget _host(Widget child) => MaterialApp(
 
 ToolInvocationActivity _activity({
   bool readFile = false,
+  bool createFile = false,
   int proposalSequence = 1,
   ToolActivityKind kind = ToolActivityKind.prepared,
   bool progress = false,
@@ -614,13 +892,22 @@ ToolInvocationActivity _activity({
   preparedSequence: proposalSequence + 10,
   modelInvocationId: ModelInvocationId('model-1'),
   proposalSequence: proposalSequence,
-  toolId: readFile ? readFileToolId : applyPatchToolId,
-  alias: readFile ? 'read_file' : 'apply_patch',
+  toolId: createFile
+      ? createFileToolId
+      : readFile
+      ? readFileToolId
+      : applyPatchToolId,
+  alias: createFile
+      ? 'create_file'
+      : readFile
+      ? 'read_file'
+      : 'apply_patch',
   providerCallId: 'call-1',
   canonicalArguments:
       arguments ??
       {
         'relativePath': 'lib/main.dart',
+        if (createFile) 'content': 'Requested file content.',
         'expectedRevision': 'revision-1',
         'edits': [
           {'search': 'a', 'replace': 'b'},

@@ -2,6 +2,144 @@ import 'package:adele_ui/inspection_display.dart';
 import 'package:adele_ui/tool_activity_inspection_bridge.dart';
 import 'package:flutter/material.dart';
 
+Widget buildCreateFileInspection() => CreateFileInspection();
+Widget buildCreateFileCompact() => CreateFileInspection(compact: true);
+
+class CreateFileInspection extends StatefulWidget {
+  CreateFileInspection({this.compact = false});
+
+  final bool compact;
+
+  @override
+  State<CreateFileInspection> createState() =>
+      _CreateFileInspectionState(compact);
+}
+
+class _CreateFileInspectionState extends State<CreateFileInspection> {
+  // The eval pin cannot reliably resolve this field through State.widget.
+  _CreateFileInspectionState(this.compact);
+
+  final bool compact;
+  bool disposed = false;
+
+  @override
+  void initState() {
+    super.initState();
+    subscribeToolActivityChanges(() {
+      if (!disposed) setState(() {});
+    });
+  }
+
+  @override
+  void dispose() {
+    disposed = true;
+    unsubscribeToolActivityChanges();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final ToolActivityInspectionSnapshot snapshot = readToolActivitySnapshot();
+    final Map<String, dynamic> arguments = snapshot.canonicalArguments;
+    final dynamic target = arguments['relativePath'];
+    if (compact) {
+      if (target is! String) {
+        throw FormatException('Create File compact data is unavailable.');
+      }
+      final String path = compactDisplayText(
+        target,
+        maximumCharacters: 120,
+        quoted: true,
+      );
+      return Text('Create File: $path');
+    }
+    final String lifecycle = snapshot.lifecycle;
+    final String? disposition = snapshot.disposition;
+    String status = lifecycle;
+    if (lifecycle == 'prepared') status = 'Prepared';
+    if (lifecycle == 'approvalRequested') status = 'Waiting for approval';
+    if (lifecycle == 'executionStarted') status = 'Running';
+    if (lifecycle == 'completed') status = 'Completed';
+    if (disposition == 'success') status = 'Succeeded';
+    if (disposition == 'failure') status = 'Failed';
+    if (disposition == 'userRejected') status = 'User rejected';
+    if (disposition == 'policyDenied') status = 'Policy denied';
+    if (disposition == 'cancelled') status = 'Cancelled';
+    if (disposition == 'indeterminate') status = 'Indeterminate';
+    final String path = compactDisplayText(
+      target is String ? target : 'Unavailable',
+      maximumCharacters: 2000,
+      quoted: true,
+    );
+    final List<Widget> children = <Widget>[
+      Text('Create File', style: TextStyle(fontWeight: FontWeight.bold)),
+      SizedBox(height: 8),
+      Text('Relative path: $path'),
+      Text('Status: ${compactDisplayText(status)}'),
+      Text('Lifecycle: ${compactDisplayText(lifecycle)}'),
+      Text('Tool delivery: ${compactDisplayText(disposition ?? 'Pending')}'),
+      Text(
+        'Requested content preview (up to 2,000 displayed characters; ... indicates truncation; not a file read or proof of written content):',
+      ),
+    ];
+    final dynamic content = arguments['content'];
+    if (content is String) {
+      children.add(
+        Text(
+          content.isEmpty
+              ? 'Empty requested content ("").'
+              : compactDisplayText(
+                  content,
+                  maximumCharacters: 2000,
+                  quoted: true,
+                ),
+        ),
+      );
+    } else {
+      children.add(Text('Requested content unavailable.'));
+    }
+    final Map<String, dynamic> data = snapshot.hostData;
+    final dynamic revision = data['revision'];
+    if (lifecycle == 'completed' && disposition == 'success') {
+      children.add(Text('Creation succeeded.'));
+      if (revision is String) {
+        children.add(
+          Text(
+            'New revision: ${compactDisplayText(revision, maximumCharacters: 2000)}',
+          ),
+        );
+      }
+    }
+    if (snapshot.failureKind != null) {
+      children.add(
+        Text('Failure kind: ${compactDisplayText(snapshot.failureKind!)}'),
+      );
+    }
+    final dynamic code = data['code'];
+    if (code is String) {
+      children.add(
+        Text(
+          'Failure code: ${compactDisplayText(code, maximumCharacters: 256)}',
+        ),
+      );
+    }
+    if (disposition != null &&
+        disposition != 'success' &&
+        snapshot.modelContent.isNotEmpty) {
+      children.add(
+        Text(
+          'Outcome: ${compactDisplayText(snapshot.modelContent, maximumCharacters: 2000)}',
+        ),
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: children,
+    );
+  }
+}
+
 Widget buildReadFileInspection() => ReadFileInspection();
 Widget buildReadFileCompact() => ReadFileInspection(compact: true);
 

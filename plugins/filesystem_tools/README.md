@@ -133,6 +133,33 @@ focus on adaptation, generated calls, identity-only description, failures, and
 entrypoint routing rather than duplicating those semantic cases. The independent
 frontend package does not depend on this backend.
 
+## Create File Inspection
+
+The same compiled Filesystem frontend provides rich and compact `create_file`
+presentations. The read-only rich card shows the requested Environment-relative
+path, lifecycle, and recorded disposition. Its escaped, quoted requested-content
+preview is bounded to 2,000 displayed characters, with `...` indicating truncation
+and an explicit empty-content label. This preview is available before completion:
+it represents the captured request, not a fresh file read or proof of written
+content.
+
+Successful terminal creation is identified explicitly, with the new revision when
+recorded. No file size or byte count is inferred. Failures show available failure
+kind, bounded scalar error code, and bounded escaped outcome text, not arbitrary
+diagnostic structures. `file_already_exists` is a failure, not creation or
+replacement; other failures do not imply that no filesystem effects occurred.
+The compact summary contains only Create File and a safely bounded requested path,
+remaining stable across execution without content, revision, or diagnostics.
+
+Both presentations observe recorded activity, refresh through independent live
+subscriptions, and unsubscribe on disposal. Exact-generation retirement of either
+role leaves its sibling and Read File/Apply Patch contributions available; common
+hosting retains unavailable/fallback behavior for retired bindings. Neither view
+performs filesystem operations, accesses backend services, opens files, edits,
+executes tools, or supplies approval controls. Approval and Inspection interactions
+remain host-owned. Creation itself requires an absent target and an existing
+parent directory; this card adds no overwrite or directory-creation capability.
+
 ## Read File Inspection
 
 The Filesystem frontend also provides rich and compact `read_file` presentations
