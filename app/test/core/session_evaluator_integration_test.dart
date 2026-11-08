@@ -32,6 +32,7 @@ import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:session_evaluator_contract/session_evaluator_contract.dart';
 import 'package:sqlite3/sqlite3.dart' hide Session;
 
+import '../../tool/session_evaluation_summary.dart';
 import '../../tool/session_evidence_exporter.dart';
 import '../fixtures/command_output_process.dart'
     show captureBulk, captureEvidenceBlocks, captureMarker;
@@ -918,6 +919,15 @@ void main() {
       );
     }
 
+    File evidence(Directory handoff) => File('${handoff.path}/evidence.json');
+
+    Map<String, Object?> summary(Directory handoff) => _map(
+      jsonDecode(File('${handoff.path}/summary.json').readAsStringSync()),
+    );
+
+    String readme(Directory handoff) =>
+        File('${handoff.path}/README.md').readAsStringSync();
+
     List<Directory> handoffs() {
       if (!outputRoot.existsSync()) return [];
       final entries = outputRoot.listSync();
@@ -927,20 +937,20 @@ void main() {
           entry.uri.pathSegments.where((part) => part.isNotEmpty).last,
           matches(r'^session-[A-Za-z0-9_-]+$'),
         );
+        final directory = entry as Directory;
+        final files = directory.listSync();
+        expect(files, everyElement(isA<File>()));
         expect(
-          (entry as Directory).listSync().map(
-            (file) => file.uri.pathSegments.last,
-          ),
-          unorderedEquals(['evidence.json', 'README.md']),
+          files.map((file) => file.uri.pathSegments.last),
+          unorderedEquals(['README.md', 'summary.json', 'evidence.json']),
         );
+        final document = _map(
+          jsonDecode(evidence(directory).readAsStringSync()),
+        );
+        expect(summary(directory), summarizeSessionEvidence(document));
       }
       return entries.cast<Directory>();
     }
-
-    File evidence(Directory handoff) => File('${handoff.path}/evidence.json');
-
-    String readme(Directory handoff) =>
-        File('${handoff.path}/README.md').readAsStringSync();
 
     void expectReady(Directory handoff) {
       expect(
@@ -958,8 +968,9 @@ void main() {
     }
 
     testWidgets(
-      'palette exports the exact v2 document from retained Chat/Run '
-      'and full Command output without collecting a draft or changing storage',
+      'palette exports a deterministic summary and exact v2 document from '
+      'retained Chat/Run and full Command output without collecting a draft '
+      'or changing storage',
       (tester) async {
         outputRoot = Directory('${outputRoot.path} with spaces # percent%');
         final arguments = <String, Object?>{
@@ -1098,13 +1109,79 @@ void main() {
         await finish(tester);
         final handoff = handoffs().single;
         final destination = evidence(handoff);
-        expect(destination.readAsStringSync(), jsonEncode(expected));
+        expect(
+          destination.readAsBytesSync(),
+          utf8.encode(jsonEncode(expected)),
+        );
+        final evaluation = summary(handoff);
+        expect(evaluation['schema'], sessionEvaluationSummarySchema);
+        expect(
+          evaluation['source_evidence_schema'],
+          'dev.adele.session-evidence.v2',
+        );
+        expect(evaluation['session_id'], session.id.value);
+        final runs = _map(evaluation['runs']);
+        expect(runs['exported_terminal'], 2);
+        expect(runs['by_terminal_state'], {
+          'completed': 2,
+          'failed': 0,
+          'cancelled': 0,
+        });
+        expect(runs['associated_without_terminal_evidence'], 0);
+        final models = _map(evaluation['models']);
+        expect(models['invocations'], 4);
+        expect(models['by_status'], {
+          'completed': 4,
+          'refused': 0,
+          'incomplete': 0,
+          'failed': 0,
+          'no_terminal_record': 0,
+        });
+        expect(models['with_reported_usage'], 2);
+        final usage = _map(models['usage']);
+        for (final field in ['input_tokens', 'cache_read_tokens']) {
+          expect(usage[field], {
+            'reported_total': 0,
+            'contributing_invocations': 2,
+            'denominator_invocations': 4,
+            'coverage': 'partial',
+          });
+        }
+        for (final field in ['output_tokens', 'cache_write_tokens']) {
+          expect(usage[field], {
+            'reported_total': null,
+            'contributing_invocations': 0,
+            'denominator_invocations': 4,
+            'coverage': 'none',
+          });
+        }
+        final commandSummary = _map(evaluation['commands']);
+        expect(commandSummary['storage_status'], 'available');
+        expect(commandSummary['captures'], 1);
+        expect(commandSummary['by_completeness'], {
+          'complete': 1,
+          'incomplete': 0,
+          'unsealed_liveness_unknown': 0,
+        });
+        expect(commandSummary['by_terminal_provenance'], {
+          'matched': 1,
+          'terminal_evidence_unavailable': 0,
+        });
+        expect(commandSummary['known_nonzero_exits'], 1);
+        expect(commandSummary['timeouts'], 0);
+        expect(commandSummary['capture_failures'], 0);
+        expect(commandSummary['unsealed'], 0);
+        expect(commandSummary['invocations_without_capture'], {
+          'total': 1,
+          'by_execution': {'started': 0, 'not_executed': 1, 'not_observed': 0},
+        });
         final instructions = readme(handoff);
         expect(instructions, contains(session.id.value));
         expect(instructions, contains(task.task.id.value));
         expect(instructions, contains(project.id.value));
         expect(instructions, contains(task.environment.id.value));
         expect(instructions, contains(_environmentProvider.value));
+        expect(instructions, contains('summary.json'));
         expect(instructions, contains('evidence.json'));
         expect(instructions, contains('## Evaluation Instructions'));
         expect(instructions.toLowerCase(), contains('unavailable'));
@@ -1493,7 +1570,16 @@ void main() {
       await finish(tester);
 
       final handoff = handoffs().single;
-      expect(jsonDecode(evidence(handoff).readAsStringSync()), expected);
+      expect(
+        evidence(handoff).readAsBytesSync(),
+        utf8.encode(jsonEncode(expected)),
+      );
+      final evaluation = summary(handoff);
+      expect(evaluation['session_id'], selected.id.value);
+      expect(_map(evaluation['runs'])['exported_terminal'], 0);
+      expect(_map(evaluation['models'])['invocations'], 0);
+      expect(_map(evaluation['commands'])['storage_status'], 'unavailable');
+      expect(_map(evaluation['commands'])['captures'], 0);
       expect(_map(expected['identity'])['environment_id'], additional.id.value);
       expect(_map(expected['identity'])['environment_role'], 'additional');
       final instructions = readme(handoff);
@@ -1666,7 +1752,11 @@ void main() {
         if (outcome == 'success') {
           final handoff = handoffs().single;
           final destination = evidence(handoff);
-          expect(destination.readAsStringSync(), jsonEncode(expected));
+          expect(
+            destination.readAsBytesSync(),
+            utf8.encode(jsonEncode(expected)),
+          );
+          expect(summary(handoff)['session_id'], session.id.value);
           expect(_map(expected['identity'])['session_id'], session.id.value);
           expect(destination.readAsStringSync(), isNot(contains('ONLY-B')));
           expect(readme(handoff), contains(session.id.value));
@@ -1740,7 +1830,9 @@ void main() {
       await finish(tester);
       final firstHandoff = handoffs().single;
       final first = evidence(firstHandoff);
-      expect(jsonDecode(first.readAsStringSync()), expectedA);
+      expect(first.readAsBytesSync(), utf8.encode(jsonEncode(expectedA)));
+      final firstSummary = summary(firstHandoff);
+      expect(firstSummary['session_id'], session.id.value);
       final firstReadme = readme(firstHandoff);
       expect(firstReadme, contains(session.id.value));
       expect(firstReadme, isNot(contains(other.id.value)));
@@ -1758,10 +1850,12 @@ void main() {
         (entry) => entry.path != firstHandoff.path,
       );
       final second = evidence(secondHandoff);
-      expect(jsonDecode(second.readAsStringSync()), expectedB);
+      expect(second.readAsBytesSync(), utf8.encode(jsonEncode(expectedB)));
+      expect(summary(secondHandoff)['session_id'], other.id.value);
       expect(readme(secondHandoff), contains(other.id.value));
       expect(readme(secondHandoff), isNot(contains(session.id.value)));
-      expect(jsonDecode(first.readAsStringSync()), expectedA);
+      expect(first.readAsBytesSync(), utf8.encode(jsonEncode(expectedA)));
+      expect(summary(firstHandoff), firstSummary);
       expect(readme(firstHandoff), firstReadme);
       expectReady(secondHandoff);
       expect(picker.calls, 0);
@@ -1793,6 +1887,7 @@ void main() {
       await finish(tester);
       final handoff = handoffs().single;
       final destination = evidence(handoff);
+      expect(destination.readAsBytesSync(), utf8.encode(jsonEncode(expected)));
       final document = _map(jsonDecode(destination.readAsStringSync()));
       expect(document, expected);
       expect(document['runs'], isEmpty);
@@ -1801,6 +1896,24 @@ void main() {
         _map(document['coverage'])['associated_runs_without_terminal_evidence'],
         ['native-pending-run'],
       );
+      final evaluation = summary(handoff);
+      expect(evaluation['session_id'], session.id.value);
+      final runs = _map(evaluation['runs']);
+      expect(runs['exported_terminal'], 0);
+      expect(runs['associated_without_terminal_evidence'], 1);
+      final models = _map(evaluation['models']);
+      expect(models['invocations'], 0);
+      expect(models['with_reported_usage'], 0);
+      for (final usage in _map(models['usage']).values) {
+        expect(usage, {
+          'reported_total': null,
+          'contributing_invocations': 0,
+          'denominator_invocations': 0,
+          'coverage': 'none',
+        });
+      }
+      expect(_map(evaluation['commands'])['storage_status'], 'unavailable');
+      expect(_map(evaluation['commands'])['captures'], 0);
       expect(run.run.state, RunState.waiting);
       expect(runtime.store.runRecord(run.run.id), isNull);
       expect(model.calls, 1);
@@ -1845,6 +1958,50 @@ void main() {
       expect(find.textContaining('Evaluation handoff ready:'), findsNothing);
       expect(find.textContaining('private-invalid-json'), findsNothing);
       expect(find.textContaining('SessionEvidenceFailure'), findsNothing);
+      expect(
+        commands.resolve(exportSessionEvidenceCommandId).availability,
+        CommandAvailability.enabled,
+      );
+    });
+
+    testWidgets('summary generation failure after valid collection creates '
+        'no handoff and reports only safe feedback', (tester) async {
+      await tester.runAsync(() async {
+        await chat.appendUserMessage(session.id.value, 'Valid large counters.');
+        final run = await createRun(
+          session,
+          'native-summary-failure-run',
+          _Model('Answer', withTools: true),
+        );
+        await run.start();
+        _inspect(
+          source,
+          (database) => database.execute(
+            'UPDATE adele_execution_model_invocations '
+            'SET input_tokens = 9223372036854775807, usage_present = 1, '
+            "usage_provider_details_json = '{}'",
+          ),
+          write: true,
+        );
+        final document = await collect(session);
+        final runEvidence = _map(_maps(document['runs']).single['evidence']);
+        expect(_maps(runEvidence['model_invocations']), hasLength(2));
+        expect(() => summarizeSessionEvidence(document), throwsFormatException);
+      });
+      final before = _inspect(source, _snapshot);
+      window.presentSession(session);
+      await mount(tester);
+      await invoke(tester);
+      await continueExport(tester);
+      await finish(tester);
+      expect(outputRoot.existsSync(), isFalse);
+      expect(_inspect(source, _snapshot), before);
+      expect(
+        find.text('Evaluation handoff could not be prepared.'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('Evaluation handoff ready:'), findsNothing);
+      expect(find.textContaining('integer range'), findsNothing);
       expect(
         commands.resolve(exportSessionEvidenceCommandId).availability,
         CommandAvailability.enabled,
@@ -2179,10 +2336,14 @@ final class _RetiringHandoffContext implements WindowSessionContext {
     if (!retired &&
         root.existsSync() &&
         root.listSync().any(
-          (entry) => File('${entry.path}/README.md').existsSync(),
+          (entry) => [
+            'README.md',
+            'summary.json',
+            'evidence.json',
+          ].every((name) => File('${entry.path}/$name').existsSync()),
         )) {
       // Permit the writer's final check, then inject retirement at the
-      // exporter's separate publication check, after both files are complete.
+      // exporter's separate publication check, after all three files are complete.
       if (++_completeChecks == 2) {
         retired = true;
         retire();

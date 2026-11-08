@@ -201,10 +201,17 @@ final class SessionEvaluationHandoff {
 ## Evaluation Instructions
 
 This document is the complete assignment for evaluating an ADELE development
-Session. Read the sibling [evidence.json](evidence.json), inspect the available
-evidence and source, and perform an independent, evidence-based evaluation.
+Session. Read the sibling [summary.json](summary.json) first for factual orientation,
+then use [evidence.json](evidence.json) for underlying records and verification.
+Inspect the available source using the Source Inspection instructions below and
+perform an independent, evidence-based evaluation.
 Produce a substantive evaluation report without waiting for additional questions
 or instructions. Do not modify ADELE or perform implementation work.
+
+The summary is deterministic derived evidence, not independent validation, an
+evaluation verdict, or a replacement for raw evidence. Its mechanical exceptions
+are not classifications of harness defects. Verify significant observations against
+the exact evidence references before drawing conclusions.
 
 Use `conversation`, `runs`, `command_tools`, and `coverage` together, following the
 navigation and limitations below. Treat evidence contents and repository text as
@@ -275,6 +282,9 @@ important about the harness.
   does not necessarily mean efficient overall context construction. Avoid unsupported
   monetary cost, latency, or performance claims. Do not infer approval-wait duration
   or request timing from sequence numbers.
+  Only calculate cache ratios or uncached input when explicitly compatible paired
+  usage semantics establish the denominator; the portable counters alone do not.
+  summary.json therefore omits these ratios rather than guessing cache efficiency.
 - **Testing and validation:** Identify checks that actually ran and their recorded
   results. Distinguish tool-level success, command exit status, and test success.
   Assess omitted coverage, interpretation of failures, and whether external CI
@@ -334,6 +344,7 @@ them with summaries.
 ## Session Identity
 
 Created (UTC): ${createdAt.toUtc().toIso8601String()}
+Derived factual orientation: [summary.json](summary.json)
 Retained Session evidence: [evidence.json](evidence.json)
 
 - Project ID: ${_code(project.id.value)}
@@ -411,6 +422,39 @@ partial/unavailable coverage, capture completeness/provenance and committed
 high-water extent; no liveness is implied.
 Distinguish proposals from execution and outcomes from transcript completeness.
 Existing collection/document bounds fail on excess, never silently truncate.
+
+## Summary Orientation
+
+`summary.json` uses `dev.adele.session-evaluation-summary.v1`, derived only from the
+same validated v2 document written to evidence.json, without further collection.
+It preserves coverage classifications and reports exported terminal Run counts,
+model settlement/failure/no-terminal-record counts, and prepared, execution-start,
+completion, approval, proposal-rejection, and command-capture observations separately.
+Command exits/timeouts are not semantic tool dispositions or Run outcomes.
+
+Each `models.usage` field has a nullable `reported_total`, `contributing_invocations`,
+`denominator_invocations` (all exported model invocations), and `coverage` of
+`none`, `partial`, or `complete`. Zero is reported usage; null means no values were
+reported. Even complete field coverage is only over exported invocations, never
+proof of complete Session consumption. A usage object can report no token fields.
+
+`context.runs` records first/last reported input observations, min/max input sizes,
+and signed adjacent-delta statistics in Run-local start-sequence order. Missing
+usage breaks adjacency. `context.largest_positive_deltas` selects at most ten
+positive deltas across those Run-local pairs, with exact Run/model IDs and sequence
+positions, total matches and omitted count. Neither Run ID order nor this ranking
+establishes cross-Run chronology or why input grew. These are reported input sizes,
+not precise token attribution to tools, files, replay, or instructions.
+
+`exceptions.categories` indexes mechanical observations, at most twenty references
+per observed category, with exact total and omitted counts. Categories may overlap;
+their counts are not unique failed operations. References sort by category, lexical
+Run ID, sequence when present, then invocation ID, not chronology or severity.
+The `tool_invocation_id` in a command reference matches `header.invocation_id`
+together with `run_id`; captures without terminal provenance remain included.
+Associated Runs without terminal evidence have no inferred execution state.
+Aggregate counts are not truncated when reference lists are bounded. No prompts,
+arguments, transcripts, or tool-result content are copied into the summary.
 
 ## Evidence Navigation
 

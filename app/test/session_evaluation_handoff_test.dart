@@ -578,7 +578,11 @@ void main() {
         .replaceAll(RegExp(r'\s+'), ' ');
     for (final value in [
       'complete assignment for evaluating an ADELE development Session',
-      'Read the sibling [evidence.json](evidence.json)',
+      'Read the sibling [summary.json](summary.json) first for factual orientation',
+      'then use [evidence.json](evidence.json) for underlying records and verification',
+      'Inspect the available source using the Source Inspection instructions',
+      'deterministic derived evidence, not independent validation',
+      'not classifications of harness defects',
       'independent, evidence-based evaluation',
       'report without waiting for additional questions or instructions',
       'Do not modify ADELE or perform implementation work',
@@ -700,6 +704,7 @@ void main() {
       'do not provide precisely measured token attribution',
       'Avoid unsupported monetary cost, latency, or performance claims',
       'Do not infer approval-wait duration or request timing from sequence numbers',
+      'Only calculate cache ratios or uncached input when explicitly compatible paired usage semantics establish the denominator',
       'concrete Run IDs, tool invocations, commands, recorded outcomes, and source changes',
       'confirmed observations, reasonable inferences, and unavailable evidence',
       'Tool proposals are not tool executions',
@@ -778,6 +783,32 @@ void main() {
       'unavailable storage differs from available empty storage',
     ]) {
       expect(navigation, contains(value));
+    }
+  });
+
+  test('README explains summary denominators, bounds, and authority', () {
+    final readme = _Fixture(source).capture().readme(createdAt);
+    final orientation = readme
+        .split('## Summary Orientation')[1]
+        .split('## Evidence Navigation')
+        .first
+        .replaceAll(RegExp(r'\s+'), ' ');
+    for (final value in [
+      'dev.adele.session-evaluation-summary.v1',
+      'same validated v2 document written to evidence.json',
+      'all exported model invocations',
+      'never proof of complete Session consumption',
+      'Zero is reported usage; null means no values were reported',
+      'Missing usage breaks adjacency',
+      'at most ten positive deltas',
+      'at most twenty references per observed category',
+      'exact total and omitted counts',
+      'not chronology or severity',
+      'captures without terminal provenance remain included',
+      'have no inferred execution state',
+      'Aggregate counts are not truncated',
+    ]) {
+      expect(orientation, contains(value), reason: value);
     }
   });
 

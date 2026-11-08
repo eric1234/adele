@@ -14,7 +14,9 @@ void main() {
   final bytes = utf8.encode(
     '{"schema":"$sessionEvidenceSchema","exact":"a\\nb"}',
   );
-  const readme = '# Evaluation handoff\nRead evidence.json first.\n';
+  final summaryBytes = utf8.encode('{"synthetic":true}');
+  const readme =
+      '# Evaluation handoff\nRead summary.json, then evidence.json.\n';
 
   setUp(() async {
     directory = await Directory.systemTemp.createTemp('adele-handoff-test-');
@@ -28,6 +30,7 @@ void main() {
       writeSessionEvaluationHandoff(
         output,
         bytes,
+        summaryBytes: summaryBytes,
         readme: readme,
         validate: validate ?? () {},
         excludedDirectories: [worktree],
@@ -38,15 +41,19 @@ void main() {
   }
 
   test(
-    'unique private directories retain both files without overwriting',
+    'unique private directories retain all three files without overwriting',
     () async {
       final first = await write();
       final firstEvidence = File('${first.path}/evidence.json');
       expect(await firstEvidence.readAsBytes(), bytes);
+      expect(
+        await File('${first.path}/summary.json').readAsBytes(),
+        summaryBytes,
+      );
       expect(await File('${first.path}/README.md').readAsString(), readme);
       expect(
         first.listSync().map((file) => file.uri.pathSegments.last).toSet(),
-        {'README.md', 'evidence.json'},
+        {'README.md', 'summary.json', 'evidence.json'},
       );
       expect(first.isAbsolute, isTrue);
       expect(first.parent.path, output.path);
@@ -58,13 +65,21 @@ void main() {
       expect(second.path, isNot(first.path));
       expect(await firstEvidence.readAsString(), 'previous handoff');
       expect(await File('${second.path}/evidence.json').readAsBytes(), bytes);
+      expect(
+        await File('${second.path}/summary.json').readAsBytes(),
+        summaryBytes,
+      );
       expect(await File('${second.path}/README.md').readAsString(), readme);
+      expect(
+        second.listSync().map((file) => file.uri.pathSegments.last).toSet(),
+        {'README.md', 'summary.json', 'evidence.json'},
+      );
       expect(output.listSync(), hasLength(2));
       expect(worktree.listSync(), hasLength(1));
     },
   );
 
-  for (final filename in ['evidence.json', 'README.md']) {
+  for (final filename in ['evidence.json', 'summary.json', 'README.md']) {
     test(
       'partial $filename write fails and removes incomplete output',
       () async {
@@ -208,6 +223,7 @@ void main() {
       writeSessionEvaluationHandoff(
         output,
         List<int>.filled(sessionEvidenceMaxBytes + 1, 32),
+        summaryBytes: summaryBytes,
         readme: readme,
         validate: () {},
         excludedDirectories: [worktree],

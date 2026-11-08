@@ -20,7 +20,10 @@ owns the desktop Command, sensitive-data confirmation, local directory writing,
 and completion feedback. Its development-only
 [`session_evaluation_handoff.dart`](../../app/tool/session_evaluation_handoff.dart)
 helper captures canonical source metadata and renders the companion README; it
-does not depend on the legacy runner. Production `app/lib` imports no evaluator
+does not depend on the legacy runner. The pure development-only
+[`session_evaluation_summary.dart`](../../app/tool/session_evaluation_summary.dart)
+projects factual counts and bounded references from that same validated document,
+without further storage reads. Production `app/lib` imports no evaluator
 contract or implementation.
 
 The backend obtains the public `ProjectStorageService` through its exact
@@ -268,9 +271,9 @@ provider replay data, Markdown reports, and evaluation questions are deliberatel
 absent from the JSON evidence. Retained command captures can exist without terminal
 Run evidence; their inclusion does not add live Run observation. The desktop
 handoff's companion README supplies the evaluation assignment and source-inspection
-guidance separately, without changing this schema or its collection bounds. Neither
-file is a source snapshot or a portable reproduction bundle, and neither promises
-reproducibility.
+guidance separately, without changing this schema or its collection bounds. No
+handoff file is a source snapshot or a portable reproduction bundle, and none
+promises reproducibility.
 
 <a id="desktop-export"></a>
 
@@ -305,8 +308,9 @@ Direct `app/lib/main.dart` remains plugin-neutral and does not attach the export
    its `README.md`, not the directory or file contents.
 5. Provide only that path to a separate evaluator AI with local file access. The
    generated README contains the complete independent evaluation assignment and
-   references the adjacent `evidence.json`; no additional evaluation prompt is
-   needed. It requests a substantive report, not implementation work, and remains
+   directs the evaluator to read `summary.json` first, verify underlying records
+   in `evidence.json`, then independently assess source/Git; no additional evaluation
+   prompt is needed. It requests a substantive report, not implementation work, and remains
    useful with unavailable source or partial retained evidence.
 
 Clipboard access occurs only on the explicit snackbar action. The handoff does not
@@ -326,7 +330,7 @@ priority, recommended action, and evidence references.
 The README's **Evidence Navigation** map and four read-only SDK-only Dart projections
 help locate Run states, invocation counts, nonzero command exits, and an exact
 Run/tool/capture pair without dumping transcripts. Any JSON reader can be used;
-the snippet is optional, not a third handoff file or an evaluation engine. The
+the snippet is optional, not another handoff file or an evaluation engine. The
 [versioned format above](#retained-evidence) remains the schema documentation.
 
 Evaluators are directed to inspect selectively and distinguish recorded facts,
@@ -336,6 +340,65 @@ agent's Session. Usage analysis retains null-versus-zero semantics and reports
 coverage/denominators; sequences are not timing evidence and context growth is not
 precise tool-result token attribution. These instructions neither alter the raw
 evidence nor substitute summaries for it.
+
+### Deterministic Summary
+
+`summary.json` has its own format, `dev.adele.session-evaluation-summary.v1`, and
+accepts only source schema `dev.adele.session-evidence.v2`. It is a deterministic,
+read-only convenience projection of the **same in-memory validated document**
+encoded as `evidence.json`, not independent validation or a new authority. It
+does not change the raw evidence encoding, service contract, collector, or bounds.
+No legacy self-hosting implementation is imported.
+
+- `source_evidence_schema`, `session_id`, and `coverage` preserve source identity
+  and general/conversation/command coverage. `runs` counts exported terminal states
+  separately from associated Runs with no terminal evidence, with no invented state.
+- `models` counts recorded settlements (`completed`, `incomplete`, `refused`),
+  failures, and `no_terminal_record`, plus invocations with a reported usage object.
+  Each of the four token fields has `reported_total`, `contributing_invocations`,
+  `denominator_invocations`, and `coverage` (`none`, `partial`, `complete`). The
+  denominator is **all exported model invocations**, not only usage-bearing ones.
+  No reported values produces null, not zero. A present usage object may have no
+  counters. Complete field coverage still does not establish total Session usage;
+  partial sums describe only the contributing subset.
+  A sum outside the native integer range fails handoff preparation, not silently
+  wrapping or publishing a partial summary.
+- `context.runs` orders each Run's invocations by `start_sequence`, retaining
+  first/last reported input observations, min/max sizes, comparable/missing adjacent
+  pair counts, signed min/max deltas, and positive/zero/negative counts. Missing
+  input usage breaks adjacency rather than being skipped. The global
+  `largest_positive_deltas` selection retains at most **10** pairs, ordered by
+  descending delta then lexical Run ID and destination sequence for ties, with
+  exact Run/model IDs and both start sequences. Total/omitted counts remain explicit.
+  Run arrays are lexical for determinism only, never cross-Run chronology.
+- `tools` separates prepared invocations, observed execution-start records,
+  recorded completed dispositions, and missing completion, also grouped by
+  canonical Tool ID. Approval requests and resolutions (approved/rejected),
+  requests without an exact Run/tool/interruption resolution, and rejected model
+  proposals remain separate. Counts of change records are not provider attempts.
+- `commands` preserves available versus unavailable storage (including its owner
+  version), counts captures by completeness and terminal provenance, known nonzero
+  exits, timeouts, failed/unsealed captures, and missing captures by their existing
+  execution classification. Captures lacking a terminal Run are not discarded.
+- `exceptions.categories` indexes observed exceptional records, not harness-defect
+  judgments. Each observed category retains at most **20** references, its full
+  matching total, and omitted count. Categories sort lexically; references sort by
+  lexical Run ID, sequence if present, then tool/model invocation ID, not severity
+  or chronology. Categories can overlap; totals do not count distinct failed
+  operations. Command references use the composite `run_id`/`tool_invocation_id`,
+  where the latter matches capture `header.invocation_id`. Proposal and approval
+  references retain their exact occurrence/interruption identity. Absent categories
+  have no matches. Aggregate counts remain accurate even when references are limited.
+
+The projection copies no prompts, command arguments, transcripts, result content,
+or provider-detail maps. It does not infer monetary cost, timing, request attempts,
+Run liveness, or failure from stderr/text searches. Portable usage counters do not
+define whether cache-read/write values are subsets of input, so cache-hit ratios
+and uncached-input calculations are omitted. Input deltas are observed reported
+sizes, not precise attribution to tool results, reads, replay, or instructions.
+Successful tool dispositions, process exits, capture completeness, and Run states
+remain independent. Refer to raw evidence for details and verify meaningful
+observations before making evaluator judgments.
 
 ### Command Availability
 
@@ -398,18 +461,20 @@ For example, with the default Linux XDG state location:
 ~/.local/state/adele/state/evaluations/
   session-<random>/
     README.md
+    summary.json
     evidence.json
 ```
 
 The complete versioned document is collected and validated before creating a
 handoff directory. The writer uses `createTemp('session-')` to allocate a unique
-directory under the output root, containing `README.md` and `evidence.json`.
+directory under the output root, containing `README.md`, `summary.json`, and
+`evidence.json`. Summary generation and encoding finish before directory allocation.
 On Linux/macOS it requires `chmod` on `PATH` and sets the directory to owner-only
 mode `0700` before writing sensitive contents; a permission-setting failure aborts
 the handoff and attempts cleanup. Windows instead inherits the output root's ACL;
 private Windows access has not been validated, and no POSIX-mode guarantee applies.
 The adapter preserves the document's structured data, schema, coverage, and bounds;
-it does not interpret, redact, wrap, or truncate evidence. Both files must finish
+it does not rewrite, redact, wrap, or truncate evidence. All three files must finish
 writing with flush requested and ownership validation must succeed before
 completion is reported.
 Failed writing or validation attempts best-effort removal of the new directory;
@@ -476,7 +541,8 @@ model/tools produce actual retained Chat and Run data without paid provider call
 The native handoff path includes command captures from a compiled local child
 executed through the fixture's deterministic Environment adapter. The test
 caller and native Command Palette workflow use temporary output roots and check
-exact evidence, the companion README, completion path and clipboard action,
+exact evidence bytes, summary/evidence consistency and fixture counts, the companion
+README, completion path and clipboard action,
 read-only state, Session isolation, valid partial coverage, cancellation, failure,
 pending work, navigation, shutdown, and generation retirement.
 A stock Git AOT fixture exercises a nonprimary Session Environment with nested
@@ -488,7 +554,11 @@ beyond the model-result bound, an unsealed committed prefix, evaluator-only Proj
 reopen without Command Tools activation, and an over-budget transcript that fails
 without emitting a successful prefix. These are separate from Chat strategy support
 and from a claim of process liveness.
-`app/test/session_evidence_file_test.dart` owns unique two-file directory writing,
+`app/test/session_evaluation_summary_test.dart` owns deterministic projection,
+null/zero/partial field coverage, Run-local ordering and reused IDs, exact mechanical
+counts, unavailable/empty storage, missing provenance/activity, bounded references,
+schema rejection, content exclusion, and raw evidence preservation.
+`app/test/session_evidence_file_test.dart` owns unique three-file directory writing,
 bounds, ownership revocation, and best-effort failure cleanup using real temporary
 files and injected write faults. `app/test/session_evaluation_handoff_test.dart`
 owns captured source metadata, canonical nonprimary association, stock Git v2
@@ -516,7 +586,7 @@ dart tools/adele.dart generate --check
 After current generation, from `app/`:
 
 ```sh
-flutter test --no-pub --concurrency 1 test/core/session_evaluator_integration_test.dart test/core/command_output_capture_integration_test.dart test/session_evidence_file_test.dart test/session_evaluation_handoff_test.dart test/application_test.dart
+flutter test --no-pub --concurrency 1 test/core/session_evaluator_integration_test.dart test/core/command_output_capture_integration_test.dart test/session_evaluation_summary_test.dart test/session_evidence_file_test.dart test/session_evaluation_handoff_test.dart test/application_test.dart
 ```
 
 The packages participate in maintained analysis/test targets; the existing
