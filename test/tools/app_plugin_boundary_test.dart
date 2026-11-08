@@ -6,6 +6,25 @@ import 'package:test/test.dart';
 import 'package:yaml/yaml.dart';
 
 void main() {
+  test('application runtime remains usable without a Flutter engine', () async {
+    final temporary = Directory.systemTemp.createTempSync('adele-runtime-');
+    addTearDown(() => temporary.deleteSync(recursive: true));
+    final probe = File('${temporary.path}/runtime.dart')
+      ..writeAsStringSync('''
+import 'package:adele_desktop/core/adele_runtime.dart';
+
+Future<void> main() async {
+  await AdeleRuntime().close();
+}
+''');
+    final result = await Process.run(Platform.resolvedExecutable, [
+      'run',
+      '--packages=${File('.dart_tool/package_config.json').absolute.path}',
+      probe.path,
+    ]);
+    expect(result.exitCode, 0, reason: '${result.stdout}\n${result.stderr}');
+  });
+
   group('production app plugin boundary', () {
     late Set<String> pluginNames;
 

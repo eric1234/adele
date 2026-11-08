@@ -1537,16 +1537,6 @@ exit "$CLIPPY_EXIT"
       ).readAsStringSync();
       expect(runtime, isNot(contains('CommandToolsPlugin')));
       expect(runtime, isNot(contains('includeCommandTools')));
-      const selfHostingPath =
-          'app/tool/self_hosting/development_self_hosting.dart';
-      final selfHosting = File(selfHostingPath).readAsStringSync();
-      for (final package in ['search_tools', 'command_tools']) {
-        expect(
-          selfHosting,
-          isNot(contains('package:$package')),
-          reason: selfHostingPath,
-        );
-      }
     });
 
     test('discovers the UI API with the Flutter runner policy', () {

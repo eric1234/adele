@@ -59,8 +59,8 @@ Environment or changing Git state. The small developer-only
 [`tool/development_git_baseline.dart`](tool/development_git_baseline.dart) reader
 checks the exact association and original Git-owned SQL anchor in existing Project
 backing, without creating or changing storage. These helpers stay outside `app/lib`
-and do not import the legacy headless runner. Handoffs contain a README
-and unchanged evidence JSON, not a source snapshot or portable archive.
+and prepare handoffs containing a README and unchanged evidence JSON, not a source
+snapshot or portable archive.
 
 ```text
 Flutter application
@@ -73,7 +73,7 @@ Flutter application
     -> window / product / Session interaction
 ```
 
-`AdeleRuntime` is the pure-Dart host graph shared with SDK-only self-hosting.
+`AdeleRuntime` is the pure-Dart host graph.
 [`NativeAdeleRuntime`](lib/terminal/native_adele_runtime.dart) adds desktop-owned
 terminal resources without putting Flutter in that shared import graph.
 Both runtimes statically activate zero stock plugins. Construction is
@@ -2185,28 +2185,12 @@ under `lib/` contain no package under `plugins/**`, including plugin contracts.
 The app may use public ADELE APIs, internal generic host packages, Flutter, and
 generic native/host libraries such as `file_selector`, `sqlite3`, and eval runtime libraries.
 
-Plugin-aware tests, source preparation, and self-hosting use development dependencies
+Plugin-aware tests, source preparation, and evaluation handoffs use development dependencies
 outside the normal runtime graph. Source/build tooling is not a normal runtime
 dependency. The temporary provider identity/model seam grants no plugin-import
 exception. Follow [dependency rules](../docs/architecture/dependency-rules.md);
 the [application boundary test](../test/tools/app_plugin_boundary_test.dart) checks
 production manifest dependencies and import/export directives.
-
-## Developer Self-Hosting Runner
-
-[`bin/adele_self_host.dart`](bin/adele_self_host.dart) and
-[`tool/self_hosting/cli.dart`](tool/self_hosting/cli.dart) are the developer-only
-headless entrypoints. Runner, topology, and report owners live under
-[`tool/self_hosting/`](tool/self_hosting/), deliberately outside `app/lib` because
-they know concrete plugins. They reuse application/core runtime composition and
-normal remote execution boundaries, not desktop frontend composition.
-The topology injects an explicit invocation budget at Chat backend startup and
-reports that configured value; Session configuration remains instructions-only.
-
-This legacy workflow remains separate from desktop evaluation handoff preparation;
-the desktop Command does not launch it. See
-[developer self-hosting](../docs/development/self-hosting.md) for usage,
-prerequisites, provider presets, topology, retained outputs, and validation.
 
 ## Focused validation
 
@@ -2294,4 +2278,3 @@ repository-wide deferred-feature ledger here.
 | Temporary provider/model choice | [`lib/plugins/temporary_chatgpt_selection.dart`](lib/plugins/temporary_chatgpt_selection.dart) |
 | Source-checkout frontend compilation | [`tool/`](tool/): compiler harnesses listed [above](#prepared-chat-frontend) |
 | Development evaluation handoff | [`tool/session_evidence_exporter.dart`](tool/session_evidence_exporter.dart), [`tool/session_evaluation_handoff.dart`](tool/session_evaluation_handoff.dart); [procedure and limits](../plugins/session_evaluator/README.md#desktop-handoff) |
-| Self-hosting | [`bin/adele_self_host.dart`](bin/adele_self_host.dart), [`tool/self_hosting/`](tool/self_hosting/) |

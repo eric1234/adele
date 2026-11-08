@@ -47,5 +47,6 @@ builds/tests additionally need the [pinned Rust toolchain](docs/development/tool
 The maintained entrypoint is [`tools/adele.dart`](tools/adele.dart).
 See [toolchain and generation](docs/development/toolchain.md),
 [testing and validation](docs/development/testing.md), and
-[developer self-hosting](docs/development/self-hosting.md) for repository workflows, and the
+[desktop evaluation handoffs](plugins/session_evaluator/README.md#desktop-handoff)
+for repository workflows, and the
 [application README](app/README.md) for local launch configuration and limitations.

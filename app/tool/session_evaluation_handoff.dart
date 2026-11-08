@@ -58,8 +58,8 @@ final class SessionEvaluationHandoff {
     if (environment.providerId.value != 'dev.adele.environment.git-worktree') {
       return unavailable('unsupported Environment provider.');
     }
-    // Match the stock provider's v2 schema without importing its implementation
-    // or the legacy self-hosting runner. Production core keeps this state opaque.
+    // Match the stock provider's v2 schema without importing its implementation.
+    // Production core keeps this state opaque.
     const fields = {
       'schemaVersion',
       'environmentId',

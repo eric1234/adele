@@ -233,7 +233,7 @@ void main() {
       );
       expect(preparedWithoutArguments.capabilityExposures, isEmpty);
       await preparedWithoutArguments.close();
-      // The same host still supports direct/self-hosting environment configuration.
+      // The same host still supports direct environment configuration.
       final PluginBackendConnection connection = await host.startPlugin(
         pluginId: openAiPluginId,
         artifactUri: pluginArtifact.uri,

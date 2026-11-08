@@ -214,8 +214,8 @@ neither registers nor discovers context sources in production. The host's
 `InferenceContextComposer` discovers current sources through the existing
 `ExtensionRegistry` on every new inference, including Chat continuation, and
 captures instruction material without changing
-Chat's semantic input. Normal prepared startup and explicit development/self-hosting
-activate the independent stock [`agents_md_backend`](../agents_md/README.md) through
+Chat's semantic input. Normal prepared startup
+activates the independent stock [`agents_md_backend`](../agents_md/README.md) through
 generic remote-source adapters, reusing `agents_md_plugin` semantics. It rereads
 root `AGENTS.md` through generated authorized reads backed by the captured Session's
 Environment read facet each snapshot, without a direct app plugin dependency.

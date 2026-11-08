@@ -479,8 +479,8 @@ Every Run still receives a fresh model-provider adapter with null provider turn
 state. Only its routing identity is shared with other Runs in that live Session.
 Model/tool continuations and approval resume retain the current Run's adapter
 and state; no previous Run's state is supplied when the next Run starts. A
-standalone single-Run caller, such as the self-hosting runner, may simply let its
-adapter allocate a fresh routing identity.
+standalone single-Run caller may simply let its adapter allocate a fresh routing
+identity.
 
 `ModelProviderRequest.affinity` carries the provider-neutral identity and optional
 opaque Run-local provider state. `ModelProviderTerminal.affinityState` returns

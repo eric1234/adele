@@ -60,11 +60,7 @@ void main() {
           );
       addTearDown(harness.close);
       final SourceCodingLiveProviderActivation model =
-          await startOpenAiApiKeyProvider(
-            host: harness.host,
-            registry: harness.registry,
-            artifact: artifacts.openAiArtifact,
-          );
+          await startOpenAiApiKeyProvider(harness: harness);
       addTearDown(model.close);
       final ModelProviderCapabilityAdapter modelAdapter =
           ModelProviderCapabilityAdapter(

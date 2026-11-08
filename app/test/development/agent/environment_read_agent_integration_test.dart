@@ -17,8 +17,9 @@ import 'package:chat_strategy_backend/chat_strategy_backend.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
-import '../../../tool/self_hosting/development_agent_support.dart';
-import '../../../tool/self_hosting/development_self_hosting.dart';
+import '../../support/fixed_tool_policy.dart';
+import '../../support/git_worktree_fixture.dart';
+import 'source_coding_live_test_support.dart';
 import 'source_read_evidence_test_support.dart';
 
 const String _gitPluginId = 'dev.adele.plugin.git';
@@ -26,7 +27,7 @@ const String _gitEnvironmentProviderId = 'dev.adele.environment.git-worktree';
 const String _agentsMdPluginId = 'dev.adele.plugin.agents-md';
 const String _sourceRelativePath = 'plugins/chat_strategy/settings.schema.json';
 const String _transientSourceRelativePath =
-    'app/tool/self_hosting/phase_v_d1_transient_test_file.txt';
+    'plugins/chat_strategy/transient_source_fixture.txt';
 const String _transientSourceContent = 'transient ADELE content \u{1f642}\n';
 
 void main() {
@@ -103,50 +104,40 @@ void main() {
   });
 
   test(
-    'self-hosting retains remote AGENTS, Search, Filesystem and Command with canonical Session authority',
+    'normal prepared runtime retains remote AGENTS, Search, Filesystem and Command with canonical Session authority',
     () async {
-      final Directory container = await Directory.systemTemp.createTemp(
-        'adele-self-hosting-topology-',
+      final topology = await SourceCodingLiveHarness.start(
+        artifacts: SourceCodingLiveArtifacts(
+          repository: repository,
+          dartAotRuntime: dartaotruntime,
+          hostArtifact: hostArtifact,
+          // This deterministic fixture never starts a model provider.
+          openAiArtifact: File('${hostArtifact.parent.path}/unused-openai.aot'),
+          backends: {
+            chatStrategyPluginId.value: chatStrategyArtifact,
+            _gitPluginId: gitArtifact,
+            _agentsMdPluginId: agentsMdArtifact,
+            'dev.adele.plugin.command-tools': commandToolsArtifact,
+            'dev.adele.plugin.search-tools': searchToolsArtifact,
+            'dev.adele.plugin.filesystem-tools': filesystemToolsArtifact,
+          },
+        ),
+        hostEnvironment: const <String, String>{},
+        identity: 'topology',
+        taskTitle: 'Establish a canonical development Session',
+        maxModelInvocations: 3,
+        enableCommandTools: true,
       );
-      addTearDown(() async {
-        if (await container.exists()) await container.delete(recursive: true);
-      });
-      final Directory source = Directory('${container.path}/source');
-      await _createSourceRepository(repository: repository, source: source);
-      final DevelopmentSelfHostingTopology topology =
-          await DevelopmentSelfHostingTopology.start(
-            artifacts: DevelopmentSelfHostingArtifacts(
-              repository: Directory(repository),
-              dartAotRuntime: dartaotruntime,
-              directory: hostArtifact.parent,
-              hostArtifact: hostArtifact,
-              // Topology establishment does not activate a model provider.
-              openAiArtifact: File(
-                '${hostArtifact.parent.path}/unused-openai.aot',
-              ),
-              gitArtifact: gitArtifact,
-              agentsMdArtifact: agentsMdArtifact,
-              searchToolsArtifact: searchToolsArtifact,
-              filesystemToolsArtifact: filesystemToolsArtifact,
-              commandToolsArtifact: commandToolsArtifact,
-              chatStrategyArtifact: chatStrategyArtifact,
-            ),
-            projectSource: source,
-            hostEnvironment: const <String, String>{},
-            identity: 'topology',
-            taskTitle: 'Establish a canonical development Session',
-            maxModelInvocations: 3,
-          );
       addTearDown(topology.close);
+      final source = topology.projectSource;
 
       expect(topology.registry, same(topology.runtime.registry));
       expect(topology.lifecycle, same(topology.runtime.lifecycle));
       expect(topology.store, same(topology.runtime.store));
       expect(topology.contextComposer, same(topology.runtime.contextComposer));
       expect(topology.chatSession, isA<ChatSessionServiceClient>());
-      // Self-hosting uses its existing host, not normal installation bootstrap.
-      expect(topology.runtime.plugins.host, isNull);
-      expect(topology.runtime.plugins.catalog, isNull);
+      expect(topology.runtime.plugins.host, same(topology.host));
+      expect(topology.runtime.plugins.catalog!.installations, hasLength(6));
       final agentsMdBinding = topology.runtime.extensions
           .discover(inferenceContextSources)
           .single;
@@ -156,7 +147,6 @@ void main() {
         agentsMdBinding.value.failureMode,
         InferenceContextFailureMode.required,
       );
-      expect(topology.sessionId, SessionId('session-topology'));
       expect(topology.sessionId, topology.session.id);
       expect(topology.session.taskId, topology.task.id);
       expect(topology.session.strategyId, chatStrategyId);
@@ -262,21 +252,19 @@ void main() {
         isEmpty,
       );
       final _SearchReadModel model = _SearchReadModel();
-      final DevelopmentSelfHostingRunResult result =
-          await executeDevelopmentSelfHostingRun(
-            identity: 'topology',
-            lifecycle: topology.lifecycle,
-            contextComposer: topology.contextComposer,
-            sessions: topology.chatSession,
-            resolvedStrategy: topology.resolvedStrategy,
-            sessionId: topology.sessionId,
-            prompt: 'Locate and read the Chat invocation-budget declaration.',
-            instructions: 'Inspect source through the authorized Environment.',
-            model: model,
-            catalog: topology.catalog,
-          );
-      expect(result.succeeded, isTrue, reason: result.run.failure?.toString());
-      expect(result.sessionSnapshot.entries, hasLength(2));
+      final result = await topology.run(
+        identity: 'topology',
+        userPrompt: 'Locate and read the Chat invocation-budget declaration.',
+        developmentInstructions:
+            'Inspect source through the authorized Environment.',
+        model: model,
+      );
+      expect(
+        result.run.state,
+        RunState.completed,
+        reason: result.run.failure?.toString(),
+      );
+      expect(result.session.entries, hasLength(2));
       expect(model.receivedRealSource, isTrue);
       expect(model.requests, hasLength(3));
       for (final SemanticModelRequest request in model.requests) {
@@ -475,7 +463,7 @@ void main() {
             contextComposer: InferenceContextComposer(extensions),
             model: model,
             toolCatalog: catalogA,
-            policy: const DevelopmentToolPolicy(ToolPolicyDecision.allow),
+            policy: const FixedToolPolicy(ToolPolicyDecision.allow),
           );
       addTearDown(strategy.close);
       final AgentRun run = strategy.run;
@@ -585,7 +573,7 @@ void main() {
         'search',
       )!;
       const String siblingPath = 'plugins/chat_strategy/scope-decoy.txt';
-      final String worktreePath = developmentGitWorktreePath(
+      final String worktreePath = gitWorktreeFixturePath(
         store.project(project.id)!,
         materializationB.environment,
       );
@@ -839,7 +827,7 @@ void main() {
             contextComposer: InferenceContextComposer(extensions),
             model: model,
             toolCatalog: catalog,
-            policy: const DevelopmentToolPolicy(ToolPolicyDecision.allow),
+            policy: const FixedToolPolicy(ToolPolicyDecision.allow),
           );
       addTearDown(strategy.close);
       final AgentRun run = strategy.run;
@@ -1063,7 +1051,7 @@ void main() {
       );
       expect(resultingFile.text, expectedTaskSource);
       expect(resultingFile.revision, model.postWriteRevision);
-      final String worktreePath = developmentGitWorktreePath(
+      final String worktreePath = gitWorktreeFixturePath(
         store.project(project.id)!,
         materialization.environment,
       );
@@ -1199,7 +1187,7 @@ void main() {
         'create_file',
         'delete_file',
       ]);
-      final String worktreePath = developmentGitWorktreePath(
+      final String worktreePath = gitWorktreeFixturePath(
         store.project(project.id)!,
         store.environment(created.environment.id)!,
       );
@@ -1228,7 +1216,7 @@ void main() {
             contextComposer: InferenceContextComposer(extensions),
             model: model,
             toolCatalog: catalog,
-            policy: const DevelopmentToolPolicy(ToolPolicyDecision.allow),
+            policy: const FixedToolPolicy(ToolPolicyDecision.allow),
           );
       addTearDown(strategy.close);
       final AgentRun run = strategy.run;
@@ -1980,10 +1968,7 @@ Future<String> _createSourceRepository({
   final File copiedSource = File('${source.path}/$_sourceRelativePath');
   await copiedSource.parent.create(recursive: true);
   await copiedSource.writeAsString(content);
-  final List<String> supportingPaths = <String>[
-    'README.md',
-    'app/tool/self_hosting/development_agent_support.dart',
-  ];
+  final List<String> supportingPaths = <String>['README.md'];
   for (final String relativePath in supportingPaths) {
     final File maintained = File('$repository/$relativePath');
     final File copied = File('${source.path}/$relativePath');

@@ -72,11 +72,7 @@ void main() {
         expectedEffectiveModel: null,
         evidenceLabel: 'V-C3',
         startProvider: (SourceCodingLiveHarness harness) =>
-            startOpenAiApiKeyProvider(
-              host: harness.host,
-              registry: harness.registry,
-              artifact: artifacts.openAiArtifact,
-            ),
+            startOpenAiApiKeyProvider(harness: harness),
       );
     },
     skip: apiKeyEnabled
@@ -101,11 +97,7 @@ void main() {
         expectedEffectiveModel: selectedModel,
         evidenceLabel: 'ChatGPT subscription validation',
         startProvider: (SourceCodingLiveHarness harness) =>
-            startOpenAiChatGptProvider(
-              host: harness.host,
-              registry: harness.registry,
-              artifact: artifacts.openAiArtifact,
-            ),
+            startOpenAiChatGptProvider(harness: harness),
       );
     },
     skip: chatGptEnabled

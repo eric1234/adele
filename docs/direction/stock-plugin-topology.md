@@ -272,8 +272,8 @@ boundary. Public contract ownership follows [`../architecture/dependency-rules.m
 Retirement rejects late native results without forcibly closing dialogs; semantic
 selection failures stay operation-local. The picker bridge uses no backend RPC or
 Session/Environment authority; the host separately uses generated provider RPC for
-backing preparation. Headless self-hosting remains selector-free and uses
-an explicitly known source URI directly.
+backing preparation. Headless callers can use an explicitly known source URI
+directly without a selector.
 
 ## 3.2 Task Browser
 

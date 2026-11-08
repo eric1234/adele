@@ -1,16 +1,27 @@
 import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
-import 'package:adele_desktop/core/model_provider_host.dart';
+import 'package:adele_desktop/core/adele_runtime.dart';
+import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
+import 'package:adele_desktop/core/model_tool_host.dart';
+import 'package:adele_desktop/core/orchestration_host.dart';
+import 'package:adele_desktop/core/prepared_settings.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/resource_cleanup.dart';
 import 'package:adele_environment/adele_environment.dart';
+import 'package:adele_model_provider/adele_model_provider.dart';
+import 'package:adele_orchestration/adele_orchestration.dart';
+import 'package:adele_product/adele_product.dart';
+import 'package:adele_settings/adele_settings.dart';
 import 'package:agent_kernel/agent_kernel.dart';
 import 'package:chat_strategy_contract/chat_strategy_contract.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
-import '../../../tool/self_hosting/development_self_hosting.dart';
+import '../../../../tools/backend_artifacts.dart';
+import '../../support/fixed_tool_policy.dart';
+import '../../support/git_worktree_fixture.dart';
 
 const String sourceCodingStrategyPath =
     'plugins/chat_strategy/settings.schema.json';
@@ -25,53 +36,123 @@ const String sourceCodingInstructions =
     'You must call search for "dev.adele.plugin.chat-strategy.max-model-invocations", '
     'then call read_file with the relative path returned by search before '
     'answering.';
-const String openAiApiKeyProviderId = developmentSelfHostingApiKeyProviderId;
-const String openAiChatGptProviderId = developmentSelfHostingChatGptProviderId;
-const String sourceCodingChatGptDefaultModel =
-    developmentSelfHostingChatGptDefaultModel;
+const String openAiApiKeyProviderId = 'dev.adele.openai.api-key';
+const String openAiChatGptProviderId = 'dev.adele.openai.chatgpt-experimental';
+const String sourceCodingChatGptDefaultModel = 'gpt-6-astra';
 
 final class SourceCodingLiveArtifacts {
-  const SourceCodingLiveArtifacts._(this.value);
+  const SourceCodingLiveArtifacts({
+    required this.repository,
+    required this.dartAotRuntime,
+    required this.hostArtifact,
+    required this.openAiArtifact,
+    required this.backends,
+  });
 
-  final DevelopmentSelfHostingArtifacts value;
-
-  String get repository => value.repository.path;
-  String get dartAotRuntime => value.dartAotRuntime;
-  File get hostArtifact => value.hostArtifact;
-  File get openAiArtifact => value.openAiArtifact;
-  File get gitArtifact => value.gitArtifact;
+  final String repository;
+  final String dartAotRuntime;
+  final File hostArtifact;
+  final File openAiArtifact;
+  final Map<String, File> backends;
 
   static Future<SourceCodingLiveArtifacts> compile(String scope) async {
     final Directory repository = Directory.current.parent;
-    final Directory artifacts = Directory(
+    final Directory output = Directory(
       '${repository.path}/.dart_tool/adele/integration/$scope',
     );
-    return SourceCodingLiveArtifacts._(
-      await DevelopmentSelfHostingArtifacts.compile(
-        repository: repository,
-        outputDirectory: artifacts,
-      ),
+    final flutterRoot = Platform.environment['FLUTTER_ROOT'];
+    final sdkBin = flutterRoot == null
+        ? File(Platform.resolvedExecutable).parent
+        : Directory.fromUri(
+            Directory(flutterRoot).uri.resolve('bin/cache/dart-sdk/bin/'),
+          );
+    if (!sdkBin.path.endsWith(
+      '${Platform.pathSeparator}dart-sdk${Platform.pathSeparator}bin',
+    )) {
+      throw StateError('Set FLUTTER_ROOT to the pinned Flutter SDK.');
+    }
+    final dart = File.fromUri(
+      sdkBin.uri.resolve(Platform.isWindows ? 'dart.exe' : 'dart'),
+    ).path;
+    const entrypoints = {
+      'host': 'packages/plugin_backend_host/bin/adele_backend_host.dart',
+      'openai':
+          'plugins/openai/packages/backend/bin/openai_model_provider_backend.dart',
+      'dev.adele.plugin.chat-strategy':
+          'plugins/chat_strategy/packages/backend/bin/chat_strategy_backend.dart',
+      'dev.adele.plugin.git':
+          'plugins/git/packages/backend/bin/git_backend.dart',
+      'dev.adele.plugin.agents-md':
+          'plugins/agents_md/packages/backend/bin/agents_md_backend.dart',
+      'dev.adele.plugin.command-tools':
+          'plugins/command_tools/packages/backend/bin/command_tools_backend.dart',
+      'dev.adele.plugin.search-tools':
+          'plugins/search_tools/packages/backend/bin/search_tools_backend.dart',
+      'dev.adele.plugin.filesystem-tools':
+          'plugins/filesystem_tools/packages/backend/bin/filesystem_tools_backend.dart',
+    };
+    final artifacts = <String, File>{};
+    for (final entry in entrypoints.entries) {
+      final artifact = File('${output.path}/${entry.key}.aot');
+      await compileAotSnapshot(
+        dartExecutable: dart,
+        workingDirectory: repository,
+        entrypoint: entry.value,
+        artifact: artifact,
+        stage: 'source-coding-test',
+      );
+      artifacts[entry.key] = artifact;
+    }
+    return SourceCodingLiveArtifacts(
+      repository: repository.path,
+      dartAotRuntime: File.fromUri(
+        sdkBin.uri.resolve(
+          Platform.isWindows ? 'dartaotruntime.exe' : 'dartaotruntime',
+        ),
+      ).path,
+      hostArtifact: artifacts.remove('host')!,
+      openAiArtifact: artifacts.remove('openai')!,
+      backends: artifacts,
     );
   }
 }
 
+/// Source-coding fixture over normal prepared-plugin startup, shared by the
+/// deterministic Environment test and explicitly gated live-provider tests.
 final class SourceCodingLiveHarness {
-  SourceCodingLiveHarness._({
-    required DevelopmentSelfHostingTopology topology,
-    required Directory container,
-  }) : _topology = topology,
-       _container = container;
+  SourceCodingLiveHarness._(
+    this.runtime,
+    this._container,
+    this.projectSource,
+    this._artifacts,
+    this._hostEnvironment,
+  );
 
-  final DevelopmentSelfHostingTopology _topology;
+  final AdeleRuntime runtime;
   final Directory _container;
-
+  final Directory projectSource;
+  final SourceCodingLiveArtifacts _artifacts;
+  final Map<String, String> _hostEnvironment;
+  late final Project project;
+  late final Task task;
+  late final Environment environment;
+  late final Session session;
+  late final ToolCatalog catalog;
+  late final ChatSessionServiceClient chatSession;
   bool _closed = false;
 
-  PluginBackendHost get host => _topology.host;
-  CapabilityRegistry get registry => _topology.registry;
-  SessionId get sessionId => _topology.sessionId;
-  SessionEnvironmentAuthority get authority => _topology.authority;
-  ToolCatalog get catalog => _topology.catalog;
+  PluginBackendHost get host => runtime.plugins.host!;
+  CapabilityRegistry get registry => runtime.registry;
+  InMemoryProductStore get store => runtime.store;
+  ProductLifecycleCoordinator get lifecycle => runtime.lifecycle;
+  InferenceContextComposer get contextComposer => runtime.contextComposer;
+  SessionId get sessionId => session.id;
+  SessionEnvironmentAuthority get authority =>
+      store.requireSessionAuthority(sessionId);
+  ResolvedOrchestrationStrategy get resolvedStrategy =>
+      lifecycle.resolveSessionStrategy(sessionId);
+  EnvironmentMaterialization get environmentMaterialization =>
+      lifecycle.environmentRuntime.currentMaterialization(environment.id)!;
 
   static Future<SourceCodingLiveHarness> start({
     required SourceCodingLiveArtifacts artifacts,
@@ -79,79 +160,155 @@ final class SourceCodingLiveHarness {
     required String identity,
     required String taskTitle,
     bool enableCommandTools = false,
+    int maxModelInvocations = 8,
   }) async {
     final Directory container = await Directory.systemTemp.createTemp(
       'adele-$identity-environment-source-',
     );
+    final runtime = AdeleRuntime(ids: MonotonicProductIdSource(seed: identity));
     try {
       final Directory sourceRepository = Directory('${container.path}/source');
       await _createSourceRepository(
         repository: artifacts.repository,
         source: sourceRepository,
       );
-      final DevelopmentSelfHostingTopology topology =
-          await DevelopmentSelfHostingTopology.start(
-            artifacts: artifacts.value,
-            projectSource: sourceRepository,
-            hostEnvironment: hostEnvironment,
-            identity: '$identity-source-live',
-            taskTitle: taskTitle,
-            maxModelInvocations: 8,
-            includeCommandTools: enableCommandTools,
-          );
-      return SourceCodingLiveHarness._(
-        topology: topology,
-        container: container,
+      final installations = Directory('${container.path}/installations');
+      var index = 0;
+      for (final entry in artifacts.backends.entries) {
+        if (!enableCommandTools &&
+            entry.key == 'dev.adele.plugin.command-tools') {
+          continue;
+        }
+        final installation = Directory(
+          '${installations.path}/${index++}-${entry.key}',
+        );
+        await publishStockPluginInstallation(
+          repositoryRoot: Directory(artifacts.repository),
+          installationDirectory: installation,
+          pluginId: entry.key,
+          displayName: entry.key,
+          backend: true,
+        );
+        await entry.value.copy('${installation.path}/backend.aot');
+      }
+      runtime.plugins.configureSettingsLoader(
+        (catalog) async => PreparedSettingsSnapshot.resolve(
+          catalog,
+          globalOverrides: {
+            SettingId(chatMaxModelInvocationsSettingId): maxModelInvocations,
+          },
+        ),
       );
-    } catch (_) {
-      if (await container.exists()) await container.delete(recursive: true);
-      rethrow;
+      await runtime.plugins.start(
+        installationRoot: installations.path,
+        dartaotruntimeExecutable: artifacts.dartAotRuntime,
+        hostArtifactPath: artifacts.hostArtifact.path,
+        startupArguments: const {},
+      );
+      expect(runtime.plugins.failure, isNull);
+      for (final backend in runtime.plugins.backends) {
+        expect(
+          backend.state,
+          InstalledBackendState.active,
+          reason: '${backend.failure}',
+        );
+      }
+      final fixture = SourceCodingLiveHarness._(
+        runtime,
+        container,
+        sourceRepository,
+        artifacts,
+        Map.unmodifiable(hostEnvironment),
+      );
+      fixture.project = runtime.lifecycle.createProject(sourceRepository.uri);
+      final created = await runtime.lifecycle.createTask(
+        projectId: fixture.project.id,
+        title: taskTitle,
+        providerId: ProviderId('dev.adele.environment.git-worktree'),
+      );
+      fixture.task = created.task;
+      fixture.environment = created.environment;
+      fixture.session = runtime.lifecycle.createSession(
+        taskId: created.task.id,
+        strategyId: chatStrategyId,
+      );
+      final chat = runtime.plugins.backends.singleWhere(
+        (backend) => backend.installation.metadata.id == chatStrategyPluginId,
+      );
+      final connection = chat.connection!;
+      expect(
+        chat.strategyOrigin(fixture.resolvedStrategy.binding)!.connection,
+        same(connection),
+      );
+      fixture.chatSession = ChatSessionServiceClient(
+        connection.channelFor(
+          connection.defaultConfigurationContext,
+          chatSessionServiceId,
+        ),
+      );
+      fixture.catalog = await buildModelToolCatalogForSession(
+        sessionId: fixture.sessionId,
+        environmentRuntime: runtime.lifecycle.environmentRuntime,
+        extensions: runtime.extensions,
+      );
+      return fixture;
+    } catch (error, stackTrace) {
+      try {
+        await closeResources([
+          runtime.close,
+          () => container.delete(recursive: true),
+        ]);
+      } on Object {
+        // Preserve setup failure after attempting both cleanup actions.
+      }
+      Error.throwWithStackTrace(error, stackTrace);
     }
   }
 
   Future<SourceCodingLiveResult> run({
     required String identity,
-    required ModelProviderCapabilityAdapter model,
+    required ModelPort model,
     String userPrompt = sourceCodingPrompt,
     String developmentInstructions = sourceCodingInstructions,
   }) async {
-    final DevelopmentSelfHostingRunResult result =
-        await executeDevelopmentSelfHostingRun(
-          identity: '$identity-source-live',
-          lifecycle: _topology.lifecycle,
-          contextComposer: _topology.contextComposer,
-          sessions: _topology.chatSession,
-          resolvedStrategy: _topology.resolvedStrategy,
-          sessionId: sessionId,
-          prompt: userPrompt,
-          instructions: developmentInstructions,
-          model: model,
-          catalog: catalog,
-        );
-    if (result.executionFailure != null) {
-      Error.throwWithStackTrace(
-        result.executionFailure!,
-        result.executionStackTrace!,
-      );
+    await chatSession.configureSession(
+      sessionId.value,
+      developmentInstructions,
+    );
+    await chatSession.appendUserMessage(sessionId.value, userPrompt);
+    final execution = await createSessionOrchestrationRun(
+      lifecycle: lifecycle,
+      resolvedStrategy: resolvedStrategy,
+      contextComposer: contextComposer,
+      sessionId: sessionId,
+      runId: RunId('run-$identity-source-live'),
+      model: model,
+      toolCatalog: catalog,
+      policy: const FixedToolPolicy(ToolPolicyDecision.allow),
+    );
+    try {
+      await execution.start();
+    } finally {
+      await execution.close();
     }
     return SourceCodingLiveResult(
-      run: result.run,
-      session: result.sessionSnapshot,
+      run: execution.run,
+      session: await chatSession.snapshot(sessionId.value),
     );
   }
 
-  String get projectSourcePath => _topology.projectSource.path;
+  String get projectSourcePath => projectSource.path;
 
-  String get taskWorktreePath => _topology.taskWorktreePath;
+  String get taskWorktreePath => gitWorktreeFixturePath(project, environment);
 
   Future<String> readProjectSourceFile(String relativePath) =>
-      File('${_topology.projectSource.path}/$relativePath').readAsString();
+      File('${projectSource.path}/$relativePath').readAsString();
 
   Future<String> readTaskWorktreeFile(String relativePath) =>
       File('$taskWorktreePath/$relativePath').readAsString();
 
   Future<EnvironmentTextFile> readEnvironmentFile(String relativePath) =>
-      _topology.environmentMaterialization.provider.readFile(
+      environmentMaterialization.provider.readFile(
         authority.environmentId,
         relativePath,
       );
@@ -160,60 +317,99 @@ final class SourceCodingLiveHarness {
     if (_closed) return;
     _closed = true;
     await closeResources(<Future<void> Function()>[
-      _topology.close,
+      runtime.close,
       if (await _container.exists()) () => _container.delete(recursive: true),
     ]);
   }
 }
 
 Future<SourceCodingLiveProviderActivation> startOpenAiApiKeyProvider({
-  required PluginBackendHost host,
-  required CapabilityRegistry registry,
-  required File artifact,
-}) async {
-  return SourceCodingLiveProviderActivation(
-    await activateDevelopmentSelfHostingModelProvider(
-      host: host,
-      registry: registry,
-      artifact: artifact,
-      profile: DevelopmentSelfHostingProfile.apiKey,
-    ),
-  );
-}
+  required SourceCodingLiveHarness harness,
+}) => _startOpenAiProvider(harness, openAiApiKeyProviderId);
 
 Map<String, String> sourceCodingChatGptHostEnvironment() {
-  return DevelopmentSelfHostingProviderConfiguration.fromEnvironment(
-    DevelopmentSelfHostingProfile.chatgpt,
-  ).hostEnvironment;
+  final source = Platform.environment;
+  final credentialFile = source['ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE'];
+  if (credentialFile == null || credentialFile.trim().isEmpty) {
+    throw StateError(
+      'ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE is required for the live test.',
+    );
+  }
+  final environment = <String, String>{
+    'OPENAI_API_KEY': '',
+    'ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE': credentialFile,
+  };
+  for (final name in [
+    'ADELE_OPENAI_CHATGPT_CLIENT_ID',
+    'ADELE_OPENAI_CHATGPT_INSTANCE_ID',
+    'ADELE_OPENAI_CHATGPT_OAUTH_ISSUER',
+    'ADELE_OPENAI_CHATGPT_REDIRECT_URI',
+    'ADELE_OPENAI_CHATGPT_ENDPOINT',
+  ]) {
+    final value = source[name];
+    if (value != null && value.trim().isNotEmpty) environment[name] = value;
+  }
+  if (!environment.containsKey('ADELE_OPENAI_CHATGPT_CLIENT_ID')) {
+    environment['ADELE_OPENAI_CHATGPT_EXPERIMENTAL_CODEX_CLIENT'] = '1';
+  }
+  return environment;
 }
 
 String sourceCodingChatGptSelectedModel() {
-  return DevelopmentSelfHostingProviderConfiguration.fromEnvironment(
-    DevelopmentSelfHostingProfile.chatgpt,
-  ).selectedModel;
+  final selected = Platform.environment['ADELE_OPENAI_CHATGPT_TEST_MODEL'];
+  return selected == null || selected.trim().isEmpty
+      ? sourceCodingChatGptDefaultModel
+      : selected;
 }
 
 Future<SourceCodingLiveProviderActivation> startOpenAiChatGptProvider({
-  required PluginBackendHost host,
-  required CapabilityRegistry registry,
-  required File artifact,
-}) async {
-  return SourceCodingLiveProviderActivation(
-    await activateDevelopmentSelfHostingModelProvider(
-      host: host,
-      registry: registry,
-      artifact: artifact,
-      profile: DevelopmentSelfHostingProfile.chatgpt,
-    ),
+  required SourceCodingLiveHarness harness,
+}) => _startOpenAiProvider(harness, openAiChatGptProviderId);
+
+Future<SourceCodingLiveProviderActivation> _startOpenAiProvider(
+  SourceCodingLiveHarness harness,
+  String providerId,
+) async {
+  // Apply explicit provider configuration only when an opted-in test starts it.
+  // Normal source/runtime bootstrap stays provider-free.
+  final host = await PluginBackendHost.start(
+    dartaotruntimeExecutable: harness._artifacts.dartAotRuntime,
+    hostArtifactPath: harness._artifacts.hostArtifact.path,
+    environment: harness._hostEnvironment,
   );
+  try {
+    final activation = await PluginCapabilityActivation.registerAdvertised(
+      connection: await host.startPlugin(
+        pluginId: 'dev.adele.openai',
+        artifactUri: harness._artifacts.openAiArtifact.uri,
+      ),
+      registry: harness.registry,
+    );
+    final result = SourceCodingLiveProviderActivation(host, activation);
+    try {
+      harness.registry.resolve(
+        modelProviderCapability,
+        providerId: ProviderId(providerId),
+      );
+      return result;
+    } on Object {
+      await result.close();
+      rethrow;
+    }
+  } on Object {
+    if (!host.isClosed) await host.close();
+    rethrow;
+  }
 }
 
 final class SourceCodingLiveProviderActivation {
-  const SourceCodingLiveProviderActivation(this._activation);
+  const SourceCodingLiveProviderActivation(this._host, this._activation);
 
-  final DevelopmentSelfHostingProviderActivation _activation;
+  final PluginBackendHost _host;
+  final PluginCapabilityActivation _activation;
 
-  Future<void> close() => _activation.close();
+  Future<void> close() =>
+      closeResources([_activation.close, if (!_host.isClosed) _host.close]);
 }
 
 final class SourceCodingLiveResult {
@@ -444,7 +640,6 @@ Future<void> _createSourceRepository({
 }) async {
   const List<String> sourcePaths = <String>[
     'README.md',
-    'app/tool/self_hosting/development_agent_support.dart',
     sourceCodingStrategyPath,
   ];
   await source.create(recursive: true);

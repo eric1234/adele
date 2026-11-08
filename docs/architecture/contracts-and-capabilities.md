@@ -722,9 +722,8 @@ transport backpressure or independent backend work. See
 Chat's `ChatSessionService` is a generated plugin-internal service reached through
 direct/owning-backend routing; it is not an advertised Chat Session Capability.
 Chat installs its Session dispatcher on the backend router but advertises only its
-orchestration strategy through extension exposures. Explicit native consumers,
-including self-hosting, likewise use the captured backend/context rather than
-Capability resolution.
+orchestration strategy through extension exposures. Explicit native consumers
+likewise use the captured backend/context rather than Capability resolution.
 
 Chat's separate generated `ChatFeedbackInspectionService` exposes only
 `readAcceptedFeedback(sessionId, occurrenceId)` on `chat.feedbackInspection`.

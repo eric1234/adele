@@ -431,9 +431,7 @@ generation receipt permits reuse without semantic resolution; missing, stale, or
 uncertain evidence requires authoritative generation. This validation still runs
 when all compiled components can be reused. Generation failures stop preparation;
 cached output is not a fallback. Other desktop build/run
-commands and development smoke generate before launching Flutter. The SDK-only
-`app/bin/adele_self_host.dart` launcher generates before starting its native CLI
-consumer, which in turn compiles the self-hosting AOT artifacts. Low-level snapshot
+commands and development smoke generate before launching Flutter. Low-level snapshot
 compilers remain generation-agnostic; direct Dart/Flutter or standalone frontend
 harness invocations require bootstrap/current generation first.
 
@@ -567,10 +565,6 @@ a `backendServices` allowlist containing generated `chatSessionServiceId`, and
 `strategyAffinity: 'owningBackend'` instead
 of `hostAdapter`, still under manifest version 1. Rebuild prepared artifacts and
 descriptors together. No deployment define is added.
-
-Plugin-specific self-hosting composition lives in `app/tool/self_hosting/`, outside
-the normal `app/lib` import graph. It uses Chat Contract as a development dependency
-and the same remote Chat backend, not an in-process strategy fallback.
 
 `tools/backend_artifacts.dart` still owns stock source entrypoints and writes
 `adele_plugin.installation.json` beside each installation's independently optional

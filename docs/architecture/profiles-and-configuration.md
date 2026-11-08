@@ -28,9 +28,8 @@ architectural constraints, principally recorded in
 not a proposed API or storage design.
 
 Current normal startup uses a fixed participation policy, not profile-aware
-activation. The self-hosting CLI's `chatgpt` / `api-key` provider-selection
-"profiles" are unrelated implementation terminology. Prepared installation
-metadata, backend-ready advertisements, generation-bound configuration contexts,
+activation. Prepared installation metadata, backend-ready advertisements,
+generation-bound configuration contexts,
 and host invocation/infrastructure contexts are not Profiles; their boundaries
 belong to [plugin layout](plugin-layout.md) and
 [contracts and capabilities](contracts-and-capabilities.md).
@@ -900,8 +899,7 @@ limit is absent from Chat Session state, public snapshots, and relational storag
 `configureSession` changes instructions only. Native fixtures supply an explicit
 positive constructor value, and standalone AOT hosts inject a value at backend
 startup rather than changing a Session. The [execution model](execution-model.md#strategy-sequencing-and-host-mechanics)
-owns sequencing and exhaustion semantics; [self-hosting](../development/self-hosting.md#execution-topology)
-owns the developer runner's explicit budget path.
+owns sequencing and exhaustion semantics.
 
 ## Workbench and window state
 

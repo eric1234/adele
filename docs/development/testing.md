@@ -452,7 +452,7 @@ flutter test --no-pub --concurrency 1 test/core/startup_record_projection_test.d
 ```
 
 Retain existing Settings/credential service and application lifecycle suites,
-Source/Review retention tests and normal configured-provider/self-hosting tests.
+Source/Review retention tests and normal configured-provider tests.
 Production backend startup packaging changes also require the maintained
 `dart tools/adele.dart build linux --profile`; an isolated AOT fixture alone does
 not validate desktop packaging.
@@ -518,9 +518,7 @@ Session snapshots and SQL. Native `ChatStrategyPlugin` and
 Prepared-catalog fixtures should publish the authoritative Chat schema through
 the maintained stock helper and inject `PreparedSettingsSnapshot.resolve` or
 temporary configuration roots. Do not let tests inherit real user overrides or
-reproduce the schema default as an implicit fixture fallback. Developer topology
-tests likewise supply their explicit budget at backend start and check report
-provenance against the actual topology; see [self-hosting](self-hosting.md#execution-topology).
+reproduce the schema default as an implicit fixture fallback.
 
 `app/test/core/global_settings_service_test.dart` exercises the retained I/O worker
 with actual native persistence, temporary roots, separate owner baselines, serialized
@@ -781,18 +779,16 @@ relative to `app/`; this is a testing map, not an application architecture map.
 | Activity/Inspection | [`test/core/run_activity_projection_test.dart`](../../app/test/core/run_activity_projection_test.dart), [`test/inspection_host_test.dart`](../../app/test/inspection_host_test.dart), [`test/inspection_stack_test.dart`](../../app/test/inspection_stack_test.dart), [`openai_frontend/test/openai_activity_frontend_eval_test.dart`](../../plugins/openai/packages/frontend/test/openai_activity_frontend_eval_test.dart) |
 | Scoped activity reacquisition | [`test/session_execution_activity_test.dart`](../../app/test/session_execution_activity_test.dart), [`test/session_execution_bridge_test.dart`](../../app/test/session_execution_bridge_test.dart) (live/waiting/preparing and historical Session validation, fresh read-only opaque handles, permanent old-view revocation, unchanged activity/Inspection paths, and no execution authority) |
 | Prepared normal composition, no live model | [`test/core/normal_task_git_integration_test.dart`](../../app/test/core/normal_task_git_integration_test.dart), [`test/core/normal_chatgpt_run_integration_test.dart`](../../app/test/core/normal_chatgpt_run_integration_test.dart) (local fake Responses/credentials and picker; canonical Session opening with missing components or zero Main Content, ordinary Chat/editor coexistence, frontend retirement without Run closure, concurrent Session commands in separate Task worktrees through shared AOT hosting, warm Command Output switching and cold Session history return, browser running/attention status, live/terminal Chat/activity reentry, stale approval callbacks, delayed/failed draft settlement, Inspection clearing, and hidden-owner shutdown; not interactive native-picker proof) |
-| Deterministic self-hosting | [`test/development/agent/development_self_hosting_test.dart`](../../app/test/development/agent/development_self_hosting_test.dart), [`test/development/agent/environment_read_agent_integration_test.dart`](../../app/test/development/agent/environment_read_agent_integration_test.dart) |
+| Environment-authorized agent integration | [`test/development/agent/environment_read_agent_integration_test.dart`](../../app/test/development/agent/environment_read_agent_integration_test.dart) (remote context/tools, source reads/mutations, and commands in distinct Task worktrees with deterministic model fixtures) |
 
 Application dependency-boundary checks belong to
 [`test/tools/app_plugin_boundary_test.dart`](../../test/tools/app_plugin_boundary_test.dart)
 in `adele_tools`. They check production app manifest dependencies and import/export
-directives, not every repository dependency edge. Checkout preparation, driver,
+directives and run the generic application runtime under the Dart SDK without a
+Flutter engine; they do not check every repository dependency edge. Checkout preparation, driver,
 and launcher checks also live in that target:
-[`backend_artifacts_test.dart`](../../test/tools/backend_artifacts_test.dart),
-[`adele_test.dart`](../../test/tools/adele_test.dart), and
-[`self_hosting_cli_test.dart`](../../test/tools/self_hosting_cli_test.dart).
-See [developer self-hosting](self-hosting.md#validation-and-source-map) for that
-workflow's source/evidence owners and deterministic-versus-live distinction.
+[`backend_artifacts_test.dart`](../../test/tools/backend_artifacts_test.dart) and
+[`adele_test.dart`](../../test/tools/adele_test.dart).
 
 ### Focused Session Evaluator checks
 
@@ -821,7 +817,7 @@ These do not replace the real prepared-backend/native-directory boundary tests.
 The [metadata suite](../../app/test/session_evaluation_handoff_test.dart) owns the
 development-only helper's canonical Session association, strict Worktree v2 source
 state, and passive exact Git SQL anchor lookup over existing durable or temporary
-backing, independently of the runner. Missing or corrupt anchors never become HEAD
+backing. Missing or corrupt anchors never become HEAD
 comparisons, and diagnostic reads must not initialize backing or schema. The
 [directory writer suite](../../app/test/session_evidence_file_test.dart) owns unique
 allocation, exact two-file output, incomplete-write cleanup, revocation, and size
@@ -1343,7 +1339,7 @@ dart tools/adele.dart test --target command_tools_contract
 dart tools/adele.dart test --target adele_model_tool
 dart tools/adele.dart test --target adele_project_storage
 dart tools/adele.dart test --target contract_codegen
-dart test test/tools/adele_test.dart test/tools/app_plugin_boundary_test.dart test/tools/self_hosting_cli_test.dart
+dart test test/tools/adele_test.dart test/tools/app_plugin_boundary_test.dart
 dart tools/adele.dart generate --check
 ```
 
@@ -1432,7 +1428,7 @@ the [host accounting policy](../../app/README.md#session-console). The normal
 integration uses identity/lifetime evidence rather than adding production Command
 read counters; deterministic stock EVC fixtures cover precise read/watch accounting.
 The native process fixture is local and deterministic; these checks use
-no paid/live model, self-hosting workflow, or desktop/profile run. Command capture
+no paid/live model or desktop/profile run. Command capture
 uses foreground pipes, not a PTY; the normal application's separate interactive
 Terminal coexistence check does run the stock PTY path.
 New app tests participate in the unrestricted maintained `adele_desktop` target;
@@ -1918,10 +1914,7 @@ overriding inherited `ADELE_OPENAI_ENDPOINT`. App ChatGPT cases require
 
 The command-validation cases require Linux x64 process support and executable
 `/usr/bin/setsid` or `/bin/setsid`; their gates do not automatically skip unsupported
-platforms. Both currently have a stale ordered tool-catalog assertion before
-provider activation in `_runSourceValidation`. The topology registers Command,
-Search, then Filesystem tools, but the assertion expects Filesystem tools first.
-This is a known test blocker, not a claim of live success or a provider failure.
+platforms.
 
 Provider-only live smokes belong to the
 [OpenAI backend](../../plugins/openai/packages/backend/README.md#validation-scope):
@@ -1932,4 +1925,4 @@ both network cases. Consult the backend's
 [API-key test](../../plugins/openai/packages/backend/test/openai_live_test.dart)
 and [ChatGPT test](../../plugins/openai/packages/backend/test/openai_chatgpt_live_test.dart)
 for their exact configuration; these are separate from the app full-stack cases
-and from a deliberate [self-hosting runner invocation](self-hosting.md).
+and from [desktop evaluation handoff preparation](../../plugins/session_evaluator/README.md#desktop-handoff).
