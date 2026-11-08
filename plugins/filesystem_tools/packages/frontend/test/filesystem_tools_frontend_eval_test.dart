@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:adele_desktop/frontend/application_frontend_bootstrap.dart';
 import 'package:adele_desktop/ui/activity/tool_activity_compact_host.dart';
+import 'package:adele_desktop/ui/inspection/tool_activity_inspection_host.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_ui/adele_ui.dart';
@@ -169,11 +170,7 @@ void main() {
       (ToolActivityKind.approvalRequested, 'Waiting for approval'),
       (ToolActivityKind.executionStarted, 'Running'),
     ]) {
-      source.value = _activity(
-        createFile: true,
-        kind: stage.$1,
-        data: {'revision': 'premature'},
-      );
+      source.value = _activity(createFile: true, kind: stage.$1);
       source.notifyListeners();
       source.notifyListeners();
       await tester.pumpAndSettle();
@@ -231,6 +228,124 @@ void main() {
     source.notifyListeners();
     await tester.pump();
     expect(source.reads, reads);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('create success without recorded revision', (tester) async {
+    final source = _Source(
+      _activity(
+        createFile: true,
+        kind: ToolActivityKind.completed,
+        disposition: ToolOutcomeDisposition.success,
+        data: {'environmentId': 'environment', 'relativePath': 'lib/main.dart'},
+      ),
+    );
+    await tester.pumpWidget(_host(presentation(source)));
+    expect(find.text('Status: Succeeded'), findsOneWidget);
+    expect(find.text('Creation succeeded.'), findsOneWidget);
+    expect(find.text('Tool delivery: success'), findsOneWidget);
+    expect(find.textContaining('New revision:'), findsNothing);
+    expect(find.textContaining('File size'), findsNothing);
+    expect(find.textContaining('Failure'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('create rich host retirement preserves live compact sibling', (
+    tester,
+  ) async {
+    final source = _Source(_activity(createFile: true));
+    final richBinding = ToolActivityInspectionResolver(
+      extensions,
+    ).resolve(createFileToolId);
+    final compactBinding = ToolActivityCompactPresentationResolver(
+      extensions,
+    ).resolve(createFileToolId);
+    final survivingRich = [
+      for (final id in [readFileToolId, applyPatchToolId])
+        ToolActivityInspectionResolver(extensions).resolve(id),
+    ];
+    final survivingCompact = [
+      for (final id in [readFileToolId, applyPatchToolId])
+        ToolActivityCompactPresentationResolver(extensions).resolve(id),
+    ];
+    await tester.pumpWidget(
+      _host(
+        Column(
+          children: [
+            compact(source),
+            ToolActivityInspectionHost(extensions: extensions, source: source),
+          ],
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Create File'), findsOneWidget);
+    expect(find.text('Relative path: "lib/main.dart"'), findsOneWidget);
+    expect(find.text('"Requested file content."'), findsOneWidget);
+    expect(source.activeListeners, 2);
+    final compactElement = tester.element(
+      find.text('Create File: "lib/main.dart"'),
+    );
+
+    await filesystem.retire(
+      toolActivityInspectionContributions,
+      richBinding.id,
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Create File'), findsNothing);
+    expect(find.text('"Requested file content."'), findsNothing);
+    expect(
+      find.text('Tool activity inspection is unavailable.'),
+      findsOneWidget,
+    );
+    expect(richBinding.validate, throwsA(isA<StaleExtensionBinding>()));
+    compactBinding.validate();
+    expect(source.activeListeners, 1);
+    expect(
+      tester.element(find.text('Create File: "lib/main.dart"')),
+      same(compactElement),
+    );
+
+    // A changed recorded path makes delivery to the surviving view observable.
+    source.value = _activity(
+      createFile: true,
+      kind: ToolActivityKind.executionStarted,
+      arguments: {'relativePath': 'updated.dart', 'content': 'Updated request'},
+    );
+    source.notifyListeners();
+    await tester.pumpAndSettle();
+    expect(find.text('Create File: "updated.dart"'), findsOneWidget);
+    expect(source.activeListeners, 1);
+    for (final binding in survivingRich) {
+      binding.validate();
+    }
+    for (final binding in survivingCompact) {
+      binding.validate();
+    }
+    final read = _Source(_activity(readFile: true));
+    final patch = _Source(_activity());
+    await tester.pumpWidget(
+      _host(
+        Column(
+          children: [
+            compact(read),
+            presentation(read),
+            compact(patch),
+            presentation(patch),
+          ],
+        ),
+      ),
+    );
+    expect(source.activeListeners, 0);
+    expect(find.text('Read File'), findsOneWidget);
+    expect(find.text('Apply Patch'), findsOneWidget);
+    expect(find.text('Read File: "lib/main.dart"'), findsOneWidget);
+    expect(find.text('Apply Patch: "lib/main.dart" / 2 edits'), findsOneWidget);
+    expect(read.activeListeners, 2);
+    expect(patch.activeListeners, 2);
+    await tester.pumpWidget(const SizedBox.shrink());
+    expect(read.activeListeners, 0);
+    expect(patch.activeListeners, 0);
     expect(tester.takeException(), isNull);
   });
 
@@ -908,11 +1023,13 @@ ToolInvocationActivity _activity({
       {
         'relativePath': 'lib/main.dart',
         if (createFile) 'content': 'Requested file content.',
-        'expectedRevision': 'revision-1',
-        'edits': [
-          {'search': 'a', 'replace': 'b'},
-          {'search': 'c', 'replace': 'd'},
-        ],
+        if (!createFile && !readFile) ...{
+          'expectedRevision': 'revision-1',
+          'edits': [
+            {'search': 'a', 'replace': 'b'},
+            {'search': 'c', 'replace': 'd'},
+          ],
+        },
       },
   changes: [
     ToolActivityChange(sequence: proposalSequence + 10, kind: kind),
@@ -945,6 +1062,7 @@ class _Source extends ChangeNotifier implements ToolActivityInspectionSource {
   ToolInvocationActivity value;
   int reads = 0;
   int subscriptions = 0;
+  int activeListeners = 0;
   bool get listening => hasListeners;
 
   @override
@@ -956,6 +1074,13 @@ class _Source extends ChangeNotifier implements ToolActivityInspectionSource {
   @override
   void addListener(VoidCallback listener) {
     subscriptions++;
+    activeListeners++;
     super.addListener(listener);
+  }
+
+  @override
+  void removeListener(VoidCallback listener) {
+    activeListeners--;
+    super.removeListener(listener);
   }
 }
