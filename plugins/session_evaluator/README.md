@@ -313,6 +313,32 @@ Clipboard access occurs only on the explicit snackbar action. The handoff does n
 open another application or submit an evaluation request. Failure feedback is
 generic and never includes evidence contents or backend/SQL diagnostics.
 
+### Evaluation Assignment
+
+The generated assignment requires progressive disclosure: a verdict-first executive
+summary (approximately 200-300 words with a compact assessment table), a short
+prioritized findings table, material detailed analysis, then an evidence appendix.
+It caps principal strengths and concerns at three each without requiring invented
+findings. Findings distinguish confirmed defects, observed inefficiencies,
+improvement opportunities, and untested capabilities, with likely ownership,
+priority, recommended action, and evidence references.
+
+The README's **Evidence Navigation** map and four read-only SDK-only Dart projections
+help locate Run states, invocation counts, nonzero command exits, and an exact
+Run/tool/capture pair without dumping transcripts. Any JSON reader can be used;
+the snippet is optional, not a third handoff file or an evaluation engine. The
+[versioned format above](#retained-evidence) remains the schema documentation.
+
+Evaluators are directed to inspect selectively and distinguish recorded facts,
+agent-reported claims, extracted command-output observations, and evaluator
+judgments. Later checks or CI results must not be attributed to the implementing
+agent's Session. Usage analysis retains null-versus-zero semantics and reports
+coverage/denominators; sequences are not timing evidence and context growth is not
+precise tool-result token attribution. These instructions neither alter the raw
+evidence nor substitute summaries for it.
+
+### Command Availability
+
 The ordinary semantic Command ID is
 `dev.adele.session-evaluator.export-session-evidence`. The adapter registers exactly
 one Command when the evaluator becomes ready and retires it with that generation;
@@ -468,6 +494,10 @@ files and injected write faults. `app/test/session_evaluation_handoff_test.dart`
 owns captured source metadata, canonical nonprimary association, stock Git v2
 validation, exact read-only SQL anchors, absent/corrupt backing evidence,
 unsafe/unavailable source handling, and rendered inspection guidance.
+It also checks report ordering, evidence-attribution safeguards, navigation, and
+executes the generated JSON inspection snippet with the pinned Dart SDK against
+selected v2 fixture fields, including empty/unavailable storage and captures without
+terminal Runs. It adds no external JSON-query dependency to CI.
 Tooling tests check the ordinary prepared catalog and launcher target;
 application tests check the plugin-neutral Navigator/context composition seams.
 
