@@ -14,6 +14,7 @@ import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:session_evaluator_contract/session_evaluator_contract.dart';
 
 import 'session_evaluation_handoff.dart';
+import 'session_evaluation_summary.dart';
 
 final exportSessionEvidenceCommandId = CommandId(
   'dev.adele.session-evaluator.export-session-evidence',
@@ -146,6 +147,9 @@ final class SessionEvidenceExporter {
       if (bytes.length > sessionEvidenceMaxBytes) {
         throw const FormatException('Session evidence exceeds its byte bound.');
       }
+      final summaryBytes = utf8.encode(
+        jsonEncode(summarizeSessionEvidence(document)),
+      );
       var root = outputRoot;
       if (root == null) {
         final roots = PlatformStorageRoots.resolve(
@@ -159,6 +163,7 @@ final class SessionEvidenceExporter {
       final destination = await (_writing = writeSessionEvaluationHandoff(
         root,
         bytes,
+        summaryBytes: summaryBytes,
         readme: handoff.readme(DateTime.now().toUtc()),
         validate: channel.validate,
         excludedDirectories: [
@@ -295,6 +300,7 @@ final class _EvidenceChannel implements AdeleStreamChannel {
 Future<Directory> writeSessionEvaluationHandoff(
   Directory outputRoot,
   List<int> bytes, {
+  required List<int> summaryBytes,
   required String readme,
   required void Function() validate,
   required Iterable<Directory> excludedDirectories,
@@ -360,6 +366,10 @@ Future<Directory> writeSessionEvaluationHandoff(
     await File(
       '${destination.path}${Platform.pathSeparator}evidence.json',
     ).writeAsBytes(bytes, flush: true);
+    validateLocation(destination);
+    await File(
+      '${destination.path}${Platform.pathSeparator}summary.json',
+    ).writeAsBytes(summaryBytes, flush: true);
     validateLocation(destination);
     await File(
       '${destination.path}${Platform.pathSeparator}README.md',
