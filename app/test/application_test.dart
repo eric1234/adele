@@ -27,6 +27,7 @@ import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:adele_settings/adele_settings.dart';
 import 'package:adele_ui/adele_ui.dart';
+import 'package:dart_eval/dart_eval.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -2155,6 +2156,8 @@ void main() {
       );
       final presented = <Session>[];
       final commandGate = Completer<void>();
+      final preparedCommandId = CommandId('dev.example.session-command');
+      final backendCommandId = CommandId('dev.example.session-backend-command');
       late WindowSessionCommandFixture consumer;
       var consumerDetachments = 0;
       ExtensionRegistration? contribution(String name, {bool strategy = true}) {
@@ -2213,9 +2216,62 @@ void main() {
           root: Directory('${source.path}/installed'),
           artifacts: {'dev.adele.plugin.task-browser': artifact},
         );
+        const library = 'package:session_command_probe/main.dart';
+        final probe = await Directory(
+          '${installations.path}/session-command',
+        ).create();
+        await File('${probe.path}/frontend.evc').writeAsBytes(
+          (Compiler()..entrypoints.add(library)).compile({
+            'session_command_probe': {
+              'main.dart': '''
+void inspect(String sessionId) {
+  if (sessionId.isEmpty) throw StateError('missing captured Session');
+}
+''',
+            },
+          }).write(),
+        );
+        await File(
+          '${probe.path}/adele_plugin.installation.json',
+        ).writeAsString(
+          jsonEncode({
+            'manifestVersion': 1,
+            'metadata': {
+              'id': 'dev.example.session-command-probe',
+              'version': 'test',
+              'displayName': 'Session Command Probe',
+            },
+            'components': {
+              'frontend': {
+                'artifact': 'frontend.evc',
+                'presentations': <Object?>[],
+                'extensions': [
+                  for (final id in [preparedCommandId, backendCommandId])
+                    PreparedSessionCommandExtension(
+                      extensionId: ExtensionId(id.value),
+                      commandId: id,
+                      label: id == preparedCommandId
+                          ? 'Inspect Selected Session'
+                          : 'Session Backend Probe',
+                      library: library,
+                      entrypoint: 'inspect',
+                      backendServices: id == backendCommandId
+                          ? ['dev.example.probe']
+                          : [],
+                    ).toJson(),
+                ],
+              },
+            },
+          }),
+        );
         final registered = runtime.extensions.changes.firstWhere(
           (_) =>
-              runtime.extensions.discover(taskBrowserContributions).isNotEmpty,
+              runtime.extensions
+                  .discover(taskBrowserContributions)
+                  .isNotEmpty &&
+              CommandResolver(
+                runtime.extensions,
+              ).discover().any((command) => command.id == preparedCommandId),
         );
         await tester.pumpWidget(
           AdeleApplication(
@@ -2242,6 +2298,12 @@ void main() {
       await tester.pumpAndSettle();
       final commands = CommandResolver(runtime.extensions);
       final toggleConsole = commands.resolve(toggleConsoleCommandId);
+      final preparedCommand = commands.resolve(preparedCommandId);
+      expect(preparedCommand.availability, CommandAvailability.hidden);
+      expect(
+        commands.resolve(backendCommandId).availability,
+        CommandAvailability.hidden,
+      );
       expect(consumer.initialSnapshot.session, isNull);
       expect(consumer.initialSnapshot.revision, 0);
       expect(consumer.command.availability, CommandAvailability.hidden);
@@ -2251,6 +2313,8 @@ void main() {
       expect(find.byType(CommandPalette), findsOneWidget);
       expect(find.text('Toggle Console'), findsNothing);
       expect(find.text(WindowSessionCommandFixture.label), findsNothing);
+      expect(find.text('Inspect Selected Session'), findsNothing);
+      expect(find.text('Session Backend Probe'), findsNothing);
       await tester.tap(find.byTooltip('Close Command Palette'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('New Task'));
@@ -2313,6 +2377,25 @@ void main() {
         same(selectionA.session),
       );
       expect(consumer.command.availability, CommandAvailability.enabled);
+      expect(preparedCommand.availability, CommandAvailability.enabled);
+      expect(
+        commands.resolve(backendCommandId).availability,
+        CommandAvailability.disabled,
+      );
+      await sendPaletteShortcut(tester);
+      await tester.pumpAndSettle();
+      expect(
+        tester
+            .widget<ListTile>(
+              find.widgetWithText(ListTile, 'Session Backend Probe'),
+            )
+            .enabled,
+        isFalse,
+      );
+      await tester.tap(find.text('Inspect Selected Session'));
+      await tester.pumpAndSettle();
+      expect(find.byType(CommandPalette), findsNothing);
+      expect(find.byType(SnackBar), findsNothing);
       expect(find.text('Second presentation'), findsOneWidget);
       expect(runtime.registry.providersFor(modelProviderCapability), isEmpty);
       final console = tester
@@ -2382,6 +2465,8 @@ void main() {
       await tester.pumpAndSettle();
       final sessionB = consumer.context.snapshot.session!;
       expect(sessionB, isNot(same(sessionA)));
+      expect(preparedCommand.availability, CommandAvailability.enabled);
+      await preparedCommand.invoke();
       expect(consumer.context.snapshot.revision, 3);
       expect(console.session, same(sessionB));
       expect(
@@ -2409,6 +2494,7 @@ void main() {
       expect(consumer.changes.map((value) => value.revision), [1, 2, 3, 4, 5]);
       await tester.runAsync(tester.binding.handleRequestAppExit);
       expect(consumer.context.isActive, isFalse);
+      expect(preparedCommand.availability, CommandAvailability.disabled);
       expect(() => consumer.context.snapshot, throwsStateError);
       expect(consumerDetachments, 1);
       expect(console.isClosed, isTrue);

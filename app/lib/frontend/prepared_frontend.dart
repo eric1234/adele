@@ -166,7 +166,7 @@ final class PreparedFrontend {
     ).executeLib(library, entrypoint);
   }
 
-  /// Host-internal execution of a descriptor-selected, no-argument operation.
+  /// Host-internal execution of a descriptor-selected operation.
   /// Each call gets a fresh runtime; the role adapter must copy/validate its
   /// result before any eval-owned value can escape. Do not eagerly reify unknown
   /// values: collection reification is recursive and some eval types lose shape.
@@ -175,9 +175,10 @@ final class PreparedFrontend {
     required String entrypoint,
     required PreparedFrontendBridge Function() createBridge,
     required T Function(Object? value) decodeResult,
-    // Only reversible application-exit checks supply this lifetime. Ending the
-    // wait revokes this operation's bridges, not its generation or native owners.
-    Future<void>? preflightEnded,
+    List<$Value> arguments = const [],
+    // A native owner may end this operation's access independently of its
+    // generation. This settles even operations waiting on an idle stream.
+    Future<void>? accessEnded,
   }) {
     // The completion belongs to the caller's zone, not the eval error zone.
     final completion = Completer<T>();
@@ -210,14 +211,18 @@ final class PreparedFrontend {
       fail(error, stack);
       return completion.future;
     }
-    preflightEnded?.then((_) {
-      fail(StateError('Exit preflight access ended.'), StackTrace.current);
+    accessEnded?.then((_) {
+      fail(StateError('Prepared operation access ended.'), StackTrace.current);
     });
     runZonedGuarded(() async {
       try {
         final runtime = Runtime(ByteData.sublistView(bytes))
           ..addPlugin(operation);
-        final Object? result = await runtime.executeLib(library, entrypoint);
+        final Object? result = await runtime.executeLib(
+          library,
+          entrypoint,
+          arguments,
+        );
         _requireBytes();
         if (completion.isCompleted) return;
         final decoded = decodeResult(result);

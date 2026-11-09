@@ -20,6 +20,7 @@ import 'owning_backend_bridge.dart';
 import 'prepared_console_host.dart';
 import 'prepared_frontend.dart';
 import 'prepared_main_content_host.dart';
+import 'prepared_session_command.dart';
 import 'prepared_session_services.dart';
 import 'prepared_task_browser_host.dart';
 import 'session_content_inspection_bridge.dart';
@@ -42,6 +43,7 @@ final class ApplicationFrontendBootstrap {
   ApplicationFrontendBootstrap({
     required ExtensionRegistry extensions,
     ApplicationPluginBootstrap? backends,
+    WindowSessionContext? sessionContext,
     PreparedSessionServices? sessionServices,
     PreparedTaskBrowserHost? taskBrowserHost,
     PreparedConsoleHost? consoleHost,
@@ -49,6 +51,7 @@ final class ApplicationFrontendBootstrap {
     this.loadSettings = PreparedSettingsSnapshot.load,
   }) : _extensions = extensions,
        _backends = backends,
+       _sessionContext = sessionContext,
        _sessionServices = sessionServices,
        _taskBrowserHost = taskBrowserHost,
        _consoleHost = consoleHost,
@@ -56,6 +59,7 @@ final class ApplicationFrontendBootstrap {
 
   final ExtensionRegistry _extensions;
   final ApplicationPluginBootstrap? _backends;
+  final WindowSessionContext? _sessionContext;
   final PreparedSessionServices? _sessionServices;
   final PreparedTaskBrowserHost? _taskBrowserHost;
   final PreparedConsoleHost? _consoleHost;
@@ -133,6 +137,7 @@ final class ApplicationFrontendBootstrap {
             installation,
             _extensions,
             _backends,
+            _sessionContext,
             _sessionServices,
             _taskBrowserHost,
             _consoleHost,
@@ -155,8 +160,8 @@ final class ApplicationFrontendBootstrap {
     }
   }
 
-  /// Stops pending activation while keeping already-mounted inert views alive
-  /// during application exit settlement. Final [close] still owns all cleanup.
+  /// Stops pending activation and Session Command operations while keeping
+  /// mounted views alive during exit settlement. Final [close] owns all cleanup.
   void stopStarting() {
     if (_state == ApplicationFrontendState.closing ||
         _state == ApplicationFrontendState.closed) {
@@ -164,6 +169,7 @@ final class ApplicationFrontendBootstrap {
     }
     _setState(ApplicationFrontendState.closing);
     for (final generation in _generations) {
+      generation._stopSessionCommands();
       if (generation.state == InstalledFrontendState.pending ||
           generation.state == InstalledFrontendState.starting) {
         // close retains this completion/failure for final owner cleanup.
@@ -224,6 +230,7 @@ final class InstalledFrontendActivation {
     this.installation,
     this._extensions,
     this._backends,
+    this._sessionContext,
     this._sessionServices,
     this._taskBrowserHost,
     this._consoleHost,
@@ -233,6 +240,7 @@ final class InstalledFrontendActivation {
   final PreparedPluginInstallation installation;
   final ExtensionRegistry _extensions;
   final ApplicationPluginBootstrap? _backends;
+  final WindowSessionContext? _sessionContext;
   final PreparedSessionServices? _sessionServices;
   final PreparedTaskBrowserHost? _taskBrowserHost;
   final PreparedConsoleHost? _consoleHost;
@@ -240,6 +248,7 @@ final class InstalledFrontendActivation {
   final List<(String, ExtensionId, ExtensionRegistration)> _registrations = [];
   final List<(ExtensionRegistration, ExtensionRegistration)>
   _dependentCommands = [];
+  final List<PreparedSessionCommand> _sessionCommands = [];
   StreamSubscription<void>? _registrationChanges;
   InstalledFrontendState _state = InstalledFrontendState.pending;
   Object? _failure;
@@ -284,7 +293,11 @@ final class InstalledFrontendActivation {
                 :final library,
                 :final entrypoint,
               ) ||
-              PreparedCommandExtension(:final library, :final entrypoint):
+              PreparedCommandExtension(:final library, :final entrypoint) ||
+              PreparedSessionCommandExtension(
+                :final library,
+                :final entrypoint,
+              ):
             generation.validateOperation(
               library: library,
               entrypoint: entrypoint,
@@ -691,6 +704,28 @@ final class InstalledFrontendActivation {
               ),
             );
             _dependOn(mainContentRegistration, registration);
+          case PreparedSessionCommandExtension():
+            late final PreparedSessionCommand command;
+            final registration = _register(
+              point: commandContributions,
+              id: descriptor.extensionId,
+              contribution: (isActive) {
+                command = PreparedSessionCommand(
+                  installation: installation,
+                  generation: generation,
+                  descriptor: descriptor,
+                  sessionContext: _sessionContext,
+                  backends: _backends,
+                  isRegistered: isActive,
+                );
+                _sessionCommands.add(command);
+                return command.contribution;
+              },
+            );
+            _extensions
+                .discover(commandContributions)
+                .singleWhere(registration.owns)
+                .onRetire(command.retireRegistration);
           case PreparedCommandExtension():
             _register(
               point: commandContributions,
@@ -850,10 +885,17 @@ final class InstalledFrontendActivation {
     }
   }
 
+  void _stopSessionCommands() {
+    for (final command in _sessionCommands) {
+      command.close();
+    }
+  }
+
   Future<void> close() {
     if (_closing != null) return _closing!;
     _closed = true;
     _state = InstalledFrontendState.closing;
+    _stopSessionCommands();
     for (final descriptor in installation.frontend!.presentations) {
       if (descriptor is PreparedMainContentPresentation) {
         _mainContentHost.revokeContextualAccess(descriptor);
@@ -874,6 +916,7 @@ final class InstalledFrontendActivation {
   Future<void> _release() => _releasing ??= _releaseResources();
 
   Future<void> _releaseResources() async {
+    _stopSessionCommands();
     try {
       await Future.wait([
         for (final (_, _, registration) in _registrations.reversed)

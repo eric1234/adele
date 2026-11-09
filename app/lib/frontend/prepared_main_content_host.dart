@@ -685,7 +685,7 @@ final class PreparedMainContentHost {
         .invoke<Map<String, Object?>>(
           library: retained.descriptor.library,
           entrypoint: entrypoint,
-          preflightEnded: preflight?.ended.future,
+          accessEnded: preflight?.ended.future,
           createBridge: () => PreparedFrontendBridges([
             MainContentBridge(context: context, isActive: available),
             ContributionBridge(

@@ -668,12 +668,13 @@ backend generation and configuration context, not Capability provider discovery.
 The prepared descriptor constrains allowed services; interpreted frontend code
 cannot select an arbitrary PluginId, configuration context, or service.
 
-The host validates captured ownership and presentation lifetime before dispatch
-and after settlement. Streams admit on listen, validate each delivered item, and
-propagate pause/resume/cancellation through the existing transport. Owner retirement
-cancels active observations, including idle/paused ones; presentation retirement
-fences queued callbacks and cancels subscriptions without stopping independent
-backend work. Malformed stream items and safe eval error/done delivery affect the
+The host validates captured ownership and presentation or finite-operation lifetime
+before dispatch and after settlement. Streams admit on listen, validate each
+delivered item, and propagate pause/resume/cancellation through the existing
+transport. Owner retirement cancels active observations, including idle/paused ones;
+presentation or operation retirement fences queued callbacks and cancels
+subscriptions without stopping independent backend work. Malformed stream items
+and safe eval error/done delivery affect the
 observation, not the producer's domain outcome. Generic prepared hosting does not
 require Session or strategy presentation. Where owning-backend strategy affinity
 is required, it must
@@ -760,6 +761,29 @@ normally. The frontend generation owns operation revocation, while the
 [Command domain](plugin-system.md#commands-and-input) owns exact registration and
 unique enabled-state admission. This does not introduce a public Command bridge
 or an authority token.
+
+The additive `sessionCommand` form instead receives one positional `String`
+containing the selected Session ID captured synchronously at admission. Its optional
+`backendServices` declaration grants only existing generated unary/server-streaming
+access to its own exact prepared installation's captured backend and default
+configuration route. No plugin, configuration, or backend selector is supplied by
+the operation. Matching semantic IDs from another installation cannot satisfy
+ownership, and replacement never repairs an admitted operation. Frontend-only
+operations receive an empty bridge set. Backend readiness is locally observable;
+service health is an invocation outcome, not something availability probes.
+The finite operation must await its intended work: returning ends bridge access,
+including any streams or Futures it started but did not await.
+
+This supplies neither a live Session object nor a product store, lifecycle
+coordinator, database connection, generic host-invocation token, or authority for
+filesystem, Project storage, Environment reads/mutation/processes, execution,
+approvals, native dialogs, clipboard, or notifications. The ID is immutable data,
+not authorization: the transport allowlist restricts services, not their methods'
+effects or payload identities. Backend service contracts retain their own semantic
+validation and any separately granted infrastructure authority. The finite evaluator
+and captured channels own cleanup; navigation revisions are not execution lifetimes.
+See [Commands and input](plugin-system.md#commands-and-input) for availability,
+admission, and retirement. Other interpreted roles acquire no additional grants.
 
 The contextual Console-action Command descriptor adds no operation or bridge.
 It delegates to an exact sibling creation action, whose existing Console admission

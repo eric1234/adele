@@ -425,6 +425,43 @@ bridge operations, host context, or authority; declaration is not a grant. Local
 availability and generation-owned execution belong to the
 [application adapter](../../app/README.md#prepared-frontend-activation), not this catalog.
 
+`PreparedSessionCommandExtension` is a separate additive variant under the same
+version-1 `frontend.extensions` list:
+
+```json
+{
+  "kind": "sessionCommand",
+  "extensionId": "org.example.session-command-extension",
+  "commandId": "org.example.session-command",
+  "label": "Run Session Command",
+  "library": "package:example_frontend/command.dart",
+  "entrypoint": "runSessionCommand",
+  "backendServices": ["example.session"]
+}
+```
+
+It requires exactly the same `extensionId`, `commandId`, `label`, `library`, and
+`entrypoint` fields and validation as `command`. Its only optional field is
+`backendServices`, a string service-ID allowlist defaulting to empty. It uses the
+existing public service-ID validator, rejects duplicates, and preserves authored
+order in an immutable copy. `toJson()` includes an explicit `backendServices` array
+and returns a fresh copy. Null, non-array/non-string services, malformed IDs, and
+unknown fields invalidate the whole frontend component while preserving its healthy
+backend and independent installations.
+
+The `sessionCommand` kind itself explicitly requires a selected Session; this is
+not an optional context flag or a change to context-free `command`. There are no
+arbitrary context, grant, Session/Environment/backend selectors, execution, or
+presentation fields. Its finite operation receives one positional `String`
+containing the selected Session ID and returns void/null, rather than the
+context-free operation's no-argument signature. Session identity is data, not
+authority. The allowlist names services on the exact owning backend, not providers
+to discover. Catalog discovery requires no backend readiness or presentation and
+grants no live authority. Selection and invocation admission
+belong to [Commands and input](../../docs/architecture/plugin-system.md#commands-and-input)
+and [Window Session context](../../docs/architecture/plugin-system.md#window-session-context),
+not a second catalog-owned context model.
+
 `PreparedConsoleActionCommandExtension` is an additive behavioral descriptor with
 exactly these required fields:
 

@@ -328,8 +328,8 @@ failures rather than exposing arbitrary exception text as user-facing output.
 The current implementation accepts native/in-process contributions, context-free
 backend Commands through ordinary backend-ready extension exposures, and prepared
 frontend Commands through behavioral `frontend.extensions` descriptors, including
-context-free operations and explicit contextual Console-action and Main Content
-input-action adapters.
+context-free operations, Session-aware operations, and explicit contextual
+Console-action and Main Content input-action adapters.
 Application adapters register the same public contribution; the palette
 does not distinguish its origin. Context-free backend-only and frontend-only
 Commands need no Main Content, Console, Task Browser, or other presentation contribution.
@@ -358,6 +358,30 @@ Retiring a frontend generation invalidates its owned evaluator operations under
 existing frontend lifetime rules; an already-admitted operation may therefore fail.
 It is not detached to outlive that generation and never retries through a replacement.
 See [frontend behavioral operations](contracts-and-capabilities.md#frontend-behavioral-operations).
+
+The separate prepared `sessionCommand` form requires the current selected Session,
+without requiring a presentation contribution or executable Session strategy. The
+application supplies its existing read-only `WindowSessionContext` to the frontend
+owner. Availability is hidden without a selected Session; with one, it is enabled
+unless explicitly requested owning-backend access is unavailable, in which case it
+is disabled. An empty service allowlist needs no backend. Selection observation
+and existing backend readiness changes invalidate availability without polling,
+interpreted evaluation, or RPC. Frontend activation remains independent of backend
+readiness.
+
+Admission synchronously captures the canonical Session's ID and, when requested,
+the backend belonging to the exact same prepared installation. The finite operation
+receives only that immutable ID as a positional string and the declared
+owning-backend services. Navigation neither changes the capture nor revokes admitted
+work; a later invocation captures the new selection. Window shutdown, frontend
+generation retirement, and captured backend generation retirement revoke operation
+access and settle its native wait, including idle/paused stream consumers. Individual
+Command registration retirement bars new admission but does not cancel already
+admitted work. Completion releases operation bridges and observation subscriptions;
+no operation retries through a replacement. The Session ID is data, not a host
+authorization token. This narrow form adds no arbitrary contextual Command API;
+its authority limits belong to
+[frontend behavioral operations](contracts-and-capabilities.md#frontend-behavioral-operations).
 
 The contextual prepared Console-action adapter exposes one explicitly declared
 sibling creation action as an ordinary Command. Activation validates the exact
@@ -462,10 +486,11 @@ That capture must not silently follow later navigation. This adds no generalized
 contextual Command interface and grants no filesystem, storage, Environment,
 execution, or approval authority.
 
-Interpreted frontend and AOT backend notification transport remains separate and
-unimplemented. It needs deliberate window-scoped and exact-generation routing;
-this local source neither broadcasts to backends nor defines a globally active
-Session or unrestricted host service. See the [public API map](../../packages/core_extensions/README.md#window-session-context)
+Prepared Session-aware Commands use this same source at native admission and pass
+only the captured ID into their finite operation. This is not live context
+notification transport to interpreted code or AOT backends, which remains separate
+and unimplemented. The local source neither broadcasts to backends nor defines a
+globally active Session or unrestricted host service. See the [public API map](../../packages/core_extensions/README.md#window-session-context)
 and [desktop composition](../../app/README.md#window-session-context).
 
 ## UI and presentation

@@ -34,6 +34,8 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
         ),
         // A routed service is not a public Capability advertisement.
         'test.capability.private': CapabilityProbeServiceDispatcher(probe),
+        if (options['foreignService'] == true)
+          'test.foreign.service': CapabilityProbeServiceDispatcher(probe),
       },
     },
   );
@@ -90,7 +92,7 @@ final class _Probe implements CapabilityProbeService {
   final requests = <Map<String, Object?>>[];
   final counts = <String, int>{};
   final gates = <String, Map<int, Completer<void>>>{};
-  final held = Completer<void>();
+  final held = <String, Completer<void>>{'held': Completer<void>()};
   StreamController<ProbeValue>? events;
 
   void mark(String key) {
@@ -106,8 +108,13 @@ final class _Probe implements CapabilityProbeService {
     );
   }
 
-  void release() {
-    if (!held.isCompleted) held.complete();
+  void release([String? scope]) {
+    final gates = scope == null
+        ? held.values
+        : [held.putIfAbsent(scope, Completer<void>.new)];
+    for (final gate in gates) {
+      if (!gate.isCompleted) gate.complete();
+    }
   }
 
   ProbeValue value(int sequence, String text) => ProbeValue(
@@ -120,7 +127,9 @@ final class _Probe implements CapabilityProbeService {
   @override
   Future<ProbeValue> read(String scope) async {
     mark('read:$scope');
-    if (scope == 'held') await held.future.timeout(_bound);
+    if (scope == 'held' || scope.startsWith('held-')) {
+      await held.putIfAbsent(scope, Completer<void>.new).future.timeout(_bound);
+    }
     if (scope == 'fail') throw StateError('SECRET provider failure');
     return value(0, scope);
   }
@@ -142,6 +151,8 @@ final class _Probe implements CapabilityProbeService {
         }
       },
       onCancel: () => mark('cancel:$scope'),
+      onPause: () => mark('pause:$scope'),
+      onResume: () => mark('resume:$scope'),
     );
     events = controller;
     return controller.stream;
@@ -160,7 +171,7 @@ final class _Probe implements CapabilityProbeService {
           payload['count'] as int,
         ).then((_) => true),
         'release' => (() {
-          release();
+          release(payload['scope'] as String?);
           return true;
         })(),
         'emit' => (() {
