@@ -21,7 +21,7 @@ Document role determines how to read a claim, not just its directory or filename
 | [ADRs](adr/README.md) | Why durable decisions were made, with their historical context. Not the canonical description of current architecture; later decisions explicitly supersede or amend earlier records rather than rewrite history. |
 | [Product](product/README.md) | Intended product/user experience, which may deliberately be ahead of implementation. Implementation progress alone is not a reason to change product direction. |
 | [Direction](direction/README.md) | Reviewed technical/design hypotheses useful enough to guide future work, but explicitly open to change under implementation pressure. |
-| [Development](development/README.md) | Current repository working procedure: toolchain, build/bootstrap/generation, testing, local workflows, and development/self-hosting execution where appropriate. Must track operational reality. |
+| [Development](development/README.md) | Current repository working procedure: toolchain, build/bootstrap/generation, testing, local workflows, and desktop evaluation. Must track operational reality. |
 | [Research](research/README.md) | Dated/versioned, non-normative investigation and evidence. Informs architecture but does not define it. |
 | [Experiments](experiments/README.md) | Retained empirical spikes/proofs worth preserving because reproducing a result may be useful or expensive. Evidence, not specifications or phase logs. |
 | Local application/package/plugin READMEs | Maps of local ownership and non-ownership, important entrypoints and invariants, dependencies/boundaries, focused validation, and links to global architecture. They do not redefine global architecture. |

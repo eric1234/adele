@@ -48,8 +48,8 @@ lifetime stay with callers. The primitive is generation agnostic.
 An optional `depfile` forwards the compiler's dependency-file output path; callers
 own its parent directory, validation, and lifetime. An optional `packageConfig`
 pins compilation to the caller's fingerprinted package resolution.
-The development builder, self-hosting compiler, and resource-inspector smoke
-compiler share this primitive.
+The development builder, desktop tooling, and resource-inspector smoke compiler
+share this primitive.
 
 ## Desktop Tooling
 
@@ -199,9 +199,9 @@ does not inherit an API-key exposure. Independently, normal bootstrap always set
 `startupArgumentsOnly: true`, forwarded through the shared host to backend startup.
 OpenAI then disables environment fallback even for empty argv or an absent
 configuration document; root-only normal activation cannot inherit an API-key
-exposure even without this launcher map. Direct/self-hosting callers keep the default `false` and their existing
-environment configuration path. This is temporary deployment metadata, not
-general settings/profile/credential infrastructure. The application forwards argv
+exposure even without this launcher map. Direct callers keep the default `false`
+and their existing environment configuration path. This is temporary deployment
+metadata, not general settings/profile/credential infrastructure. The application forwards argv
 generically without interpreting OpenAI fields. The app reads only the model default/override,
 without a credential-presence gate; provider availability comes from the active
 registry. This does not implement general provider/model configuration. See
@@ -316,10 +316,6 @@ revocation and bounded cleanup. General symmetric RPC, client/bidirectional
 streaming, and ambient callbacks are unimplemented. Chat is an installed AOT
 strategy using public remote orchestration and a separate generated
 `ChatSessionService`. Runtime composition has no static stock activations or fallback.
-Self-hosting tooling under `app/tool/self_hosting/` uses the same remote backend
-path, with Chat Contract as a development-only app dependency, not linked semantics.
-Self-hosting stays selector-free and creates its Project from an explicitly known
-source URI; it does not prepare or activate the directory-picker frontend.
 
 ## Current Scope
 

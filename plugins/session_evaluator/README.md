@@ -6,7 +6,7 @@ It collects retained evidence for an explicit durable Session without resolving
 its strategy, materializing its Environment, starting a Run, or initializing state.
 The development desktop can prepare a local evaluation handoff after using a
 normal ADELE Chat Session. This plugin does not evaluate, score, or interpret the
-evidence, and does not replace the separate legacy headless runner.
+evidence.
 
 ## Ownership
 
@@ -20,7 +20,7 @@ owns the desktop Command, sensitive-data confirmation, local directory writing,
 and completion feedback. Its development-only
 [`session_evaluation_handoff.dart`](../../app/tool/session_evaluation_handoff.dart)
 helper captures canonical source metadata and renders the companion README; it
-does not depend on the legacy runner. The pure development-only
+does not execute the Session. The pure development-only
 [`session_evaluation_summary.dart`](../../app/tool/session_evaluation_summary.dart)
 projects factual counts and bounded references from that same validated document,
 without further storage reads. Production `app/lib` imports no evaluator
@@ -348,7 +348,6 @@ accepts only source schema `dev.adele.session-evidence.v2`. It is a deterministi
 read-only convenience projection of the **same in-memory validated document**
 encoded as `evidence.json`, not independent validation or a new authority. It
 does not change the raw evidence encoding, service contract, collector, or bounds.
-No legacy self-hosting implementation is imported.
 
 - `source_evidence_schema`, `session_id`, and `coverage` preserve source identity
   and general/conversation/command coverage. `runs` counts exported terminal states

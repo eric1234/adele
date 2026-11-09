@@ -20,8 +20,7 @@ internal runtime, or Flutter implementation. This source uses only unary reads;
 the shared transport's reverse process streaming grants it no process authority.
 This is neither general symmetric RPC nor a sandbox.
 
-Normal preparation installs `agents-md/backend.aot`. Explicit self-hosting uses
-its own `agentsMdArtifact` on the same shared host without a normal installation
-root. Both use generic remote extension activation. Root-only reread, `not_found`,
+Normal preparation installs `agents-md/backend.aot`, loaded through generic remote
+extension activation. Root-only reread, `not_found`,
 blank-file, exact-text/revision, and required-source semantics are maintained in
 [the plugin README](../../README.md).

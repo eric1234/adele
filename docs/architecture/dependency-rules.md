@@ -177,7 +177,7 @@ Production composition imports no stock implementation or plugin contract and
 does not special-case a plugin ID to grant storage. See
 [infrastructure access](contracts-and-capabilities.md#generation-scoped-infrastructure-access).
 
-Tests, development tooling, and self-hosting may know concrete stock plugins when
+Tests and development tooling may know concrete stock plugins when
 their role requires it. Keep those dependencies development-only and outside
 the normal production import graph; a `dev_dependencies` entry does not permit
 an import from `app/lib/**`.

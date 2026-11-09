@@ -75,9 +75,7 @@ activation or production implementation dependency/import and no in-process
 fallback. The combined installation retains the existing PluginId
 `dev.adele.plugin.command-tools` and an independently available `frontend.evc`.
 There are no Command-specific startup arguments, configuration, or deployment
-defines. Self-hosting supplies explicit `commandToolsArtifact`; its
-`includeCommandTools` switch controls backend start/registration, not runtime
-construction.
+defines.
 
 Readiness advertises two extensions at `dev.adele.extension.model-tools` through
 the generated `modelTool` service in the same backend generation. The existing

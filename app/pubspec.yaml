@@ -30,7 +30,6 @@ dependencies:
   adele_ui: ^0.1.0
   appflowy_editor: 6.2.0
   code_forge: 10.14.0
-  crypto: ^3.0.6
   dart_eval: 0.8.5
   file_selector: ^1.1.0
   flutter:
@@ -48,6 +47,7 @@ dev_dependencies:
   command_tools_plugin: ^0.1.0
   command_tools_contract: ^0.1.0
   contract_codegen: ^0.1.0
+  crypto: ^3.0.6
   diff_viewer_contract: ^0.1.0
   file_selector_platform_interface: ^2.7.0
   filesystem_tools_plugin: ^0.1.0

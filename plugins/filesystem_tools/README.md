@@ -50,9 +50,7 @@ reverse calls remain unary on protocol version 1 under the
 the shared transport's separate process streaming grants these tools no process
 authority. Host-service
 authorization is not an OS sandbox or rollback of already-started effects. No Filesystem-specific
-configuration or deployment define is required. Explicit self-hosting supplies
-`filesystemToolsArtifact` on its same shared host through generic registration,
-without a desktop installation root.
+configuration or deployment define is required.
 
 ## Tool Semantics
 

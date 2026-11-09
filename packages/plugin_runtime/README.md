@@ -41,7 +41,7 @@ start fails explicitly instead of racing old-generation cleanup.
 `bool startupArgumentsOnly = false`, forwarded through the shared host to the
 backend startup message alongside opaque argv. Normal application bootstrap always
 sets it to `true`, including when no startup-arguments file or plugin entry exists.
-Direct and self-hosting callers retain the default `false` and their existing
+Direct callers retain the default `false` and their existing
 environment-based configuration behavior.
 
 This temporary argv-only deployment mode carries no plugin-specific configuration

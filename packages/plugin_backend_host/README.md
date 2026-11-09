@@ -28,7 +28,7 @@ capability or extension registry, or remote extension adapters. See
 
 The host also forwards `startupArgumentsOnly` from `startPlugin` into the backend
 startup message alongside argv, without a PluginId switch or configuration parsing.
-The flag defaults to `false` for direct/self-hosting callers; normal application
+The flag defaults to `false` for direct callers; normal application
 bootstrap always sets it to `true`. This is temporary deployment metadata, not an
 environment scrubber or settings/profile/credential service. See
 [`plugin_runtime` startup arguments](../plugin_runtime/README.md#startup-arguments).

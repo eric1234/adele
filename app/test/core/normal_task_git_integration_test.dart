@@ -20,7 +20,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
-import '../../tool/self_hosting/development_self_hosting.dart';
+import '../support/git_worktree_fixture.dart';
 
 const String _gitPluginId = 'dev.adele.plugin.git';
 final ProviderId _gitProviderId = ProviderId(
@@ -320,7 +320,7 @@ void main() {
         // Inspect provider-owned state only to corroborate the real Git fixture.
         final Map<String, Object?> state = created.environment.providerState!;
         final Directory worktree = Directory(
-          developmentGitWorktreePath(project, created.environment),
+          gitWorktreeFixturePath(project, created.environment),
         );
         final String commonDirectory = (await _git(repository, [
           'rev-parse',
@@ -524,7 +524,7 @@ void main() {
         expect(runtime.store.sessionsForTask(created.task.id), isEmpty);
         materializations.add(materialization);
         roots.add(
-          Directory(developmentGitWorktreePath(project, created.environment)),
+          Directory(gitWorktreeFixturePath(project, created.environment)),
         );
       }
       expect(
@@ -1106,7 +1106,7 @@ void main() {
         same(database),
       );
       final worktree = Directory(
-        developmentGitWorktreePath(project, first.environment),
+        gitWorktreeFixturePath(project, first.environment),
       );
       await _git(worktree, ['commit', '--allow-empty', '-m', 'Task progress']);
       await _git(source, ['commit', '--allow-empty', '-m', 'Source progress']);

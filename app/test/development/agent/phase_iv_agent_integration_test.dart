@@ -14,8 +14,8 @@ import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:resource_inspector_contract/resource_inspector_contract.dart';
 import 'package:scripted_model_contract/scripted_model_contract.dart';
 
-import '../../../tool/self_hosting/development_agent_support.dart';
 import '../../support/agent_capability_adapters.dart';
+import '../../support/fixed_tool_policy.dart';
 import 'chat_test_topology.dart';
 
 void main() {
@@ -504,7 +504,7 @@ Future<_RunFixture> _runFixture({
     contextComposer: topology.contextComposer,
     model: model,
     toolCatalog: catalog,
-    policy: const DevelopmentToolPolicy(ToolPolicyDecision.ask),
+    policy: const FixedToolPolicy(ToolPolicyDecision.ask),
   );
   addTearDown(strategy.close);
   return _RunFixture(session: session, run: strategy.run, strategy: strategy);

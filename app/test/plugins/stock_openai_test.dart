@@ -11,9 +11,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
-import '../../tool/self_hosting/development_self_hosting.dart';
-
 const String _openAiPluginId = 'dev.adele.openai';
+const String _apiKeyProviderId = 'dev.adele.openai.api-key';
 
 void main() {
   test(
@@ -25,7 +24,7 @@ void main() {
         <String, String>{'ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE': ' \t '},
         <String, String>{'ADELE_OPENAI_CHATGPT_ENDPOINT': 'https://[invalid'},
         <String, String>{'ADELE_OPENAI_CHATGPT_MODEL': ' \t '},
-        <String, String>{'ADELE_OPENAI_CHATGPT_TEST_MODEL': 'selfhosting-only'},
+        <String, String>{'ADELE_OPENAI_CHATGPT_TEST_MODEL': 'live-test-only'},
       ]) {
         expect(
           StockChatGptConfiguration.fromEnvironment(environment).model,
@@ -51,20 +50,6 @@ void main() {
     environment.clear();
     expect(configuration.model, 'explicit-model');
   });
-
-  test(
-    'normal and selfhosting selections retain the same ChatGPT identity',
-    () {
-      expect(
-        developmentSelfHostingChatGptProviderId,
-        stockChatGptProviderId.value,
-      );
-      expect(
-        developmentSelfHostingChatGptDefaultModel,
-        stockChatGptDefaultModel,
-      );
-    },
-  );
 
   group('real backend activation', () {
     late Directory artifacts;
@@ -202,28 +187,12 @@ void main() {
     }
 
     for (final fixture in [
-      (
-        profile: DevelopmentSelfHostingProfile.chatgpt,
-        apiKey: false,
-        chatGpt: true,
-      ),
-      (
-        profile: DevelopmentSelfHostingProfile.apiKey,
-        apiKey: true,
-        chatGpt: false,
-      ),
-      (
-        profile: DevelopmentSelfHostingProfile.chatgpt,
-        apiKey: true,
-        chatGpt: true,
-      ),
-      (
-        profile: DevelopmentSelfHostingProfile.apiKey,
-        apiKey: true,
-        chatGpt: true,
-      ),
+      (providerId: stockChatGptProviderId.value, apiKey: false, chatGpt: true),
+      (providerId: _apiKeyProviderId, apiKey: true, chatGpt: false),
+      (providerId: stockChatGptProviderId.value, apiKey: true, chatGpt: true),
+      (providerId: _apiKeyProviderId, apiKey: true, chatGpt: true),
     ]) {
-      test('selfhosting ${fixture.profile.cliName} registers online contexts '
+      test('backend selection ${fixture.providerId} retains online contexts '
           'apiKey=${fixture.apiKey} chatGpt=${fixture.chatGpt}', () async {
         final PluginBackendHost host = await PluginBackendHost.start(
           dartaotruntimeExecutable: runtime,
@@ -244,12 +213,13 @@ void main() {
         );
         addTearDown(host.close);
         final CapabilityRegistry registry = CapabilityRegistry();
-        final DevelopmentSelfHostingProviderActivation activation =
-            await activateDevelopmentSelfHostingModelProvider(
-              host: host,
+        final PluginCapabilityActivation activation =
+            await PluginCapabilityActivation.registerAdvertised(
+              connection: await host.startPlugin(
+                pluginId: _openAiPluginId,
+                artifactUri: pluginArtifact.uri,
+              ),
               registry: registry,
-              artifact: pluginArtifact,
-              profile: fixture.profile,
             );
         addTearDown(activation.close);
         expect(
@@ -257,15 +227,15 @@ void main() {
               .providersFor(modelProviderCapability)
               .map((provider) => provider.id.value),
           unorderedEquals([
-            if (fixture.apiKey) developmentSelfHostingApiKeyProviderId,
-            if (fixture.chatGpt) developmentSelfHostingChatGptProviderId,
+            if (fixture.apiKey) _apiKeyProviderId,
+            if (fixture.chatGpt) stockChatGptProviderId.value,
           ]),
         );
         final ProviderBinding selected = registry.resolve(
           modelProviderCapability,
-          providerId: ProviderId(fixture.profile.providerId),
+          providerId: ProviderId(fixture.providerId),
         );
-        expect(selected.provider.id.value, fixture.profile.providerId);
+        expect(selected.provider.id.value, fixture.providerId);
         expect(() => selected.streamChannel, returnsNormally);
         await activation.close();
         expect(registry.providersFor(modelProviderCapability), isEmpty);

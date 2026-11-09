@@ -39,11 +39,7 @@ void main() {
         sourceCodingStrategyPath,
       );
       final SourceCodingLiveProviderActivation model =
-          await startOpenAiChatGptProvider(
-            host: harness.host,
-            registry: harness.registry,
-            artifact: artifacts.openAiArtifact,
-          );
+          await startOpenAiChatGptProvider(harness: harness);
       addTearDown(model.close);
       final ModelProviderCapabilityAdapter modelAdapter =
           ModelProviderCapabilityAdapter(

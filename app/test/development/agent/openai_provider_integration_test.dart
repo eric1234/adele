@@ -21,8 +21,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:resource_inspector_contract/resource_inspector_contract.dart';
 
-import '../../../tool/self_hosting/development_agent_support.dart';
 import '../../support/agent_capability_adapters.dart';
+import '../../support/fixed_tool_policy.dart';
 import 'chat_test_topology.dart';
 
 const String _gitPluginId = 'dev.adele.plugin.git';
@@ -237,7 +237,7 @@ void main() {
             contextComposer: topology.contextComposer,
             model: modelAdapter,
             toolCatalog: catalog,
-            policy: const DevelopmentToolPolicy(ToolPolicyDecision.ask),
+            policy: const FixedToolPolicy(ToolPolicyDecision.ask),
           );
       addTearDown(strategy.close);
       final AgentRun run = strategy.run;
@@ -721,7 +721,7 @@ void main() {
             contextComposer: InferenceContextComposer(extensions),
             model: modelAdapter,
             toolCatalog: catalog,
-            policy: const DevelopmentToolPolicy(ToolPolicyDecision.allow),
+            policy: const FixedToolPolicy(ToolPolicyDecision.allow),
           );
       addTearDown(strategy.close);
       final AgentRun run = strategy.run;
@@ -829,7 +829,6 @@ Future<void> _createSourceRepository({
 }) async {
   const List<String> sourcePaths = <String>[
     'README.md',
-    'app/tool/self_hosting/development_agent_support.dart',
     'plugins/chat_strategy/settings.schema.json',
   ];
   await source.create(recursive: true);

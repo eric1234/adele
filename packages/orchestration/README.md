@@ -596,9 +596,9 @@ lifecycle/storage.
 Chat contributes no context source and does not discover sources
 itself. It owns history, instructions (including automatic batch-narration
 guidance), Run-local replay, and bounded sequencing; tools, policy, and model
-controls remain separate. Normal prepared startup and explicit development/self-hosting
-activate the independent stock [`agents_md_backend`](../../plugins/agents_md/README.md)
-through the same generic remote-source adapter; Chat remains AGENTS-unaware.
+controls remain separate. Normal prepared startup
+activates the independent stock [`agents_md_backend`](../../plugins/agents_md/README.md)
+through the generic remote-source adapter; Chat remains AGENTS-unaware.
 The backend reuses pure-Dart `agents_md_plugin` semantics and rereads root `AGENTS.md`
 through generated authorized reads backed by the captured Session's
 `AuthorizedEnvironmentFileReadFacet` each snapshot. Missing (`not_found`) or blank

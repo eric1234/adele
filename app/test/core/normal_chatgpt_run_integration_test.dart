@@ -14,6 +14,7 @@ import 'package:adele_desktop/core/adele_runtime.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/credential_service.dart';
 import 'package:adele_desktop/core/global_settings_service.dart';
+import 'package:adele_desktop/core/model_tool_host.dart';
 import 'package:adele_desktop/core/prepared_settings.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/run_id_source.dart';
@@ -49,9 +50,11 @@ import 'package:appflowy_editor/appflowy_editor.dart' as rich;
 import 'package:chat_strategy_contract/chat_strategy_contract.dart';
 import 'package:code_forge/code_forge.dart';
 import 'package:command_tools_contract/command_tools_contract.dart';
+import 'package:command_tools_plugin/command_tools_plugin.dart';
 import 'package:crypto/crypto.dart';
 import 'package:dart_eval/dart_eval.dart';
 import 'package:file_selector_platform_interface/file_selector_platform_interface.dart';
+import 'package:filesystem_tools_plugin/filesystem_tools_plugin.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -60,6 +63,7 @@ import 'package:flutter_eval/widgets.dart' show $StatefulWidget$bridge;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
+import 'package:search_tools_plugin/search_tools_plugin.dart';
 import 'package:xterm2/xterm.dart';
 
 import '../../../tools/backend_artifacts.dart';
@@ -70,11 +74,11 @@ import '../../tool/local_directory_project_frontend_compiler.dart';
 import '../../tool/main_content_fixture.dart';
 import '../../tool/main_content_frontend_compiler.dart';
 import '../../tool/openai_activity_frontend_compiler.dart';
-import '../../tool/self_hosting/development_self_hosting.dart';
 import '../../tool/source_editor_frontend_compiler.dart';
 import '../../tool/task_browser_frontend_compiler.dart';
 import '../../tool/terminal_frontend_compiler.dart';
 import '../../tool/tool_inspection_frontend_compiler.dart';
+import '../support/git_worktree_fixture.dart';
 import '../support/markdown_paste_fixture.dart';
 
 const _gitPluginId = 'dev.adele.plugin.git';
@@ -354,7 +358,7 @@ void main() {
         final taskA = fixture.shell(tester).task!;
         final environmentA = fixture.shell(tester).environment!;
         final worktreeA = Directory(
-          developmentGitWorktreePath(project, environmentA),
+          gitWorktreeFixturePath(project, environmentA),
         );
         const secondPath = 'lib/source_neighbor.dart';
         const secondText = 'const neighbor = "Environment A";\n';
@@ -685,7 +689,7 @@ void main() {
         final taskB = fixture.shell(tester).task!;
         final environmentB = fixture.shell(tester).environment!;
         final worktreeB = Directory(
-          developmentGitWorktreePath(project, environmentB),
+          gitWorktreeFixturePath(project, environmentB),
         );
         expect(environmentB.id, isNot(environmentA.id));
         expect(worktreeB.path, isNot(worktreeA.path));
@@ -969,10 +973,7 @@ void main() {
         final task = fixture.shell(tester).task!;
         final environmentA = fixture.shell(tester).environment!;
         final worktreeA = Directory(
-          developmentGitWorktreePath(
-            fixture.shell(tester).project!,
-            environmentA,
-          ),
+          gitWorktreeFixturePath(fixture.shell(tester).project!, environmentA),
         );
         await _tap(tester, 'New Chat Session');
         await _send(tester, prompt);
@@ -2181,7 +2182,7 @@ void main() {
       final taskA = fixture.shell(tester).task!;
       final environmentA = fixture.shell(tester).environment!;
       final worktreeA = await Directory(
-        developmentGitWorktreePath(project, environmentA),
+        gitWorktreeFixturePath(project, environmentA),
       ).resolveSymbolicLinks();
       await File(
         '$worktreeA/AGENTS.md',
@@ -2235,7 +2236,7 @@ void main() {
       final taskB = fixture.shell(tester).task!;
       final environmentB = fixture.shell(tester).environment!;
       final worktreeB = await Directory(
-        developmentGitWorktreePath(project, environmentB),
+        gitWorktreeFixturePath(project, environmentB),
       ).resolveSymbolicLinks();
       expect(worktreeB, isNot(worktreeA));
       expect(environmentB.id, isNot(environmentA.id));
@@ -2826,7 +2827,7 @@ printf '%s\n' 'S2B_SHELL_DONE'
       await fixture.openTask(tester);
       final environment = fixture.shell(tester).environment!;
       final worktree = Directory(
-        developmentGitWorktreePath(fixture.shell(tester).project!, environment),
+        gitWorktreeFixturePath(fixture.shell(tester).project!, environment),
       );
       expect(worktree.path, isNot(fixture.source.path));
       expect(
@@ -3275,7 +3276,7 @@ printf '%s\n' 'S2B_SHELL_DONE'
       final project = fixture.shell(tester).project!;
       final task = fixture.shell(tester).task!;
       final environment = fixture.shell(tester).environment!;
-      final worktree = developmentGitWorktreePath(project, environment);
+      final worktree = gitWorktreeFixturePath(project, environment);
       expect(
         runtime.lifecycle.environmentRuntime
             .currentMaterialization(environment.id)!
@@ -4164,7 +4165,7 @@ printf '%s\n' 'S2B_SHELL_DONE'
       final task = fixture.shell(tester).task!;
       final environment = fixture.shell(tester).environment!;
       final worktree = await Directory(
-        developmentGitWorktreePath(fixture.shell(tester).project!, environment),
+        gitWorktreeFixturePath(fixture.shell(tester).project!, environment),
       ).resolveSymbolicLinks();
       expect(runtime.terminals.forEnvironment(environment.id), isEmpty);
       expect(find.byType(WorkbenchConsole), findsNothing);
@@ -4994,10 +4995,7 @@ printf '%s\n' 'S2B_SHELL_DONE'
         await fixture.openTask(tester);
         final environment = fixture.shell(tester).environment!;
         final worktree = Directory(
-          developmentGitWorktreePath(
-            fixture.shell(tester).project!,
-            environment,
-          ),
+          gitWorktreeFixturePath(fixture.shell(tester).project!, environment),
         );
         expect(worktree.path, isNot(fixture.source.path));
         await File(
@@ -5074,6 +5072,69 @@ printf '%s\n' 'S2B_SHELL_DONE'
           null,
         ]);
         expect(outbound, hasLength(1));
+
+        // Source registrations are only the oracle; the desktop Run used AOT
+        // contributions and the real provider's HTTP lowering above.
+        final toolContext = SessionModelToolHostContext(
+          sessionId: session.id,
+          environmentRuntime: runtime.lifecycle.environmentRuntime,
+        );
+        final shellDescription = await toolContext
+            .requireHostService<AuthorizedEnvironmentShellDescriptionFacet>();
+        final sourceTools = [
+          const SearchExecutable.unbound().registration,
+          const GlobExecutable.unbound().registration,
+          ...filesystemToolRegistrations(
+            await toolContext
+                .requireHostService<AuthorizedEnvironmentFileReadFacet>(),
+            await toolContext
+                .requireHostService<AuthorizedEnvironmentFileMutationFacet>(),
+          ),
+          commandToolRegistration(
+            await toolContext
+                .requireHostService<AuthorizedEnvironmentProcessFacet>(),
+            shellProfile: await shellDescription.describeShell(),
+            shell: await toolContext
+                .requireHostService<AuthorizedEnvironmentShellFacet>(),
+          ),
+        ];
+        final remoteTools = (await buildModelToolCatalogForSession(
+          sessionId: session.id,
+          environmentRuntime: runtime.lifecycle.environmentRuntime,
+          extensions: runtime.extensions,
+        )).materialize().tools;
+        final sentTools = (outbound.single['tools']! as List<Object?>)
+            .cast<Map<String, Object?>>();
+        for (final sourceTool in sourceTools) {
+          final definition = sourceTool.modelDefinition;
+          final remote = remoteTools.singleWhere(
+            (tool) => tool.modelDefinition.alias == definition.alias,
+          );
+          expect(
+            remote.definition.description,
+            sourceTool.definition.description,
+          );
+          expect(remote.modelDefinition.description, definition.description);
+          expect(
+            remote.modelDefinition.description,
+            isNot(remote.definition.description),
+          );
+          expect(
+            remote.modelDefinition.argumentsSchema,
+            definition.argumentsSchema,
+          );
+          expect(
+            sentTools.singleWhere((tool) => tool['name'] == definition.alias),
+            {
+              'type': 'function',
+              'name': definition.alias,
+              'description': definition.description,
+              'parameters': definition.argumentsSchema,
+              'strict': false,
+            },
+            reason: 'Source-to-HTTP equality for ${definition.alias}',
+          );
+        }
 
         await _send(tester, _prompt);
         await _pumpUntil(
@@ -5799,7 +5860,7 @@ printf '%s\n' 'S2B_SHELL_DONE'
         final task = fixture.shell(tester).task!;
         final environment = fixture.shell(tester).environment!;
         final worktree = Directory(
-          developmentGitWorktreePath(project, environment),
+          gitWorktreeFixturePath(project, environment),
         );
         final marker = File('${worktree.path}/$markerName');
         final chat = _chatClient(

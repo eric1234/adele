@@ -3,8 +3,8 @@
 `agents_md_plugin` is the pure-Dart semantic package for the stock root-level
 AGENTS.md instruction source. It provides `agentsMdInstructions` and the in-process
 `AgentsMdPlugin.activate` seam used by focused tests. Normal application startup
-and development/self-hosting load [`agents_md_backend`](packages/backend/README.md)
-from `packages/backend` as AOT on their shared backend host. The app does not import
+loads [`agents_md_backend`](packages/backend/README.md)
+from `packages/backend` as AOT on the shared backend host. The app does not import
 or depend on either plugin package; activation uses the generic remote-source adapter.
 
 The backend advertises one `extensionExposures` entry for
@@ -57,9 +57,7 @@ Those other mechanisms remain independent plugin concerns.
 Normal Linux preparation installs backend-only `agents-md/backend.aot` under the
 prepared installation root. Shared-host artifacts and generic deployment inputs
 are described in [desktop tooling](../../packages/plugin_builder/README.md#desktop-tooling).
-Self-hosting supplies its explicit `agentsMdArtifact` on the same host through the
-same adapter activation, without requiring a normal installation root. Both
-host/plugin protocol versions are 1; prepared artifacts must be rebuilt together
+Both host/plugin protocol versions are 1; prepared artifacts must be rebuilt together
 under the [pre-release transport policy](../../docs/architecture/contracts-and-capabilities.md#transport-version-policy).
 
 The semantic package, backend, and support package are workspace members with
