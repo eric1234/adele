@@ -58,9 +58,13 @@ stock Git v2 source hints for the companion README without materializing that
 Environment or changing Git state. The small developer-only
 [`tool/development_git_baseline.dart`](tool/development_git_baseline.dart) reader
 checks the exact association and original Git-owned SQL anchor in existing Project
-backing, without creating or changing storage. These helpers stay outside `app/lib`
-and prepare handoffs containing a README and unchanged evidence JSON, not a source
-snapshot or portable archive.
+backing, without creating or changing storage.
+[`tool/session_evaluation_summary.dart`](tool/session_evaluation_summary.dart)
+projects deterministic factual counts and bounded references from the same
+validated evidence document without further storage reads. These helpers stay
+outside `app/lib` and prepare three-file handoffs: `README.md`, `summary.json`, and
+unchanged `evidence.json`. The summary is a convenience projection, not independent
+validation; the handoff is not a source snapshot or portable archive.
 
 ```text
 Flutter application
