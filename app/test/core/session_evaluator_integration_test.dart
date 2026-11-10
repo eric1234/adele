@@ -29,10 +29,10 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
+import 'package:session_evaluator_backend/src/session_evaluation_summary.dart';
 import 'package:session_evaluator_contract/session_evaluator_contract.dart';
 import 'package:sqlite3/sqlite3.dart' hide Session;
 
-import '../../tool/session_evaluation_summary.dart';
 import '../../tool/session_evidence_exporter.dart';
 import '../fixtures/command_output_process.dart'
     show captureBulk, captureEvidenceBlocks, captureMarker;
@@ -52,8 +52,11 @@ void main() {
   late File hostArtifact;
   late Directory installations;
   late Directory evaluatorOnly;
+  late Directory gatedEvaluator;
   late Directory gitInstallations;
   late Directory source;
+  late Directory localState;
+  late Directory outputRoot;
   late AdeleRuntime runtime;
   late Project project;
   late TaskCreationResult task;
@@ -72,6 +75,7 @@ void main() {
     for (final entry in const {
       'host': 'packages/plugin_backend_host/bin/adele_backend_host.dart',
       'child': 'app/test/fixtures/command_output_process.dart',
+      'gated-evaluator': 'app/test/fixtures/session_evaluation_backend.dart',
       _chatPlugin:
           'plugins/chat_strategy/packages/backend/bin/chat_strategy_backend.dart',
       _evaluatorPlugin:
@@ -97,6 +101,9 @@ void main() {
     evaluatorOnly = await _install(artifacts, 'replacement', [
       _evaluatorPlugin,
     ]);
+    gatedEvaluator = await _install(artifacts, 'gated', [
+      _evaluatorPlugin,
+    ], evaluatorArtifact: 'gated-evaluator');
     gitInstallations = await _install(artifacts, 'git', [
       _chatPlugin,
       _evaluatorPlugin,
@@ -131,7 +138,14 @@ void main() {
   setUp(() async {
     source = await Directory.systemTemp.createTemp('adele-evidence-project-');
     addTearDown(() => source.delete(recursive: true));
-    runtime = AdeleRuntime(ids: MonotonicProductIdSource(seed: 'evidence'));
+    localState = await Directory.systemTemp.createTemp('adele-handoff-');
+    final temporaryState = localState;
+    addTearDown(() => temporaryState.delete(recursive: true));
+    outputRoot = Directory('${localState.path}/evaluations');
+    runtime = AdeleRuntime(
+      ids: MonotonicProductIdSource(seed: 'evidence'),
+      localStateRoot: () => localState.path,
+    );
     addTearDown(runtime.close);
     final provider = TestProjectProvider(runtime.registry);
     addTearDown(provider.close);
@@ -220,6 +234,60 @@ void main() {
 
   Future<Map<String, Object?>> collect(Session owner) =>
       readSessionEvidence(evaluator, owner.id.value);
+
+  test('handoff rejects wrong route, service, configuration and Session '
+      'without creating output or changing SQL', () async {
+    final connection = _connection(runtime.plugins, _evaluatorPlugin);
+    final before = _inspect(source, _snapshot);
+    for (final (configuration, service, method, code) in [
+      (
+        connection.defaultConfigurationContext,
+        sessionEvaluationHandoffServiceId,
+        sessionEvaluatorServiceCollectSessionId,
+        'unknown_method',
+      ),
+      (
+        connection.defaultConfigurationContext,
+        sessionEvaluatorServiceId,
+        sessionEvaluationHandoffServicePrepareSessionId,
+        'unknown_method',
+      ),
+      (
+        connection.defaultConfigurationContext,
+        'dev.adele.test.unexposed',
+        sessionEvaluationHandoffServicePrepareSessionId,
+        'service_unavailable',
+      ),
+      (
+        connection.configurationContext('unavailable'),
+        sessionEvaluationHandoffServiceId,
+        sessionEvaluationHandoffServicePrepareSessionId,
+        'configuration_context_unavailable',
+      ),
+    ]) {
+      final emitted = <Object?>[];
+      await expectLater(
+        connection
+            .channelFor(configuration, service)
+            .stream(method, {'sessionId': session.id.value})
+            .forEach(emitted.add),
+        throwsA(isA<AdeleRemoteFailure>().having((e) => e.code, 'code', code)),
+      );
+      expect(emitted, isEmpty);
+    }
+    final client = _handoffClient(connection);
+    for (final id in ['', ' ${session.id.value}', 'unknown-session']) {
+      final emitted = <String>[];
+      await expectLater(
+        client.prepareSession(id).forEach(emitted.add),
+        throwsA(isA<SessionEvidenceFailure>()),
+      );
+      expect(emitted, isEmpty);
+    }
+    expect(outputRoot.existsSync(), isFalse);
+    expect(localState.listSync(), isEmpty);
+    expect(_inspect(source, _snapshot), before);
+  });
 
   test(
     'invalid Session IDs retain their declared failure across AOT transport',
@@ -816,14 +884,10 @@ void main() {
     late CommandResolver commands;
     late AdeleRuntime mountedRuntime;
     late _SavePicker picker;
-    late Directory outputRoot;
     late Future<void> exporting;
     late Future<ResolvedCommand?> paletteSelection;
 
     setUp(() async {
-      final output = await Directory.systemTemp.createTemp('adele-handoff-');
-      addTearDown(() => output.delete(recursive: true));
-      outputRoot = Directory('${output.path}/evaluations');
       window = WindowSessionContextHost();
       addTearDown(window.close);
       navigatorKey = GlobalKey<NavigatorState>();
@@ -838,12 +902,15 @@ void main() {
       WindowSessionContext? sessionContext,
     }) async {
       final host = mountedRuntime = owner ?? runtime;
-      exporter = SessionEvidenceExporter(
-        runtime: host,
-        context: sessionContext ?? window.context,
-        navigatorKey: navigatorKey,
-        outputRoot: outputRoot,
-      );
+      // Bootstrap callbacks can cancel AOT streams; bind their cleanup timers to
+      // real async as well, rather than Flutter's animation-only fake clock.
+      await tester.runAsync(() async {
+        exporter = SessionEvidenceExporter(
+          runtime: host,
+          context: sessionContext ?? window.context,
+          navigatorKey: navigatorKey,
+        );
+      });
       commands = CommandResolver(host.extensions);
       addTearDown(exporter.close);
       await tester.pumpWidget(
@@ -855,7 +922,7 @@ void main() {
     }
 
     Future<AdeleRuntime> reopenRuntime(WidgetTester tester) async {
-      final fresh = AdeleRuntime();
+      final fresh = AdeleRuntime(localStateRoot: () => localState.path);
       addTearDown(fresh.close);
       final provider = TestProjectProvider(fresh.registry);
       addTearDown(provider.close);
@@ -868,6 +935,13 @@ void main() {
         );
       });
       window.presentSession(fresh.store.session(session.id)!);
+      return fresh;
+    }
+
+    Future<AdeleRuntime> startGatedBackend(WidgetTester tester) async {
+      await tester.runAsync(runtime.plugins.close);
+      final fresh = await reopenRuntime(tester);
+      await tester.runAsync(() => start(fresh.plugins, gatedEvaluator));
       return fresh;
     }
 
@@ -884,13 +958,11 @@ void main() {
       await tester.pumpAndSettle();
     }
 
-    Future<void> invoke(WidgetTester tester, {IOOverrides? overrides}) async {
+    Future<void> invoke(WidgetTester tester) async {
       // AOT I/O and its continuations use real async; only UI animation is fake.
       await tester.runAsync(() async {
         final command = commands.resolve(exportSessionEvidenceCommandId);
-        exporting = overrides == null
-            ? command.invoke()
-            : IOOverrides.runWithIOOverrides(command.invoke, overrides);
+        exporting = command.invoke();
       });
       await tester.pumpAndSettle();
       expect(find.text('Prepare Evaluation Handoff'), findsOneWidget);
@@ -972,7 +1044,8 @@ void main() {
       'retained Chat/Run and full Command output without collecting a draft '
       'or changing storage',
       (tester) async {
-        outputRoot = Directory('${outputRoot.path} with spaces # percent%');
+        localState = Directory('${localState.path}/with spaces # percent%');
+        outputRoot = Directory('${localState.path}/evaluations');
         final arguments = <String, Object?>{
           'program': aotRuntime,
           'arguments': ['${artifacts.path}/child.aot', 'export'],
@@ -1388,6 +1461,7 @@ void main() {
 
         final establishing = AdeleRuntime(
           ids: MonotonicProductIdSource(seed: 'git-handoff'),
+          localStateRoot: () => localState.path,
         );
         addTearDown(establishing.close);
         final projectProvider = TestProjectProvider(establishing.registry);
@@ -1528,7 +1602,7 @@ void main() {
         ).writeAsString('Untracked\n');
         await establishing.close();
 
-        gitRuntime = AdeleRuntime();
+        gitRuntime = AdeleRuntime(localStateRoot: () => localState.path);
         addTearDown(gitRuntime.close);
         final freshProvider = TestProjectProvider(gitRuntime.registry);
         addTearDown(freshProvider.close);
@@ -2041,93 +2115,72 @@ void main() {
       );
     });
 
-    for (final retirement in ['window', 'backend']) {
-      testWidgets('closing $retirement after final writer validation '
-          'removes the unpublished complete handoff', (tester) async {
-        window.presentSession(session);
-        Future<void>? closing;
-        final completion = _RetiringHandoffContext(
-          window.context,
-          outputRoot,
-          () {
+    for (final file in ['evidence.json', 'README.md']) {
+      for (final retirement in ['exporter', 'window', 'backend']) {
+        testWidgets('closing $retirement after a real backend $file write '
+            'fences publication and cleans the unpublished handoff', (
+          tester,
+        ) async {
+          final before = _inspect(source, _snapshot);
+          final fresh = await startGatedBackend(tester);
+          late _BackendWriteGate gate;
+          await tester.runAsync(() async {
+            gate = await _BackendWriteGate.open(localState, file: file);
+          });
+          await mount(tester, owner: fresh);
+          addTearDown(gate.close);
+          final command = commands.resolve(exportSessionEvidenceCommandId);
+          final signals = <String>[];
+          final subscription = command.binding.value.availabilityChanges!
+              .listen(
+                (_) => signals.add('changed'),
+                onDone: () => signals.add('closed'),
+              );
+          addTearDown(subscription.cancel);
+          await invoke(tester);
+          await continueExport(tester);
+          await tester.runAsync(
+            () => gate.entered.future.timeout(const Duration(seconds: 20)),
+          );
+          expect(tester.takeException(), isNull);
+          expect(gate.entered.isCompleted, isTrue);
+          final directory = outputRoot.listSync().single as Directory;
+          expect(File('${directory.path}/$file').lengthSync(), greaterThan(0));
+          expect(
+            directory.listSync().map((entry) => entry.uri.pathSegments.last),
+            unorderedEquals([
+              'evidence.json',
+              if (file == 'README.md') ...['summary.json', 'README.md'],
+            ]),
+          );
+          expect(signals, ['changed']);
+          expect(
+            find.textContaining('Evaluation handoff ready:'),
+            findsNothing,
+          );
+          expect(command.availability, CommandAvailability.disabled);
+          await expectLater(
+            command.invoke(),
+            throwsA(isA<CommandUnavailable>()),
+          );
+          late Future<void> closing;
+          var closed = false;
+          await tester.runAsync(() async {
             if (retirement == 'window') {
               window.close();
+              // Actual window teardown also closes the development exporter.
+              // The read-only context alone has no retirement notification.
+              closing = exporter.close();
             } else {
-              closing = runtime.plugins.close();
+              closing = retirement == 'exporter'
+                  ? exporter.close()
+                  : fresh.plugins.close();
             }
-          },
-        );
-        await mount(tester, sessionContext: completion);
-        await invoke(tester);
-        await continueExport(tester);
-        await finish(tester);
-        await tester.runAsync(() async => await closing);
-        expect(completion.retired, isTrue);
-        expect(handoffs(), isEmpty);
-        expect(find.textContaining('Evaluation handoff ready:'), findsNothing);
-        if (retirement == 'backend') {
-          expect(
-            find.text('Evaluation handoff could not be prepared.'),
-            findsOneWidget,
-          );
-        } else {
-          expectNoFeedback();
-        }
-      });
-    }
-
-    for (final retirement in ['exporter', 'window', 'backend']) {
-      testWidgets('closing $retirement during a real evidence write '
-          'fences publication and cleans the incomplete handoff', (
-        tester,
-      ) async {
-        final before = _inspect(source, _snapshot);
-        late _EvidenceWriteGate gate;
-        await tester.runAsync(() async {
-          gate = _EvidenceWriteGate(outputRoot);
-        });
-        window.presentSession(session);
-        await mount(tester);
-        addTearDown(() {
-          if (!gate.release.isCompleted) gate.release.complete();
-        });
-        final command = commands.resolve(exportSessionEvidenceCommandId);
-        final signals = <String>[];
-        final subscription = command.binding.value.availabilityChanges!.listen(
-          (_) => signals.add('changed'),
-          onDone: () => signals.add('closed'),
-        );
-        addTearDown(subscription.cancel);
-        await invoke(tester, overrides: gate);
-        await continueExport(tester);
-        await tester.runAsync(
-          () => gate.entered.future.timeout(const Duration(seconds: 20)),
-        );
-        expect(tester.takeException(), isNull);
-        expect(gate.entered.isCompleted, isTrue);
-        expect(signals, ['changed']);
-        expect(find.textContaining('Evaluation handoff ready:'), findsNothing);
-        expect(command.availability, CommandAvailability.disabled);
-        await expectLater(command.invoke(), throwsA(isA<CommandUnavailable>()));
-        late Future<void> closing;
-        await tester.runAsync(() async {
-          if (retirement == 'window') {
-            window.close();
-            closing = Future<void>.value();
-          } else {
-            closing = retirement == 'exporter'
-                ? exporter.close()
-                : runtime.plugins.close();
-            if (retirement == 'backend') {
-              await closing.timeout(const Duration(seconds: 10));
-            }
-          }
-        });
-        await tester.pumpAndSettle();
-        expect(gate.release.isCompleted, isFalse);
-        if (retirement == 'window') {
-          expect(command.availability, CommandAvailability.hidden);
-        } else {
+            unawaited(closing.then((_) => closed = true));
+          });
+          await tester.pumpAndSettle();
+          expect(gate.released, isFalse);
+          expect(closed, isFalse);
           expect(signals, ['changed', 'closed']);
           expect(
             () => commands.resolve(exportSessionEvidenceCommandId),
@@ -2137,31 +2190,145 @@ void main() {
             command.invoke(),
             throwsA(isA<StaleExtensionBinding>()),
           );
-        }
-        await tester.runAsync(() async {
-          gate.release.complete();
-        });
-        await finish(tester);
-        await tester.runAsync(
-          () => closing.timeout(const Duration(seconds: 10)),
-        );
-        expect(
-          signals,
-          retirement == 'window' ? ['changed'] : ['changed', 'closed'],
-        );
-        expect(handoffs(), isEmpty);
-        expect(_inspect(source, _snapshot), before);
-        expect(picker.calls, 0);
-        if (retirement != 'backend') {
-          expectNoFeedback();
-        } else {
-          expect(
-            find.text('Evaluation handoff could not be prepared.'),
-            findsOneWidget,
+          await tester.runAsync(() => gate.release());
+          await finish(tester);
+          await tester.runAsync(
+            () => closing.timeout(const Duration(seconds: 10)),
           );
+          expect(signals, ['changed', 'closed']);
+          expect(handoffs(), isEmpty);
+          expect(_inspect(source, _snapshot), before);
+          expect(picker.calls, 0);
+          if (retirement != 'backend') {
+            expectNoFeedback();
+          } else {
+            expect(
+              find.text('Evaluation handoff could not be prepared.'),
+              findsOneWidget,
+            );
+          }
+        });
+      }
+    }
+
+    testWidgets('context loss alone suppresses remote completion feedback '
+        'without pretending to roll back backend effects', (tester) async {
+      final fresh = await startGatedBackend(tester);
+      final before = _inspect(source, _snapshot);
+      late _BackendWriteGate gate;
+      await tester.runAsync(() async {
+        gate = await _BackendWriteGate.open(localState, file: 'README.md');
+      });
+      await mount(tester, owner: fresh);
+      addTearDown(gate.close);
+      await invoke(tester);
+      await continueExport(tester);
+      await tester.runAsync(
+        () => gate.entered.future.timeout(const Duration(seconds: 20)),
+      );
+      window.close();
+      expect(
+        commands.resolve(exportSessionEvidenceCommandId).availability,
+        CommandAvailability.hidden,
+      );
+      await tester.runAsync(() => gate.release());
+      await finish(tester);
+      expectNoFeedback();
+      expect(handoffs(), hasLength(1));
+      expect(_inspect(source, _snapshot), before);
+    });
+
+    testWidgets('real backend cancellation drains the write, rejects duplicate '
+        'service admission and permits a fresh handoff', (tester) async {
+      final fresh = await startGatedBackend(tester);
+      final before = _inspect(source, _snapshot);
+      await tester.runAsync(() async {
+        final gate = await _BackendWriteGate.open(localState);
+        final connection = _connection(fresh.plugins, _evaluatorPlugin);
+        final client = _handoffClient(connection);
+        final emitted = <String>[];
+        final errors = <Object>[];
+        final subscription = client
+            .prepareSession(session.id.value)
+            .listen(emitted.add, onError: errors.add);
+        addTearDown(() async {
+          await gate.close();
+          await subscription.cancel();
+        });
+        await gate.entered.future.timeout(const Duration(seconds: 20));
+        final duplicate = <String>[];
+        await expectLater(
+          client.prepareSession(session.id.value).forEach(duplicate.add),
+          throwsA(
+            isA<SessionEvidenceFailure>().having(
+              (failure) => failure.code,
+              'code',
+              'handoff_unavailable',
+            ),
+          ),
+        );
+        expect(duplicate, isEmpty);
+        expect(outputRoot.listSync(), hasLength(1));
+        var cancelled = false;
+        final cancelling = subscription.cancel().then((_) => cancelled = true);
+        // A separate generated request is a transport barrier, not a timer.
+        await readSessionEvidence(_client(connection), session.id.value);
+        expect(cancelled, isFalse);
+        expect(emitted, isEmpty);
+        await gate.release();
+        await cancelling.timeout(const Duration(seconds: 20));
+        expect(errors, isEmpty);
+        expect(emitted, isEmpty);
+        expect(outputRoot.listSync(), isEmpty);
+        await gate.control.delete();
+        final completion = StreamIterator(
+          client.prepareSession(session.id.value),
+        );
+        try {
+          final path = await readSessionEvaluationHandoff(completion);
+          expect(File(path).isAbsolute, isTrue);
+          expect(File(path).uri.pathSegments.last, 'README.md');
+          expect(File(path).parent.path, handoffs().single.path);
+        } finally {
+          await completion.cancel();
         }
       });
-    }
+      expect(_inspect(source, _snapshot), before);
+    });
+
+    testWidgets('real backend final-file failure removes complete unpublished '
+        'files and publishes only safe desktop feedback', (tester) async {
+      final fresh = await startGatedBackend(tester);
+      final before = _inspect(source, _snapshot);
+      late _BackendWriteGate gate;
+      await tester.runAsync(() async {
+        gate = await _BackendWriteGate.open(localState, file: 'README.md');
+      });
+      await mount(tester, owner: fresh);
+      addTearDown(gate.close);
+      await invoke(tester);
+      await continueExport(tester);
+      await tester.runAsync(
+        () => gate.entered.future.timeout(const Duration(seconds: 20)),
+      );
+      expect(handoffs(), hasLength(1));
+      expectNoFeedback();
+      await tester.runAsync(() => gate.release(fail: true));
+      await finish(tester);
+      expect(handoffs(), isEmpty);
+      expect(_inspect(source, _snapshot), before);
+      expect(
+        find.text('Evaluation handoff could not be prepared.'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('Evaluation handoff ready:'), findsNothing);
+      expect(find.textContaining('Injected backend'), findsNothing);
+      expect(find.textContaining(outputRoot.path), findsNothing);
+      expect(
+        commands.resolve(exportSessionEvidenceCommandId).availability,
+        CommandAvailability.enabled,
+      );
+    });
 
     testWidgets('close dismisses its confirmation without creating output', (
       tester,
@@ -2308,77 +2475,56 @@ final class _SavePicker extends FileSelectorPlatform {
   }
 }
 
-final class _EvidenceWriteGate extends IOOverrides {
-  _EvidenceWriteGate(this.root);
-  final Directory root;
-  final entered = Completer<void>();
-  final release = Completer<void>();
-
-  @override
-  File createFile(String path) {
-    final file = super.createFile(path);
-    return path.startsWith('${root.path}/') && path.endsWith('/evidence.json')
-        ? _GatedEvidenceFile(file, this)
-        : file;
-  }
-}
-
-final class _RetiringHandoffContext implements WindowSessionContext {
-  _RetiringHandoffContext(this.delegate, this.root, this.retire);
-  final WindowSessionContext delegate;
-  final Directory root;
-  final void Function() retire;
-  int _completeChecks = 0;
-  bool retired = false;
-
-  @override
-  bool get isActive {
-    if (!retired &&
-        root.existsSync() &&
-        root.listSync().any(
-          (entry) => [
-            'README.md',
-            'summary.json',
-            'evidence.json',
-          ].every((name) => File('${entry.path}/$name').existsSync()),
-        )) {
-      // Permit the writer's final check, then inject retirement at the
-      // exporter's separate publication check, after all three files are complete.
-      if (++_completeChecks == 2) {
-        retired = true;
-        retire();
-      }
-    }
-    return delegate.isActive;
+final class _BackendWriteGate {
+  _BackendWriteGate(this.server, this.control) {
+    _connections = server.listen((socket) async {
+      _socket = socket;
+      final lines = _lines = StreamIterator(
+        socket
+            .cast<List<int>>()
+            .transform(utf8.decoder)
+            .transform(const LineSplitter()),
+      );
+      expect(await lines.moveNext(), isTrue);
+      final event = _map(jsonDecode(lines.current));
+      expect(event['pid'], isNot(pid), reason: 'The gate must run in AOT.');
+      entered.complete(event['path']! as String);
+    });
   }
 
-  @override
-  WindowSessionSnapshot get snapshot => delegate.snapshot;
-
-  @override
-  void Function() observe(void Function(WindowSessionSnapshot) listener) =>
-      delegate.observe(listener);
-}
-
-final class _GatedEvidenceFile implements File {
-  _GatedEvidenceFile(this.file, this.gate);
-  final File file;
-  final _EvidenceWriteGate gate;
-
-  @override
-  Future<File> writeAsBytes(
-    List<int> bytes, {
-    FileMode mode = FileMode.write,
-    bool flush = false,
+  static Future<_BackendWriteGate> open(
+    Directory localState, {
+    String file = 'evidence.json',
   }) async {
-    await file.writeAsBytes(bytes, mode: mode, flush: flush);
-    gate.entered.complete();
-    await gate.release.future;
-    return this;
+    final server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+    final control = File('${localState.path}/.evaluator-write-gate.json');
+    await control.writeAsString(
+      jsonEncode({'port': server.port, 'file': file}),
+    );
+    return _BackendWriteGate(server, control);
   }
 
-  @override
-  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+  final ServerSocket server;
+  final File control;
+  final entered = Completer<String>();
+  late final StreamSubscription<Socket> _connections;
+  Socket? _socket;
+  StreamIterator<String>? _lines;
+  bool released = false;
+
+  Future<void> release({bool fail = false}) async {
+    released = true;
+    _socket!.writeln(fail ? 'fail' : 'release');
+    await _socket!.flush();
+  }
+
+  Future<void> close() async {
+    if (await control.exists()) await control.delete();
+    _socket?.destroy();
+    await _lines?.cancel();
+    await _connections.cancel();
+    await server.close();
+  }
 }
 
 Future<String> _git(Directory directory, List<String> arguments) async {
@@ -2399,13 +2545,14 @@ Future<String> _git(Directory directory, List<String> arguments) async {
 Future<Directory> _install(
   Directory artifacts,
   String name,
-  List<String> plugins,
-) async {
+  List<String> plugins, {
+  String? evaluatorArtifact,
+}) async {
   final root = await Directory('${artifacts.path}/$name').create();
   for (final plugin in plugins) {
     final directory = await Directory('${root.path}/$plugin').create();
     await File(
-      '${artifacts.path}/$plugin.aot',
+      '${artifacts.path}/${plugin == _evaluatorPlugin ? evaluatorArtifact ?? plugin : plugin}.aot',
     ).copy('${directory.path}/backend.aot');
     if (plugin == _chatPlugin) {
       await File(
@@ -2442,6 +2589,15 @@ SessionEvaluatorServiceClient _client(PluginBackendConnection connection) =>
         sessionEvaluatorServiceId,
       ),
     );
+
+SessionEvaluationHandoffServiceClient _handoffClient(
+  PluginBackendConnection connection,
+) => SessionEvaluationHandoffServiceClient(
+  connection.channelFor(
+    connection.defaultConfigurationContext,
+    sessionEvaluationHandoffServiceId,
+  ),
+);
 
 Map<String, Object?> _map(Object? value) =>
     Map<String, Object?>.from(value! as Map);

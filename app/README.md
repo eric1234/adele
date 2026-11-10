@@ -50,21 +50,20 @@ for Command availability, sensitive-data confirmation, directory semantics, and
 limits.
 
 [`tool/session_evidence_exporter.dart`](tool/session_evidence_exporter.dart) owns
-the native **Prepare Evaluation Handoff...** Command, bounded evidence collection,
-local-state output directory, and completion path/clipboard feedback.
-[`tool/session_evaluation_handoff.dart`](tool/session_evaluation_handoff.dart)
-captures the selected canonical Session's Environment association and validates
-stock Git v2 source hints for the companion README without materializing that
-Environment or changing Git state. The small developer-only
-[`tool/development_git_baseline.dart`](tool/development_git_baseline.dart) reader
-checks the exact association and original Git-owned SQL anchor in existing Project
-backing, without creating or changing storage.
-[`tool/session_evaluation_summary.dart`](tool/session_evaluation_summary.dart)
-projects deterministic factual counts and bounded references from the same
-validated evidence document without further storage reads. These helpers stay
-outside `app/lib` and prepare three-file handoffs: `README.md`, `summary.json`, and
-unchanged `evidence.json`. The summary is a convenience projection, not independent
-validation; the handoff is not a source snapshot or portable archive.
+only the temporary native **Prepare Evaluation Handoff...** Command, sensitive-data
+confirmation, and completion path/clipboard feedback. It captures the selected
+Session and exact backend generation, invokes the plugin's generated
+`SessionEvaluationHandoffService.prepareSession`, and accepts one absolute README
+path only after successful stream completion. Window closure and backend retirement
+cancel that observation; navigation never retargets an admitted operation.
+The [Session Evaluator backend](../plugins/session_evaluator/README.md#ownership)
+owns evidence assembly, deterministic summary, retained source/Git provenance,
+README rendering, private directory writing, and cleanup. No application helper
+duplicates those rules. The generic host supplies only its existing local-state
+path policy through generation-scoped `BackendLocalStateService`; the path grants
+no filesystem-writing authority. The development launcher and this UI adapter
+remain application-specific wiring until the prepared Session Command cutover in
+S3. Confirmation and the explicit **Copy README path** action are unchanged here.
 
 ```text
 Flutter application
@@ -2301,4 +2300,4 @@ repository-wide deferred-feature ledger here.
 | Inspection/compact hosts | [`lib/ui/inspection/`](lib/ui/inspection/), [`lib/ui/activity/`](lib/ui/activity/) |
 | Temporary provider/model choice | [`lib/plugins/temporary_chatgpt_selection.dart`](lib/plugins/temporary_chatgpt_selection.dart) |
 | Source-checkout frontend compilation | [`tool/`](tool/): compiler harnesses listed [above](#prepared-chat-frontend) |
-| Development evaluation handoff | [`tool/session_evidence_exporter.dart`](tool/session_evidence_exporter.dart), [`tool/session_evaluation_handoff.dart`](tool/session_evaluation_handoff.dart); [procedure and limits](../plugins/session_evaluator/README.md#desktop-handoff) |
+| Temporary evaluation handoff UI client | [`tool/session_evidence_exporter.dart`](tool/session_evidence_exporter.dart); plugin-owned [implementation, procedure and limits](../plugins/session_evaluator/README.md#desktop-handoff) |

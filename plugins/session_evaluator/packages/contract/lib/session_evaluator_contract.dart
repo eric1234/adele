@@ -4,6 +4,7 @@ library;
 import 'package:adele_contract/adele_contract.dart';
 
 export 'src/identities.dart';
+export 'src/read_session_evaluation_handoff.dart';
 export 'src/read_session_evidence.dart';
 
 part 'session_evaluator_contract.g.dart';
@@ -21,6 +22,15 @@ abstract interface class SessionEvaluatorService {
   /// the complete UTF-8 document is bounded by [sessionEvidenceMaxBytes].
   @AdeleMethod('collectSession')
   Stream<String> collectSession(String sessionId);
+}
+
+@AdeleService('dev.adele.session-evaluation-handoff')
+abstract interface class SessionEvaluationHandoffService {
+  /// Prepares a private local handoff when listened to. Successful completion
+  /// emits exactly one absolute README.md path, after all files are complete.
+  /// Cancellation fences further work and joins incomplete-output cleanup.
+  @AdeleMethod('prepareSession')
+  Stream<String> prepareSession(String sessionId);
 }
 
 @AdeleFailure('dev.adele.session-evidence.failure')

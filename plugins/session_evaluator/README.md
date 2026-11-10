@@ -5,26 +5,42 @@ development-only diagnostic**, not a model tool or production export workflow.
 It collects retained evidence for an explicit durable Session without resolving
 its strategy, materializing its Environment, starting a Run, or initializing state.
 The development desktop can prepare a local evaluation handoff after using a
-normal ADELE Chat Session. This plugin does not evaluate, score, or interpret the
-evidence.
+normal ADELE Chat Session. Its deterministic projections are factual navigation
+aids, not an evaluation or score of the Session.
 
 ## Ownership
 
-`packages/contract` owns the narrow generated `SessionEvaluatorService` and
-`readSessionEvidence` document assembler. `packages/backend` owns the collector,
-selected SQL schema knowledge, validation, and native entrypoint. There is no
-frontend, Capability, strategy, backend Command, storage schema, or file-writing
-service. The development-only native adapter in
+`packages/contract` owns two distinct generated services:
+
+- `SessionEvaluatorService.collectSession(String sessionId) -> Stream<String>`
+  remains read-only, returning bounded chunks of the validated v2 evidence document.
+  `readSessionEvidence` assembles it only after successful completion.
+- `SessionEvaluationHandoffService.prepareSession(String sessionId) -> Stream<String>`
+  is effectful. It emits exactly one absolute `README.md` path after preparing all
+  three files. `readSessionEvaluationHandoff` validates cardinality, path shape, and
+  successful stream completion; empty, duplicate, or failed completion is not success.
+
+The handoff service ID is `dev.adele.session-evaluation-handoff`, distinct from the
+read-only service ID `dev.adele.session-evaluator`. Both use the ordinary generated
+transport, the exact owning backend, and its default configuration context. The
+handoff request accepts only a Session ID, not a Project, Environment, backend
+selector, output path, or filesystem authority. A future prepared frontend can
+allowlist only the handoff service.
+Handoff failures use the fixed `handoff_unavailable` failure without SQL diagnostics,
+transcripts, provider state, or arbitrary exception text.
+
+`packages/backend` owns the collector, selected SQL schema knowledge, validation,
+deterministic summary, source/Git provenance, README rendering, private writer,
+handoff operation lifecycle, and native entrypoint. It uses the existing validated
+collector internally without changing its v2 document. There is no frontend,
+Capability, strategy, backend Command, or storage schema. The development-only
+native adapter in
 [`app/tool/session_evidence_exporter.dart`](../../app/tool/session_evidence_exporter.dart)
-owns the desktop Command, sensitive-data confirmation, local directory writing,
-and completion feedback. Its development-only
-[`session_evaluation_handoff.dart`](../../app/tool/session_evaluation_handoff.dart)
-helper captures canonical source metadata and renders the companion README; it
-does not execute the Session. The pure development-only
-[`session_evaluation_summary.dart`](../../app/tool/session_evaluation_summary.dart)
-projects factual counts and bounded references from that same validated document,
-without further storage reads. Production `app/lib` imports no evaluator
-contract or implementation.
+is a temporary thin client owning only the desktop Command, sensitive-data
+confirmation, captured selection/generation, and completion/Copy feedback. The
+development launcher and native UI attachment remain application-specific in S2;
+the ordinary prepared Session Command frontend and clipboard cutover are reserved
+for S3. Production `app/lib` imports no evaluator contract or implementation.
 
 The backend obtains the public `ProjectStorageService` through its exact
 generation's infrastructure context. It calls only `queryForSession`, in `durable`
@@ -413,41 +429,60 @@ No Main Content, Console, or Inspection participation is needed.
 
 Command invocation synchronously captures the `WindowSessionSnapshot`, canonical
 Session, exact `InstalledBackendActivation`, and its default configuration/service
-route. Metadata capture follows that retained Session's canonical same-Task
-Environment association, not an assumed Task-primary
-Environment. `SessionEvaluatorServiceClient` and `readSessionEvidence` use the
-retained route through the existing generation-validated channel. Evidence JSON
-still comes only from that backend; the development source-hint helper separately
-reads the original Git anchor from existing Project SQL backing. Navigation,
+route. After confirmation, backend metadata reads follow that retained Session's
+canonical same-Task Environment association, not an assumed Task-primary
+Environment. `SessionEvaluationHandoffServiceClient` uses the retained route
+through the existing generation-validated channel, allowlisting only that service.
+The backend assembles evidence and separately reads provider state and the original
+Git anchor through its generation-scoped Project storage client. Navigation,
 including leaving and reentering a Session,
 does not replace the captured Session or retarget the backend. The selection
 revision is only an epoch, not execution or storage authority. Fresh invocation
 captures the new selection.
 
+The completion helper's caller also validates its captured lifetime after awaiting
+the path. Dart's `StreamIterator` reports external cancellation as end-of-stream;
+that alone must not be mistaken for an independently successful transport terminal.
+
 Only one handoff may be pending per exporter/window, from confirmation through
-directory writing. Success, cancellation, and failure clear pending state. Backend
-retirement fences collection and writing; no replacement is silently selected.
+completion. The backend additionally admits at most one active handoff operation
+per generation, so concurrent clients cannot race duplicate exports. Success,
+cancellation, and failure release admission. Backend retirement fences collection
+and writing; no replacement is silently selected or inherits an operation.
 Valid partial evidence is written unchanged with its existing coverage fields;
 successful handoff preparation does not upgrade that coverage to complete.
 
 Window cleanup closes admission and removes the exact Command and bootstrap
 subscription immediately. It withdraws only its own confirmation route, suppresses
-late feedback and clipboard actions, and does not await an unanswered confirmation
-or collection. Backend shutdown settles the captured transport. In-flight writing
-receives at most two seconds of shutdown joining; further validation rejects closed
-ownership and failure cleanup removes the new directory where possible. Shutdown never publishes
-a late successful handoff or reports an incomplete directory as successful. Forced
-process termination or failed cleanup can leave an incomplete directory.
+late feedback and clipboard actions, and does not wait indefinitely for an
+unanswered confirmation or collection. It cancels the captured stream and bounds
+its cancellation join to
+two seconds. The backend marks operation cancellation synchronously when its stream
+is cancelled, validates around asynchronous reads and writes, and joins best-effort
+cleanup. Backend shutdown fences service admission before closing reverse calls and
+draining generated dispatchers. No incomplete directory or retired observation is
+reported as successful. An already submitted OS write is not interruptible, and
+forced process termination or failed cleanup can leave an incomplete directory.
+Filesystem completion and remote delivery are not one atomic transaction: completed
+effects can survive lost delivery. This is not rollback or crash recovery.
+The native window owner must call the adapter's `close` cleanup to cancel promptly.
+Merely making its selection facade inactive supplies no close notification; that
+still fences late UI feedback but cannot roll back completed backend effects.
 
 ### Directory Semantics
 
-The default output root is `evaluations/` beneath
-`PlatformStorageRoots.resolve(...).localStateRoot`, resolved with the host's
-`Platform.operatingSystem` and `Platform.environment`. This is local state, not
+The default output root is `evaluations/` beneath the root returned by the generic
+generation-scoped `BackendLocalStateService.getLocalStateRoot` infrastructure
+lookup. The host delegates to the existing
+`PlatformStorageRoots.resolve(...).localStateRoot` policy with its
+`Platform.operatingSystem` and `Platform.environment`; the plugin neither imports
+that internal package nor duplicates its policy. The lookup conveys only a path,
+creates nothing, and grants no filesystem-writing authority. This is local state, not
 configuration, cache, or a directory in the selected Project. See
 [platform storage paths](../../packages/platform_storage/README.md#paths) for the
-OS/environment policy. Tests inject a temporary `outputRoot` instead of writing
-real user storage. The writer resolves existing output aliases and rejects output
+OS/environment policy. Tests inject a temporary root at the host resolver or backend
+implementation boundary, never through the public handoff request or a new
+environment variable. The writer resolves existing output aliases and rejects output
 inside the launching checkout, selected Project's enclosing repository, or a
 `.adele/worktrees/` hierarchy rather than falling back to another location.
 Unresolvable output-confinement paths, including dangling Project source aliases,
@@ -472,7 +507,7 @@ On Linux/macOS it requires `chmod` on `PATH` and sets the directory to owner-onl
 mode `0700` before writing sensitive contents; a permission-setting failure aborts
 the handoff and attempts cleanup. Windows instead inherits the output root's ACL;
 private Windows access has not been validated, and no POSIX-mode guarantee applies.
-The adapter preserves the document's structured data, schema, coverage, and bounds;
+The backend preserves the document's structured data, schema, coverage, and bounds;
 it does not rewrite, redact, wrap, or truncate evidence. All three files must finish
 writing with flush requested and ownership validation must succeed before
 completion is reported.
@@ -489,7 +524,7 @@ handoff directories manually when no longer needed.
 ### Source Inspection
 
 The companion README records captured Project, Task, Session, and Environment
-identities plus validated local source hints when available. The development helper
+identities plus validated local source hints when available. The plugin-owned helper
 recognizes only v2 retained state from the stock Git plugin's Environment provider,
 validates its retained identity fields, relative paths, and selected-source scope against the
 Project source's nearest enclosing checkout marker. It resolves
@@ -501,9 +536,10 @@ branch, or HEAD. Unsupported providers or malformed, missing, or unsafe source
 metadata are explicitly unavailable, not replaced with the Task primary, current
 checkout, or a guessed repository. The helper neither materializes the Environment
 nor runs Git commands or changes Git state.
-The original baseline comes only from `adele_git_task_anchors` in the current
-Project's already-open durable or temporary backing. This read-only developer
-diagnostic checks the exact canonical Session/Environment/same-Task association,
+The original baseline comes only from `adele_git_task_anchors` in the selected
+Session's already-open durable Project backing. Separate, narrow parameterized
+`ProjectStorageService.queryForSession` reads check the exact canonical
+Session/Environment/same-Task association against the collected identity,
 supported Git schema, full commit ID, and expected branch reference. It never
 creates backing, prepares schemas, or enrolls anchors. Missing, corrupt, or
 mismatched SQL evidence makes source hints unavailable, with no provider-state,
@@ -553,13 +589,13 @@ beyond the model-result bound, an unsealed committed prefix, evaluator-only Proj
 reopen without Command Tools activation, and an over-budget transcript that fails
 without emitting a successful prefix. These are separate from Chat strategy support
 and from a claim of process liveness.
-`app/test/session_evaluation_summary_test.dart` owns deterministic projection,
+`packages/backend/test/session_evaluation_summary_test.dart` owns deterministic projection,
 null/zero/partial field coverage, Run-local ordering and reused IDs, exact mechanical
 counts, unavailable/empty storage, missing provenance/activity, bounded references,
 schema rejection, content exclusion, and raw evidence preservation.
-`app/test/session_evidence_file_test.dart` owns unique three-file directory writing,
+`packages/backend/test/session_evidence_file_test.dart` owns unique three-file directory writing,
 bounds, ownership revocation, and best-effort failure cleanup using real temporary
-files and injected write faults. `app/test/session_evaluation_handoff_test.dart`
+files and injected write faults. `packages/backend/test/session_evaluation_handoff_test.dart`
 owns captured source metadata, canonical nonprimary association, stock Git v2
 validation, exact read-only SQL anchors, absent/corrupt backing evidence,
 unsafe/unavailable source handling, and rendered inspection guidance.
@@ -567,7 +603,10 @@ It also checks report ordering, evidence-attribution safeguards, navigation, and
 executes the generated JSON inspection snippet with the pinned Dart SDK against
 selected v2 fixture fields, including empty/unavailable storage and captures without
 terminal Runs. It adds no external JSON-query dependency to CI.
-Tooling tests check the ordinary prepared catalog and launcher target;
+Backend service tests exercise cancellation, duplicate admission, shutdown, and
+publication failure without adding a public output-root parameter. Real AOT tests
+retain native Command coverage and use child-side write gates for cancellation and
+retirement rather than app-isolate file overrides. Tooling tests check the ordinary prepared catalog and launcher target;
 application tests check the plugin-neutral Navigator/context composition seams.
 
 From the repository root:
@@ -585,7 +624,7 @@ dart tools/adele.dart generate --check
 After current generation, from `app/`:
 
 ```sh
-flutter test --no-pub --concurrency 1 test/core/session_evaluator_integration_test.dart test/core/command_output_capture_integration_test.dart test/session_evaluation_summary_test.dart test/session_evidence_file_test.dart test/session_evaluation_handoff_test.dart test/application_test.dart
+flutter test --no-pub --concurrency 1 test/core/session_evaluator_integration_test.dart test/core/command_output_capture_integration_test.dart test/application_test.dart
 ```
 
 The packages participate in maintained analysis/test targets; the existing

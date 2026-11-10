@@ -1,10 +1,11 @@
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:adele_desktop/core/product_lifecycle.dart';
+import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_product/adele_product.dart';
+import 'package:adele_project_storage/adele_project_storage.dart';
 
-import 'development_git_baseline.dart';
+import 'evidence_validation.dart';
 
 /// Development-only interpretation of retained stock Git metadata, not a live
 /// Environment binding or a repository snapshot.
@@ -22,29 +23,109 @@ final class SessionEvaluationHandoff {
     String? unavailableReason,
   }) : _unavailableReason = unavailableReason;
 
-  factory SessionEvaluationHandoff.capture(
-    ProductLifecycleCoordinator lifecycle,
-    Session session,
-  ) {
-    final store = lifecycle.store;
-    if (!identical(store.session(session.id), session)) {
-      throw ArgumentError('Evaluation handoff requires the canonical Session.');
+  /// Uses only the caller's captured generation-scoped storage grant. The caller
+  /// may wrap it to fence cancellation before and after each awaited query.
+  static Future<SessionEvaluationHandoff> capture(
+    ProjectStorageService storage,
+    Map<String, Object?> document,
+  ) async {
+    if (document['schema'] != 'dev.adele.session-evidence.v2' ||
+        document['identity'] is! Map<String, Object?>) {
+      throw const FormatException('Unsupported handoff evidence identity.');
     }
-    final authority = store.sessionAuthority(session.id);
-    final task = store.task(session.taskId);
-    final project = task == null ? null : store.project(task.projectId);
-    final environment = authority == null
-        ? null
-        : store.environment(authority.environmentId);
-    if (authority == null ||
-        task == null ||
-        project == null ||
-        environment == null ||
-        authority.sessionId != session.id ||
-        authority.taskId != task.id ||
-        environment.taskId != task.id) {
+    final identity = Map<String, Object?>.of(
+      document['identity'] as Map<String, Object?>,
+    );
+    validateSessionIdentity(identity);
+    if (identity['task_id'] != identity['environment_task_id']) {
       throw StateError('Session Environment graph is not canonical.');
     }
+    final sessionId = identity['session_id'] as String;
+    Future<List<RelationalRow>> query(
+      String sql,
+      Map<String, Object?> parameters,
+    ) => storage.queryForSession(sessionId, sql, {
+      ':session': sessionId,
+      ...parameters,
+    }, ProjectStorageAccessMode.durable);
+
+    // Revalidate the collector's exact canonical graph, not just an Environment
+    // ID or the Task primary. Provider state remains outside the evidence JSON.
+    final identities = await query('''
+SELECT s.id AS session_id, s.strategy_id, s.task_id,
+ t.project_id, t.title AS task_title, p.source_location,
+ a.environment_id, e.task_id AS environment_task_id,
+ e.role AS environment_role, e.provider_id AS environment_provider_id
+FROM adele_product_sessions s
+LEFT JOIN adele_product_tasks t ON t.id = s.task_id
+LEFT JOIN adele_product_projects p ON p.id = t.project_id
+LEFT JOIN adele_product_session_environment_authority a ON a.session_id = s.id
+LEFT JOIN adele_product_environments e ON e.id = a.environment_id
+WHERE s.id = :session ORDER BY a.environment_id LIMIT 2
+''', const {});
+    if (identities.length != 1) {
+      throw StateError('Session Environment graph is not canonical.');
+    }
+    final retained = identities.single.values;
+    validateSessionIdentity(retained);
+    if (retained['task_id'] != retained['environment_task_id'] ||
+        retained.entries.any((entry) => identity[entry.key] != entry.value)) {
+      throw StateError('Session Environment graph differs from the evidence.');
+    }
+    const association = '''
+FROM adele_product_sessions s
+JOIN adele_product_tasks t ON t.id=s.task_id
+JOIN adele_product_projects p ON p.id=t.project_id
+JOIN adele_product_session_environment_authority a ON a.session_id=s.id
+JOIN adele_product_environments e ON e.id=a.environment_id
+WHERE s.id=:session AND s.task_id=:task AND t.project_id=:project
+ AND e.id=:environment AND e.task_id=s.task_id AND s.strategy_id=:strategy
+ AND p.source_location=:source AND t.title=:title
+ AND e.role=:role AND e.provider_id=:provider
+''';
+    final parameters = <String, Object?>{
+      ':task': identity['task_id'],
+      ':project': identity['project_id'],
+      ':environment': identity['environment_id'],
+      ':strategy': identity['strategy_id'],
+      ':source': identity['source_location'],
+      ':title': identity['task_title'],
+      ':role': identity['environment_role'],
+      ':provider': identity['environment_provider_id'],
+    };
+    Future<List<RelationalRow>> version(String owner) => query(
+      'SELECT version FROM adele_schema_versions WHERE owner_id=:owner '
+      'AND EXISTS (SELECT 1 $association) LIMIT 2',
+      {...parameters, ':owner': owner},
+    );
+    final productVersions = await version('dev.adele.product');
+    if (productVersions.length != 1 ||
+        productVersions.single.values['version'] != 1) {
+      throw StateError('No supported retained product schema.');
+    }
+    final project = Project(
+      id: ProjectId(identity['project_id'] as String),
+      sourceLocation: Uri.parse(identity['source_location'] as String),
+    );
+    final task = Task(
+      id: TaskId(identity['task_id'] as String),
+      projectId: project.id,
+      title: identity['task_title'] as String,
+    );
+    final session = Session(
+      id: SessionId(sessionId),
+      taskId: task.id,
+      strategyId: OrchestrationStrategyId(identity['strategy_id'] as String),
+    );
+    var environment = Environment(
+      id: EnvironmentId(identity['environment_id'] as String),
+      taskId: task.id,
+      role: EnvironmentRole.values.byName(
+        identity['environment_role'] as String,
+      ),
+      providerId: ProviderId(identity['environment_provider_id'] as String),
+      providerState: null,
+    );
 
     SessionEvaluationHandoff unavailable(String reason) =>
         SessionEvaluationHandoff._(
@@ -57,6 +138,34 @@ final class SessionEvaluationHandoff {
 
     if (environment.providerId.value != 'dev.adele.environment.git-worktree') {
       return unavailable('unsupported Environment provider.');
+    }
+    final List<RelationalRow> states;
+    try {
+      states = await query(
+        'SELECT e.provider_state_json $association LIMIT 2',
+        parameters,
+      );
+    } on Object {
+      return unavailable('retained Environment provider state is unavailable.');
+    }
+    if (states.length != 1) {
+      throw StateError('Session Environment graph differs from the evidence.');
+    }
+    try {
+      final encoded = states.single.values['provider_state_json'];
+      final state = encoded is String ? jsonDecode(encoded) : null;
+      if (state is! Map<String, Object?>) {
+        return unavailable('invalid or unsupported stock Git v2 state.');
+      }
+      environment = Environment(
+        id: environment.id,
+        taskId: environment.taskId,
+        role: environment.role,
+        providerId: environment.providerId,
+        providerState: state,
+      );
+    } on FormatException {
+      return unavailable('invalid or unsupported stock Git v2 state.');
     }
     // Match the stock provider's v2 schema without importing its implementation.
     // Production core keeps this state opaque.
@@ -96,12 +205,34 @@ final class SessionEvaluationHandoff {
 
     final String baseline;
     try {
-      baseline = developmentGitBaselineCommit(
-        lifecycle,
-        environment,
-        branch: branch,
-        session: session,
+      final versions = await version('dev.adele.plugin.git');
+      if (versions.length != 1 || versions.single.values['version'] != 1) {
+        return unavailable(
+          'retained Git SQL baseline is unavailable or invalid.',
+        );
+      }
+      final anchors = await query(
+        'SELECT g.baseline_commit, g.expected_branch_ref '
+        'FROM adele_git_task_anchors g WHERE g.environment_id=:environment '
+        'AND EXISTS (SELECT 1 $association AND e.id=g.environment_id) LIMIT 2',
+        parameters,
       );
+      if (anchors.length != 1) {
+        return unavailable(
+          'retained Git SQL baseline is unavailable or invalid.',
+        );
+      }
+      final row = anchors.single.values;
+      final commit = row['baseline_commit'];
+      if (commit is! String ||
+          !RegExp(r'^(?:[0-9a-f]{40}|[0-9a-f]{64})$').hasMatch(commit) ||
+          controls.hasMatch(commit) ||
+          row['expected_branch_ref'] != 'refs/heads/$branch') {
+        return unavailable(
+          'retained Git SQL baseline is unavailable or invalid.',
+        );
+      }
+      baseline = commit;
     } on Object {
       return unavailable(
         'retained Git SQL baseline is unavailable or invalid.',

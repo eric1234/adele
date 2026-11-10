@@ -2,10 +2,9 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:flutter_test/flutter_test.dart';
+import 'package:session_evaluator_backend/session_evaluator_backend.dart';
 import 'package:session_evaluator_contract/session_evaluator_contract.dart';
-
-import '../tool/session_evidence_exporter.dart';
+import 'package:test/test.dart';
 
 void main() {
   late Directory directory;
