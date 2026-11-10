@@ -2488,6 +2488,7 @@ void main() {
   for (final descriptor in [
     _projectSelector,
     _command,
+    _sessionCommand,
     _consoleActionCommand,
     _mainContentActionCommand,
   ]) {
@@ -2750,6 +2751,124 @@ void main() {
     expect(() => frontend.extensions.clear(), throwsUnsupportedError);
   });
 
+  PreparedSessionCommandExtension sessionCommand({
+    String label = 'Run Session Command',
+    String library = 'package:example_frontend/command.dart',
+    String entrypoint = 'runSessionCommand',
+    Iterable<String> backendServices = const [],
+  }) => PreparedSessionCommandExtension(
+    extensionId: ExtensionId(_sessionCommand['extensionId']!),
+    commandId: CommandId(_sessionCommand['commandId']!),
+    label: label,
+    library: library,
+    entrypoint: entrypoint,
+    backendServices: backendServices,
+  );
+
+  for (final explicitServices in [false, true]) {
+    test(
+      'Session Command defaults are frontend-only with explicit services=$explicitServices',
+      () async {
+        await install(
+          'session-command',
+          _manifest(
+            components: {
+              'frontend': {
+                ..._frontend(),
+                'extensions': [
+                  {
+                    ..._sessionCommand,
+                    if (explicitServices) 'backendServices': <String>[],
+                  },
+                ],
+              },
+            },
+          ),
+        );
+        final catalog = await PreparedPluginCatalog.discover(root.path);
+        expect(catalog.issues, isEmpty);
+        final installation = catalog.installations.single;
+        expect(installation.backendArtifactUri, isNull);
+        expect(installation.frontend!.presentations, isEmpty);
+        final parsed =
+            installation.frontend!.extensions.single
+                as PreparedSessionCommandExtension;
+        expect(
+          parsed.extensionId,
+          ExtensionId(_sessionCommand['extensionId']!),
+        );
+        expect(parsed.commandId, CommandId(_sessionCommand['commandId']!));
+        expect(parsed.label, _sessionCommand['label']);
+        expect(parsed.library, _sessionCommand['library']);
+        expect(parsed.entrypoint, _sessionCommand['entrypoint']);
+        expect(parsed.backendServices, isEmpty);
+        expect(parsed.backendServices.clear, throwsUnsupportedError);
+        expect(parsed.toJson(), {
+          ..._sessionCommand,
+          'backendServices': <String>[],
+        });
+        final descriptor = sessionCommand();
+        expect(descriptor.toJson(), parsed.toJson());
+        expect(descriptor.backendServices.clear, throwsUnsupportedError);
+      },
+    );
+  }
+
+  test('Session Command snapshots and roundtrips service allowlists', () async {
+    final services = ['example.session', 'testService', 'V1_read-write'];
+    final descriptor = sessionCommand(backendServices: services);
+    services.clear();
+    expect(descriptor.backendServices, [
+      'example.session',
+      'testService',
+      'V1_read-write',
+    ]);
+    expect(descriptor.backendServices.clear, throwsUnsupportedError);
+    expect(
+      () => descriptor.backendServices[0] = 'other.service',
+      throwsUnsupportedError,
+    );
+    final commands = [
+      descriptor,
+      for (final label in [
+        '  Session Command with spaces  ',
+        'Ouvrir le projet \u00e9tendu',
+        'L' * 160,
+        '\u{1f680}' * 80,
+      ])
+        sessionCommand(
+          label: label,
+          library: 'package:example_frontend/src/another_command.g.dart',
+          entrypoint: r'_runSessionCommand$2',
+        ),
+    ];
+    final json = commands.map((command) => command.toJson()).toList();
+    await install(
+      'session-commands',
+      _manifest(
+        components: {
+          'frontend': {..._frontend(), 'extensions': json},
+        },
+      ),
+    );
+    final catalog = await PreparedPluginCatalog.discover(root.path);
+    expect(catalog.issues, isEmpty);
+    final installation = catalog.installations.single;
+    expect(installation.backendArtifactUri, isNull);
+    final parsed = installation.frontend!.extensions
+        .cast<PreparedSessionCommandExtension>();
+    expect(parsed.map((command) => command.toJson()), json);
+    (json.first['backendServices']! as List)[0] = 'changed.service';
+    json.first.clear();
+    expect(descriptor.toJson()['backendServices'], [
+      'example.session',
+      'testService',
+      'V1_read-write',
+    ]);
+    expect(parsed.first.toJson(), descriptor.toJson());
+    expect(parsed.first.backendServices.clear, throwsUnsupportedError);
+  });
+
   PreparedConsoleActionCommandExtension consoleActionCommand({
     String actionId = 'new-console',
   }) => PreparedConsoleActionCommandExtension(
@@ -2841,6 +2960,7 @@ void main() {
             ),
             'extensions': [
               _command,
+              _sessionCommand,
               _consoleActionCommand,
               _mainContentActionCommand,
               _projectSelector,
@@ -2867,6 +2987,7 @@ void main() {
     );
     expect(frontend.extensions.map((extension) => extension.toJson()), [
       _command,
+      {..._sessionCommand, 'backendServices': <String>[]},
       _consoleActionCommand,
       _mainContentActionCommand,
       _projectSelector,
@@ -3377,6 +3498,186 @@ void main() {
     });
   }
 
+  final invalidSessionCommandServices = <Object?>[
+    null,
+    false,
+    1,
+    'example.session',
+    {},
+    [null],
+    [false],
+    [1],
+    [<Object?>[]],
+    [<String, Object?>{}],
+    for (final service in [
+      '',
+      ' ',
+      ' example.session',
+      'example.session ',
+      'example.session\n',
+      'example/session',
+      'example..session',
+      '.example.session',
+      'example.session-',
+      'example.s\u00e9ssion',
+    ])
+      [service],
+    ['example.session', 'example.session'],
+  ];
+
+  test('Session Command constructor validates operation and services', () {
+    for (final label in invalidCommandLabels) {
+      expect(() => sessionCommand(label: label), throwsArgumentError);
+    }
+    for (final library in invalidCommandOperations['library']!) {
+      expect(() => sessionCommand(library: library), throwsFormatException);
+    }
+    for (final entrypoint in invalidCommandOperations['entrypoint']!) {
+      expect(
+        () => sessionCommand(entrypoint: entrypoint),
+        throwsFormatException,
+      );
+    }
+    for (final services
+        in invalidSessionCommandServices.whereType<List<String>>()) {
+      expect(
+        () => sessionCommand(backendServices: services),
+        throwsFormatException,
+      );
+    }
+  });
+
+  final invalidSessionCommands = <String, Object?>{
+    'case-sensitive kind': {..._sessionCommand, 'kind': 'SessionCommand'},
+    for (final field in [
+      'unknown',
+      'role',
+      'displayName',
+      'projectProviderId',
+      'providerId',
+      'pluginId',
+      'backendId',
+      'optionalBackendServices',
+      'capabilities',
+      'strategyId',
+      'strategyAffinity',
+      'sessionExecution',
+      'sessionFeedback',
+      'requiresSession',
+      'environmentTextFiles',
+      'hostAdapter',
+      'configuration',
+      'availability',
+      'arguments',
+      'context',
+      'projectId',
+      'taskId',
+      'sessionId',
+      'environmentId',
+      'environmentKey',
+      'authority',
+      'grants',
+      'permissions',
+      'hostServices',
+      'hostContext',
+      'hostInvocationContext',
+      'hostInfrastructureContext',
+    ])
+      'unsupported $field': {..._sessionCommand, field: 'unsupported'},
+    for (final field in ['extensionId', 'commandId'])
+      for (final id in [
+        'command',
+        'not namespaced',
+        'org.Example.command',
+        'org.example..command',
+        'org.example.command-',
+        'org.example.-command',
+        'org.example_command',
+        'org.ex\u00e4mple.command',
+        ' org.example.command',
+        'org.example.command ',
+        'org.example.command\n',
+      ])
+        'invalid $field ${jsonEncode(id)}': {..._sessionCommand, field: id},
+    for (final label in invalidCommandLabels)
+      'invalid label ${jsonEncode(label)}': {
+        ..._sessionCommand,
+        'label': label,
+      },
+    for (final field in invalidCommandOperations.entries)
+      for (final value in field.value)
+        'invalid ${field.key} ${jsonEncode(value)}': {
+          ..._sessionCommand,
+          field.key: value,
+        },
+    for (final services in invalidSessionCommandServices)
+      'invalid services ${jsonEncode(services)}': {
+        ..._sessionCommand,
+        'backendServices': services,
+      },
+  };
+  for (final entry in invalidSessionCommands.entries) {
+    test('Session Command ${entry.key} invalidates only frontend', () async {
+      final directory = await install(
+        'invalid-session-command',
+        _manifest(
+          components: {
+            'backend': {
+              'artifact': 'backend.aot',
+              'consumesCapabilities': [consumedCapability],
+            },
+            'frontend': {
+              ..._frontend(presentations: [_session]),
+              'extensions': [_command, entry.value, _projectSelector],
+            },
+          },
+        ),
+      );
+      final healthyDirectory = await install(
+        'healthy',
+        _manifest(
+          id: 'org.example.healthy',
+          components: {
+            'backend': {'artifact': 'backend.aot'},
+            'frontend': {
+              ..._frontend(),
+              'extensions': [_command],
+            },
+          },
+        ),
+      );
+      final catalog = await PreparedPluginCatalog.discover(root.path);
+      expect(catalog.installations, hasLength(2));
+      final installation = catalog.installations.last;
+      expect(installation.frontend, isNull);
+      expect(
+        installation.backendArtifactUri,
+        directory.uri.resolve('backend.aot'),
+      );
+      expect(installation.backendConsumedCapabilitiesToJson(), [
+        consumedCapability,
+      ]);
+      final healthy = catalog.installations.first;
+      expect(healthy.metadata.id, PluginId('org.example.healthy'));
+      expect(
+        healthy.backendArtifactUri,
+        healthyDirectory.uri.resolve('backend.aot'),
+      );
+      expect(healthy.frontend!.extensions.single.toJson(), _command);
+      final issue = catalog.issues.single;
+      expect(issue.component, PreparedPluginComponent.frontend);
+      expect(issue.pluginId, installation.metadata.id);
+      expect(issue.installationDirectory.uri, directory.uri);
+      expect(issue.message, isNotEmpty);
+      if (entry.key.startsWith('invalid label')) {
+        expect(issue.message, contains('frontend.extensions[1].label'));
+      }
+      if (entry.key.startsWith('unsupported')) {
+        expect(issue.message, contains('unsupported fields'));
+      }
+    });
+  }
+
   test('explicit empty extensions coexist with presentations', () async {
     await install(
       'frontend',
@@ -3603,6 +3904,7 @@ void main() {
     _modelNativeActivity,
     _projectSelector,
     _command,
+    _sessionCommand,
     _consoleActionCommand,
     _mainContentActionCommand,
   ]) {
@@ -3675,6 +3977,11 @@ void main() {
     'string descriptor': 'session',
     'behavioral extension in presentations': _projectSelector,
     'command extension in presentations': _command,
+    'session command extension in presentations': _sessionCommand,
+    'session command presentation role': {
+      ..._sessionCommand,
+      'role': 'sessionCommand',
+    }..remove('kind'),
     'console action command extension in presentations': _consoleActionCommand,
     'console action command presentation role': {
       ..._consoleActionCommand,
@@ -4515,6 +4822,15 @@ const _command = {
   'label': 'Run Command',
   'library': 'package:example_frontend/command.dart',
   'entrypoint': 'runCommand',
+};
+
+const _sessionCommand = {
+  'kind': 'sessionCommand',
+  'extensionId': 'org.example.session-command-extension',
+  'commandId': 'org.example.session-command',
+  'label': 'Run Session Command',
+  'library': 'package:example_frontend/command.dart',
+  'entrypoint': 'runSessionCommand',
 };
 
 const _consoleActionCommand = {

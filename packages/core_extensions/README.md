@@ -61,9 +61,14 @@ asynchronous invocation on retirement nor migrates its completion. Implementatio
 lifetimes still apply; failures propagate to the invoking surface for safe containment.
 
 Registration supports native/in-process, context-free remote backend, and
-context-free prepared frontend contributions, independently of Main Content,
-Console, or other presentation. A narrow prepared Console-action adapter also
-uses this same contract, without extending its context or authority API.
+context-free and Session-aware prepared frontend contributions, independently of
+Main Content, Console, or other presentation. Narrow prepared Console-action and
+Main Content input-action adapters also use this same contract, without extending
+its context or authority API. The Session-aware form uses separately supplied
+`WindowSessionContext` in native hosting, passing only the captured Session ID to
+its operation. Its optional owning-backend access is an explicit prepared service
+allowlist, not authority inferred from Session identity. Arbitrary contextual
+Commands remain unsupported.
 Prepared metadata reuses `CommandId` and
 `CommandContribution.validateLabel`; adaptation and evaluator lifetime belong to
 the [application frontend owner](../../app/README.md#prepared-frontend-activation).

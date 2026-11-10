@@ -244,6 +244,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     _frontends = ApplicationFrontendBootstrap(
       extensions: _runtime.extensions,
       backends: _runtime.plugins,
+      sessionContext: _sessionContext.context,
       sessionServices: PreparedSessionServices(
         extensions: _runtime.extensions,
         backends: _runtime.plugins,

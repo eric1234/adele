@@ -219,6 +219,24 @@ Registration retirement fences new admission; retiring the frontend generation
 also invalidates its active operations through existing evaluator lifetime rules.
 Captured bindings/callbacks never retarget a replacement, even when IDs are reused.
 
+`PreparedSessionCommandExtension` uses the same point through
+[`PreparedSessionCommand`](lib/frontend/prepared_session_command.dart). The window
+supplies its existing `WindowSessionContext` to `ApplicationFrontendBootstrap`;
+the adapter observes committed selection and backend readiness for synchronous
+availability invalidation. Admission passes one captured Session ID string to a
+fresh finite evaluator. Optional services use `backendForInstallation` and
+`openPresentationChannel` with the existing `OwningBackendBridge`, not a strategy
+binding or another plugin's backend. No backend is needed for an empty allowlist.
+`stopStarting` synchronously fences these operations during shutdown before the
+window awaits other cleanup; exact backend retirement also ends pending native
+waits. Registration-only retirement stops discovery observation without cancelling
+admitted work. See the [Command lifecycle](../docs/architecture/plugin-system.md#commands-and-input)
+and [authority boundary](../docs/architecture/contracts-and-capabilities.md#frontend-behavioral-operations).
+The neutral [Session Command integration fixture](test/prepared_session_command_test.dart)
+exercises actual catalog activation, interpreted execution, and generated AOT
+unary/stream transport; `application_test.dart` checks window selection and palette
+composition through the normal application.
+
 `PreparedConsoleActionCommandExtension` and
 `PreparedMainContentActionCommandExtension` instead declare one exact sibling
 Console creation action or Main Content input action. Activation validates the
@@ -1376,7 +1394,9 @@ requiring a frontend, presentation, or open Project. Backend retirement removes
 its registrations and refreshes an open palette through the existing registry stream.
 Prepared frontend activation adapts behavioral descriptors through that same point;
 frontend retirement refreshes membership identically. The palette has no transport
-or descriptor-specific path. The explicit contextual adapters are described in
+or descriptor-specific path. The Session-aware form is described in
+[prepared activation](#prepared-frontend-activation); the sibling-action adapters
+are described in
 [Session console](#session-console) and [Grouped Main Content](#grouped-main-content);
 general contextual authority,
 plugin/default keybinding registration, configurable bindings and overrides,

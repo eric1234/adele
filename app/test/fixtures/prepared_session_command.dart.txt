@@ -1,0 +1,188 @@
+import 'package:adele_ui/capability_bridge.dart';
+import 'package:adele_ui/directory_picker_bridge.dart';
+import 'package:adele_ui/environment_access_bridge.dart';
+import 'package:adele_ui/environment_capability_bridge.dart';
+import 'package:adele_ui/main_content_bridge.dart';
+import 'package:adele_ui/owning_backend_bridge.dart';
+import 'package:adele_ui/session_execution_bridge.dart';
+import 'package:session_command_probe/contract.dart';
+
+int calls = 0;
+
+void local(String sessionId) {
+  calls++;
+  if (calls != 1 || !sessionId.startsWith('session-')) {
+    throw StateError('Expected a fresh runtime and captured Session identity.');
+  }
+}
+
+void independent() {}
+
+CapabilityProbeServiceClient client() => CapabilityProbeServiceClient(
+  OwningBackendRequestChannel(capabilityProbeServiceId),
+);
+
+void checkValue(ProbeValue value, String text) {
+  if (value.provider != 'OWNER' ||
+      value.configuration != 'default' ||
+      value.text != text) {
+    throw StateError('Generated value reached the wrong owner or Session.');
+  }
+}
+
+Future<void> unary(String sessionId) async {
+  final value = await client().read(sessionId);
+  checkValue(value, sessionId);
+}
+
+Future<void> captured(String sessionId) async {
+  final service = client();
+  checkValue(await service.read('held'), 'held');
+  checkValue(await service.read(sessionId), sessionId);
+}
+
+Future<void> bounded(String sessionId) => StreamOperation().bounded(sessionId);
+Future<void> paused(String sessionId) => StreamOperation().paused(sessionId);
+Future<void> observing(String sessionId) =>
+    StreamOperation().observing(sessionId);
+
+class StreamOperation {
+  final values = <String>[];
+  bool failed = false;
+  bool delivered = false;
+  dynamic subscription;
+
+  Future<void> bounded(String sessionId) async {
+    subscription = client()
+        .watch('bounded')
+        .listen(
+          (ProbeValue value) {
+            checkValue(value, value.sequence == 1 ? 'first' : 'last');
+            values.add('${value.sequence}:${value.text}');
+          },
+          onError: (Object error) {
+            failed = true;
+          },
+          onDone: () {
+            client().read('bounded-done');
+          },
+        );
+    await client().read('held');
+    if (failed || values.join(',') != '1:first,2:last') {
+      throw StateError('Generated stream was incomplete or out of order.');
+    }
+    await unary(sessionId);
+  }
+
+  Future<void> paused(String sessionId) async {
+    subscription = client()
+        .watch('gated')
+        .listen(
+          (ProbeValue value) {
+            delivered = true;
+            checkValue(value, 'queued');
+            client().read('delivered');
+          },
+          onError: (Object error) {
+            failed = true;
+          },
+        );
+    subscription.pause();
+    await client().read('held');
+    if (delivered) throw StateError('A paused subscription delivered an item.');
+    subscription.resume();
+    await client().read('held-completion');
+    await subscription.cancel();
+    if (failed || !delivered) throw StateError('Observation unavailable.');
+    await unary(sessionId);
+  }
+
+  Future<void> observing(String sessionId) async {
+    subscription = client()
+        .watch('gated')
+        .listen(
+          (ProbeValue value) {
+            throw StateError('Unexpected observation after retirement.');
+          },
+          onError: (Object error) {
+            failed = true;
+          },
+        );
+    await client().read('held-observation');
+    if (failed) throw StateError('Observation unavailable.');
+    await unary(sessionId);
+  }
+}
+
+Future<void> undeclared(String sessionId) async {
+  await requestOwningBackend(
+    'test.capability.private',
+    'test.capability.probe.read',
+    <String, dynamic>{'scope': sessionId},
+  );
+}
+
+Future<void> foreign(String sessionId) async {
+  await requestOwningBackend(
+    'test.foreign.service',
+    'test.capability.probe.read',
+    <String, dynamic>{'scope': sessionId, 'pluginId': 'test.session.foreign'},
+  );
+}
+
+Future<void> backendFailure(String sessionId) async {
+  final result = await settleOwningBackendOperation(client().read('fail'));
+  if (result[0] != false || result[1] != null) {
+    throw StateError('Backend failure escaped safe settlement.');
+  }
+}
+
+Future<void> picker(String sessionId) async {
+  await pickDirectory();
+}
+
+void panes(String sessionId) {
+  openMainContentPane(sessionId, 'Forbidden', true);
+}
+
+void capabilities(String sessionId) {
+  discoverCapabilityProviders('test.capability.read', 1);
+}
+
+Future<void> environmentRead(String sessionId) async {
+  await readEnvironmentTextFile('private.txt');
+}
+
+Future<void> environmentWrite(String sessionId) async {
+  await replaceEnvironmentTextFile('private.txt', 'forbidden', 'revision');
+}
+
+Future<void> environmentProcess(String sessionId) async {
+  await resolveEnvironmentBufferedProcessCapabilityProvider(
+    'test.capability.read',
+    1,
+    capabilityProbeServiceId,
+    null,
+  );
+}
+
+Future<void> execution(String sessionId) async {
+  await startSessionRun();
+}
+
+void approval(String sessionId) {
+  buildSessionExecutionStatus();
+}
+
+int malformed(String sessionId) => 42;
+
+Future<int> malformedAsync(String sessionId) async => 42;
+
+void wrongArgument(int sessionId) {
+  if (sessionId.isEven)
+    throw StateError('An integer is not a Session identity.');
+}
+
+Future<void> failure(String sessionId) async {
+  throw StateError('private session-command diagnostic');
+}

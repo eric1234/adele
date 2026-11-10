@@ -277,6 +277,18 @@ adapts them to the shared public Command contract. Supported descriptor kinds ar
 additive under the version-1 envelope. See
 [Commands and input](plugin-system.md#commands-and-input).
 
+The additive `sessionCommand` behavioral variant explicitly requires current
+Session selection and names its own operation, unlike the sibling-action adapters
+below. It supplies the normal Command identity/label/ABI metadata and an optional
+owning-backend service allowlist. It has no caller-selected Session, backend,
+configuration route, or general authority fields. Parsing failure stays within the
+frontend component boundary, preserving healthy independent components. Backend
+absence does not invalidate the descriptor or frontend activation. Exact schema
+and the single captured-Session-ID operation argument belong to the
+[catalog owner](../../packages/plugin_runtime/README.md#prepared-catalog);
+[behavioral operations](contracts-and-capabilities.md#frontend-behavioral-operations)
+owns the authority boundary.
+
 The additive `consoleActionCommand` behavioral variant instead identifies a
 semantic `commandId`, its registration `extensionId`, and an exact sibling
 `consoleExtensionId` / local `actionId` target. It has no library, entrypoint,

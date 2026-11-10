@@ -247,6 +247,51 @@ final class PreparedCommandExtension extends PreparedFrontendExtension {
   };
 }
 
+/// A finite Command requiring a selected Session, not arbitrary host context.
+final class PreparedSessionCommandExtension extends PreparedFrontendExtension {
+  PreparedSessionCommandExtension({
+    required this.extensionId,
+    required this.commandId,
+    required this.label,
+    required this.library,
+    required this.entrypoint,
+    Iterable<String> backendServices = const [],
+  }) : backendServices = List.unmodifiable(backendServices) {
+    CommandContribution.validateLabel(label);
+    _library(library, 'library');
+    _entrypoint(entrypoint, 'entrypoint');
+    final seen = <String>{};
+    for (final service in this.backendServices) {
+      adeleValidateServiceId(service);
+      if (!seen.add(service)) {
+        throw const FormatException(
+          'backendServices must not contain duplicates.',
+        );
+      }
+    }
+  }
+
+  final ExtensionId extensionId;
+  final CommandId commandId;
+  final String label;
+  final String library;
+  final String entrypoint;
+
+  /// Explicit service allowlist for the exact owning backend, not a selector.
+  final List<String> backendServices;
+
+  @override
+  Map<String, Object?> toJson() => {
+    'kind': 'sessionCommand',
+    'extensionId': extensionId.value,
+    'commandId': commandId.value,
+    'label': label,
+    'library': library,
+    'entrypoint': entrypoint,
+    'backendServices': [...backendServices],
+  };
+}
+
 /// Names an existing console creation action without a separate operation.
 final class PreparedConsoleActionCommandExtension
     extends PreparedFrontendExtension {
@@ -1544,6 +1589,35 @@ PreparedFrontendExtension _extension(Object? value, String label) {
           label: _text(value['label'], '$label.label', blank: true),
           library: _library(value['library'], '$label.library'),
           entrypoint: _entrypoint(value['entrypoint'], '$label.entrypoint'),
+        );
+      } on ArgumentError catch (error) {
+        throw FormatException('$label.label: ${error.message}');
+      }
+    case 'sessionCommand':
+      _object(value, label, {
+        'kind',
+        'extensionId',
+        'commandId',
+        'label',
+        'library',
+        'entrypoint',
+        'backendServices',
+      });
+      final services = value.containsKey('backendServices')
+          ? value['backendServices']
+          : const <String>[];
+      if (services is! List<Object?> ||
+          services.any((item) => item is! String)) {
+        throw FormatException('$label.backendServices must be a string array.');
+      }
+      try {
+        return PreparedSessionCommandExtension(
+          extensionId: ExtensionId(text('extensionId')),
+          commandId: CommandId(text('commandId')),
+          label: _text(value['label'], '$label.label', blank: true),
+          library: _library(value['library'], '$label.library'),
+          entrypoint: _entrypoint(value['entrypoint'], '$label.entrypoint'),
+          backendServices: services.cast<String>(),
         );
       } on ArgumentError catch (error) {
         throw FormatException('$label.label: ${error.message}');
