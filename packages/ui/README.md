@@ -222,6 +222,20 @@ The bridge libraries are interpreted-only stubs. App-owned eval declarations and
 native implementations supply their behavior; calling a stub natively throws
 `UnsupportedError`.
 
+- `command_bridge.dart` supplies `Future<bool> writeCommandClipboard(String text)`
+  and `void showCommandFeedback(String message)` only to admitted prepared Session
+  Commands. `clipboardWrite` and `feedback` are separate default-false descriptor
+  opt-ins, not implied by Session identity or owning-backend access. Each text is
+  bounded to 16,384 UTF-16 code units. Clipboard access is write-only; true follows
+  OS acknowledgement, false reports platform copy failure without diagnostics, and
+  invalid/retired access throws. Native validation checks the operation and any
+  captured backend before submission and after acknowledgement. A write already
+  submitted to the OS cannot be recalled. Feedback is selectable, nonmodal text
+  without retained callbacks or authority. The bridge logs neither text nor
+  platform diagnostics. Compile declarations grant no access; context-free
+  Commands and other interpreted roles receive none. See the
+  [authority boundary](../../docs/architecture/contracts-and-capabilities.md#frontend-behavioral-operations)
+  and [native host](../../app/README.md#prepared-frontend-activation).
 - `owning_backend_bridge.dart` supplies `OwningBackendRequestChannel` for generated
   unary and server-streaming clients via `AdeleStreamChannel`. Requests are limited
   to descriptor-allowlisted services on the
@@ -687,5 +701,5 @@ replacement. Prepared hosting and runtime-local failure containment belong to th
 app, not this public API. Terminal evidence persistence belongs to the
 [execution-history owner](../../docs/architecture/execution-model.md#terminal-execution-history),
 not UI; it does not restore open cards, handles, or workbench layout. Broader
-workbench, Commands, workbench persistence, and general third-party interpreted
-Flutter compatibility remain deferred.
+workbench, generalized Command context, workbench persistence, and general
+third-party interpreted Flutter compatibility remain deferred.

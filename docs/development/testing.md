@@ -731,10 +731,11 @@ relative to `app/`; this is a testing map, not an application architecture map.
 | Changed boundary | Representative app test paths |
 | --- | --- |
 | Zero-plugin runtime/shell | [`test/core/adele_runtime_test.dart`](../../app/test/core/adele_runtime_test.dart), [`test/application_test.dart`](../../app/test/application_test.dart) |
-| Window Session Context | [`test/core/window_session_context_test.dart`](../../app/test/core/window_session_context_test.dart) (pure-Dart snapshot/revision, observer isolation/cleanup, independent windows, and native Command invocation capture); [`test/application_test.dart`](../../app/test/application_test.dart) (native attachment, canonical Main Content/Console selection, palette admission, and cleanup); existing prepared navigation, concurrent Session, and shutdown cases in [`test/core/normal_chatgpt_run_integration_test.dart`](../../app/test/core/normal_chatgpt_run_integration_test.dart) (pending/rejected preflight, committed departure, Inspection clearing, background Run isolation, and shutdown). These app files are discovered by the maintained desktop target. |
+| Window Session Context | [`test/core/window_session_context_test.dart`](../../app/test/core/window_session_context_test.dart) (pure-Dart snapshot/revision, observer isolation/cleanup, independent windows, and native Command invocation capture); [`test/application_test.dart`](../../app/test/application_test.dart) (canonical Main Content/Console selection, palette admission, and cleanup without external context attachment); existing prepared navigation, concurrent Session, and shutdown cases in [`test/core/normal_chatgpt_run_integration_test.dart`](../../app/test/core/normal_chatgpt_run_integration_test.dart) (pending/rejected preflight, committed departure, Inspection clearing, background Run isolation, and shutdown). These app files are discovered by the maintained desktop target. |
 | Global Commands/Command Palette | [`test/command_palette_test.dart`](../../app/test/command_palette_test.dart), [`test/application_test.dart`](../../app/test/application_test.dart) (AppBar and fixed platform-shortcut dispatch across shell states, text-field focus restoration, modal isolation, repeat suppression, focus/search/keyboard/empty states, live conflicts and exact stale selection, safe failures, Session-only console toggling/navigation fencing, and application retirement); pure-Dart identity/resolution/admission belongs to the maintained `adele_core_extensions` target and [`commands_test.dart`](../../packages/core_extensions/test/commands_test.dart) |
 | Context-free remote Commands | [`test/core/remote_command_integration_test.dart`](../../app/test/core/remote_command_integration_test.dart) (real shared-host/probe AOT, strict backend-ready metadata, local availability, exact route/generation, retirement and admitted completion, and backend-only prepared installation through the actual application palette before Project opening); generated client/dispatcher payload and completion tests belong to [`remote_command_test.dart`](../../packages/core_extensions/test/remote_command_test.dart) in `adele_core_extensions` |
 | Context-free prepared frontend Commands | [`test/prepared_command_palette_test.dart`](../../app/test/prepared_command_palette_test.dart) (actual compiled EVC, normal frontend-only/no-presentation startup before Project opening, safe invocation failure, and live palette retirement/replacement); [`test/prepared_frontend_activation_test.dart`](../../app/test/prepared_frontend_activation_test.dart) covers operation validation, no-authority invocation/return shape, rollback, exact retirement and evaluator lifetime; the remote integration suite above proves native/backend/frontend coexistence. Strict descriptor parsing belongs to the maintained `plugin_runtime` catalog tests. |
+| Prepared Session Commands and native operations | [`test/prepared_session_command_test.dart`](../../app/test/prepared_session_command_test.dart) (actual EVC/AOT, canonical invocation capture, exact installation/backend routing, hidden/disabled/pending availability, registration versus generation retirement, navigation and shutdown); [`test/command_bridge_test.dart`](../../app/test/command_bridge_test.dart) (native and interpreted independent opt-ins, UTF-16 bounds, write-only clipboard acknowledgement/failure, retirement fencing, and safe feedback). Public native-stub denial belongs to `adele_ui`; strict descriptor parsing/roundtrip belongs to `plugin_runtime`. |
 | Contextual Console-action Commands | [`test/prepared_frontend_activation_test.dart`](../../app/test/prepared_frontend_activation_test.dart) (same-component target validation before publication); [`test/prepared_console_host_test.dart`](../../app/test/prepared_console_host_test.dart) (canonical authority, availability without EVC, shared creation/policy, safe warning, rollback, and asymmetric exact retirement); [`test/console_controller_test.dart`](../../app/test/console_controller_test.dart) (fresh post-reveal admission and owner/action pending state across context changes); stock palette/PTY evidence is in the Terminal case of [`test/core/normal_chatgpt_run_integration_test.dart`](../../app/test/core/normal_chatgpt_run_integration_test.dart). |
 | Contextual Main Content input-action Commands | [`test/prepared_frontend_activation_test.dart`](../../app/test/prepared_frontend_activation_test.dart) (exact sibling targets and synchronous rollback); [`test/prepared_main_content_host_test.dart`](../../app/test/prepared_main_content_host_test.dart) (availability and asymmetric registration/replacement lifetime); [`test/main_content_controller_test.dart`](../../app/test/main_content_controller_test.dart) and [`test/main_content_host_test.dart`](../../app/test/main_content_host_test.dart) (exact action/current attachment, single input route, shared button/Command presentation, safe factory failure, and navigation). Stock Source EVC/no-read-before-submit belongs to the Source frontend target; normal global palette behavior belongs to the Source cases in the normal application suite. |
 | Prepared backend/frontend bootstrap | [`test/core/application_plugin_bootstrap_test.dart`](../../app/test/core/application_plugin_bootstrap_test.dart), [`test/prepared_frontend_activation_test.dart`](../../app/test/prepared_frontend_activation_test.dart), [`test/prepared_frontend_failure_test.dart`](../../app/test/prepared_frontend_failure_test.dart) |
@@ -771,7 +772,7 @@ relative to `app/`; this is a testing map, not an application architecture map.
 | Terminal Run execution/restart | [`test/core/durable_run_lifecycle_test.dart`](../../app/test/core/durable_run_lifecycle_test.dart) (completed/failed fresh-runtime snapshot restore, unstarted/waiting close without invented outcomes, approval completion, SQLite and execution-plus-storage failures without retry, deferred mechanics draining, and no ID allocation or live execution/approval recreation) |
 | Session- or Environment-addressed plugin storage host | [`test/core/project_storage_host_test.dart`](../../app/test/core/project_storage_host_test.dart) (owner schema, canonical Project routing before Sessions, scalar/query bounds, atomic batches, explicit volatile distinction, later Session mirroring, and queued-entry revocation); [`test/core/backend_capability_integration_test.dart`](../../app/test/core/backend_capability_integration_test.dart) exercises the generated client over compiled infrastructure transport, owner/backing isolation and generation retirement/replacement without Environment execution grants. |
 | Durable Chat across real backend generations | [`test/core/durable_chat_session_integration_test.dart`](../../app/test/core/durable_chat_session_integration_test.dart) (conversation/configuration/plain-text draft, user-entry Run association, atomic draft submission, fresh-runtime reopen, and completed Run/activity retention despite Chat storage failure; real Local Directory/Git/Chat AOT backends and SQLite with a deterministic native model fixture, no paid provider) |
-| Session Evaluator retained evidence and temporary native handoff client | [`test/core/session_evaluator_integration_test.dart`](../../app/test/core/session_evaluator_integration_test.dart) (prepared Chat/Command Tools/evaluator AOT, both generated evaluator services, native Command Palette/confirmation/Copy, plugin-owned three-file publication, captured Session across navigation, cancellation, duplicate admission, partial coverage, safe failures, shutdown, retirement/replacement, read-only SQL snapshots and nonprimary Git provenance; temporary host path lookup and backend-side write gates, no paid provider); [`test/core/command_output_capture_integration_test.dart`](../../app/test/core/command_output_capture_integration_test.dart) (real Git/Command Tools/evaluator AOT, full decoded command export beyond the model-result bound, unsealed prefix, evaluator-only reopen, and whole-export limit failure). Plugin-local summary, source/README, writer and operation lifecycle suites live under [`session_evaluator/packages/backend/test`](../../plugins/session_evaluator/packages/backend/test/), not the app. See [focused checks](#focused-session-evaluator-checks); normal catalog/launcher selection belongs to tooling tests. |
+| Session Evaluator retained evidence and ordinary prepared handoff | [`test/core/session_evaluator_integration_test.dart`](../../app/test/core/session_evaluator_integration_test.dart) (prepared Chat/Command Tools/evaluator AOT and production evaluator EVC, generated services, normal application/Task Browser/palette composition, evaluator absence, automatic copy and selectable copy-failure feedback, plugin-owned three-file publication, captured Session across navigation, cancellation, duplicate admission, partial coverage, safe failures, shutdown, retirement/replacement, read-only SQL snapshots and nonprimary Git provenance; temporary host path lookup and backend-side write gates, no paid provider); [`test/core/command_output_capture_integration_test.dart`](../../app/test/core/command_output_capture_integration_test.dart) (real Git/Command Tools/evaluator AOT, full decoded command export beyond the model-result bound, unsealed prefix, evaluator-only reopen, and whole-export limit failure). Plugin-local summary, source/README, writer and operation lifecycle suites live under [`session_evaluator/packages/backend/test`](../../plugins/session_evaluator/packages/backend/test/); compiled completion/copy tests belong to its frontend package. See [focused checks](#focused-session-evaluator-checks); normal catalog/compiler-input/launcher selection belongs to tooling tests. |
 | Prepared Chat applicability/composer/history | [`chat_strategy_frontend/test/chat_frontend_eval_test.dart`](../../plugins/chat_strategy/packages/frontend/test/chat_frontend_eval_test.dart) (initializer strategy match without service acquisition, local service failure, plugin-owned layout, draft saves/submission/retry, latest-save deactivation settlement, recoverable failure/pending-Send refusal, stale snapshot protection, historical activity placement, and preserving live handles during refresh) |
 | Contributed-pane services and departure settlement | [`test/session_presentation_lifecycle_bridge_test.dart`](../../app/test/session_presentation_lifecycle_bridge_test.dart), [`test/prepared_session_services_test.dart`](../../app/test/prepared_session_services_test.dart), [`test/prepared_main_content_host_test.dart`](../../app/test/prepared_main_content_host_test.dart) (exact service/affinity capture, per-pane hooks, async acceptance/failure/retry, no-hook behavior, retirement during settlement, and action revocation on unbind/reopen without closing execution) |
 | Session execution/approval | [`test/session_execution_test.dart`](../../app/test/session_execution_test.dart), [`test/session_execution_bridge_test.dart`](../../app/test/session_execution_bridge_test.dart), [`test/core/approval_gated_tool_policy_test.dart`](../../app/test/core/approval_gated_tool_policy_test.dart) (passive retained-owner lookup, independent Session advancement, shared IDs, exact approval isolation, semantic readiness, and all-owner shutdown) |
@@ -801,6 +802,7 @@ targets from the repository root:
 ```sh
 dart tools/adele.dart test --target session_evaluator_contract
 dart tools/adele.dart test --target session_evaluator_backend
+dart tools/adele.dart test --target session_evaluator_frontend
 dart tools/adele.dart generate --check
 ```
 
@@ -816,6 +818,19 @@ These do not replace the real prepared-backend/native-directory boundary tests.
 The separate handoff contract suite validates the one-path completion shape,
 failed/empty/duplicate completion, and generated effectful-service routing.
 
+The [frontend suite](../../plugins/session_evaluator/packages/frontend/test/session_evaluator_frontend_eval_test.dart)
+uses the production EVC compiler, generated handoff client, and real generic bridges
+with a scripted service channel and mocked platform clipboard. It owns exact
+path/cardinality/EOF validation, malformed generated items, automatic copy only
+after successful EOF, OS acknowledgement, distinct preparation/copy failure,
+safe feedback, and retirement. Its native-helper compilation case records the
+pinned `StreamIterator` constraint; the workaround stays plugin-local. Generic
+Session capture and per-registration admission belong to
+`app/test/prepared_session_command_test.dart`; default-denied independent bridge
+opt-ins, bounds, and lifetime fencing belong to `app/test/command_bridge_test.dart`.
+These isolated checks do not replace normal application composition or real AOT
+publication below.
+
 The plugin-owned [summary suite](../../plugins/session_evaluator/packages/backend/test/session_evaluation_summary_test.dart) owns
 deterministic factual projections, null/zero/partial usage coverage, Run-local
 ordering and identities, bounded references, and exact raw evidence preservation.
@@ -828,10 +843,10 @@ comparisons, and diagnostic reads must not initialize backing or schema. The
 allocation, exact three-file output (`README.md`, `summary.json`, `evidence.json`),
 incomplete-write cleanup, revocation, and size bounds. Backend operation tests add
 lazy bounded admission, cancellation and shutdown around collection/publication.
-Native Command integration uses the generic host path lookup with an injected
+Prepared Command integration uses the generic host path lookup with an injected
 temporary local-state resolver, not real user storage or a handoff request parameter; a
 rejecting Save-picker spy verifies that no picker is invoked. It checks complete
-handoff publication and safe completion feedback
+handoff publication, automatic clipboard copying, and selectable safe copy-failure feedback
 without changing the evidence schema or collector limits. Its real stock Git AOT
 fixture uses a reopened nonprimary Session Environment with a nested Project source
 and compares Git state before and after preparation without materialization.
@@ -845,14 +860,22 @@ invocations sharing its build directory:
 flutter test --no-pub --concurrency 1 test/core/session_evaluator_integration_test.dart test/core/command_output_capture_integration_test.dart test/core/backend_local_state_host_test.dart
 ```
 
-The existing `adele_desktop` target and CI shards discover these app files; the
-`session_evaluator_backend` target discovers the relocated plugin-local suites.
+The existing `adele_desktop` target and CI shards discover these app files;
+`session_evaluator_backend` and `session_evaluator_frontend` discover their
+plugin-local suites. For generic Command hosting changes, additionally run
+`test/prepared_session_command_test.dart` and `test/command_bridge_test.dart` from
+`app/`, plus the affected `adele_core_extensions`, `adele_ui`, and `plugin_runtime`
+targets. Public bridge stubs belong to `packages/ui/test/command_bridge_test.dart`;
+catalog acceptance, rejection, and roundtrip tests belong to
+`packages/plugin_runtime/test/prepared_plugin_catalog_test.dart`.
 The path-only infrastructure contract belongs to `adele_plugin_backend_support`,
 its host/liveness checks to the app, and OS path policy to `adele_platform_storage`.
 Command
 writer/schema changes require their own [Command Output checks](#focused-command-output-checks);
 the evaluator is a passive reader and must not initialize or migrate that schema.
-Catalog/launcher or dependency-boundary changes additionally use `adele_tools`.
+Catalog/launcher, compiler-input discovery, or dependency-boundary changes
+additionally use `adele_tools`, including `backend_artifacts_test.dart`,
+`desktop_build_inputs_test.dart`, `adele_test.dart`, and `app_plugin_boundary_test.dart`.
 For documentation-only edits, inspect those sources and run `git diff --check`
 rather than compiling the integration suite without a behavioral reason.
 

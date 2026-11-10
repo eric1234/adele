@@ -363,17 +363,22 @@ The separate prepared `sessionCommand` form requires the current selected Sessio
 without requiring a presentation contribution or executable Session strategy. The
 application supplies its existing read-only `WindowSessionContext` to the frontend
 owner. Availability is hidden without a selected Session; with one, it is enabled
-unless explicitly requested owning-backend access is unavailable, in which case it
-is disabled. An empty service allowlist needs no backend. Selection observation
+unless explicitly requested owning-backend access is unavailable or this
+registration already has a pending finite operation, in which case it is disabled.
+Settlement restores admission subject to current availability. This per-registration
+guard does not replace a backend service's own cross-client admission rules.
+An empty service allowlist needs no backend. Selection observation
 and existing backend readiness changes invalidate availability without polling,
 interpreted evaluation, or RPC. Frontend activation remains independent of backend
 readiness.
 
 Admission synchronously captures the canonical Session's ID and, when requested,
 the backend belonging to the exact same prepared installation. The finite operation
-receives only that immutable ID as a positional string and the declared
-owning-backend services. Navigation neither changes the capture nor revokes admitted
-work; a later invocation captures the new selection. Window shutdown, frontend
+receives only that immutable ID as a positional string, declared owning-backend
+services, and independently opted-in bounded clipboard-write/nonmodal-feedback
+operations. No grant is inferred from the ID. Navigation neither changes the
+capture nor revokes admitted work; a later invocation captures the new selection.
+Window shutdown, frontend
 generation retirement, and captured backend generation retirement revoke operation
 access and settle its native wait, including idle/paused stream consumers. Individual
 Command registration retirement bars new admission but does not cancel already

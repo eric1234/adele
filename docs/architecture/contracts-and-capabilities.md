@@ -759,8 +759,8 @@ callbacks, owning-backend access, directory picking, filesystem/process services
 Session execution, or retained presentation state. Unavailable bridge calls fail
 normally. The frontend generation owns operation revocation, while the
 [Command domain](plugin-system.md#commands-and-input) owns exact registration and
-unique enabled-state admission. This does not introduce a public Command bridge
-or an authority token.
+unique enabled-state admission. Context-free Commands receive neither the opt-in
+Session Command bridge below nor an authority token.
 
 The additive `sessionCommand` form instead receives one positional `String`
 containing the selected Session ID captured synchronously at admission. Its optional
@@ -769,7 +769,7 @@ access to its own exact prepared installation's captured backend and default
 configuration route. No plugin, configuration, or backend selector is supplied by
 the operation. Matching semantic IDs from another installation cannot satisfy
 ownership, and replacement never repairs an admitted operation. Frontend-only
-operations receive an empty bridge set. Backend readiness is locally observable;
+operations need no owning-backend bridge. Backend readiness is locally observable;
 service health is an invocation outcome, not something availability probes.
 The finite operation must await its intended work: returning ends bridge access,
 including any streams or Futures it started but did not await.
@@ -777,13 +777,31 @@ including any streams or Futures it started but did not await.
 This supplies neither a live Session object nor a product store, lifecycle
 coordinator, database connection, generic host-invocation token, or authority for
 filesystem, Project storage, Environment reads/mutation/processes, execution,
-approvals, native dialogs, clipboard, or notifications. The ID is immutable data,
+approvals, or native dialogs. Clipboard writing and nonmodal feedback require the
+separate explicit opt-ins below; they are not implied by Session identity or the
+service allowlist. The ID is immutable data,
 not authorization: the transport allowlist restricts services, not their methods'
 effects or payload identities. Backend service contracts retain their own semantic
 validation and any separately granted infrastructure authority. The finite evaluator
 and captured channels own cleanup; navigation revisions are not execution lifetimes.
 See [Commands and input](plugin-system.md#commands-and-input) for availability,
 admission, and retirement. Other interpreted roles acquire no additional grants.
+
+Only this prepared Session Command form can independently opt into `clipboardWrite`
+and `feedback`, both denied by default. The public
+[`adele_ui/command_bridge.dart`](../../packages/ui/lib/command_bridge.dart) supplies
+`Future<bool> writeCommandClipboard(String text)` and
+`void showCommandFeedback(String message)`. Each accepts at most 16,384 UTF-16 code
+units. Clipboard access is write-only: true follows OS acknowledgement, false
+reports platform copy failure without diagnostics, and invalid/retired access
+throws. The native host validates the exact operation and any captured backend
+before submission and after acknowledgement; a submitted OS write cannot be
+recalled. Feedback is selectable and nonmodal, with no callbacks, arbitrary native
+UI, or continuing authority. Neither copied text, feedback, nor platform diagnostics
+is logged by this bridge. Returning from the finite operation revokes both grants;
+neither grant extends to context-free Commands, presentation roles, or unrelated
+operations. Native rendering/lifecycle hosting belongs to the
+[application](../../app/README.md#prepared-frontend-activation).
 
 The contextual Console-action Command descriptor adds no operation or bridge.
 It delegates to an exact sibling creation action, whose existing Console admission

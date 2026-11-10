@@ -36,6 +36,10 @@ const _frontends = {
   'filesystem': ('filesystem_tools', 'compile_tool_inspection_frontends.dart'),
   'command': ('command_tools', 'compile_tool_inspection_frontends.dart'),
   'openai': ('openai', 'compile_openai_activity_frontend.dart'),
+  'session-evaluator': (
+    'session_evaluator',
+    'compile_session_evaluator_frontend.dart',
+  ),
   'local-directory-project': (
     'local_directory_project',
     'compile_local_directory_project_frontend.dart',
@@ -90,6 +94,7 @@ void main() {
     for (final bridge in [
       'main_content',
       'owning_backend',
+      'command',
       'rich_document_editor',
       'session_content_inspection',
       'session_execution',
@@ -139,7 +144,12 @@ dev_dependencies:
       'plugins/command_tools/packages/frontend/lib/command_output_view.dart',
     );
     write('plugins/source_editor/packages/frontend/lib/source_documents.dart');
-    for (final plugin in ['chat_strategy', 'command_tools', 'diff_viewer']) {
+    for (final plugin in [
+      'chat_strategy',
+      'command_tools',
+      'diff_viewer',
+      'session_evaluator',
+    ]) {
       final component = 'plugins/$plugin/packages/contract';
       write('$component/pubspec.yaml', 'name: ${plugin}_contract\n');
       write('$component/lib/${plugin}_contract.dart');
@@ -261,7 +271,7 @@ part 'public.g.dart';
         ),
         inputs,
       );
-      expect(inputs, hasLength(20));
+      expect(inputs, hasLength(_backends.length + _frontends.length));
       for (final entry in inputs.entries) {
         if (entry.key.contains('-frontend-')) {
           expect(
@@ -285,7 +295,7 @@ part 'public.g.dart';
   );
 
   test(
-    'returns all 20 stages with sorted existing inputs and discovery identity',
+    'returns all stages with sorted existing inputs and discovery identity',
     () async {
       final inputs = await discover();
       expect(
@@ -409,6 +419,16 @@ part 'missing_part.dart';
         'plugins/command_tools/packages/contract/lib/command_tools_contract.dart',
       );
       expect(inputs['command-frontend-compilation'], contains(commandContract));
+      expect(
+        inputs['session-evaluator-frontend-compilation'],
+        containsAll([
+          absolute('packages/ui/lib/command_bridge.dart'),
+          absolute('packages/ui/lib/owning_backend_bridge.dart'),
+          absolute(
+            'plugins/session_evaluator/packages/contract/lib/session_evaluator_contract.dart',
+          ),
+        ]),
+      );
       expect(
         inputs['chat-frontend-compilation'],
         contains(absolute('packages/ui/lib/rich_document_editor_bridge.dart')),

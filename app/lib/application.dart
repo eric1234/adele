@@ -57,8 +57,6 @@ final class AdeleApplication extends StatefulWidget {
     this.readChatGptConfiguration = StockChatGptConfiguration.fromEnvironment,
     this.runIds,
     this.mainContentHost,
-    this.attachSessionContext,
-    this.navigatorKey,
     this.configurationRoots,
     this.exitTimeout = const Duration(seconds: 5),
     this.exitPreflightThreshold = const Duration(seconds: 5),
@@ -91,16 +89,6 @@ final class AdeleApplication extends StatefulWidget {
   /// Catalog discovery and registration still use the ordinary frontend path.
   /// Selected once at mount; this application closes the host on shutdown.
   final PreparedMainContentHost? mainContentHost;
-
-  /// Optional native composition, independent of presentation contributions.
-  /// Called once at mount with read-only window access. Return cleanup for owned
-  /// subscriptions/registrations; shutdown revokes access before invoking it and
-  /// joins its completion. Widget updates do not reattach or retarget consumers.
-  final FutureOr<void> Function() Function(WindowSessionContext)?
-  attachSessionContext;
-
-  /// Optional caller-owned UI access, selected once at mount.
-  final GlobalKey<NavigatorState>? navigatorKey;
 
   /// One total budget after exit acceptance, not a deadline for user preflight.
   /// Native tests can shorten it without changing resource-owner deadlines.
@@ -144,7 +132,6 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
   Object? _workbench;
   final _sessionContext = WindowSessionContextHost();
   Session? get _session => _sessionContext.session;
-  FutureOr<void> Function()? _detachSessionContext;
   late final ConsoleController _console;
   late final PreparedConsoleHost _consoleHost;
   late final PreparedMainContentHost _mainContentHost;
@@ -157,7 +144,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
   final WindowInspection _inspection = WindowInspection();
   final ValueNotifier<bool> _retainingPresentations = ValueNotifier(false);
   Widget? _presentation;
-  late final _navigator = widget.navigatorKey ?? GlobalKey<NavigatorState>();
+  final _navigator = GlobalKey<NavigatorState>();
   final _messenger = GlobalKey<ScaffoldMessengerState>();
   final _commandRegistrations = ExtensionRegistrationGroup();
   late final CommandResolver _commands;
@@ -245,6 +232,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
       extensions: _runtime.extensions,
       backends: _runtime.plugins,
       sessionContext: _sessionContext.context,
+      showCommandFeedback: _showCommandFeedback,
       sessionServices: PreparedSessionServices(
         extensions: _runtime.extensions,
         backends: _runtime.plugins,
@@ -381,9 +369,6 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
         unawaited(_closeAndReport());
       },
     );
-    _detachSessionContext = widget.attachSessionContext?.call(
-      _sessionContext.context,
-    );
   }
 
   bool get _commandsInteractive =>
@@ -407,6 +392,19 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     if (!mounted || _closing != null) return;
     _messenger.currentState?.showSnackBar(
       const SnackBar(content: Text('The command could not be completed.')),
+    );
+  }
+
+  void _showCommandFeedback(String message) {
+    if (!mounted || _closing != null) return;
+    final messenger = _messenger.currentState;
+    messenger?.removeCurrentSnackBar();
+    messenger?.showSnackBar(
+      SnackBar(
+        content: SelectableText(message),
+        showCloseIcon: true,
+        duration: const Duration(seconds: 15),
+      ),
     );
   }
 
@@ -1074,11 +1072,6 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     _workbench = null;
     _inspection.retire();
     _sessionContext.close();
-    final detachContext = _detachSessionContext;
-    _detachSessionContext = null;
-    final closingContextConsumer = Future<void>.sync(
-      () => detachContext?.call(),
-    );
     final closingCommands = Future<void>.sync(_commandRegistrations.close);
     final Future<void> closingConfiguration;
     if (_credentialAssociations case final associations?) {
@@ -1115,7 +1108,6 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     final draining = Future.wait<void>([
       stoppingFrontends,
       closingCommands,
-      closingContextConsumer,
       closingConfiguration,
       settlingRuns,
       closingTerminals,

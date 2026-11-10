@@ -131,6 +131,13 @@ const _frontends =
         ui: ['task_browser_bridge.dart'],
         contract: null,
       ),
+      'session-evaluator': (
+        plugin: 'session_evaluator',
+        harness: 'compile_session_evaluator_frontend.dart',
+        sources: ['session_evaluator_frontend.dart'],
+        ui: ['command_bridge.dart', 'owning_backend_bridge.dart'],
+        contract: 'session_evaluator',
+      ),
       'terminal': (
         plugin: 'terminal',
         harness: 'compile_terminal_frontend.dart',

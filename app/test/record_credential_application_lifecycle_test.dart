@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:ui' show AppExitResponse, IsolateNameServer;
 
+import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_desktop/application.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/credential_service.dart';
@@ -501,12 +502,17 @@ final class _ApplicationFixture {
         mainContentHost: mainContentHost,
         configurationRoots: roots,
         readChatGptConfiguration: () => null,
-        attachSessionContext: (_) => closeStarted.complete,
         bootstrapPlugins: (plugins) => starting = start.future.then(
           (_) => plugins.start(installationRoot: '${root.path}/installed'),
         ),
       ),
     );
+    runtime.extensions
+        .discover(commandContributions)
+        .singleWhere(
+          (binding) => binding.value.id == showCommandPaletteCommandId,
+        )
+        .onRetire(closeStarted.complete);
     expect(credentialConstructions, 1);
     expect(associationConstructions, 0);
     expect(storage.calls, isEmpty);

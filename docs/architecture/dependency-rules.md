@@ -105,7 +105,10 @@ implementations into the normal application runtime.
 - **`adele_ui`** owns public semantic presentation contracts that genuinely need
   Flutter. Do not add Flutter to product, orchestration, or tool packages for
   presentation convenience. App-native bridge implementations and hosting belong
-  in the composition root, not public semantic packages. Task Browser contribution
+  in the composition root, not public semantic packages. The narrow interpreted
+  Command clipboard-write/feedback API belongs here, not in pure-Dart
+  `adele_core_extensions`; generic operation-scoped hosting stays app-owned and
+  concrete Command workflow remains plugin-owned. Task Browser contribution
   and interpreted bridge contracts belong here; the app projects its canonical
   live graph and mediates lifecycle/navigation, while the stock frontend depends
   only on public UI and Flutter. Browser rendering must not acquire app/store,
@@ -209,6 +212,14 @@ A strategy obtains execution semantics through `adele_orchestration`, not by
 importing `agent_kernel`. A backend obtains Project storage through
 `adele_project_storage` over `adele_plugin_backend_support`, not by importing the
 app database, linking SQLite to reach its backing, or opening a second connection.
+
+The trusted development-only [Session Evaluator](../../plugins/session_evaluator/README.md#ownership)
+deliberately knows selected internal SQL shapes across product, execution, Chat,
+Command Tools, and Git owners. It reads them through the public durable Project
+storage service without initializing or migrating another owner's schema. This is
+a diagnostic schema coupling, not a public cross-plugin storage API or permission
+for implementation imports. Its frontend/backend runtime logic stays plugin-local;
+ordinary build preparation and app-hosting tests do not relax production boundaries.
 
 Depending on a public interface is not requiring one implementation to be active.
 Discover compatible registrations at runtime; missing participation follows the

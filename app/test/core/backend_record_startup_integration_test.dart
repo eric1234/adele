@@ -7,8 +7,10 @@ import 'dart:io';
 import 'dart:ui' show AppExitResponse;
 
 import 'package:adele_capabilities/adele_capabilities.dart';
+import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_desktop/application.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
+import 'package:adele_desktop/core/credential_service.dart';
 import 'package:adele_desktop/core/global_settings_service.dart';
 import 'package:adele_desktop/core/prepared_settings.dart';
 import 'package:adele_desktop/terminal/native_adele_runtime.dart';
@@ -19,6 +21,8 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
+
+import '../support/gated_credential_storage.dart';
 
 const _owner = 'test.records';
 const _nested = 'test.records.child';
@@ -290,18 +294,16 @@ void main() {
       final reading = Completer<void>();
       final releaseRead = Completer<void>();
       final draining = Completer<void>();
-      final releaseDrain = Completer<void>();
+      final storage = GatedCredentialStorage();
+      final credentials = CredentialService(storage);
       Future<void>? starting;
       try {
         await tester.pumpWidget(
           AdeleApplication(
             createRuntime: () => appRuntime,
+            createCredentials: () => credentials,
             configurationRoots: fixture.roots,
             readChatGptConfiguration: () => null,
-            attachSessionContext: (_) => () {
-              draining.complete();
-              return releaseDrain.future;
-            },
             bootstrapPlugins: (plugins) {
               plugins.configureSettingsLoader(
                 (catalog) async => PreparedSettingsSnapshot.resolve(catalog),
@@ -317,7 +319,15 @@ void main() {
             },
           ),
         );
+        appRuntime.extensions
+            .discover(commandContributions)
+            .singleWhere(
+              (binding) => binding.value.id == showCommandPaletteCommandId,
+            )
+            .onRetire(draining.complete);
         await reading.future;
+        final admitted = credentials.contains(CredentialReference.generate());
+        await storage.entered.future;
         final exiting = tester.binding.handleRequestAppExit();
         await draining.future;
         // Application drain deliberately keeps the runtime alive. A pending read
@@ -332,7 +342,8 @@ void main() {
           isTrue,
         );
         expect(appRuntime.plugins.state, ApplicationPluginState.starting);
-        releaseDrain.complete();
+        storage.release.complete();
+        expect(await admitted, isFalse);
         expect(await exiting, AppExitResponse.exit);
         expect(appRuntime.plugins.state, ApplicationPluginState.closed);
         expect(
@@ -342,8 +353,9 @@ void main() {
         expect(tester.takeException(), isNull);
       } finally {
         if (!releaseRead.isCompleted) releaseRead.complete();
-        if (!releaseDrain.isCompleted) releaseDrain.complete();
+        if (!storage.release.isCompleted) storage.release.complete();
         await tester.pumpWidget(const SizedBox.shrink());
+        await credentials.close();
         await appRuntime.close();
       }
     }),
