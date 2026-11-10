@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:adele_contract/adele_contract.dart';
 import 'package:session_evaluator_contract/session_evaluator_contract.dart';
@@ -12,10 +13,160 @@ void main() {
       'dev.adele.plugin.session-evaluator',
     );
     expect(sessionEvaluatorServiceId, 'dev.adele.session-evaluator');
+    expect(
+      sessionEvaluationHandoffServiceId,
+      'dev.adele.session-evaluation-handoff',
+    );
+    expect(
+      sessionEvaluationHandoffServicePrepareSessionId,
+      'dev.adele.session-evaluation-handoff.prepareSession',
+    );
     expect(sessionEvidenceSchema, 'dev.adele.session-evidence.v2');
     expect(sessionEvidenceMaxBytes, 16 * 1024 * 1024);
     expect(sessionEvidenceChunkCodeUnits, 16 * 1024);
     expect(sessionEvidenceMaxRows, 100000);
+  });
+
+  group('evaluation handoff completion', () {
+    final path = File('fixture/README.md').absolute.path;
+
+    Future<String> read(Stream<String> stream) async {
+      final iterator = StreamIterator(stream);
+      try {
+        return await readSessionEvaluationHandoff(iterator);
+      } finally {
+        await iterator.cancel();
+      }
+    }
+
+    test(
+      'requires exactly one absolute README path and successful EOF',
+      () async {
+        final controller = StreamController<String>();
+        var returned = false;
+        final result = read(controller.stream).then((value) {
+          returned = true;
+          return value;
+        });
+        controller.add(path);
+        await Future<void>.delayed(Duration.zero);
+        expect(returned, isFalse);
+        await controller.close();
+        expect(await result, path);
+      },
+    );
+
+    test('rejects absent duplicate malformed and failed completions', () async {
+      for (final values in <List<String>>[
+        [],
+        [path, path],
+        [''],
+        ['README.md'],
+        ['relative/README.md'],
+        [r'C:relative\README.md'],
+        [r'\current-drive\README.md'],
+        ['https://example.test/README.md'],
+        [File('summary.json').absolute.path],
+        ['$path\u0000'],
+        ['$path/'],
+      ]) {
+        await expectLater(
+          read(Stream.fromIterable(values)),
+          throwsFormatException,
+        );
+      }
+      const failure = SessionEvidenceFailure(
+        code: 'handoff_unavailable',
+        message: 'Evaluation handoff could not be prepared.',
+      );
+      await expectLater(
+        read(() async* {
+          yield path;
+          throw failure;
+        }()),
+        throwsA(same(failure)),
+      );
+    });
+
+    test(
+      'caller lifetime check rejects cancellation after receiving a path',
+      () async {
+        final controller = StreamController<String>();
+        final iterator = StreamIterator(controller.stream);
+        var active = true;
+        final result = readSessionEvaluationHandoff(iterator).then((path) {
+          if (!active) throw StateError('The captured lifetime retired.');
+          return path;
+        });
+        final rejected = expectLater(result, throwsStateError);
+        controller.add(path);
+        await Future<void>.delayed(Duration.zero);
+        active = false;
+        await iterator.cancel();
+        await rejected;
+        await controller.close();
+      },
+    );
+
+    test(
+      'accepts absolute POSIX Windows drive and UNC paths without IO',
+      () async {
+        for (final path in [
+          '/state/evaluations/session/README.md',
+          r'C:\state\evaluations\session\README.md',
+          'C:/state/evaluations/session/README.md',
+          r'\\server\share\evaluations\session\README.md',
+        ]) {
+          expect(await read(Stream.value(path)), path);
+        }
+      },
+    );
+
+    test(
+      'generated route accepts only Session identity and remains lazy',
+      () async {
+        final service = _HandoffService((_) => Stream.value(path));
+        final router = AdeleConfigurationContextRouter.single(
+          configurationContext: 'selected-context',
+          serviceId: sessionEvaluationHandoffServiceId,
+          dispatcher: SessionEvaluationHandoffServiceDispatcher(service),
+        );
+        addTearDown(router.close);
+        final channel = _Channel(
+          router,
+          serviceId: sessionEvaluationHandoffServiceId,
+        );
+        final client = SessionEvaluationHandoffServiceClient(channel);
+        final stream = client.prepareSession('selected-session');
+        expect(service.sessions, isEmpty);
+        expect(await read(stream), path);
+        expect(service.sessions, ['selected-session']);
+        expect(
+          channel.opens.single['serviceId'],
+          sessionEvaluationHandoffServiceId,
+        );
+        expect(
+          channel.opens.single['method'],
+          sessionEvaluationHandoffServicePrepareSessionId,
+        );
+        expect(channel.opens.single['payload'], {
+          'sessionId': 'selected-session',
+        });
+        for (final extra in ['outputRoot', 'hostInvocationContext', 'path']) {
+          final frames = <Map<String, Object?>>[];
+          await router.handle({
+            'kind': 'streamOpen',
+            'requestId': 10,
+            'configurationContext': 'selected-context',
+            'serviceId': sessionEvaluationHandoffServiceId,
+            'method': sessionEvaluationHandoffServicePrepareSessionId,
+            'payload': {'sessionId': 'session', extra: '/private'},
+          }, frames.add);
+          expect(frames.single['kind'], 'streamFailure');
+        }
+        expect(service.sessions, ['selected-session']);
+      },
+    );
   });
 
   group('readSessionEvidence', () {
@@ -337,8 +488,9 @@ final class _Service implements SessionEvaluatorService {
 }
 
 final class _Channel implements AdeleStreamChannel {
-  _Channel(this.router);
+  _Channel(this.router, {this.serviceId = sessionEvaluatorServiceId});
   final AdeleConfigurationContextRouter router;
+  final String serviceId;
   final opens = <Map<String, Object?>>[];
   int nextId = 0;
 
@@ -358,7 +510,7 @@ final class _Channel implements AdeleStreamChannel {
       'kind': 'streamOpen',
       'requestId': id,
       'configurationContext': 'selected-context',
-      'serviceId': sessionEvaluatorServiceId,
+      'serviceId': serviceId,
       'method': method,
       'payload': jsonDecode(jsonEncode(payload)),
     };
@@ -384,6 +536,18 @@ final class _Channel implements AdeleStreamChannel {
       await iterator.cancel();
       await replies.close();
     }
+  }
+}
+
+final class _HandoffService implements SessionEvaluationHandoffService {
+  _HandoffService(this.produce);
+  final Stream<String> Function(String) produce;
+  final sessions = <String>[];
+
+  @override
+  Stream<String> prepareSession(String sessionId) {
+    sessions.add(sessionId);
+    return produce(sessionId);
   }
 }
 

@@ -1261,6 +1261,8 @@ exit "$CLIPPY_EXIT"
           'agent_kernel',
           'plugin_runtime',
           'plugin_backend_host',
+          'adele_platform_storage',
+          'adele_configuration_store',
           'sqlite3',
         ]) {
           expect(dependencies.containsKey(forbidden), isFalse, reason: path);
@@ -1292,6 +1294,30 @@ exit "$CLIPPY_EXIT"
         (app['dev_dependencies'] as YamlMap).containsKey(
           'session_evaluator_contract',
         ),
+        isTrue,
+      );
+      for (final helper in [
+        'session_evaluation_handoff',
+        'session_evaluation_summary',
+      ]) {
+        expect(File('app/tool/$helper.dart').existsSync(), isFalse);
+        expect(File('$root/backend/lib/src/$helper.dart').existsSync(), isTrue);
+        expect(File('app/test/${helper}_test.dart').existsSync(), isFalse);
+        expect(
+          File('$root/backend/test/${helper}_test.dart').existsSync(),
+          isTrue,
+        );
+      }
+      expect(
+        File('app/tool/development_git_baseline.dart').existsSync(),
+        isFalse,
+      );
+      expect(
+        File('app/test/session_evidence_file_test.dart').existsSync(),
+        isFalse,
+      );
+      expect(
+        File('$root/backend/test/session_evidence_file_test.dart').existsSync(),
         isTrue,
       );
     });

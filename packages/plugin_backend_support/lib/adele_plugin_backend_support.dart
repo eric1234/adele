@@ -9,6 +9,7 @@ export 'adele_backend_credentials.dart';
 export 'adele_backend_records.dart';
 export 'adele_backend_settings.dart';
 export 'adele_capability_consumer.dart';
+export 'backend_local_state.dart';
 export 'capability_consumer.dart';
 
 /// One unary operation's explicit, request-only access to host services.

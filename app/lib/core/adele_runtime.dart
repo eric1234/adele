@@ -1,8 +1,10 @@
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
+import 'package:adele_plugin_backend_support/backend_local_state.dart';
 
 import 'application_plugin_bootstrap.dart';
+import 'backend_local_state_host.dart';
 import 'product_lifecycle.dart';
 import 'project_storage_host.dart';
 import 'run_id_source.dart';
@@ -13,6 +15,7 @@ base class AdeleRuntime {
   AdeleRuntime({
     ProductIdSource? ids,
     RunIdSource? runIds,
+    String Function()? localStateRoot,
     EnvironmentEstablishmentOwner? Function(ProviderBinding)?
     captureEstablishmentOwner,
   }) : runIds = runIds ?? MonotonicRunIdSource() {
@@ -35,8 +38,15 @@ base class AdeleRuntime {
     plugins = ApplicationPluginBootstrap(
       registry,
       extensions,
-      createInfrastructureServices: (connection) =>
-          projectStorageServices(lifecycle, connection),
+      createInfrastructureServices: (connection) => {
+        ...projectStorageServices(lifecycle, connection),
+        backendLocalStateServiceId: BackendLocalStateServiceDispatcher(
+          BackendLocalStateHost(
+            validateAccess: connection.validateInfrastructureContext,
+            localStateRoot: localStateRoot,
+          ),
+        ),
+      },
     );
     contextComposer = InferenceContextComposer(extensions);
   }

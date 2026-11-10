@@ -9,6 +9,7 @@ facade lets generated plugin
 clients use declared context-free unary access without importing runtime packages.
 Its credential client reads explicitly declared record slots through the existing
 generation infrastructure grant, without native credential-store dependencies.
+Its generated local-state service provides path-only host location lookup.
 
 ## Bootstrap Settings
 
@@ -117,6 +118,26 @@ replacement generation and grant no execution or other services implicitly.
 It supplies no client/bidirectional streaming, ambient callbacks, or general
 symmetric RPC and is not a sandbox.
 See [operation-scoped host calls](../../docs/architecture/contracts-and-capabilities.md#operation-scoped-host-calls).
+
+## Local-State Path Lookup
+
+[`backend_local_state.dart`](lib/backend_local_state.dart), also exported from the
+package root, declares `BackendLocalStateService`. Construct its generated
+`BackendLocalStateServiceClient` with `hostRequests.bindInfrastructure`, using the
+generation's bootstrap context and `backendLocalStateServiceId`
+(`adele.backendLocalState`). Its only operation, `getLocalStateRoot()`, takes no
+arguments and returns `Future<String>` through normal generated unary transport.
+
+The host owns platform location policy. The path need not exist; lookup performs
+no filesystem access, creates no directory, and grants no write or persistence
+authority. There are no caller-selected roots, owner selectors, or configuration
+values. Binding alone grants no access and a retired generation cannot renew it.
+See [infrastructure access](../../docs/architecture/contracts-and-capabilities.md#backend-local-state-location)
+for host composition and the single location-policy owner.
+
+[`backend_local_state_test.dart`](test/backend_local_state_test.dart) checks the
+generated argument-free infrastructure route and rejects selectors and mutation
+methods through the existing backend-support test target.
 
 ## Credential Reads
 

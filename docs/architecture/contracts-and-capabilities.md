@@ -1043,7 +1043,8 @@ transport contracts, and their tests.
 ## Generation-scoped infrastructure access
 
 Infrastructure services support non-execution access outside a Run operation,
-including Project storage, declared [backend Capability consumption](#prepared-backend-capability-consumption),
+including Project storage, [local-state location](#backend-local-state-location),
+declared [backend Capability consumption](#prepared-backend-capability-consumption),
 and explicitly authorized [record credentials](#backend-credential-access).
 `PluginBackendHost.startPlugin` accepts a generic
 `createInfrastructureServices` factory called with the actual connection, not a
@@ -1071,6 +1072,28 @@ grant supplies no execution, orchestration, model/tool, Environment-facet, or
 filesystem services. [ADR 0034](../adr/0034-plugin-owned-relational-session-storage.md)
 narrowly amends ADR 0032's invocation-only host-access rule without widening
 semantic operation authority.
+
+### Backend local-state location
+
+The public generated `BackendLocalStateService` in
+[`adele_plugin_backend_support/backend_local_state.dart`](../../packages/plugin_backend_support/lib/backend_local_state.dart)
+exposes only `Future<String> getLocalStateRoot()` through the normal
+`bindInfrastructure` route and service ID `adele.backendLocalState`. It accepts no
+path, owner, Session, or environment selector. This is path information, not a
+filesystem service or write grant; lookup neither inspects nor creates directories.
+
+`AdeleRuntime` composes the app-private `BackendLocalStateHost` alongside
+`projectStorageServices` for every normal backend connection, without plugin-ID
+dispatch. The host revalidates the exact connection's infrastructure context at
+service entry, then lazily delegates to the internal `PlatformStorageRoots.resolve`
+policy using the host OS/environment and returns only `localStateRoot`. Plugins
+must not import that internal package or duplicate its platform fallback policy.
+Resolution errors are redacted without logging environment values or paths.
+The optional runtime `localStateRoot` resolver supports isolated host fixtures;
+it is not a new environment variable or plugin-controlled path override. The
+[storage-root package](../../packages/platform_storage/README.md) owns location
+policy and [dependency rules](dependency-rules.md) preserve the public/internal
+boundary.
 
 ### Backend credential access
 

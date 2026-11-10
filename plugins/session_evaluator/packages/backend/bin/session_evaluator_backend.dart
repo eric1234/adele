@@ -28,18 +28,34 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
   }
 
   final hostRequests = AdeleHostRequestMultiplexer(send: responsePort.send);
-  final collector = SessionEvidenceCollector(
-    ProjectStorageServiceClient(
-      hostRequests.bindInfrastructure(
-        hostInfrastructureContext: hostInfrastructureContext,
-        serviceId: projectStorageServiceId,
-      ),
+  final storage = ProjectStorageServiceClient(
+    hostRequests.bindInfrastructure(
+      hostInfrastructureContext: hostInfrastructureContext,
+      serviceId: projectStorageServiceId,
     ),
   );
-  final router = AdeleConfigurationContextRouter.single(
-    configurationContext: defaultConfigurationContext,
-    serviceId: sessionEvaluatorServiceId,
-    dispatcher: SessionEvaluatorServiceDispatcher(collector),
+  final localState = BackendLocalStateServiceClient(
+    hostRequests.bindInfrastructure(
+      hostInfrastructureContext: hostInfrastructureContext,
+      serviceId: backendLocalStateServiceId,
+    ),
+  );
+  final handoffs = SessionEvaluationHandoffServiceImpl(
+    storage,
+    outputRoot: () async => Directory(
+      '${await localState.getLocalStateRoot()}${Platform.pathSeparator}evaluations',
+    ),
+  );
+  final router = AdeleConfigurationContextRouter(
+    contexts: {
+      defaultConfigurationContext: {
+        sessionEvaluatorServiceId: SessionEvaluatorServiceDispatcher(
+          SessionEvidenceCollector(storage),
+        ),
+        sessionEvaluationHandoffServiceId:
+            SessionEvaluationHandoffServiceDispatcher(handoffs),
+      },
+    },
   );
   final requests = ReceivePort();
   try {
@@ -54,8 +70,10 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
       if (request['kind'] == 'request' &&
           request['method'] == 'shutdown' &&
           request['requestId'] is int) {
-        // Settle reverse calls before draining forward collection streams.
+        // Fence effects before settling reverse calls or draining transport.
+        final drained = handoffs.close();
         hostRequests.close();
+        await drained;
         await router.close();
         responsePort.send(<String, Object?>{
           'kind': 'response',
@@ -68,8 +86,10 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
       unawaited(router.handle(request, responsePort.send));
     }
   } finally {
+    final drained = handoffs.close();
     hostRequests.close();
     requests.close();
+    await drained;
     await router.close();
   }
 }

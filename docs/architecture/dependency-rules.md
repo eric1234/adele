@@ -49,7 +49,7 @@ manifests for exact current dependencies, including development-only dependencie
 | [`adele_plugin_api`](../../packages/plugin_api/pubspec.yaml) | Public: generic plugin identity, extension registration, and binding liveness | No Flutter, host implementations, app, or concrete plugins. |
 | [`adele_core_extensions`](../../packages/core_extensions/pubspec.yaml) | Public: core-owned extension contracts and window selection observation without another domain owner | Not a catch-all for public APIs; no Flutter or implementation dependencies. |
 | [`adele_contract`](../../packages/contract/pubspec.yaml) | Public: declarations, channels, and exposure values | No Flutter, analyzer/compiler, generation tooling, or host/runtime implementation dependencies. |
-| [`adele_plugin_backend_support`](../../packages/plugin_backend_support/pubspec.yaml) | Public: generic plugin-side host-call channels and immutable backend startup settings/records | No Flutter, host internals, configuration persistence, or domain-specific orchestration semantics. |
+| [`adele_plugin_backend_support`](../../packages/plugin_backend_support/pubspec.yaml) | Public: generic plugin-side host-call channels, path-only local-state lookup contract, and immutable backend startup settings/records | No Flutter, host internals, configuration persistence, or domain-specific orchestration semantics. |
 | [`adele_capabilities`](../../packages/capabilities/pubspec.yaml) | Public: capability/provider identities and routing | No Flutter, host implementations, app, or concrete providers. |
 | [`adele_model_provider`](../../packages/model_provider/pubspec.yaml) | Public: provider-neutral model-provider contract | No Flutter, host implementations, app, or concrete providers. |
 | [`adele_product`](../../packages/product/pubspec.yaml) | Public: product identities and immutable values | No executable orchestration, extension registration, UI, host, or plugin implementation concerns. |
@@ -169,10 +169,13 @@ the host owns filesystem confinement, schema coordination, one connection per
 Project, and canonical publication. `ProjectStorageHost` implements the public
 contract without making application code a public API owner.
 
-`AdeleRuntime` constructs lifecycle before backend bootstrap and supplies the
-generic `projectStorageServices(lifecycle, connection)` factory for every normal
-connection. Transport/runtime packages know only explicit infrastructure
-dispatchers and exact-generation access, not Chat or application database semantics.
+`AdeleRuntime` constructs lifecycle before backend bootstrap and composes the
+generic `projectStorageServices(lifecycle, connection)` factory with
+`BackendLocalStateHost` for every normal connection. The latter implements the
+public backend-support path lookup contract by delegating to internal platform
+storage roots; plugins receive no internal resolver or filesystem service.
+Transport/runtime packages know only explicit infrastructure dispatchers and
+exact-generation access, not Chat or application database semantics.
 Production composition imports no stock implementation or plugin contract and
 does not special-case a plugin ID to grant storage. See
 [infrastructure access](contracts-and-capabilities.md#generation-scoped-infrastructure-access).

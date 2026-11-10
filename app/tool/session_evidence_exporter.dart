@@ -1,20 +1,15 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_desktop/core/adele_runtime.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
-import 'package:adele_platform_storage/adele_platform_storage.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:session_evaluator_contract/session_evaluator_contract.dart';
-
-import 'session_evaluation_handoff.dart';
-import 'session_evaluation_summary.dart';
 
 final exportSessionEvidenceCommandId = CommandId(
   'dev.adele.session-evaluator.export-session-evidence',
@@ -26,7 +21,6 @@ final class SessionEvidenceExporter {
     required this.runtime,
     required this.context,
     required this.navigatorKey,
-    this.outputRoot,
   }) {
     _changes = runtime.plugins.changes.listen((_) => _reconcile());
     _reconcile();
@@ -35,7 +29,6 @@ final class SessionEvidenceExporter {
   final AdeleRuntime runtime;
   final WindowSessionContext context;
   final GlobalKey<NavigatorState> navigatorKey;
-  final Directory? outputRoot;
   late final StreamSubscription<ApplicationPluginState> _changes;
   InstalledBackendActivation? _backend;
   ExtensionRegistration? _registration;
@@ -44,7 +37,8 @@ final class SessionEvidenceExporter {
   DialogRoute<bool>? _confirmation;
   bool _pending = false;
   bool _closed = false;
-  Future<Directory>? _writing;
+  StreamIterator<String>? _preparing;
+  Future<void>? _cancelling;
   Future<void>? _closing;
 
   void _reconcile() {
@@ -97,6 +91,7 @@ final class SessionEvidenceExporter {
   }
 
   void _retireCommand() {
+    unawaited(_cancelPreparation());
     _detachBackend?.call();
     _detachBackend = null;
     _backend = null;
@@ -106,6 +101,14 @@ final class SessionEvidenceExporter {
     final changes = _availabilityChanges;
     _availabilityChanges = null;
     if (changes != null) unawaited(changes.close());
+  }
+
+  Future<void> _cancelPreparation() {
+    final preparing = _preparing;
+    if (preparing == null) return Future<void>.value();
+    // StreamIterator drops its subscription on the first cancel. Retain that
+    // cancellation future so retirement, close and finally join the same work.
+    return _cancelling ??= preparing.cancel().catchError((Object _) {});
   }
 
   void _validateWindow() {
@@ -128,75 +131,30 @@ final class SessionEvidenceExporter {
       throw StateError('The selected Session is unavailable.');
     }
     final channel = backend.openPresentationChannel(
-      backendServices: [sessionEvaluatorServiceId],
+      backendServices: [sessionEvaluationHandoffServiceId],
       validatePresentation: _validateWindow,
     );
-    final client = SessionEvaluatorServiceClient(_EvidenceChannel(channel));
+    final client = SessionEvaluationHandoffServiceClient(
+      _HandoffChannel(channel),
+    );
     _pending = true;
     changes.add(null);
     try {
       if (!await _confirm()) return;
       channel.validate();
-      final handoff = SessionEvaluationHandoff.capture(
-        runtime.lifecycle,
-        session,
+      final completion = _preparing = StreamIterator(
+        client.prepareSession(session.id.value),
       );
-      final document = await readSessionEvidence(client, session.id.value);
+      final readmePath = await readSessionEvaluationHandoff(completion);
       channel.validate();
-      final bytes = utf8.encode(jsonEncode(document));
-      if (bytes.length > sessionEvidenceMaxBytes) {
-        throw const FormatException('Session evidence exceeds its byte bound.');
-      }
-      final summaryBytes = utf8.encode(
-        jsonEncode(summarizeSessionEvidence(document)),
-      );
-      var root = outputRoot;
-      if (root == null) {
-        final roots = PlatformStorageRoots.resolve(
-          operatingSystem: Platform.operatingSystem,
-          environment: Platform.environment,
-        );
-        root = Directory(
-          '${roots.localStateRoot}${Platform.pathSeparator}evaluations',
-        );
-      }
-      final destination = await (_writing = writeSessionEvaluationHandoff(
-        root,
-        bytes,
-        summaryBytes: summaryBytes,
-        readme: handoff.readme(DateTime.now().toUtc()),
-        validate: channel.validate,
-        excludedDirectories: [
-          if (handoff.project.sourceLocation.scheme == 'file')
-            Directory.fromUri(handoff.project.sourceLocation),
-          if (handoff.worktreeRoot case final path?) Directory(path),
-        ],
-      ));
-      try {
-        channel.validate();
-      } on Object {
-        // Ownership can retire between writer completion and this continuation.
-        try {
-          await destination.delete(recursive: true);
-        } on FileSystemException {
-          // Best effort, just as for an incomplete write; never publish success.
-        }
-        rethrow;
-      }
       _notify(
-        'Evaluation handoff ready: ${destination.path}',
+        'Evaluation handoff ready: ${File(readmePath).parent.path}',
         action: SnackBarAction(
           label: 'Copy README path',
           onPressed: () async {
             if (_closed || !context.isActive) return;
             try {
-              await Clipboard.setData(
-                ClipboardData(
-                  text: File.fromUri(
-                    destination.uri.resolve('README.md'),
-                  ).absolute.path,
-                ),
-              );
+              await Clipboard.setData(ClipboardData(text: readmePath));
             } on Object {
               _notify('The handoff path could not be copied.');
             }
@@ -206,9 +164,17 @@ final class SessionEvidenceExporter {
     } on Object {
       _notify('Evaluation handoff could not be prepared.');
     } finally {
-      _writing = null;
+      await _cancelPreparation();
+      _preparing = null;
+      _cancelling = null;
       _pending = false;
-      if (!_closed && context.isActive && !changes.isClosed) changes.add(null);
+      final availability = _availabilityChanges;
+      if (!_closed &&
+          context.isActive &&
+          availability != null &&
+          !availability.isClosed) {
+        availability.add(null);
+      }
     }
   }
 
@@ -264,8 +230,8 @@ final class SessionEvidenceExporter {
     );
   }
 
-  /// Fence immediately. Never join confirmation or collection futures.
-  /// A submitted write may finish, but no later phase or UI publication starts.
+  /// Fence UI immediately and cancel only this captured handoff observation.
+  /// Backend cancellation owns best-effort cleanup of unpublished output.
   Future<void> close() {
     if (_closing != null) return _closing!;
     _closed = true;
@@ -274,142 +240,21 @@ final class SessionEvidenceExporter {
     if (route != null && route.isActive) route.navigator?.removeRoute(route);
     return _closing = Future.wait<void>([
       _changes.cancel(),
-      if (_writing case final writing?)
-        writing
-            .then<void>((_) {}, onError: (Object _) {})
-            .timeout(const Duration(seconds: 2), onTimeout: () {}),
+      if (_cancelling case final cancelling?)
+        cancelling.timeout(const Duration(seconds: 2), onTimeout: () {}),
     ]).then((_) {});
   }
 }
 
-final class _EvidenceChannel implements AdeleStreamChannel {
-  const _EvidenceChannel(this.owner);
+final class _HandoffChannel implements AdeleStreamChannel {
+  const _HandoffChannel(this.owner);
   final OwningBackendChannel owner;
 
   @override
   Future<Object?> request(String method, Map<String, Object?> payload) =>
-      owner.request(sessionEvaluatorServiceId, method, payload);
+      owner.request(sessionEvaluationHandoffServiceId, method, payload);
 
   @override
   Stream<Object?> stream(String method, Map<String, Object?> payload) =>
-      owner.stream(sessionEvaluatorServiceId, method, payload);
-}
-
-/// Write only to a newly allocated private directory, never a previous handoff.
-/// Failure cleanup is best effort, not crash recovery or power-loss durability.
-Future<Directory> writeSessionEvaluationHandoff(
-  Directory outputRoot,
-  List<int> bytes, {
-  required List<int> summaryBytes,
-  required String readme,
-  required void Function() validate,
-  required Iterable<Directory> excludedDirectories,
-}) async {
-  if (bytes.length > sessionEvidenceMaxBytes) {
-    throw const FormatException('Session evidence exceeds its byte bound.');
-  }
-  final excluded = excludedDirectories
-      .map((directory) => Directory(_resolvedOutputPath(directory)))
-      .toList();
-  void validateLocation(Directory directory) {
-    final path = _resolvedOutputPath(directory);
-    // Reject any enclosing checkout, not just a selected nested source scope.
-    var ancestor = Directory(path);
-    while (true) {
-      if (FileSystemEntity.typeSync(
-            '${ancestor.path}${Platform.pathSeparator}.git',
-            followLinks: false,
-          ) !=
-          FileSystemEntityType.notFound) {
-        throw StateError('Evaluation output must be outside source checkouts.');
-      }
-      final parent = ancestor.parent;
-      if (parent.path == ancestor.path) break;
-      ancestor = parent;
-    }
-    final segments = Directory(path).uri.pathSegments;
-    if (excluded.any(
-          (root) =>
-              path == root.path ||
-              path.startsWith(
-                root.path.endsWith(Platform.pathSeparator)
-                    ? root.path
-                    : '${root.path}${Platform.pathSeparator}',
-              ),
-        ) ||
-        List.generate(segments.length - 1, (index) => index).any(
-          (index) =>
-              segments[index] == '.adele' && segments[index + 1] == 'worktrees',
-        )) {
-      throw StateError('Evaluation output must be outside source checkouts.');
-    }
-    validate();
-  }
-
-  Directory? destination;
-  var complete = false;
-  try {
-    validateLocation(outputRoot);
-    final root = Directory(_resolvedOutputPath(outputRoot));
-    await root.create(recursive: true);
-    validateLocation(root);
-    destination = await root.createTemp('session-');
-    validateLocation(destination);
-    if (Platform.isLinux || Platform.isMacOS) {
-      // Dart's createTemp uses the umask, not necessarily owner-only access.
-      final permissions = await Process.run('chmod', ['700', destination.path]);
-      if (permissions.exitCode != 0) {
-        throw FileSystemException('Could not protect the handoff directory.');
-      }
-      validateLocation(destination);
-    }
-    await File(
-      '${destination.path}${Platform.pathSeparator}evidence.json',
-    ).writeAsBytes(bytes, flush: true);
-    validateLocation(destination);
-    await File(
-      '${destination.path}${Platform.pathSeparator}summary.json',
-    ).writeAsBytes(summaryBytes, flush: true);
-    validateLocation(destination);
-    await File(
-      '${destination.path}${Platform.pathSeparator}README.md',
-    ).writeAsBytes(utf8.encode(readme), flush: true);
-    validateLocation(destination);
-    complete = true;
-    return destination;
-  } finally {
-    if (!complete && destination != null) {
-      try {
-        await destination.delete(recursive: true);
-      } on FileSystemException {
-        // Never report success for incomplete output, even if cleanup fails.
-      }
-    }
-  }
-}
-
-// Resolve existing ancestors before creating anything, including output aliases
-// into a checkout. Missing final components are appended without filesystem I/O.
-String _resolvedOutputPath(Directory directory) {
-  var absolute = Directory.fromUri(directory.absolute.uri.normalizePath());
-  // A trailing separator makes lstat follow a directory symlink on POSIX.
-  // Inspect the entry itself so a dangling alias is not treated as absent.
-  if (absolute.path.endsWith(Platform.pathSeparator) &&
-      absolute.parent.path != absolute.path) {
-    absolute = Directory(absolute.path.substring(0, absolute.path.length - 1));
-  }
-  if (FileSystemEntity.typeSync(absolute.path, followLinks: false) !=
-      FileSystemEntityType.notFound) {
-    return absolute.resolveSymbolicLinksSync();
-  }
-  final parent = absolute.parent;
-  if (parent.path == absolute.path) {
-    throw FileSystemException('Missing output filesystem root.');
-  }
-  final name = absolute.uri.pathSegments.where((part) => part.isNotEmpty).last;
-  return Directory.fromUri(
-    Directory(
-      _resolvedOutputPath(parent),
-    ).uri.resolveUri(Uri(pathSegments: [name, ''])),
-  ).path;
+      owner.stream(sessionEvaluationHandoffServiceId, method, payload);
 }

@@ -1,9 +1,8 @@
 import 'dart:convert';
 import 'dart:math';
 
-import 'package:flutter_test/flutter_test.dart';
-
-import '../tool/session_evaluation_summary.dart';
+import 'package:session_evaluator_backend/src/session_evaluation_summary.dart';
+import 'package:test/test.dart';
 
 void main() {
   test(

@@ -1,5 +1,5 @@
 name: session_evaluator_backend
-description: Read-only retained Session evidence collector backend.
+description: Retained Session evidence and local evaluation handoff backend.
 publish_to: none
 version: 0.1.0
 
@@ -9,13 +9,17 @@ environment:
 resolution: workspace
 
 dependencies:
+  adele_capabilities: ^0.1.0
   adele_contract: ^0.1.0
   adele_environment: ^0.1.0
   adele_plugin_api: ^0.1.0
   adele_plugin_backend_support: ^0.1.0
+  adele_product: ^0.1.0
   adele_project_storage: ^0.1.0
   session_evaluator_contract: ^0.1.0
 
 dev_dependencies:
   adele_orchestration: ^0.1.0
+  markdown: ^7.3.1
+  sqlite3: ^3.5.2
   test: ^1.26.3
