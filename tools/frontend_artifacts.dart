@@ -33,6 +33,11 @@ Future<Map<String, File>> prepareDesktopFrontendArtifacts({
     ),
     (name: 'openai', directory: 'openai', pluginId: 'dev.adele.openai'),
     (
+      name: 'session-evaluator',
+      directory: 'session-evaluator',
+      pluginId: 'dev.adele.plugin.session-evaluator',
+    ),
+    (
       name: 'local-directory-project',
       directory: 'local-directory-project',
       pluginId: 'dev.adele.plugin.local-directory-project',
@@ -67,6 +72,7 @@ Future<Map<String, File>> prepareDesktopFrontendArtifacts({
     final String stage = '${frontend.name}-frontend-compilation';
     final bool chat = frontend.name == 'chat';
     final bool openai = frontend.name == 'openai';
+    final bool sessionEvaluator = frontend.name == 'session-evaluator';
     final bool taskBrowser = frontend.name == 'task-browser';
     final bool terminal = frontend.name == 'terminal';
     final bool sourceEditor = frontend.name == 'source-editor';
@@ -82,6 +88,8 @@ Future<Map<String, File>> prepareDesktopFrontendArtifacts({
           ? 'tool/compile_chat_frontend.dart'
           : openai
           ? 'tool/compile_openai_activity_frontend.dart'
+          : sessionEvaluator
+          ? 'tool/compile_session_evaluator_frontend.dart'
           : localDirectoryProject
           ? 'tool/compile_local_directory_project_frontend.dart'
           : taskBrowser
@@ -111,6 +119,8 @@ Future<Map<String, File>> prepareDesktopFrontendArtifacts({
             environment: <String, String>{
               'ADELE_REPOSITORY_ROOT': root.path,
               if (chat) 'ADELE_CHAT_FRONTEND_OUTPUT': artifact.path,
+              if (sessionEvaluator)
+                'ADELE_SESSION_EVALUATOR_FRONTEND_OUTPUT': artifact.path,
               if (openai)
                 'ADELE_OPENAI_ACTIVITY_FRONTEND_OUTPUT': artifact.path,
               if (taskBrowser)
@@ -124,6 +134,7 @@ Future<Map<String, File>> prepareDesktopFrontendArtifacts({
                 'ADELE_LOCAL_DIRECTORY_PROJECT_FRONTEND_OUTPUT': artifact.path,
               if (!chat &&
                   !openai &&
+                  !sessionEvaluator &&
                   !localDirectoryProject &&
                   !taskBrowser &&
                   !terminal &&

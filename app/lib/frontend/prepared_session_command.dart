@@ -5,6 +5,7 @@ import 'package:dart_eval/stdlib/core.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
 import '../core/application_plugin_bootstrap.dart';
+import 'command_bridge.dart';
 import 'owning_backend_bridge.dart';
 import 'prepared_frontend.dart';
 
@@ -16,6 +17,7 @@ final class PreparedSessionCommand {
     required this.descriptor,
     required this.sessionContext,
     required this.backends,
+    this.showFeedback,
     required bool Function() isRegistered,
   }) : _isRegistered = isRegistered {
     if (sessionContext case final context? when context.isActive) {
@@ -31,6 +33,7 @@ final class PreparedSessionCommand {
   final PreparedSessionCommandExtension descriptor;
   final WindowSessionContext? sessionContext;
   final ApplicationPluginBootstrap? backends;
+  final void Function(String)? showFeedback;
   final bool Function() _isRegistered;
   final _changes = StreamController<void>.broadcast();
   final _operations = <void Function()>{};
@@ -62,6 +65,7 @@ final class PreparedSessionCommand {
         backends?.backendForInstallation(installation) == null) {
       return CommandAvailability.disabled;
     }
+    if (_operations.isNotEmpty) return CommandAvailability.disabled;
     return CommandAvailability.enabled;
   }
 
@@ -88,12 +92,25 @@ final class PreparedSessionCommand {
       backendServices: descriptor.backendServices,
       validatePresentation: _validateOperation,
     );
-    final PreparedFrontendBridge bridge = channel == null
-        ? PreparedFrontendBridges(const [])
-        : OwningBackendBridge.channel(
-            channel,
-            validateBinding: _validateOperation,
-          );
+    void validateAccess() {
+      _validateOperation();
+      channel?.validate();
+    }
+
+    final bridge = PreparedFrontendBridges([
+      if (channel != null)
+        OwningBackendBridge.channel(
+          channel,
+          validateBinding: _validateOperation,
+        ),
+      if (descriptor.clipboardWrite || descriptor.feedback)
+        CommandBridge(
+          clipboardWrite: descriptor.clipboardWrite,
+          feedback: descriptor.feedback,
+          validateOperation: validateAccess,
+          showFeedback: showFeedback,
+        ),
+    ]);
     final ended = Completer<void>();
     void end() {
       try {
@@ -105,6 +122,7 @@ final class PreparedSessionCommand {
 
     final detachOwner = owner?.onRetire(end);
     _operations.add(end);
+    _notify();
     return generation
         .invoke<void>(
           library: descriptor.library,
@@ -126,6 +144,7 @@ final class PreparedSessionCommand {
           detachOwner?.call();
           _operations.remove(end);
           end();
+          _notify();
         });
   }
 

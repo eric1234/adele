@@ -67,8 +67,10 @@ Main Content input-action adapters also use this same contract, without extendin
 its context or authority API. The Session-aware form uses separately supplied
 `WindowSessionContext` in native hosting, passing only the captured Session ID to
 its operation. Its optional owning-backend access is an explicit prepared service
-allowlist, not authority inferred from Session identity. Arbitrary contextual
-Commands remain unsupported.
+allowlist, not authority inferred from Session identity. Separate bounded native
+clipboard-write/feedback opt-ins belong to the interpreted
+[UI bridge](../ui/README.md#interpreted-bridges), not this pure-Dart Command contract.
+Arbitrary contextual Commands remain unsupported.
 Prepared metadata reuses `CommandId` and
 `CommandContribution.validateLabel`; adaptation and evaluator lifetime belong to
 the [application frontend owner](../../app/README.md#prepared-frontend-activation).
@@ -121,7 +123,7 @@ late consumers read `snapshot` explicitly. `isActive` becomes false when the win
 ends access, after which reads and new subscriptions throw `StateError`. Previously
 captured snapshots remain immutable. Observation is not an authority grant.
 
-The host implementation and optional native attachment belong to the
+The host implementation and normal prepared frontend integration belong to the
 [desktop application](../../app/README.md#window-session-context), not this package.
 Native Commands can use separately supplied context without changing
 `CommandContribution`; no UI participation or backend transport is implied.

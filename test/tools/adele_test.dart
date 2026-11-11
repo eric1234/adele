@@ -504,6 +504,7 @@ exit "$CLIPPY_EXIT"
           'filesystem_tools_frontend',
           'command_tools_frontend',
           'chat_strategy_frontend',
+          'session_evaluator_frontend',
           'task_browser_frontend',
           'terminal_frontend',
           'diff_viewer_frontend',
@@ -1281,12 +1282,31 @@ exit "$CLIPPY_EXIT"
         File('tools/backend_artifacts.dart').readAsStringSync(),
         contains('$root/backend/bin/session_evaluator_backend.dart'),
       );
-      expect(Directory('$root/frontend').existsSync(), isFalse);
+      final frontend = lookupTestTarget('session_evaluator_frontend');
+      expect(frontend.path, '$root/frontend');
+      expect(frontend.executable, 'flutter');
+      expect(frontend.argumentsFor(ci: true), ['test']);
+      expect(frontend.nativeToml, isTrue);
+      expect(frontend.nativeCodeEditor, isFalse);
+      expect(frontend.linuxDesktopDeps, isFalse);
+      expect(
+        File('pubspec.yaml').readAsStringSync(),
+        contains('  - $root/frontend\n'),
+      );
+      final frontendManifest =
+          loadYaml(File('$root/frontend/pubspec.yaml').readAsStringSync())
+              as YamlMap;
+      expect(frontendManifest['resolution'], 'workspace');
+      expect(
+        (frontendManifest['dependencies'] as YamlMap).keys,
+        unorderedEquals(['adele_ui', 'session_evaluator_contract']),
+      );
       final app =
           loadYaml(File('app/pubspec.yaml').readAsStringSync()) as YamlMap;
       for (final name in [
         'session_evaluator_contract',
         'session_evaluator_backend',
+        'session_evaluator_frontend',
       ]) {
         expect((app['dependencies'] as YamlMap).containsKey(name), isFalse);
       }
@@ -2017,6 +2037,10 @@ exit "$CLIPPY_EXIT"
           ),
           (name: 'openai_frontend', path: 'plugins/openai/packages/frontend'),
           (
+            name: 'session_evaluator_frontend',
+            path: 'plugins/session_evaluator/packages/frontend',
+          ),
+          (
             name: 'local_directory_project_frontend',
             path: 'plugins/local_directory_project/packages/frontend',
           ),
@@ -2079,6 +2103,7 @@ exit "$CLIPPY_EXIT"
           'dev.adele.source-editor',
           'dev.adele.plugin.terminal',
           'dev.adele.plugin.local-directory-project',
+          'dev.adele.plugin.session-evaluator',
         ]),
       );
 
@@ -2153,6 +2178,7 @@ exit "$CLIPPY_EXIT"
                 'model-native-activity-compact-presentations',
               (
                 'command' ||
+                    'sessionCommand' ||
                     'consoleActionCommand' ||
                     'mainContentActionCommand',
                 'extensionId',
@@ -2242,7 +2268,8 @@ exit "$CLIPPY_EXIT"
                     (descriptor['kind'] == 'projectSelector'
                             ? r'\bFuture<String\?>\s+'
                             : field == 'initialize' ||
-                                  descriptor['kind'] == 'command'
+                                  descriptor['kind'] == 'command' ||
+                                  descriptor['kind'] == 'sessionCommand'
                             ? r'\b(?:void|Future<void>)\s+'
                             : r'\b(?:Widget|Future<Widget>)\s+') +
                         RegExp.escape(entrypoint) +
@@ -2609,6 +2636,7 @@ exit "$CLIPPY_EXIT"
         'chat_strategy_frontend|flutter|plugins/chat_strategy/packages/frontend|test',
         'session_evaluator_contract|dart|plugins/session_evaluator/packages/contract|test',
         'session_evaluator_backend|dart|plugins/session_evaluator/packages/backend|test',
+        'session_evaluator_frontend|flutter|plugins/session_evaluator/packages/frontend|test',
         'local_directory_project_backend|dart|plugins/local_directory_project/packages/backend|test',
         'local_directory_project_frontend|flutter|plugins/local_directory_project/packages/frontend|test',
         'task_browser_frontend|flutter|plugins/task_browser/packages/frontend|test',

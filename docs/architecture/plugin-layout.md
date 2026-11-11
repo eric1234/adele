@@ -279,8 +279,9 @@ additive under the version-1 envelope. See
 
 The additive `sessionCommand` behavioral variant explicitly requires current
 Session selection and names its own operation, unlike the sibling-action adapters
-below. It supplies the normal Command identity/label/ABI metadata and an optional
-owning-backend service allowlist. It has no caller-selected Session, backend,
+below. It supplies the normal Command identity/label/ABI metadata, an optional
+owning-backend service allowlist, and separate default-denied clipboard-write and
+nonmodal-feedback opt-ins. It has no caller-selected Session, backend,
 configuration route, or general authority fields. Parsing failure stays within the
 frontend component boundary, preserving healthy independent components. Backend
 absence does not invalidate the descriptor or frontend activation. Exact schema

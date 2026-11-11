@@ -2798,6 +2798,8 @@ void main() {
           ExtensionId(_sessionCommand['extensionId']!),
         );
         expect(parsed.commandId, CommandId(_sessionCommand['commandId']!));
+        expect(parsed.clipboardWrite, isFalse);
+        expect(parsed.feedback, isFalse);
         expect(parsed.label, _sessionCommand['label']);
         expect(parsed.library, _sessionCommand['library']);
         expect(parsed.entrypoint, _sessionCommand['entrypoint']);
@@ -2868,6 +2870,46 @@ void main() {
     expect(parsed.first.toJson(), descriptor.toJson());
     expect(parsed.first.backendServices.clear, throwsUnsupportedError);
   });
+
+  for (final clipboardWrite in [false, true]) {
+    for (final feedback in [false, true]) {
+      test(
+        'Session Command native opt-ins $clipboardWrite/$feedback',
+        () async {
+          await install(
+            'command-opt-ins',
+            _manifest(
+              components: {
+                'frontend': {
+                  ..._frontend(),
+                  'extensions': [
+                    {
+                      ..._sessionCommand,
+                      'clipboardWrite': clipboardWrite,
+                      'feedback': feedback,
+                    },
+                  ],
+                },
+              },
+            ),
+          );
+          final catalog = await PreparedPluginCatalog.discover(root.path);
+          expect(catalog.issues, isEmpty);
+          final parsed =
+              catalog.installations.single.frontend!.extensions.single
+                  as PreparedSessionCommandExtension;
+          expect(parsed.clipboardWrite, clipboardWrite);
+          expect(parsed.feedback, feedback);
+          expect(parsed.toJson(), {
+            ..._sessionCommand,
+            'backendServices': <String>[],
+            if (clipboardWrite) 'clipboardWrite': true,
+            if (feedback) 'feedback': true,
+          });
+        },
+      );
+    }
+  }
 
   PreparedConsoleActionCommandExtension consoleActionCommand({
     String actionId = 'new-console',
@@ -3548,6 +3590,9 @@ void main() {
   });
 
   final invalidSessionCommands = <String, Object?>{
+    for (final field in ['clipboardWrite', 'feedback'])
+      for (final invalid in [null, 'true', 1, <Object?>[], <String, Object?>{}])
+        'invalid $field $invalid': {..._sessionCommand, field: invalid},
     'case-sensitive kind': {..._sessionCommand, 'kind': 'SessionCommand'},
     for (final field in [
       'unknown',

@@ -1,4 +1,5 @@
 import 'package:adele_ui/capability_bridge.dart';
+import 'package:adele_ui/command_bridge.dart';
 import 'package:adele_ui/directory_picker_bridge.dart';
 import 'package:adele_ui/environment_access_bridge.dart';
 import 'package:adele_ui/environment_capability_bridge.dart';
@@ -17,6 +18,27 @@ void local(String sessionId) {
 }
 
 void independent() {}
+
+Future<void> copySession(String sessionId) async {
+  if (await writeCommandClipboard(sessionId)) {
+    showCommandFeedback('Copied $sessionId');
+  } else {
+    showCommandFeedback('Not copied: $sessionId');
+  }
+}
+
+Future<void> copyHeld(String sessionId) async {
+  await client().read('held');
+  await copySession(sessionId);
+}
+
+Future<void> copyContextFree() async {
+  await writeCommandClipboard('not allowed');
+}
+
+void feedbackOnly(String sessionId) {
+  showCommandFeedback(sessionId);
+}
 
 CapabilityProbeServiceClient client() => CapabilityProbeServiceClient(
   OwningBackendRequestChannel(capabilityProbeServiceId),

@@ -436,18 +436,24 @@ version-1 `frontend.extensions` list:
   "label": "Run Session Command",
   "library": "package:example_frontend/command.dart",
   "entrypoint": "runSessionCommand",
-  "backendServices": ["example.session"]
+  "backendServices": ["example.session"],
+  "clipboardWrite": true,
+  "feedback": true
 }
 ```
 
 It requires exactly the same `extensionId`, `commandId`, `label`, `library`, and
-`entrypoint` fields and validation as `command`. Its only optional field is
-`backendServices`, a string service-ID allowlist defaulting to empty. It uses the
+`entrypoint` fields and validation as `command`. Optional `backendServices` is a
+string service-ID allowlist defaulting to empty. It uses the
 existing public service-ID validator, rejects duplicates, and preserves authored
 order in an immutable copy. `toJson()` includes an explicit `backendServices` array
-and returns a fresh copy. Null, non-array/non-string services, malformed IDs, and
-unknown fields invalidate the whole frontend component while preserving its healthy
-backend and independent installations.
+and returns a fresh copy. Independent optional booleans `clipboardWrite` and
+`feedback` default to false; `toJson()` includes each only when true. They request
+the narrow operation-scoped [Command bridge](../ui/README.md#interpreted-bridges),
+not general clipboard/UI access. Null or nonboolean opt-ins, non-array/non-string
+services, malformed IDs, duplicates, and unknown fields invalidate the whole
+frontend component while preserving its healthy backend and independent
+installations. Other descriptor kinds do not accept these opt-ins.
 
 The `sessionCommand` kind itself explicitly requires a selected Session; this is
 not an optional context flag or a change to context-free `command`. There are no

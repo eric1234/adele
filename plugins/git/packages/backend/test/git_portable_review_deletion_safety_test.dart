@@ -23,6 +23,152 @@ void main() {
     await fixture.close();
   });
 
+  for (final prefix in ['/usr/bin/stat', 'stat']) {
+    test('absence utility accepts deletion with stat prefix $prefix', () async {
+      const path = 'parent/deleted.txt';
+      await fixture.deleteTracked(path: path);
+      final before = await fixture.state();
+      // Real stat, differing only in argv[0], preserves all process outcomes.
+      _interceptAbsenceUtility(
+        fixture.processes,
+        'stat',
+        '/bin/bash -c \'exec -a "$prefix" /usr/bin/stat "\$@"\' stat "\$@"',
+      );
+      final selection = selectFileFrom(await fixture.changed(path: path));
+      await fixture.expectUnchanged(before);
+      fixture.processes.requests.clear();
+      await fixture.mutateFile(selection);
+      checkedApplyPatch(fixture, staged: false);
+      await fixture.expectIndexPresence(before, path, null);
+    });
+  }
+
+  for (final (utility, failure, response) in [
+    ('stat', 'nonzero', 'return 2'),
+    ('stat', 'permission', "printf 'stat: Permission denied\\n' >&2; return 1"),
+    ('stat', 'I/O', "printf 'stat: Input/output error\\n' >&2; return 1"),
+    ('find', 'empty nonzero', 'return 1'),
+    ('find', 'permission', "printf 'find: Permission denied\\n' >&2; return 1"),
+    (
+      'find',
+      'stderr only',
+      "printf 'find: Input/output error\\n' >&2; return 0",
+    ),
+    ('find', 'malformed stdout', "printf 'present-extra'; return 0"),
+  ]) {
+    test('absence utility $utility $failure fails closed', () async {
+      const path = 'parent/deleted.txt';
+      await fixture.deleteTracked(path: path);
+      final selection = selectFileFrom(await fixture.changed(path: path));
+      final before = await fixture.state();
+      final probes = _interceptAbsenceUtility(
+        fixture.processes,
+        utility,
+        utility == 'stat'
+            ? 'if [ "\$3" = ./parent ]; then $response; fi\n'
+                  '/usr/bin/stat "\$@"'
+            : response,
+      );
+      fixture.processes.requests.clear();
+      await expectLater(
+        fixture.snapshots.snapshotUncommitted(),
+        throwsA(isA<ChangeSetFailure>()),
+      );
+      await expectLater(
+        fixture.mutateFile(selection),
+        throwsA(hasErrorCode(['inspection_failed'])),
+      );
+      expect(probes, hasLength(2));
+      expect(
+        probes.map((probe) => probe.exitCode),
+        everyElement(failure == 'stderr only' ? 0 : 2),
+      );
+      expect(fixture.processes.writes, isEmpty);
+      await fixture.expectUnchanged(before);
+    });
+  }
+
+  test('absence utility rejects an unreadable searchable parent', () async {
+    final identity = await Process.run('/usr/bin/id', ['-u']);
+    expect(identity.exitCode, 0);
+    if ((identity.stdout as String).trim() == '0') {
+      markTestSkipped('Root bypasses directory read permissions.');
+      return;
+    }
+    const path = 'parent/deleted.txt';
+    await fixture.deleteTracked(path: path);
+    final selection = selectFileFrom(await fixture.changed(path: path));
+    final absenceRequest = fixture.processes.requests.lastWhere(
+      (request) => request.arguments.contains('adele-review-absence'),
+    );
+    final before = await fixture.state();
+    final parent = Directory('${fixture.repository.path}/parent');
+    final mode = (await parent.stat()).mode & 0x1ff;
+    fixture.processes.requests.clear();
+    try {
+      await runLocal('/usr/bin/chmod', ['111', parent.path]);
+      expect((await parent.stat()).type, FileSystemEntityType.directory);
+      await expectLater(
+        parent.list().toList(),
+        throwsA(isA<FileSystemException>()),
+      );
+      // Git inventory may fail first; also exercise the actual captured probe.
+      final probe = await fixture.processes.runBufferedProcess(absenceRequest);
+      expect(probe.exitCode, 2);
+      expect(base64Decode(probe.stdoutBase64), isEmpty);
+      expect(base64Decode(probe.stderrBase64), isNotEmpty);
+      await expectLater(
+        fixture.snapshots.snapshotUncommitted(),
+        throwsA(isA<ChangeSetFailure>()),
+      );
+      await expectLater(
+        fixture.mutateFile(selection),
+        throwsA(hasErrorCode(['inspection_failed'])),
+      );
+      expect(fixture.processes.writes, isEmpty);
+    } finally {
+      await runLocal('/usr/bin/chmod', [mode.toRadixString(8), parent.path]);
+    }
+    expect((await parent.stat()).mode & 0x1ff, mode);
+    await fixture.expectUnchanged(before);
+  });
+
+  for (final kind in ['file', 'dangling symlink']) {
+    test(
+      'absence utility distinguishes literal hidden names from $kind',
+      () async {
+        const path = "parent/.deleted*?[x];'\$(touch injected).txt";
+        await fixture.deleteTracked(path: path);
+        await fixture.write(
+          "parent/.deletedZZx;'\$(touch injected).txt",
+          'glob-matching sibling\n',
+        );
+        final before = await fixture.state();
+        final selection = selectFileFrom(await fixture.changed(path: path));
+        await fixture.mutateFile(selection);
+        checkedApplyPatch(fixture, staged: false);
+        await fixture.expectIndexPresence(before, path, null);
+        if (kind == 'file') {
+          await fixture.write(path, 'hidden recreation\n');
+        } else {
+          await Link(
+            '${fixture.repository.path}/$path',
+          ).create('missing-target');
+        }
+        final recreated = await fixture.state();
+        final file = await fixture.changed(path: path, staged: true);
+        expect(file.fileReviewRevision, isNull);
+        fixture.processes.requests.clear();
+        await expectLater(
+          fixture.mutateFile(untrustedFileSelection(path), staged: true),
+          throwsA(hasErrorCode(['unsupported_target'])),
+        );
+        expect(fixture.processes.writes, isEmpty);
+        await fixture.expectUnchanged(recreated);
+      },
+    );
+  }
+
   for (final staged in [false, true]) {
     for (final kind in [
       'binary',
@@ -872,4 +1018,35 @@ void main() {
       },
     );
   }
+}
+
+List<EnvironmentBufferedProcessResult> _interceptAbsenceUtility(
+  ProcessSpy processes,
+  String utility,
+  String body,
+) {
+  final results = <EnvironmentBufferedProcessResult>[];
+  processes.intercept = (request, run) async {
+    final marker = request.arguments.indexOf('adele-review-absence');
+    if (marker < 0) return run(request);
+    final arguments = request.arguments.toList();
+    final script = arguments[marker - 1];
+    final executable = '/usr/bin/$utility ';
+    expect(script, contains(executable));
+    arguments[marker - 1] =
+        'absence_utility() {\n$body\n}\n'
+        '${script.replaceAll(executable, 'absence_utility ')}';
+    final result = await run(
+      EnvironmentBufferedProcessRequest(
+        program: request.program,
+        arguments: arguments,
+        relativeWorkingDirectory: request.relativeWorkingDirectory,
+        timeoutSeconds: request.timeoutSeconds,
+        stdinBase64: request.stdinBase64,
+      ),
+    );
+    results.add(result);
+    return result;
+  };
+  return results;
 }
