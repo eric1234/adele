@@ -3,7 +3,7 @@ import 'environment_terminal_owner.dart';
 
 /// Desktop host graph with native terminal resources, separate from SDK callers.
 final class NativeAdeleRuntime extends AdeleRuntime {
-  NativeAdeleRuntime({super.ids, super.runIds}) {
+  NativeAdeleRuntime({super.ids, super.runIds, super.localStateRoot}) {
     terminals = EnvironmentTerminalCoordinator(
       environmentRuntime: lifecycle.environmentRuntime,
     );

@@ -75,6 +75,8 @@ const String _toolFrontendHarness =
     'tool/compile_tool_inspection_frontends.dart';
 const String _openaiFrontendHarness =
     'tool/compile_openai_activity_frontend.dart';
+const String _sessionEvaluatorFrontendHarness =
+    'tool/compile_session_evaluator_frontend.dart';
 const String _localDirectoryProjectFrontendHarness =
     'tool/compile_local_directory_project_frontend.dart';
 const String _taskBrowserFrontendHarness =
@@ -102,6 +104,7 @@ const _frontendCompilations = {
   'filesystem': '$_toolFrontendHarness|filesystem',
   'command': '$_toolFrontendHarness|command',
   'openai': _openaiFrontendHarness,
+  'session-evaluator': _sessionEvaluatorFrontendHarness,
   'local-directory-project': _localDirectoryProjectFrontendHarness,
   'task-browser': _taskBrowserFrontendHarness,
   'terminal': _terminalFrontendHarness,
@@ -172,6 +175,9 @@ void main() {
     ).writeAsStringSync('void main() {}');
     File(
       '${root.path}/app/$_openaiFrontendHarness',
+    ).writeAsStringSync('void main() {}');
+    File(
+      '${root.path}/app/$_sessionEvaluatorFrontendHarness',
     ).writeAsStringSync('void main() {}');
     File(
       '${root.path}/app/$_localDirectoryProjectFrontendHarness',
@@ -465,6 +471,10 @@ elif [ "\$1" = test ]; then
     kind=local-directory-project
     output="\$ADELE_LOCAL_DIRECTORY_PROJECT_FRONTEND_OUTPUT"
     label='$_localDirectoryProjectFrontendHarness'
+  elif [ "\$5" = '$_sessionEvaluatorFrontendHarness' ]; then
+    kind=session-evaluator
+    output="\$ADELE_SESSION_EVALUATOR_FRONTEND_OUTPUT"
+    label='$_sessionEvaluatorFrontendHarness'
   elif [ "\$5" = '$_taskBrowserFrontendHarness' ]; then
     kind=task-browser
     output="\$ADELE_TASK_BROWSER_FRONTEND_OUTPUT"
@@ -833,7 +843,14 @@ printf 'compiled|%s\n' "\$entrypoint" >> '${commands.path}'
       for (final cold in [true, false]) {
         final after = await prepare();
         expect(toolCompilations(), cold ? _toolStages.values : isEmpty);
-        expect(compilations(), hasLength(cold ? 21 : 0));
+        expect(
+          compilations(),
+          hasLength(
+            cold
+                ? _backendEntrypoints.length + _frontendCompilations.length + 1
+                : 0,
+          ),
+        );
         expect(
           commands.readAsLinesSync().where(
             (line) => line.startsWith('generate|'),
@@ -1362,6 +1379,7 @@ TZ=UTC touch -m -t 200001010000 '${override.parent.path}'
           'search_tools_backend',
           'filesystem_tools_backend',
           'command_tools_backend',
+          'session_evaluator_frontend',
           'local_directory_project_backend',
           'local_directory_project_frontend',
           'task_browser_frontend',
@@ -2081,6 +2099,10 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
     () async {
       for (final path in [
         _sessionEvaluatorEntrypoint,
+        'plugins/session_evaluator/packages/frontend/lib/session_evaluator_frontend.dart',
+        'plugins/session_evaluator/packages/frontend/lib/src/read_prepared_handoff.dart',
+        'app/$_sessionEvaluatorFrontendHarness',
+        'app/tool/session_evaluator_frontend_compiler.dart',
         _diffViewerEntrypoint,
         _localDirectoryProjectEntrypoint,
         'plugins/local_directory_project/packages/backend/lib/local_directory_project_backend.dart',
@@ -2117,6 +2139,8 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           '/wrong-tool-output';
       environment['ADELE_TOOL_INSPECTION_FRONTEND'] = 'wrong-tool';
       environment['ADELE_OPENAI_ACTIVITY_FRONTEND_OUTPUT'] = '/wrong-openai';
+      environment['ADELE_SESSION_EVALUATOR_FRONTEND_OUTPUT'] =
+          '/wrong-evaluator';
       environment['ADELE_LOCAL_DIRECTORY_PROJECT_FRONTEND_OUTPUT'] =
           '/wrong-local-directory-project';
       for (final List<String> arguments in <List<String>>[
@@ -2163,6 +2187,8 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
             'compiled|$_toolFrontendHarness|command',
             'compile|$_openaiFrontendHarness',
             'compiled|$_openaiFrontendHarness',
+            'compile|$_sessionEvaluatorFrontendHarness',
+            'compiled|$_sessionEvaluatorFrontendHarness',
             'compile|$_localDirectoryProjectFrontendHarness',
             'compiled|$_localDirectoryProjectFrontendHarness',
             'compile|$_taskBrowserFrontendHarness',
@@ -2192,7 +2218,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           if (run) '-d',
           'linux',
           arguments.length == 3 ? arguments.last : '--debug',
-          '--target=tool/development_main.dart',
+          '--target=lib/main.dart',
         ]);
         final Map<String, String> defines = <String, String>{};
         for (final String argument in launched.skip(run ? 5 : 4)) {
@@ -2482,7 +2508,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           catalog.installations.where(
             (installation) => installation.frontend != null,
           ),
-          hasLength(9),
+          hasLength(10),
         );
         final recordsInstallation = catalog.installations.singleWhere(
           (installation) => installation.recordsSchema != null,
@@ -2530,7 +2556,24 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
               installation.metadata.id.value ==
               'dev.adele.plugin.session-evaluator',
         );
-        expect(evaluator.frontend, isNull);
+        expect(
+          evaluator.frontend!.artifactUri,
+          installations.uri.resolve('session-evaluator/frontend.evc'),
+        );
+        expect(evaluator.frontend!.presentations, isEmpty);
+        expect(evaluator.frontend!.extensions.single.toJson(), {
+          'kind': 'sessionCommand',
+          'extensionId':
+              'dev.adele.plugin.session-evaluator.command.prepare-handoff',
+          'commandId': 'dev.adele.session-evaluator.export-session-evidence',
+          'label': 'Prepare Evaluation Handoff...',
+          'library':
+              'package:session_evaluator_frontend/session_evaluator_frontend.dart',
+          'entrypoint': 'prepareEvaluationHandoff',
+          'backendServices': ['dev.adele.session-evaluation-handoff'],
+          'clipboardWrite': true,
+          'feedback': true,
+        });
         expect(evaluator.settingsSchema, isNull);
         expect(evaluator.backendConsumedCapabilities, isEmpty);
         expect(
@@ -2884,22 +2927,25 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
     ['run', 'linux', '--release'],
     ['build', 'linux', '--release'],
   ]) {
-    test('${arguments.join(' ')} selects the development entrypoint', () async {
-      final result = await invoke(arguments);
-      expect(result.exitCode, 0, reason: result.stderr.toString());
-      final run = arguments.first == 'run';
-      expect(launchArguments.readAsLinesSync().take(run ? 5 : 4), [
-        arguments.first,
-        if (run) '-d',
-        'linux',
-        arguments.last,
-        '--target=tool/development_main.dart',
-      ]);
-      expect(
-        commands.readAsLinesSync(),
-        contains('compiled|$_sessionEvaluatorEntrypoint'),
-      );
-    });
+    test(
+      '${arguments.join(' ')} selects the ordinary app entrypoint',
+      () async {
+        final result = await invoke(arguments);
+        expect(result.exitCode, 0, reason: result.stderr.toString());
+        final run = arguments.first == 'run';
+        expect(launchArguments.readAsLinesSync().take(run ? 5 : 4), [
+          arguments.first,
+          if (run) '-d',
+          'linux',
+          arguments.last,
+          '--target=lib/main.dart',
+        ]);
+        expect(
+          commands.readAsLinesSync(),
+          contains('compiled|$_sessionEvaluatorEntrypoint'),
+        );
+      },
+    );
   }
 
   for (final failure in ['exit', 'missing', 'empty']) {
@@ -2962,7 +3008,10 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           catalog.installations.where(
             (installation) => installation.frontend != null,
           ),
-          hasLength(missing == PreparedPluginComponent.frontend ? 8 : 9),
+          hasLength(
+            _frontendCompilations.length -
+                (missing == PreparedPluginComponent.frontend ? 1 : 0),
+          ),
         );
       },
     );
@@ -2992,7 +3041,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
       catalog.installations.where(
         (installation) => installation.frontend != null,
       ),
-      hasLength(8),
+      hasLength(_frontendCompilations.length - 1),
     );
   });
 
@@ -3351,7 +3400,12 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
       'incremental preparation rebuilds only consumers of ${mutation.path}',
       () async {
         final before = await prepare();
-        expect(compilations(), hasLength(21));
+        expect(
+          compilations(),
+          hasLength(
+            _backendEntrypoints.length + _frontendCompilations.length + 1,
+          ),
+        );
         expect(toolCompilations(), _toolStages.values);
         final retained = retainedFiles();
         changeSource(mutation.path);
@@ -3764,7 +3818,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
       final receipts = files.where(
         (file) => file.uri.pathSegments.last == 'receipt.json',
       );
-      expect(receipts, hasLength(25));
+      expect(receipts, hasLength(26));
       for (final receipt in receipts) {
         final decoded =
             jsonDecode(receipt.readAsStringSync()) as Map<String, dynamic>;
@@ -3919,7 +3973,12 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
       expect(publishedFiles(), isEmpty);
       environment.remove('ADELE_TEST_MUTATE_SOURCE');
       await prepare();
-      expect(compilations(), hasLength(21));
+      expect(
+        compilations(),
+        hasLength(
+          _backendEntrypoints.length + _frontendCompilations.length + 1,
+        ),
+      );
     },
   );
 
@@ -3983,7 +4042,12 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
             ),
           );
         }
-        expect(compilations(), hasLength(21));
+        expect(
+          compilations(),
+          hasLength(
+            _backendEntrypoints.length + _frontendCompilations.length + 1,
+          ),
+        );
         expect(toolCompilations(), _toolStages.values);
         final catalog = await PreparedPluginCatalog.discover(
           launchDefines()['ADELE_PLUGIN_INSTALLATION_ROOT']!,

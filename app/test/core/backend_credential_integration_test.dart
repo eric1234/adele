@@ -7,6 +7,7 @@ import 'dart:io';
 import 'dart:ui' show AppExitResponse, IsolateNameServer;
 
 import 'package:adele_capabilities/adele_capabilities.dart';
+import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_desktop/application.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/credential_service.dart';
@@ -459,8 +460,6 @@ void main() {
             createCredentials: () => appCredentials,
             configurationRoots: fixture.roots,
             readChatGptConfiguration: () => null,
-            attachSessionContext: (_) =>
-                () => closeStarted.complete(),
             bootstrapPlugins: (plugins) => starting = plugins.start(
               installationRoot: fixture.installations.path,
               dartaotruntimeExecutable: fixture.runtime,
@@ -468,6 +467,12 @@ void main() {
             ),
           ),
         );
+        appRuntime.extensions
+            .discover(commandContributions)
+            .singleWhere(
+              (binding) => binding.value.id == showCommandPaletteCommandId,
+            )
+            .onRetire(closeStarted.complete);
         await starting;
         expect(appRuntime.plugins.state, ApplicationPluginState.ready);
         final backend = appRuntime.plugins.backends.singleWhere(

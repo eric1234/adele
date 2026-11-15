@@ -169,6 +169,21 @@ const Map<String, List<Map<String, Object?>>> stockFrontendDescriptors = {
 /// Build-time non-presentation extension metadata, keyed by owning PluginId.
 const Map<String, List<Map<String, Object?>>>
 stockFrontendExtensionDescriptors = {
+  'dev.adele.plugin.session-evaluator': [
+    {
+      'kind': 'sessionCommand',
+      'extensionId':
+          'dev.adele.plugin.session-evaluator.command.prepare-handoff',
+      'commandId': 'dev.adele.session-evaluator.export-session-evidence',
+      'label': 'Prepare Evaluation Handoff...',
+      'library':
+          'package:session_evaluator_frontend/session_evaluator_frontend.dart',
+      'entrypoint': 'prepareEvaluationHandoff',
+      'backendServices': ['dev.adele.session-evaluation-handoff'],
+      'clipboardWrite': true,
+      'feedback': true,
+    },
+  ],
   'dev.adele.source-editor': [
     {
       'kind': 'mainContentActionCommand',

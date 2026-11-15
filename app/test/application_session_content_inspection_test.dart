@@ -7,6 +7,7 @@ import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_desktop/application.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
+import 'package:adele_desktop/core/credential_service.dart';
 import 'package:adele_desktop/core/project_database.dart';
 import 'package:adele_desktop/frontend/contribution_bridge.dart';
 import 'package:adele_desktop/frontend/main_content_bridge.dart';
@@ -33,6 +34,7 @@ import 'package:flutter_eval/flutter_eval.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
+import 'support/gated_credential_storage.dart';
 import 'support/project_provider.dart';
 
 const _producerLibrary = 'package:application_content_producer/main.dart';
@@ -140,7 +142,7 @@ void main() {
         await tester.pump(const Duration(milliseconds: 300));
         expect(find.text('Leave content?'), findsOneWidget);
         expect(_cards(tester), [same(first)]);
-        expect(f.window.snapshot.session, same(f.session));
+        expect(f.selectedSession(tester), same(f.session));
         expect(
           tester.element(find.text('Producer session')),
           same(producerElement),
@@ -172,7 +174,7 @@ void main() {
         expect(_cards(tester), [same(second), same(first)]);
         await tester.tap(find.text('Leave now'));
         await tester.pumpAndSettle();
-        expect(f.window.snapshot.session, isNull);
+        expect(f.selectedSession(tester), isNull);
         expect(first.content!.isActive, isFalse);
         expect(second.content!.isActive, isFalse);
         expect(find.byType(InspectionStackHost), findsNothing);
@@ -183,7 +185,7 @@ void main() {
 
         await tester.tap(find.text('Open canonical Session'));
         await tester.pumpAndSettle();
-        expect(f.window.snapshot.session, same(f.session));
+        expect(f.selectedSession(tester), same(f.session));
         cachedOpen();
         await tester.pumpAndSettle();
         expect(find.byType(InspectionStackHost), findsNothing);
@@ -252,16 +254,16 @@ void main() {
         await tester.pumpAndSettle();
         expect(contexts, hasLength(2));
         expect(contexts.every((context) => context.isActive), isTrue);
-        expect(f.window.snapshot.session, same(f.session));
+        expect(f.selectedSession(tester), same(f.session));
         final cards = _cards(tester);
         final retainedHost = tester.element(find.byType(InspectionStackHost));
         final binding = SessionContentInspectionResolver(
           f.runtime.extensions,
         ).resolve(SessionContentKind(_nativeKind));
         List<bool>? activeAtCleanup;
-        f.onCleanup = () {
+        f.palette.binding.onRetire(() {
           activeAtCleanup = [for (final context in contexts) context.isActive];
-        };
+        });
 
         var exited = false;
         final exiting = tester.binding.handleRequestAppExit().then((response) {
@@ -275,7 +277,7 @@ void main() {
         expect(activeAtCleanup, [false, false]);
         expect(contexts.every((context) => !context.isActive), isTrue);
         expect(revocations, 2);
-        expect(f.window.isActive, isFalse);
+        expect(f.palette.availability, CommandAvailability.disabled);
         expect(exited, isFalse);
         expect(f.runtime.plugins.state, ApplicationPluginState.ready);
         expect(binding.validate, returnsNormally);
@@ -313,14 +315,14 @@ void main() {
         await tester.pump(const Duration(milliseconds: 300));
         await tester.tap(find.text('Leave now'));
         await tester.pumpAndSettle();
-        expect(f.window.snapshot.session, isNull);
+        expect(f.selectedSession(tester), isNull);
         final browser = tester.element(find.text('Open canonical Session'));
 
         final exiting = tester.binding.handleRequestAppExit();
         await tester.pumpAndSettle();
         await tester.tap(find.text('Leave now'));
         await f.closeEntered.future.timeout(const Duration(seconds: 2));
-        expect(f.window.isActive, isFalse);
+        expect(f.palette.availability, CommandAvailability.disabled);
         expect(f.cleanup.isCompleted, isFalse);
         await tester.pumpAndSettle();
         expect(
@@ -394,15 +396,15 @@ void main() {
           await tester.pump();
           expect(_cards(tester), [same(card)]);
           expect(card.content!.isActive, isTrue);
-          expect(f.window.snapshot.session, same(f.session));
+          expect(f.selectedSession(tester), same(f.session));
           expect(f.closeEntered.isCompleted, isFalse);
 
           await tester.tap(find.text('Keep Working'));
           await tester.pumpAndSettle();
           await exiting.expectResponse(tester, AppExitResponse.cancel);
           expect(find.byType(AlertDialog), findsNothing);
-          expect(f.window.isActive, isTrue);
-          expect(f.window.snapshot.session, same(f.session));
+          expect(f.palette.availability, CommandAvailability.enabled);
+          expect(f.selectedSession(tester), same(f.session));
           expect(tester.element(find.text('Producer session')), same(pane));
           expect(
             tester.element(find.byType(InspectionStackHost)),
@@ -478,7 +480,7 @@ void main() {
           expect(find.byType(AlertDialog), findsOneWidget);
           expect(find.text('Keep Working'), findsNothing);
           expect(find.text('Exit Anyway'), findsNothing);
-          expect(f.window.snapshot.session, same(f.session));
+          expect(f.selectedSession(tester), same(f.session));
           expect(f.closeEntered.isCompleted, isFalse);
           await _ExitRequest(
             tester,
@@ -500,7 +502,7 @@ void main() {
           await tester.tap(find.text('Leave now'));
           await tester.pumpAndSettle();
           expect(f.closeEntered.isCompleted, isTrue);
-          expect(f.window.isActive, isFalse);
+          expect(f.palette.availability, CommandAvailability.disabled);
           expect(exiting.response, isNull);
           expect(tester.element(find.text('Producer session')), same(pane));
           f.cleanup.complete();
@@ -553,14 +555,14 @@ void main() {
           await tester.pump(const Duration(seconds: 10));
           expect(exiting.response, isNull);
           expect(f.closeEntered.isCompleted, isFalse);
-          expect(f.window.isActive, isTrue);
+          expect(f.palette.binding.validate, returnsNormally);
           expect(card.content!.isActive, isTrue);
           expect(binding.validate, returnsNormally);
 
           await tester.tap(find.text('Exit Anyway'));
           await tester.pump();
           expect(f.closeEntered.isCompleted, isTrue);
-          expect(f.window.isActive, isFalse);
+          expect(f.palette.availability, CommandAvailability.disabled);
           expect(card.content!.isActive, isFalse);
           expect(f.cleanup.isCompleted, isFalse);
           expect(exiting.response, isNull);
@@ -627,7 +629,7 @@ void main() {
           expect(find.byType(AlertDialog), findsOneWidget);
           expect(find.text('Exit Anyway'), findsOneWidget);
           expect(f.closeEntered.isCompleted, isFalse);
-          expect(f.window.snapshot.session, same(f.session));
+          expect(f.selectedSession(tester), same(f.session));
           await _ExitRequest(
             tester,
             timerZone,
@@ -637,7 +639,7 @@ void main() {
           await tester.tap(find.text('Keep Working'));
           await tester.pumpAndSettle();
           await exiting.expectResponse(tester, AppExitResponse.cancel);
-          expect(f.window.isActive, isTrue);
+          expect(f.palette.availability, CommandAvailability.enabled);
           expect(tester.element(find.text('Producer session')), same(pane));
           await tester.tap(find.text('Confirm exit check'));
           final retry = _ExitRequest(tester, timerZone);
@@ -664,7 +666,7 @@ void main() {
       final preflight = Completer<bool>();
       final confirmationInvalidated = Completer<void>();
       var releases = 0;
-      var detachments = 0;
+      var commandRetirements = 0;
       var exited = false;
       final bridge = _RetentionBridge(
         () => fail('Disposed presentations must not be retained.'),
@@ -689,7 +691,7 @@ void main() {
             ),
       );
       final f = await mount(tester, mainContentHost: host);
-      f.onCleanup = () => detachments++;
+      f.palette.binding.onRetire(() => commandRetirements++);
       Future<AppExitResponse>? exiting;
       try {
         exiting = tester.binding.handleRequestAppExit().then((response) {
@@ -698,7 +700,7 @@ void main() {
         });
         await preflightEntered.future.timeout(const Duration(seconds: 2));
         expect(f.closeEntered.isCompleted, isFalse);
-        expect(f.window.isActive, isTrue);
+        expect(f.palette.binding.validate, returnsNormally);
         expect(bridge.retentions, 0);
 
         await tester.pumpWidget(const SizedBox.shrink());
@@ -706,8 +708,8 @@ void main() {
         await confirmationInvalidated.future.timeout(
           const Duration(seconds: 2),
         );
-        expect(f.window.isActive, isFalse);
-        expect(detachments, 1);
+        expect(f.palette.availability, CommandAvailability.disabled);
+        expect(commandRetirements, 1);
         expect(exited, isFalse);
 
         await host.drainOperations().timeout(const Duration(seconds: 2));
@@ -726,7 +728,7 @@ void main() {
           AppExitResponse.exit,
         );
         expect(f.runtime.plugins.state, ApplicationPluginState.closed);
-        expect(detachments, 1);
+        expect(commandRetirements, 1);
         expect(releases, 1);
         expect(bridge.retentions, 0);
         expect(tester.takeException(), isNull);
@@ -742,86 +744,95 @@ void main() {
     }),
   );
 
-  testWidgets(
-    'accepted application exit bounds throwing retention and independently retires resources',
-    (tester) => tester.runAsync(() async {
-      final failure = StateError('fixture presentation retention failed');
-      final released = Completer<void>();
-      late _Fixture f;
-      Future<AppExitResponse>? repeated;
-      final bridge = _RetentionBridge(() {
-        // Snapshot readers remain live, but a reentrant exit already joins the
-        // accepted deadline instead of reentering reversible preflight.
-        expect(f.window.snapshot.session, same(f.session));
-        repeated = tester.binding.handleRequestAppExit();
-        throw failure;
-      });
-      final host = PreparedMainContentHost(
-        confirm: (_, _) async => true,
-        createBinding:
-            ({
-              required installation,
-              required descriptor,
-              required session,
-              required paneId,
-            }) => PreparedMainContentPaneBinding(
-              createBridge: (_) => bridge,
-              release: released.complete,
+  for (final holdStorage in [false, true]) {
+    testWidgets(
+      'accepted application exit ${holdStorage ? 'bounds' : 'reports'} throwing retention and independently retires resources',
+      (tester) => tester.runAsync(() async {
+        final failure = StateError('fixture presentation retention failed');
+        final released = Completer<void>();
+        late _Fixture f;
+        Future<AppExitResponse>? repeated;
+        final bridge = _RetentionBridge(() {
+          // Snapshot readers remain live, but a reentrant exit already joins the
+          // accepted deadline instead of reentering reversible preflight.
+          expect(f.selectedSession(tester), same(f.session));
+          repeated = tester.binding.handleRequestAppExit();
+          throw failure;
+        });
+        final host = PreparedMainContentHost(
+          confirm: (_, _) async => true,
+          createBinding:
+              ({
+                required installation,
+                required descriptor,
+                required session,
+                required paneId,
+              }) => PreparedMainContentPaneBinding(
+                createBridge: (_) => bridge,
+                release: released.complete,
+              ),
+        );
+        const deadline = Duration(milliseconds: 100);
+        f = await mount(tester, mainContentHost: host, exitTimeout: deadline);
+        try {
+          if (!holdStorage) {
+            f.cleanup.complete();
+            expect(await f.admittedRead, isFalse);
+          }
+          final exiting = tester.binding.handleRequestAppExit();
+          await f.closeEntered.future.timeout(const Duration(seconds: 2));
+          expect(f.palette.availability, CommandAvailability.disabled);
+          expect(f.cleanup.isCompleted, !holdStorage);
+          expect(bridge.retentions, 1);
+          expect(repeated, isNotNull);
+
+          expect(
+            await exiting.timeout(const Duration(seconds: 2)),
+            AppExitResponse.exit,
+          );
+          expect(await repeated!, AppExitResponse.exit);
+          expect(f.cleanup.isCompleted, !holdStorage);
+          expect(
+            tester.takeException(),
+            holdStorage
+                ? isA<TimeoutException>().having(
+                    (error) => error.duration,
+                    'duration',
+                    deadline,
+                  )
+                : same(failure),
+          );
+          await released.future.timeout(const Duration(seconds: 2));
+          await f.runtime.close().timeout(const Duration(seconds: 2));
+          expect(f.runtime.plugins.state, ApplicationPluginState.closed);
+          expect(
+            f.runtime.extensions.discover(mainContentContributions),
+            isEmpty,
+          );
+          expect(
+            f.runtime.extensions.discover(
+              sessionContentInspectionContributions,
             ),
-      );
-      const deadline = Duration(milliseconds: 100);
-      f = await mount(tester, mainContentHost: host, exitTimeout: deadline);
-      try {
-        final exiting = tester.binding.handleRequestAppExit();
-        await f.closeEntered.future.timeout(const Duration(seconds: 2));
-        expect(f.window.isActive, isFalse);
-        expect(f.cleanup.isCompleted, isFalse);
-        expect(bridge.retentions, 1);
-        expect(repeated, isNotNull);
+            isEmpty,
+          );
 
-        expect(
-          await exiting.timeout(const Duration(seconds: 2)),
-          AppExitResponse.exit,
-        );
-        expect(await repeated!, AppExitResponse.exit);
-        expect(f.cleanup.isCompleted, isFalse);
-        expect(
-          tester.takeException(),
-          isA<TimeoutException>().having(
-            (error) => error.duration,
-            'duration',
-            deadline,
-          ),
-        );
-        await released.future.timeout(const Duration(seconds: 2));
-        await f.runtime.close().timeout(const Duration(seconds: 2));
-        expect(f.runtime.plugins.state, ApplicationPluginState.closed);
-        expect(
-          f.runtime.extensions.discover(mainContentContributions),
-          isEmpty,
-        );
-        expect(
-          f.runtime.extensions.discover(sessionContentInspectionContributions),
-          isEmpty,
-        );
-
-        // The eventual retention failure is observed without reopening shutdown
-        // or reporting a second error after the deadline already won.
-        f.cleanup.complete();
-        await tester.pumpAndSettle();
-        expect(
-          await tester.binding.handleRequestAppExit(),
-          AppExitResponse.exit,
-        );
-        expect(bridge.retentions, 1);
-        expect(tester.takeException(), isNull);
-      } finally {
-        if (!f.cleanup.isCompleted) f.cleanup.complete();
-        await tester.pumpWidget(const SizedBox.shrink());
-        await f.close(tester);
-      }
-    }),
-  );
+          // Late failure and repeated exit never reopen shutdown or report twice.
+          if (!f.cleanup.isCompleted) f.cleanup.complete();
+          await tester.pumpAndSettle();
+          expect(
+            await tester.binding.handleRequestAppExit(),
+            AppExitResponse.exit,
+          );
+          expect(bridge.retentions, 1);
+          expect(tester.takeException(), isNull);
+        } finally {
+          if (!f.cleanup.isCompleted) f.cleanup.complete();
+          await tester.pumpWidget(const SizedBox.shrink());
+          await f.close(tester);
+        }
+      }),
+    );
+  }
 }
 
 List<InspectionCard> _cards(WidgetTester tester) =>
@@ -857,12 +868,19 @@ final class _Fixture {
   final Directory directory;
   final runtime = NativeAdeleRuntime();
   final registrations = <ExtensionRegistration>[];
-  final cleanup = Completer<void>();
+  final storage = GatedCredentialStorage();
+  late final credentials = CredentialService(storage);
+  late Future<bool> admittedRead;
+  Completer<void> get cleanup => storage.release;
   final closeEntered = Completer<void>();
   late TestProjectProvider provider;
-  late WindowSessionContext window;
+  late ResolvedCommand palette;
   late Session session;
-  VoidCallback? onCleanup;
+
+  Session? selectedSession(WidgetTester tester) => tester
+      .widgetList<MainContentHost>(find.byType(MainContentHost))
+      .singleOrNull
+      ?.session;
 
   static Future<_Fixture> create(List<int> producer, List<int> renderer) async {
     final f = _Fixture(
@@ -989,6 +1007,7 @@ final class _Fixture {
     await tester.pumpWidget(
       AdeleApplication(
         createRuntime: () => runtime,
+        createCredentials: () => credentials,
         mainContentHost: mainContentHost,
         exitTimeout: exitTimeout,
         exitPreflightThreshold: exitPreflightThreshold,
@@ -1000,19 +1019,17 @@ final class _Fixture {
           localDataRoot: '${directory.path}/data',
           cacheRoot: '${directory.path}/cache',
         ),
-        attachSessionContext: (context) {
-          window = context;
-          return () {
-            onCleanup?.call();
-            closeEntered.complete();
-            return cleanup.future;
-          };
-        },
         bootstrapPlugins: (plugins) => starting = plugins.start(
           installationRoot: '${directory.path}/installed',
         ),
       ),
     );
+    palette = CommandResolver(
+      runtime.extensions,
+    ).resolve(showCommandPaletteCommandId);
+    palette.binding.onRetire(closeEntered.complete);
+    admittedRead = credentials.contains(CredentialReference.generate());
+    await storage.entered.future;
     await starting;
     await registered.timeout(const Duration(seconds: 10));
     await tester.pumpAndSettle();
@@ -1022,7 +1039,6 @@ final class _Fixture {
     await tester.tap(find.text('Open canonical Session'));
     await tester.pumpAndSettle();
     session = runtime.store.session(SessionId('session'))!;
-    expect(window.snapshot.session, same(session));
     expect(
       tester.widget<MainContentHost>(find.byType(MainContentHost)).session,
       same(session),
@@ -1055,7 +1071,7 @@ final class _Fixture {
 
   Future<void> close(WidgetTester tester) async {
     if (!cleanup.isCompleted) cleanup.complete();
-    if (window.isActive) {
+    if (!closeEntered.isCompleted) {
       final exiting = tester.binding.handleRequestAppExit();
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
@@ -1066,11 +1082,15 @@ final class _Fixture {
     // An accepted exit may have created this Future in the widget's fake zone.
     // Bridge it to the caller's real zone before awaiting filesystem teardown.
     var closed = false;
-    final closing = runtime.close().then<void>((_) => closed = true);
+    final closing = Future.wait<void>([
+      runtime.close(),
+      credentials.close(),
+    ]).then<void>((_) => closed = true);
     for (var turn = 0; turn < 20 && !closed; turn++) {
       await tester.pump();
     }
     await closing.timeout(const Duration(seconds: 2));
+    expect(await admittedRead, isFalse);
     for (final registration in registrations.reversed) {
       await registration.close();
     }

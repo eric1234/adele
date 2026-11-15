@@ -12,6 +12,7 @@ import 'package:adele_desktop/core/prepared_settings.dart';
 import 'package:adele_desktop/core/window_session_context.dart';
 import 'package:adele_desktop/frontend/application_frontend_bootstrap.dart';
 import 'package:adele_desktop/frontend/capability_access_bridge.dart';
+import 'package:adele_desktop/frontend/command_bridge.dart';
 import 'package:adele_desktop/frontend/directory_picker_bridge.dart';
 import 'package:adele_desktop/frontend/environment_access_bridge.dart';
 import 'package:adele_desktop/frontend/environment_capability_access_bridge.dart';
@@ -24,6 +25,7 @@ import 'package:adele_ui/adele_ui.dart';
 import 'package:contract_codegen/contract_codegen.dart';
 import 'package:dart_eval/dart_eval.dart';
 import 'package:file_selector_platform_interface/file_selector_platform_interface.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_eval/flutter_eval.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_builder/plugin_builder.dart';
@@ -43,6 +45,7 @@ Session _session(String id) => Session(
 );
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
   late Directory temporary;
   late File hostArtifact;
   late File backendArtifact;
@@ -75,6 +78,7 @@ void main() {
     final compiler = Compiler()
       ..addPlugin(flutterEvalPlugin)
       ..addPlugin(const OwningBackendDeclarations())
+      ..addPlugin(const CommandDeclarations())
       ..addPlugin(const DirectoryPickerDeclarations())
       ..addPlugin(const MainContentDeclarations())
       ..addPlugin(const CapabilityAccessDeclarations())
@@ -97,6 +101,7 @@ void main() {
       'adele_ui': {
         for (final name in [
           'owning_backend_bridge',
+          'command_bridge',
           'directory_picker_bridge',
           'main_content_bridge',
           'capability_bridge',
@@ -142,16 +147,26 @@ void main() {
   late ApplicationFrontendBootstrap frontends;
   late WindowSessionContextHost selection;
   late CommandResolver commands;
+  late List<MethodCall> clipboardCalls;
+  late List<String> feedback;
 
   setUp(() async {
     root = await Directory('${temporary.path}/case-${sequence++}').create();
     extensions = ExtensionRegistry();
     backends = ApplicationPluginBootstrap(CapabilityRegistry(), extensions);
     selection = WindowSessionContextHost();
+    clipboardCalls = [];
+    feedback = [];
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(SystemChannels.platform, (call) async {
+          clipboardCalls.add(call);
+          return null;
+        });
     frontends = ApplicationFrontendBootstrap(
       extensions: extensions,
       backends: backends,
       sessionContext: selection.context,
+      showCommandFeedback: feedback.add,
     );
     commands = CommandResolver(extensions);
   });
@@ -159,6 +174,8 @@ void main() {
     await frontends.close();
     selection.close();
     await backends.close();
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(SystemChannels.platform, null);
   });
 
   Future<void> install(
@@ -239,6 +256,131 @@ void main() {
         reason: '${generation.failure}',
       );
     }
+  }
+
+  test(
+    'compiled Commands gain only explicitly declared clipboard and feedback',
+    () async {
+      await install([
+        _descriptor(
+          'copy',
+          'copySession',
+          clipboardWrite: true,
+          feedback: true,
+        ),
+        _descriptor('denied', 'copySession'),
+        _descriptor('feedback', 'feedbackOnly', feedback: true),
+        _descriptor('feedback-denied', 'feedbackOnly', clipboardWrite: true),
+        PreparedCommandExtension(
+          extensionId: ExtensionId('test.context.free'),
+          commandId: _id('context-free'),
+          label: 'Context free',
+          library: _library,
+          entrypoint: 'copyContextFree',
+        ).toJson(),
+      ]);
+      await start();
+      expectActive();
+      selection.presentSession(_session('a'));
+      await commands.resolve(_id('copy')).invoke();
+      await commands.resolve(_id('feedback')).invoke();
+      for (final name in ['denied', 'feedback-denied', 'context-free']) {
+        await expectLater(
+          commands.resolve(_id(name)).invoke(),
+          throwsA(anything),
+        );
+      }
+      expect(clipboardCalls, hasLength(1));
+      expect(clipboardCalls.single.method, 'Clipboard.setData');
+      expect(clipboardCalls.single.arguments, {'text': 'session-a'});
+      expect(feedback, ['Copied session-a', 'session-a']);
+    },
+  );
+
+  test(
+    'compiled clipboard failure is recoverable, not a copied result',
+    () async {
+      await install([
+        _descriptor(
+          'copy',
+          'copySession',
+          clipboardWrite: true,
+          feedback: true,
+        ),
+      ]);
+      await start();
+      selection.presentSession(_session('a'));
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(SystemChannels.platform, (_) async {
+            throw PlatformException(code: 'sensitive diagnostic');
+          });
+      await commands.resolve(_id('copy')).invoke();
+      expect(feedback, ['Not copied: session-a']);
+    },
+  );
+
+  test(
+    'pending Command disables duplicate admission and retains captured Session',
+    () async {
+      await install([
+        _descriptor(
+          'copy',
+          'copyHeld',
+          services: [_service],
+          clipboardWrite: true,
+          feedback: true,
+        ),
+      ], backend: true);
+      await start(backend: true);
+      selection.presentSession(_session('a'));
+      final command = commands.resolve(_id('copy'));
+      final pending = command.invoke();
+      selection.presentSession(_session('b'));
+      expect(command.availability, CommandAvailability.disabled);
+      await expectLater(command.invoke(), throwsA(isA<CommandUnavailable>()));
+      await _wait(connection(), 'read:held');
+      await _control(connection(), 'release');
+      await pending;
+      expect(command.availability, CommandAvailability.enabled);
+      expect(clipboardCalls.single.arguments, {'text': 'session-a'});
+    },
+  );
+
+  for (final retirement in ['frontend', 'window', 'backend']) {
+    test(
+      '$retirement prevents late clipboard publication from compiled operation',
+      () async {
+        await install([
+          _descriptor(
+            'copy',
+            'copyHeld',
+            services: [_service],
+            clipboardWrite: true,
+            feedback: true,
+          ),
+        ], backend: true);
+        await start(backend: true);
+        selection.presentSession(_session('a'));
+        final pending = expectLater(
+          commands.resolve(_id('copy')).invoke(),
+          throwsA(anything),
+        );
+        final backend = connection();
+        await _wait(backend, 'read:held');
+        switch (retirement) {
+          case 'frontend':
+            await frontends.close();
+          case 'window':
+            selection.close();
+          case 'backend':
+            await backends.close();
+        }
+        if (!backend.isClosed) await _control(backend, 'release');
+        await pending.timeout(_bound);
+        expect(clipboardCalls, isEmpty);
+        expect(feedback, isEmpty);
+      },
+    );
   }
 
   test(
@@ -863,6 +1005,8 @@ Map<String, Object?> _descriptor(
   String name,
   String entrypoint, {
   List<String> services = const [],
+  bool clipboardWrite = false,
+  bool feedback = false,
 }) => PreparedSessionCommandExtension(
   extensionId: ExtensionId('test.session.$name.registration'),
   commandId: _id(name),
@@ -870,6 +1014,8 @@ Map<String, Object?> _descriptor(
   library: _library,
   entrypoint: entrypoint,
   backendServices: services,
+  clipboardWrite: clipboardWrite,
+  feedback: feedback,
 ).toJson();
 
 String _options({String identity = 'OWNER', bool foreignService = false}) =>

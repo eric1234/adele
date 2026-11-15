@@ -17,30 +17,34 @@ aids, not an evaluation or score of the Session.
   `readSessionEvidence` assembles it only after successful completion.
 - `SessionEvaluationHandoffService.prepareSession(String sessionId) -> Stream<String>`
   is effectful. It emits exactly one absolute `README.md` path after preparing all
-  three files. `readSessionEvaluationHandoff` validates cardinality, path shape, and
-  successful stream completion; empty, duplicate, or failed completion is not success.
+  three files. Native `readSessionEvaluationHandoff` validates cardinality, path
+  shape, and successful stream completion; empty, duplicate, or failed completion
+  is not success.
 
 The handoff service ID is `dev.adele.session-evaluation-handoff`, distinct from the
 read-only service ID `dev.adele.session-evaluator`. Both use the ordinary generated
 transport, the exact owning backend, and its default configuration context. The
 handoff request accepts only a Session ID, not a Project, Environment, backend
-selector, output path, or filesystem authority. A future prepared frontend can
-allowlist only the handoff service.
+selector, output path, or filesystem authority. The prepared frontend allowlists
+only the handoff service.
 Handoff failures use the fixed `handoff_unavailable` failure without SQL diagnostics,
 transcripts, provider state, or arbitrary exception text.
 
 `packages/backend` owns the collector, selected SQL schema knowledge, validation,
 deterministic summary, source/Git provenance, README rendering, private writer,
 handoff operation lifecycle, and native entrypoint. It uses the existing validated
-collector internally without changing its v2 document. There is no frontend,
-Capability, strategy, backend Command, or storage schema. The development-only
-native adapter in
-[`app/tool/session_evidence_exporter.dart`](../../app/tool/session_evidence_exporter.dart)
-is a temporary thin client owning only the desktop Command, sensitive-data
-confirmation, captured selection/generation, and completion/Copy feedback. The
-development launcher and native UI attachment remain application-specific in S2;
-the ordinary prepared Session Command frontend and clipboard cutover are reserved
-for S3. Production `app/lib` imports no evaluator contract or implementation.
+collector internally without changing its v2 document. There is no Capability,
+strategy, backend Command, or storage schema.
+
+[`packages/frontend`](packages/frontend/README.md) owns the finite
+`prepareEvaluationHandoff(String sessionId)` operation: generated service use,
+strict completion validation, automatic README-path copying, and safe feedback.
+Its ordinary `sessionCommand` descriptor lives in stock `frontend.extensions`,
+with no presentations. The host supplies only generic Session Command capture,
+exact owning-backend routing, and independently opted-in clipboard-write/feedback
+bridges. Production `app/lib` imports no evaluator contract or implementation;
+evaluator runtime behavior stays plugin-local, with ordinary build integration and
+app-hosting tests outside the plugin.
 
 The backend obtains the public `ProjectStorageService` through its exact
 generation's infrastructure context. It calls only `queryForSession`, in `durable`
@@ -303,35 +307,40 @@ dart tools/adele.dart bootstrap
 dart tools/adele.dart run linux
 ```
 
-The ordinary Linux development preparation compiles the evaluator AOT backend and
-publishes `session-evaluator/backend.aot` in the same prepared installation catalog
-as the other plugins. Normal bootstrap activates it without a feature switch,
-special startup arguments, or artificial advertisements. Its absence or failure
-leaves handoff preparation unavailable, not a prerequisite for unrelated application
-behavior.
-The launcher selects `app/tool/development_main.dart`, which mounts the ordinary
-`AdeleApplication` and attaches the native adapter through `attachSessionContext`.
-Direct `app/lib/main.dart` remains plugin-neutral and does not attach the exporter.
+The ordinary Linux development preparation publishes `session-evaluator/backend.aot`
+and `session-evaluator/frontend.evc` in one prepared installation alongside other
+plugins. Normal `app/lib/main.dart` bootstrap activates them without a feature
+switch, special startup arguments, native evaluator attachment, or artificial
+advertisements. Missing or failed components leave handoff preparation unavailable,
+not a prerequisite for unrelated application behavior.
+
+**Invoking this Command immediately prepares unredacted sensitive evidence.** There
+is no confirmation, Save dialog, destination picker, or format selector. Review
+the [evidence](#retained-evidence) and [directory limits](#directory-semantics)
+before using or sharing a handoff.
 
 1. Open a durable Project and a Session. Use ADELE normally, preferably letting
    work settle before collecting its retained evidence.
 2. Open the Command Palette with the AppBar button or its platform shortcut and
    select **Prepare Evaluation Handoff...**
-3. Read the sensitive-data warning and explicitly choose **Continue**. **Cancel**
-   writes nothing. There is no Save dialog, destination picker, or format selector.
-4. Wait for the completion snackbar, which displays the absolute handoff directory
-   path. Click **Copy README path** to copy the absolute native filesystem path to
-   its `README.md`, not the directory or file contents.
-5. Provide only that path to a separate evaluator AI with local file access. The
+3. Wait for completion. After validating exactly one absolute `README.md` path and
+   successful stream completion, the frontend automatically copies that native
+   filesystem path, not the directory or file contents. Success feedback follows
+   OS acknowledgement; there is no manual Copy action.
+4. Provide only that path to a separate evaluator AI with local file access. The
    generated README contains the complete independent evaluation assignment and
    directs the evaluator to read `summary.json` first, verify underlying records
    in `evidence.json`, then independently assess source/Git; no additional evaluation
    prompt is needed. It requests a substantive report, not implementation work, and remains
    useful with unavailable source or partial retained evidence.
 
-Clipboard access occurs only on the explicit snackbar action. The handoff does not
-open another application or submit an evaluation request. Failure feedback is
-generic and never includes evidence contents or backend/SQL diagnostics.
+If platform copying fails, a selectable nonmodal snackbar reports that preparation succeeded
+and shows the exact README path for recovery. This is distinct from preparation
+failure, which uses a fixed safe message without a success path. Feedback uses the
+host's existing 15-second snackbar with a close control; no callback or Copy action
+outlives the operation. No backend/SQL/platform diagnostics or evidence contents are
+shown or logged by this workflow. The handoff neither opens another application
+nor submits an evaluation request.
 
 ### Evaluation Assignment
 
@@ -418,21 +427,25 @@ observations before making evaluator judgments.
 ### Command Availability
 
 The ordinary semantic Command ID is
-`dev.adele.session-evaluator.export-session-evidence`. The adapter registers exactly
-one Command when the evaluator becomes ready and retires it with that generation;
-bootstrap and registration notifications refresh an open palette without polling.
-Before readiness or after failure/retirement it is not registered. With a ready
-backend but no Session it is hidden; while a handoff is pending it is disabled.
-No Main Content, Console, or Inspection participation is needed.
+`dev.adele.session-evaluator.export-session-evidence`, labeled
+**Prepare Evaluation Handoff...**. Its descriptor requests only
+`dev.adele.session-evaluation-handoff`, `clipboardWrite: true`, and `feedback: true`.
+Frontend activation registers the Command independently of backend readiness;
+bootstrap and selection/registration notifications refresh an open palette without
+polling. It is hidden without a selected Session and disabled when its exact owning
+backend is unavailable or its finite operation is pending. Frontend absence or
+retirement removes its registration. No Main Content, Console, Inspection, or
+executable Session strategy is needed.
 
 ### Capture And Lifetime
 
-Command invocation synchronously captures the `WindowSessionSnapshot`, canonical
-Session, exact `InstalledBackendActivation`, and its default configuration/service
-route. After confirmation, backend metadata reads follow that retained Session's
-canonical same-Task Environment association, not an assumed Task-primary
-Environment. `SessionEvaluationHandoffServiceClient` uses the retained route
-through the existing generation-validated channel, allowlisting only that service.
+The generic Session Command host synchronously captures the canonical selected
+Session ID, exact owning `InstalledBackendActivation`, and its default
+configuration/service route. The frontend receives only that ID and the declared
+bridges, not a live selection object or host authority. Backend metadata reads
+follow that Session's canonical same-Task Environment association, not an assumed
+Task-primary Environment. `SessionEvaluationHandoffServiceClient` uses the retained
+route through the existing generation-validated channel, allowlisting only that service.
 The backend assembles evidence and separately reads provider state and the original
 Git anchor through its generation-scoped Project storage client. Navigation,
 including leaving and reentering a Session,
@@ -440,34 +453,37 @@ does not replace the captured Session or retarget the backend. The selection
 revision is only an epoch, not execution or storage authority. Fresh invocation
 captures the new selection.
 
-The completion helper's caller also validates its captured lifetime after awaiting
-the path. Dart's `StreamIterator` reports external cancellation as end-of-stream;
-that alone must not be mistaken for an independently successful transport terminal.
+The plugin-local interpreted completion helper validates the path and requires
+successful EOF, not just the first emitted item. The
+[frontend map](packages/frontend/README.md#completion-and-feedback) owns its
+pinned-EVC compatibility constraints. Generated transport remains unchanged;
+this is not a host-side evaluator codec. The host validates operation/backend
+lifetime before clipboard submission and again after OS acknowledgement.
+Retirement cannot recall an already submitted
+clipboard write, but it fences late success and feedback. Clipboard access is
+write-only and bounded, as specified by the [public bridge](../../packages/ui/README.md#interpreted-bridges).
 
-Only one handoff may be pending per exporter/window, from confirmation through
-completion. The backend additionally admits at most one active handoff operation
-per generation, so concurrent clients cannot race duplicate exports. Success,
+The generic host disables duplicate admission on this Command registration until
+the finite operation settles, including clipboard acknowledgement. The backend
+additionally admits at most one active handoff operation per generation, so
+concurrent clients cannot race duplicate exports. Success,
 cancellation, and failure release admission. Backend retirement fences collection
 and writing; no replacement is silently selected or inherits an operation.
 Valid partial evidence is written unchanged with its existing coverage fields;
 successful handoff preparation does not upgrade that coverage to complete.
 
-Window cleanup closes admission and removes the exact Command and bootstrap
-subscription immediately. It withdraws only its own confirmation route, suppresses
-late feedback and clipboard actions, and does not wait indefinitely for an
-unanswered confirmation or collection. It cancels the captured stream and bounds
-its cancellation join to
-two seconds. The backend marks operation cancellation synchronously when its stream
+Window shutdown and frontend/backend generation retirement revoke operation access,
+cancel stream observation, and fence late clipboard submission and feedback. Mere
+Command registration retirement bars new invocations without cancelling admitted
+work. The backend marks operation cancellation synchronously when its stream
 is cancelled, validates around asynchronous reads and writes, and joins best-effort
 cleanup. Backend shutdown fences service admission before closing reverse calls and
 draining generated dispatchers. No incomplete directory or retired observation is
-reported as successful. An already submitted OS write is not interruptible, and
-forced process termination or failed cleanup can leave an incomplete directory.
+reported as successful. An already submitted filesystem write is not interruptible,
+and forced process termination or failed cleanup can leave an incomplete directory.
 Filesystem completion and remote delivery are not one atomic transaction: completed
 effects can survive lost delivery. This is not rollback or crash recovery.
-The native window owner must call the adapter's `close` cleanup to cancel promptly.
-Merely making its selection facade inactive supplies no close notification; that
-still fences late UI feedback but cannot roll back completed backend effects.
+Normal frontend hosting owns cleanup; there is no external native adapter to close.
 
 ### Directory Semantics
 
@@ -570,14 +586,15 @@ Use the [pinned toolchain](../../docs/development/toolchain.md) and repository
 bootstrap/generation. Prepared checkout paths are not portable release packaging.
 `app/test/core/session_evaluator_integration_test.dart`
 compiles the real shared host, Chat, Command Tools, and evaluator AOT entrypoints,
-assembles an explicit temporary backend-only installation, and uses normal
-application bootstrap plus the real Project storage host. Its deterministic local
-model/tools produce actual retained Chat and Run data without paid provider calls.
-The native handoff path includes command captures from a compiled local child
+plus the production evaluator frontend EVC. It assembles explicit temporary
+installations and uses normal application/frontend bootstrap plus the real Project
+storage host. Its deterministic local model/tools produce actual retained Chat and
+Run data without paid provider calls.
+The prepared handoff path includes command captures from a compiled local child
 executed through the fixture's deterministic Environment adapter. The test
-caller and native Command Palette workflow use temporary output roots and check
+caller and ordinary Command Palette workflow use temporary output roots and check
 exact evidence bytes, summary/evidence consistency and fixture counts, the companion
-README, completion path and clipboard action,
+README, completion path and automatic clipboard acknowledgement/failure,
 read-only state, Session isolation, valid partial coverage, cancellation, failure,
 pending work, navigation, shutdown, and generation retirement.
 A stock Git AOT fixture exercises a nonprimary Session Environment with nested
@@ -603,11 +620,16 @@ It also checks report ordering, evidence-attribution safeguards, navigation, and
 executes the generated JSON inspection snippet with the pinned Dart SDK against
 selected v2 fixture fields, including empty/unavailable storage and captures without
 terminal Runs. It adds no external JSON-query dependency to CI.
-Backend service tests exercise cancellation, duplicate admission, shutdown, and
+Backend service tests own cancellation, duplicate admission, shutdown, and
 publication failure without adding a public output-root parameter. Real AOT tests
-retain native Command coverage and use child-side write gates for cancellation and
-retirement rather than app-isolate file overrides. Tooling tests check the ordinary prepared catalog and launcher target;
-application tests check the plugin-neutral Navigator/context composition seams.
+use child-side write gates for cancellation and retirement rather than app-isolate
+file overrides. The [frontend suite](packages/frontend/README.md#validation) owns
+compiled generated-service use and strict completion/copy/feedback behavior.
+Application-owned cases compose evaluator and Task Browser EVC through the normal
+window, including evaluator absence and accepted shutdown. Generic Session Command
+and bridge tests own capture, independent opt-ins, bounds, and lifetime fencing.
+Tooling tests own ordinary catalog, compiler-input discovery, and launcher target
+selection. These are validation responsibilities, not recorded passing results.
 
 From the repository root:
 
@@ -615,6 +637,7 @@ From the repository root:
 dart tools/adele.dart bootstrap
 dart tools/adele.dart test --target session_evaluator_contract
 dart tools/adele.dart test --target session_evaluator_backend
+dart tools/adele.dart test --target session_evaluator_frontend
 dart tools/adele.dart test --target adele_core_extensions
 dart tools/adele.dart test --target adele_tools
 dart tools/adele.dart test --target adele_desktop --ci
@@ -624,7 +647,7 @@ dart tools/adele.dart generate --check
 After current generation, from `app/`:
 
 ```sh
-flutter test --no-pub --concurrency 1 test/core/session_evaluator_integration_test.dart test/core/command_output_capture_integration_test.dart test/application_test.dart
+flutter test --no-pub --concurrency 1 test/core/session_evaluator_integration_test.dart test/core/command_output_capture_integration_test.dart test/prepared_session_command_test.dart test/command_bridge_test.dart test/application_test.dart
 ```
 
 The packages participate in maintained analysis/test targets; the existing

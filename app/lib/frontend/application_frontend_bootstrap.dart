@@ -44,6 +44,7 @@ final class ApplicationFrontendBootstrap {
     required ExtensionRegistry extensions,
     ApplicationPluginBootstrap? backends,
     WindowSessionContext? sessionContext,
+    void Function(String)? showCommandFeedback,
     PreparedSessionServices? sessionServices,
     PreparedTaskBrowserHost? taskBrowserHost,
     PreparedConsoleHost? consoleHost,
@@ -52,6 +53,7 @@ final class ApplicationFrontendBootstrap {
   }) : _extensions = extensions,
        _backends = backends,
        _sessionContext = sessionContext,
+       _showCommandFeedback = showCommandFeedback,
        _sessionServices = sessionServices,
        _taskBrowserHost = taskBrowserHost,
        _consoleHost = consoleHost,
@@ -60,6 +62,7 @@ final class ApplicationFrontendBootstrap {
   final ExtensionRegistry _extensions;
   final ApplicationPluginBootstrap? _backends;
   final WindowSessionContext? _sessionContext;
+  final void Function(String)? _showCommandFeedback;
   final PreparedSessionServices? _sessionServices;
   final PreparedTaskBrowserHost? _taskBrowserHost;
   final PreparedConsoleHost? _consoleHost;
@@ -138,6 +141,7 @@ final class ApplicationFrontendBootstrap {
             _extensions,
             _backends,
             _sessionContext,
+            _showCommandFeedback,
             _sessionServices,
             _taskBrowserHost,
             _consoleHost,
@@ -231,6 +235,7 @@ final class InstalledFrontendActivation {
     this._extensions,
     this._backends,
     this._sessionContext,
+    this._showCommandFeedback,
     this._sessionServices,
     this._taskBrowserHost,
     this._consoleHost,
@@ -241,6 +246,7 @@ final class InstalledFrontendActivation {
   final ExtensionRegistry _extensions;
   final ApplicationPluginBootstrap? _backends;
   final WindowSessionContext? _sessionContext;
+  final void Function(String)? _showCommandFeedback;
   final PreparedSessionServices? _sessionServices;
   final PreparedTaskBrowserHost? _taskBrowserHost;
   final PreparedConsoleHost? _consoleHost;
@@ -715,6 +721,7 @@ final class InstalledFrontendActivation {
                   generation: generation,
                   descriptor: descriptor,
                   sessionContext: _sessionContext,
+                  showFeedback: _showCommandFeedback,
                   backends: _backends,
                   isRegistered: isActive,
                 );

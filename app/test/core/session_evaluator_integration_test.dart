@@ -8,6 +8,7 @@ import 'dart:io';
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_core_extensions/adele_core_extensions.dart';
+import 'package:adele_desktop/application.dart';
 import 'package:adele_desktop/core/adele_runtime.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/model_tool_host.dart';
@@ -16,11 +17,16 @@ import 'package:adele_desktop/core/prepared_settings.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/project_storage_host.dart';
 import 'package:adele_desktop/core/window_session_context.dart';
+import 'package:adele_desktop/frontend/application_frontend_bootstrap.dart';
+import 'package:adele_desktop/terminal/native_adele_runtime.dart';
 import 'package:adele_desktop/ui/commands/command_palette.dart';
+import 'package:adele_desktop/ui/main_content/main_content_host.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
+import 'package:adele_platform_storage/adele_platform_storage.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
+import 'package:adele_ui/adele_ui.dart';
 import 'package:agent_kernel/agent_kernel.dart';
 import 'package:chat_strategy_contract/chat_strategy_contract.dart';
 import 'package:file_selector_platform_interface/file_selector_platform_interface.dart';
@@ -33,7 +39,9 @@ import 'package:session_evaluator_backend/src/session_evaluation_summary.dart';
 import 'package:session_evaluator_contract/session_evaluator_contract.dart';
 import 'package:sqlite3/sqlite3.dart' hide Session;
 
-import '../../tool/session_evidence_exporter.dart';
+import '../../../tools/stock_frontend_descriptors.dart';
+import '../../tool/session_evaluator_frontend_compiler.dart';
+import '../../tool/task_browser_frontend_compiler.dart';
 import '../fixtures/command_output_process.dart'
     show captureBulk, captureEvidenceBlocks, captureMarker;
 import '../support/project_provider.dart';
@@ -41,6 +49,12 @@ import '../support/project_provider.dart';
 const _chatPlugin = 'dev.adele.plugin.chat-strategy';
 const _commandPlugin = 'dev.adele.plugin.command-tools';
 const _evaluatorPlugin = 'dev.adele.plugin.session-evaluator';
+const _browserPlugin = 'dev.adele.plugin.task-browser';
+const _successFeedback = 'Evaluation handoff README path copied to clipboard.';
+const _failureFeedback = 'The evaluation handoff could not be prepared.';
+final exportSessionEvidenceCommandId = CommandId(
+  'dev.adele.session-evaluator.export-session-evidence',
+);
 const _gitPlugin = 'dev.adele.plugin.git';
 const _instructions = 'Preserve exact evidence; use the deterministic fixture.';
 const _opaque = 'opaque-native-payload-must-not-be-exported';
@@ -92,7 +106,17 @@ void main() {
         stage: 'session-evaluator-${entry.key}',
       );
     }
-    // Explicit test installations, independent of stock preparation/startup.
+    await File('${artifacts.path}/evaluator.evc').writeAsBytes(
+      await compileSessionEvaluatorFrontend(
+        repositoryRoot: Directory.current.parent,
+      ),
+    );
+    await File('${artifacts.path}/browser.evc').writeAsBytes(
+      await compileTaskBrowserFrontend(
+        repositoryRoot: Directory.current.parent,
+      ),
+    );
+    // Real artifacts and maintained stock descriptors, discovered normally.
     installations = await _install(artifacts, 'initial', [
       _chatPlugin,
       _evaluatorPlugin,
@@ -877,20 +901,45 @@ void main() {
     );
   });
 
-  group('local evaluation handoff', () {
+  group('prepared evaluation handoff', () {
     late WindowSessionContextHost window;
     late GlobalKey<NavigatorState> navigatorKey;
-    late SessionEvidenceExporter exporter;
+    late GlobalKey<ScaffoldMessengerState> messengerKey;
+    late ApplicationFrontendBootstrap frontends;
     late CommandResolver commands;
     late AdeleRuntime mountedRuntime;
     late _SavePicker picker;
     late Future<void> exporting;
+    Object? invocationError;
     late Future<ResolvedCommand?> paletteSelection;
+    late List<MethodCall> clipboard;
+    var clipboardFails = false;
 
     setUp(() async {
       window = WindowSessionContextHost();
       addTearDown(window.close);
       navigatorKey = GlobalKey<NavigatorState>();
+      messengerKey = GlobalKey<ScaffoldMessengerState>();
+      clipboard = [];
+      clipboardFails = false;
+      invocationError = null;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(SystemChannels.platform, (call) async {
+            if (call.method == 'Clipboard.setData') {
+              clipboard.add(call);
+              if (clipboardFails) {
+                throw PlatformException(
+                  code: 'clipboard-unavailable',
+                  message: 'private clipboard diagnostics',
+                );
+              }
+            }
+            return null;
+          });
+      addTearDown(() {
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(SystemChannels.platform, null);
+      });
       final original = FileSelectorPlatform.instance;
       FileSelectorPlatform.instance = picker = _SavePicker();
       addTearDown(() => FileSelectorPlatform.instance = original);
@@ -902,20 +951,34 @@ void main() {
       WindowSessionContext? sessionContext,
     }) async {
       final host = mountedRuntime = owner ?? runtime;
-      // Bootstrap callbacks can cancel AOT streams; bind their cleanup timers to
-      // real async as well, rather than Flutter's animation-only fake clock.
+      // Bind AOT stream cleanup timers to real async, not animation fake time.
       await tester.runAsync(() async {
-        exporter = SessionEvidenceExporter(
-          runtime: host,
-          context: sessionContext ?? window.context,
-          navigatorKey: navigatorKey,
+        frontends = ApplicationFrontendBootstrap(
+          extensions: host.extensions,
+          backends: host.plugins,
+          sessionContext: sessionContext ?? window.context,
+          loadSettings: host.plugins.settingsForCatalog,
+          showCommandFeedback: (message) {
+            messengerKey.currentState!.showSnackBar(
+              SnackBar(content: SelectableText(message)),
+            );
+          },
         );
+        await frontends.start(host.plugins.catalog!);
+        for (final generation in frontends.generations) {
+          expect(
+            generation.state,
+            InstalledFrontendState.active,
+            reason: '${generation.failure}',
+          );
+        }
       });
       commands = CommandResolver(host.extensions);
-      addTearDown(exporter.close);
+      addTearDown(frontends.close);
       await tester.pumpWidget(
         MaterialApp(
           navigatorKey: navigatorKey,
+          scaffoldMessengerKey: messengerKey,
           home: const Scaffold(body: SizedBox.shrink()),
         ),
       );
@@ -962,18 +1025,21 @@ void main() {
       // AOT I/O and its continuations use real async; only UI animation is fake.
       await tester.runAsync(() async {
         final command = commands.resolve(exportSessionEvidenceCommandId);
-        exporting = command.invoke();
+        invocationError = null;
+        exporting = command.invoke().then<void>(
+          (_) {},
+          onError: (Object error) {
+            invocationError = error;
+          },
+        );
       });
       await tester.pumpAndSettle();
-      expect(find.text('Prepare Evaluation Handoff'), findsOneWidget);
+      expect(find.byType(AlertDialog), findsNothing);
+      expect(find.text('Continue'), findsNothing);
+      expect(find.text('Copy README path'), findsNothing);
     }
 
-    Future<void> continueExport(WidgetTester tester) async {
-      await tester.tap(find.text('Continue'));
-      await tester.pumpAndSettle();
-    }
-
-    Future<void> finish(WidgetTester tester) async {
+    Future<void> finish(WidgetTester tester, {bool retired = false}) async {
       await tester.runAsync(
         () => exporting.timeout(const Duration(seconds: 20)),
       );
@@ -981,14 +1047,13 @@ void main() {
       expect(tester.takeException(), isNull);
       expect(picker.calls, 0);
       expect(find.byType(AlertDialog), findsNothing);
+      expect(find.text('Copy README path'), findsNothing);
+      if (!retired) expect(invocationError, isNull);
     }
 
     void expectNoFeedback() {
-      expect(find.textContaining('Evaluation handoff ready:'), findsNothing);
-      expect(
-        find.text('Evaluation handoff could not be prepared.'),
-        findsNothing,
-      );
+      expect(find.text(_successFeedback), findsNothing);
+      expect(find.text(_failureFeedback), findsNothing);
     }
 
     File evidence(Directory handoff) => File('${handoff.path}/evidence.json');
@@ -1025,19 +1090,321 @@ void main() {
     }
 
     void expectReady(Directory handoff) {
+      expect(find.text(_successFeedback), findsOneWidget);
+      expect(find.byType(SnackBarAction), findsNothing);
+      expect(clipboard.last.arguments, {
+        'text': '${handoff.absolute.path}/README.md',
+      });
+      expect(find.text(_failureFeedback), findsNothing);
+    }
+
+    void expectClipboardFailure(Directory handoff) {
+      final path = '${handoff.absolute.path}/README.md';
+      expect(clipboard.single.arguments, {'text': path});
+      expect(find.textContaining('could not be copied'), findsOneWidget);
       expect(
-        find.text('Evaluation handoff ready: ${handoff.absolute.path}'),
+        find.byWidgetPredicate(
+          (widget) => widget is SelectableText && widget.data!.contains(path),
+        ),
         findsOneWidget,
       );
+      expect(find.text(_successFeedback), findsNothing);
       expect(
-        find.widgetWithText(SnackBarAction, 'Copy README path'),
-        findsOneWidget,
-      );
-      expect(
-        find.text('Evaluation handoff could not be prepared.'),
+        find.textContaining('private clipboard diagnostics'),
         findsNothing,
       );
+      expect(find.textContaining('PlatformException'), findsNothing);
+      expect(find.byType(SnackBarAction), findsNothing);
     }
+
+    Future<NativeAdeleRuntime> mountApplication(
+      WidgetTester tester,
+      Directory root, {
+      required bool evaluatorInstalled,
+    }) async {
+      await tester.runAsync(runtime.close);
+      final native = NativeAdeleRuntime(localStateRoot: () => localState.path);
+      addTearDown(native.close);
+      final provider = TestProjectProvider(native.registry);
+      addTearDown(provider.close);
+      // Only Project selection is a native fixture. The evaluator and browser
+      // are ordinary installed EVC components owned by AdeleApplication.
+      final selector = native.extensions.register(
+        point: projectSelectorContributions,
+        id: ExtensionId('dev.adele.test.evidence-selector'),
+        value: ProjectSelectorContribution(
+          displayName: 'Open evidence Project',
+          projectProviderId: provider.providerId,
+          selectProject: () async => source.uri,
+        ),
+      );
+      addTearDown(selector.close);
+      commands = CommandResolver(native.extensions);
+      await tester.runAsync(() async {
+        final activated = native.extensions.changes.firstWhere(
+          (_) =>
+              native.extensions.discover(taskBrowserContributions).isNotEmpty &&
+              (!evaluatorInstalled ||
+                  commands.discover().any(
+                    (command) => command.id == exportSessionEvidenceCommandId,
+                  )),
+        );
+        late Future<void> starting;
+        await tester.pumpWidget(
+          AdeleApplication(
+            createRuntime: () => native,
+            readChatGptConfiguration: () => null,
+            configurationRoots: PlatformStorageRoots(
+              operatingSystem: Platform.operatingSystem,
+              configurationRoot: '${localState.path}/config',
+              localStateRoot: localState.path,
+              localDataRoot: '${localState.path}/data',
+              cacheRoot: '${localState.path}/cache',
+            ),
+            bootstrapPlugins: (plugins) => starting = plugins.start(
+              installationRoot: root.path,
+              dartaotruntimeExecutable: aotRuntime,
+              hostArtifactPath: hostArtifact.path,
+            ),
+          ),
+        );
+        await starting.timeout(const Duration(seconds: 20));
+        await activated.timeout(const Duration(seconds: 20));
+      });
+      await tester.pumpAndSettle();
+      expect(native.plugins.failure, isNull);
+      expect(native.plugins.catalog!.issues, isEmpty);
+      expect(find.text('No Project is open'), findsOneWidget);
+      if (evaluatorInstalled) {
+        expect(
+          commands.resolve(exportSessionEvidenceCommandId).availability,
+          CommandAvailability.hidden,
+        );
+      }
+      await tester.tap(find.byKey(const ValueKey('command-palette-button')));
+      await tester.pumpAndSettle();
+      expect(find.text('Prepare Evaluation Handoff...'), findsNothing);
+      await tester.tap(find.byTooltip('Close Command Palette'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Open evidence Project'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text(task.task.title));
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.ancestor(
+          of: find.textContaining('Session: ${session.id.value}\n'),
+          matching: find.byType(ListTile),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        tester.widget<MainContentHost>(find.byType(MainContentHost)).session,
+        same(native.store.session(session.id)),
+      );
+      return native;
+    }
+
+    Future<void> unmountApplication(WidgetTester tester) async {
+      await tester.runAsync(tester.binding.handleRequestAppExit);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+    }
+
+    for (final outcome in [
+      'success',
+      'clipboard failure',
+      'absent evaluator',
+    ]) {
+      final installed = outcome != 'absent evaluator';
+      testWidgets(
+        'ordinary application bootstrap $outcome preserves selected Session evidence and plugin ownership',
+        (tester) async {
+          clipboardFails = outcome == 'clipboard failure';
+          late Map<String, Object?> expected;
+          late Directory root;
+          await tester.runAsync(() async {
+            await chat.appendUserMessage(
+              session.id.value,
+              'Application-selected Session evidence.',
+            );
+            final other = otherSession();
+            await chat.appendUserMessage(
+              other.id.value,
+              'OTHER-APPLICATION-SESSION',
+            );
+            expected = await collect(session);
+            root = await _install(artifacts, 'application-$outcome', [
+              if (installed) _evaluatorPlugin,
+            ], browser: true);
+          });
+          final before = _inspect(source, _snapshot);
+          try {
+            final native = await mountApplication(
+              tester,
+              root,
+              evaluatorInstalled: installed,
+            );
+            final evaluatorCommands = commands.discover().where(
+              (command) => command.id == exportSessionEvidenceCommandId,
+            );
+            expect(evaluatorCommands, hasLength(installed ? 1 : 0));
+            expect(
+              native.extensions.discover(taskBrowserContributions),
+              hasLength(1),
+            );
+            expect(
+              native.extensions.discover(mainContentContributions),
+              isEmpty,
+            );
+            expect(native.extensions.discover(consoleContributions), isEmpty);
+            await tester.runAsync(() async {
+              await tester.tap(
+                find.byKey(const ValueKey('command-palette-button')),
+              );
+              await tester.pumpAndSettle();
+            });
+            if (installed) {
+              final installation = native.plugins.catalog!.installations
+                  .singleWhere(
+                    (entry) => entry.metadata.id.value == _evaluatorPlugin,
+                  );
+              expect(installation.backendArtifactUri, isNotNull);
+              expect(installation.frontend, isNotNull);
+              expect(installation.frontend!.presentations, isEmpty);
+              expect(installation.frontend!.extensions, hasLength(1));
+              expect(
+                native.plugins.backends.single.state,
+                InstalledBackendState.active,
+              );
+              expect(
+                native.plugins.backends.single.connection!.extensionExposures,
+                isEmpty,
+              );
+              final command = evaluatorCommands.single;
+              expect(
+                command.binding.id.value,
+                stockFrontendExtensionDescriptors[_evaluatorPlugin]!
+                    .single['extensionId'],
+              );
+              expect(command.availability, CommandAvailability.enabled);
+              await tester.runAsync(() async {
+                final completed = command.binding.value.availabilityChanges!
+                    .firstWhere(
+                      (_) =>
+                          command.availability == CommandAvailability.enabled,
+                    );
+                await tester.tap(find.text('Prepare Evaluation Handoff...'));
+                await tester.pumpAndSettle();
+                expect(find.byType(AlertDialog), findsNothing);
+                expect(find.text('Continue'), findsNothing);
+                await completed.timeout(const Duration(seconds: 20));
+              });
+              await tester.pumpAndSettle();
+              expect(
+                find.text('The command could not be completed.'),
+                findsNothing,
+              );
+              expect(clipboard, hasLength(1));
+              final handoff = handoffs().single;
+              expect(
+                evidence(handoff).readAsBytesSync(),
+                utf8.encode(jsonEncode(expected)),
+              );
+              expect(summary(handoff), summarizeSessionEvidence(expected));
+              expect(readme(handoff), contains(session.id.value));
+              if (clipboardFails) {
+                expectClipboardFailure(handoff);
+              } else {
+                expectReady(handoff);
+              }
+              expect(clipboard, hasLength(1));
+              expect(find.byType(CommandPalette), findsNothing);
+            } else {
+              expect(native.plugins.backends, isEmpty);
+              expect(
+                native.plugins.catalog!.installations.map(
+                  (entry) => entry.metadata.id.value,
+                ),
+                [_browserPlugin],
+              );
+              expect(find.text('Prepare Evaluation Handoff...'), findsNothing);
+              expect(
+                () => commands.resolve(exportSessionEvidenceCommandId),
+                throwsA(isA<CommandNotFound>()),
+              );
+              expect(outputRoot.existsSync(), isFalse);
+              expect(clipboard, isEmpty);
+            }
+            expect(picker.calls, 0);
+            expect(find.text('Copy README path'), findsNothing);
+            expect(_inspect(source, _snapshot), before);
+          } finally {
+            await unmountApplication(tester);
+          }
+        },
+      );
+    }
+
+    testWidgets('accepted application shutdown cancels a real final-file write '
+        'without late clipboard or completion feedback', (tester) async {
+      late Directory root;
+      late _BackendWriteGate gate;
+      await tester.runAsync(() async {
+        root = await _install(
+          artifacts,
+          'application-shutdown',
+          [_evaluatorPlugin],
+          browser: true,
+          evaluatorArtifact: 'gated-evaluator',
+        );
+        gate = await _BackendWriteGate.open(localState, file: 'README.md');
+      });
+      addTearDown(gate.close);
+      final native = await mountApplication(
+        tester,
+        root,
+        evaluatorInstalled: true,
+      );
+      try {
+        await tester.runAsync(() async {
+          await tester.tap(
+            find.byKey(const ValueKey('command-palette-button')),
+          );
+          await tester.pumpAndSettle();
+          await tester.tap(find.text('Prepare Evaluation Handoff...'));
+          await tester.pumpAndSettle();
+          await gate.entered.future.timeout(const Duration(seconds: 20));
+        });
+        expect(handoffs(), hasLength(1));
+        expect(clipboard, isEmpty);
+        final command = commands.resolve(exportSessionEvidenceCommandId);
+        late Completer<void> stopped;
+        late Future<Object?> exiting;
+        await tester.runAsync(() async {
+          stopped = Completer<void>();
+          final detach = commands
+              .resolve(showCommandPaletteCommandId)
+              .binding
+              .onRetire(stopped.complete);
+          addTearDown(detach);
+          exiting = tester.binding.handleRequestAppExit();
+          await tester.pump();
+          await stopped.future.timeout(const Duration(seconds: 10));
+          expect(command.availability, isNot(CommandAvailability.enabled));
+          await gate.release();
+          await exiting.timeout(const Duration(seconds: 10));
+        });
+        await tester.pumpAndSettle();
+        expect(native.plugins.state, ApplicationPluginState.closed);
+        expect(handoffs(), isEmpty);
+        expect(clipboard, isEmpty);
+        expectNoFeedback();
+        expect(find.byType(AlertDialog), findsNothing);
+      } finally {
+        await unmountApplication(tester);
+      }
+    });
 
     testWidgets(
       'palette exports a deterministic summary and exact v2 document from '
@@ -1141,20 +1508,6 @@ void main() {
           expected = await collect(session);
         });
         final before = _inspect(source, _snapshot);
-        final clipboard = <MethodCall>[];
-        tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
-          SystemChannels.platform,
-          (call) async {
-            if (call.method == 'Clipboard.setData') clipboard.add(call);
-            return null;
-          },
-        );
-        addTearDown(
-          () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
-            SystemChannels.platform,
-            null,
-          ),
-        );
         window.presentSession(session);
         await mount(tester);
         await openPalette(tester);
@@ -1168,17 +1521,11 @@ void main() {
         });
         await tester.pumpAndSettle();
         expect(find.byType(CommandPalette), findsNothing);
-        expect(find.text('Prepare Evaluation Handoff'), findsOneWidget);
-        expect(find.textContaining('potentially sensitive'), findsOneWidget);
-        expect(
-          find.textContaining('full command stdout/stderr'),
-          findsOneWidget,
-        );
-        expect(find.textContaining('may include secrets'), findsOneWidget);
+        expect(find.byType(AlertDialog), findsNothing);
+        expect(find.text('Continue'), findsNothing);
+        expect(find.text('Copy README path'), findsNothing);
         expect(picker.calls, 0);
-        expect(outputRoot.existsSync(), isFalse);
 
-        await continueExport(tester);
         await finish(tester);
         final handoff = handoffs().single;
         final destination = evidence(handoff);
@@ -1328,9 +1675,6 @@ void main() {
         expect(model.calls, 2);
         expect(_inspect(source, _snapshot), before);
         expectReady(handoff);
-        expect(clipboard, isEmpty);
-        await tester.tap(find.text('Copy README path'));
-        await tester.pumpAndSettle();
         final readmeFile = File(
           '${handoff.absolute.path}${Platform.pathSeparator}README.md',
         );
@@ -1341,62 +1685,17 @@ void main() {
       },
     );
 
-    for (final outcome in [
-      'clipboard failure',
-      'exporter closed',
-      'window closed',
-    ]) {
-      testWidgets('README copy handles $outcome without exposing evidence', (
-        tester,
-      ) async {
-        final clipboard = <MethodCall>[];
-        tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
-          SystemChannels.platform,
-          (call) async {
-            if (call.method == 'Clipboard.setData') {
-              clipboard.add(call);
-              throw PlatformException(
-                code: 'clipboard-unavailable',
-                message: 'private clipboard diagnostics',
-              );
-            }
-            return null;
-          },
-        );
-        addTearDown(
-          () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
-            SystemChannels.platform,
-            null,
-          ),
-        );
-        window.presentSession(session);
-        await mount(tester);
-        await invoke(tester);
-        await continueExport(tester);
-        await finish(tester);
-        final handoff = handoffs().single;
-        expectReady(handoff);
-        expect(clipboard, isEmpty);
-        if (outcome == 'exporter closed') {
-          await tester.runAsync(exporter.close);
-        } else if (outcome == 'window closed') {
-          window.close();
-        }
-        await tester.tap(find.text('Copy README path'));
-        await tester.pumpAndSettle();
-        expect(clipboard, hasLength(outcome == 'clipboard failure' ? 1 : 0));
-        expect(
-          find.text('The handoff path could not be copied.'),
-          outcome == 'clipboard failure' ? findsOneWidget : findsNothing,
-        );
-        expect(
-          find.textContaining('private clipboard diagnostics'),
-          findsNothing,
-        );
-        expect(tester.takeException(), isNull);
-        expect(handoffs().single.path, handoff.path);
-      });
-    }
+    testWidgets('clipboard failure keeps a selectable safe README path, not '
+        'success or private diagnostics', (tester) async {
+      clipboardFails = true;
+      window.presentSession(session);
+      await mount(tester);
+      await invoke(tester);
+      await finish(tester);
+      final handoff = handoffs().single;
+      expectClipboardFailure(handoff);
+      expect(tester.takeException(), isNull);
+    });
 
     testWidgets('stock Git handoff uses the nonprimary Session Environment and '
         'nested source scope without changing Git or materializing a checkout', (
@@ -1639,8 +1938,6 @@ void main() {
       window.presentSession(selected);
       await mount(tester, owner: gitRuntime);
       await invoke(tester);
-      expect(outputRoot.existsSync(), isFalse);
-      await continueExport(tester);
       await finish(tester);
 
       final handoff = handoffs().single;
@@ -1698,8 +1995,8 @@ void main() {
       expectReady(handoff);
     });
 
-    testWidgets('no Session is hidden; confirmation cancellation is '
-        'silent and rejects duplicate pending admission', (tester) async {
+    testWidgets('no selected Session hides the prepared Command without '
+        'collecting or opening dialogs', (tester) async {
       final before = _inspect(source, _snapshot);
       await mount(tester);
       final command = commands.resolve(exportSessionEvidenceCommandId);
@@ -1710,21 +2007,15 @@ void main() {
       navigatorKey.currentState!.pop();
       await tester.pumpAndSettle();
 
-      window.presentSession(session);
-      await invoke(tester);
-      expect(command.availability, CommandAvailability.disabled);
-      await expectLater(command.invoke(), throwsA(isA<CommandUnavailable>()));
-      expect(find.byType(AlertDialog), findsOneWidget);
-      await tester.tap(find.text('Cancel'));
-      await finish(tester);
       expect(picker.calls, 0);
-      expect(command.availability, CommandAvailability.enabled);
+      expect(clipboard, isEmpty);
+      expect(find.byType(AlertDialog), findsNothing);
       expectNoFeedback();
       expect(_inspect(source, _snapshot), before);
       expect(outputRoot.existsSync(), isFalse);
     });
 
-    for (final outcome in ['cancel', 'success', 'collection failure']) {
+    for (final outcome in ['success', 'publication failure']) {
       testWidgets('pending export $outcome refreshes the same searched palette '
           'row and permits another selection', (tester) async {
         final other = otherSession();
@@ -1734,19 +2025,14 @@ void main() {
           await chat.appendUserMessage(other.id.value, 'ONLY-B');
           expected = await collect(session);
         });
-        if (outcome == 'collection failure') {
-          _inspect(
-            source,
-            (database) => database.execute(
-              'UPDATE adele_schema_versions SET version = 99 WHERE owner_id = ?',
-              [_chatPlugin],
-            ),
-            write: true,
-          );
-        }
         final before = _inspect(source, _snapshot);
-        window.presentSession(session);
-        await mount(tester);
+        final fresh = await startGatedBackend(tester);
+        late _BackendWriteGate gate;
+        await tester.runAsync(() async {
+          gate = await _BackendWriteGate.open(localState, file: 'README.md');
+        });
+        addTearDown(gate.close);
+        await mount(tester, owner: fresh);
         final command = commands.resolve(exportSessionEvidenceCommandId);
         final availability = command.binding.value.availabilityChanges!;
         expect(availability.isBroadcast, isTrue);
@@ -1765,10 +2051,11 @@ void main() {
           exporting = selected.invoke();
         });
         await tester.pumpAndSettle();
-        final confirmation = ModalRoute.of<bool>(
-          tester.element(find.byType(AlertDialog)),
-        )!;
-        window.presentSession(other);
+        await tester.runAsync(
+          () => gate.entered.future.timeout(const Duration(seconds: 20)),
+        );
+        expect(find.byType(AlertDialog), findsNothing);
+        window.presentSession(fresh.store.session(other.id)!);
         await openPalette(tester);
         final search = find.byKey(const ValueKey('command-palette-search'));
         await tester.enterText(search, 'evaluation handoff');
@@ -1785,17 +2072,15 @@ void main() {
         expect(pendingRow.onTap, isNull);
         expect(pendingRow.selected, isTrue);
         expect(find.text('Unavailable'), findsOneWidget);
-        expect(changes, [CommandAvailability.disabled]);
+        expect(changes, contains(CommandAvailability.disabled));
         await expectLater(command.invoke(), throwsA(isA<CommandUnavailable>()));
         expect(picker.calls, 0);
-        expect(outputRoot.existsSync(), isFalse);
+        expect(handoffs(), hasLength(1));
+        expect(clipboard, isEmpty);
 
         // No typing, navigation, or palette reopening after the pending row is
         // rendered: only the contribution's invalidation can refresh its state.
-        navigatorKey.currentState!.removeRoute<bool>(
-          confirmation,
-          outcome != 'cancel',
-        );
+        await tester.runAsync(() => gate.release(fail: outcome != 'success'));
         await finish(tester);
         expect(tester.element(find.byType(CommandPalette)), same(palette));
         expect(tester.element(row), same(rowElement));
@@ -1810,11 +2095,8 @@ void main() {
         expect(enabledRow.onTap, isNotNull);
         expect(enabledRow.selected, isTrue);
         expect(find.text('Unavailable'), findsNothing);
-        expect(changes, [
-          CommandAvailability.disabled,
-          CommandAvailability.enabled,
-        ]);
-        expect(runtime.extensions.discover(commandContributions), hasLength(1));
+        expect(changes.last, CommandAvailability.enabled);
+        expect(fresh.extensions.discover(commandContributions), hasLength(1));
         expect(
           commands
               .resolve(exportSessionEvidenceCommandId)
@@ -1822,7 +2104,7 @@ void main() {
               .isSameRegistration(command.binding),
           isTrue,
         );
-        expect(window.context.snapshot.session, same(other));
+        expect(window.context.snapshot.session!.id, other.id);
         if (outcome == 'success') {
           final handoff = handoffs().single;
           final destination = evidence(handoff);
@@ -1837,17 +2119,12 @@ void main() {
           expect(readme(handoff), isNot(contains(other.id.value)));
           expectReady(handoff);
         } else {
-          expect(outputRoot.existsSync(), isFalse);
-          if (outcome == 'collection failure') {
-            expect(
-              find.text('Evaluation handoff could not be prepared.'),
-              findsOneWidget,
-            );
-          } else {
-            expectNoFeedback();
-          }
+          expect(handoffs(), isEmpty);
+          expect(clipboard, isEmpty);
+          expect(find.text(_failureFeedback), findsOneWidget);
         }
 
+        await tester.runAsync(gate.control.delete);
         await tester.tap(row);
         await tester.pumpAndSettle();
         await tester.runAsync(() async {
@@ -1857,24 +2134,21 @@ void main() {
         });
         await tester.pumpAndSettle();
         expect(find.byType(CommandPalette), findsNothing);
-        expect(find.text('Prepare Evaluation Handoff'), findsOneWidget);
-        expect(command.availability, CommandAvailability.disabled);
-        await tester.tap(find.text('Cancel'));
         await finish(tester);
         expect(command.availability, CommandAvailability.enabled);
-        expect(changes, [
-          CommandAvailability.disabled,
-          CommandAvailability.enabled,
-          CommandAvailability.disabled,
-          CommandAvailability.enabled,
-        ]);
+        expect(changes.last, CommandAvailability.enabled);
         expect(picker.calls, 0);
         expect(_inspect(source, _snapshot), before);
-        expect(handoffs(), hasLength(outcome == 'success' ? 1 : 0));
+        expect(handoffs(), hasLength(outcome == 'success' ? 2 : 1));
+        expect(clipboard, hasLength(outcome == 'success' ? 2 : 1));
+        final latest = Directory(
+          File((clipboard.last.arguments as Map)['text'] as String).parent.path,
+        );
+        expect(summary(latest)['session_id'], other.id.value);
       });
     }
 
-    testWidgets('captures A before confirmation; B and A reentry '
+    testWidgets('captures A before awaiting; B and A reentry '
         'never redirect the export, and a fresh command captures B', (
       tester,
     ) async {
@@ -1888,19 +2162,27 @@ void main() {
         expectedB = await collect(other);
       });
       final before = _inspect(source, _snapshot);
-      window.presentSession(session);
+      final fresh = await startGatedBackend(tester);
+      late _BackendWriteGate gate;
+      await tester.runAsync(() async {
+        gate = await _BackendWriteGate.open(localState, file: 'README.md');
+      });
+      addTearDown(gate.close);
       final firstRevision = window.context.snapshot.revision;
-      await mount(tester);
+      await mount(tester, owner: fresh);
       await invoke(tester);
-      window.presentSession(other);
-      expect(outputRoot.existsSync(), isFalse);
+      await tester.runAsync(
+        () => gate.entered.future.timeout(const Duration(seconds: 20)),
+      );
+      window.presentSession(fresh.store.session(other.id)!);
+      expect(clipboard, isEmpty);
       expect(
         commands.resolve(exportSessionEvidenceCommandId).availability,
         CommandAvailability.disabled,
       );
-      window.presentSession(session);
+      window.presentSession(fresh.store.session(session.id)!);
       expect(window.context.snapshot.revision, firstRevision + 2);
-      await continueExport(tester);
+      await tester.runAsync(() => gate.release());
       await finish(tester);
       final firstHandoff = handoffs().single;
       final first = evidence(firstHandoff);
@@ -1911,12 +2193,12 @@ void main() {
       expect(firstReadme, contains(session.id.value));
       expect(firstReadme, isNot(contains(other.id.value)));
 
-      window.presentSession(other);
+      await tester.runAsync(gate.control.delete);
+      window.presentSession(fresh.store.session(other.id)!);
       ScaffoldMessenger.of(
         tester.element(find.byType(Scaffold)),
       ).removeCurrentSnackBar();
       await invoke(tester);
-      await continueExport(tester);
       await finish(tester);
       final directories = handoffs();
       expect(directories, hasLength(2));
@@ -1957,7 +2239,6 @@ void main() {
       window.presentSession(session);
       await mount(tester);
       await invoke(tester);
-      await continueExport(tester);
       await finish(tester);
       final handoff = handoffs().single;
       final destination = evidence(handoff);
@@ -2021,17 +2302,14 @@ void main() {
       window.presentSession(session);
       await mount(tester);
       await invoke(tester);
-      await continueExport(tester);
       await finish(tester);
       expect(outputRoot.existsSync(), isFalse);
       expect(_inspect(source, _snapshot), before);
-      expect(
-        find.text('Evaluation handoff could not be prepared.'),
-        findsOneWidget,
-      );
-      expect(find.textContaining('Evaluation handoff ready:'), findsNothing);
+      expect(find.text(_failureFeedback), findsOneWidget);
+      expect(find.text(_successFeedback), findsNothing);
       expect(find.textContaining('private-invalid-json'), findsNothing);
       expect(find.textContaining('SessionEvidenceFailure'), findsNothing);
+      expect(clipboard, isEmpty);
       expect(
         commands.resolve(exportSessionEvidenceCommandId).availability,
         CommandAvailability.enabled,
@@ -2066,16 +2344,13 @@ void main() {
       window.presentSession(session);
       await mount(tester);
       await invoke(tester);
-      await continueExport(tester);
       await finish(tester);
       expect(outputRoot.existsSync(), isFalse);
       expect(_inspect(source, _snapshot), before);
-      expect(
-        find.text('Evaluation handoff could not be prepared.'),
-        findsOneWidget,
-      );
-      expect(find.textContaining('Evaluation handoff ready:'), findsNothing);
+      expect(find.text(_failureFeedback), findsOneWidget);
+      expect(find.text(_successFeedback), findsNothing);
       expect(find.textContaining('integer range'), findsNothing);
+      expect(clipboard, isEmpty);
       expect(
         commands.resolve(exportSessionEvidenceCommandId).availability,
         CommandAvailability.enabled,
@@ -2097,18 +2372,15 @@ void main() {
       window.presentSession(session);
       await mount(tester);
       await invoke(tester);
-      await continueExport(tester);
       await finish(tester);
       expect(existing.readAsStringSync(), 'existing output-root file');
       expect(outputRoot.parent.listSync(), hasLength(1));
       expect(_inspect(source, _snapshot), before);
-      expect(
-        find.text('Evaluation handoff could not be prepared.'),
-        findsOneWidget,
-      );
-      expect(find.textContaining('Evaluation handoff ready:'), findsNothing);
+      expect(find.text(_failureFeedback), findsOneWidget);
+      expect(find.text(_successFeedback), findsNothing);
       expect(find.textContaining(outputRoot.path), findsNothing);
       expect(find.textContaining('FileSystemException'), findsNothing);
+      expect(clipboard, isEmpty);
       expect(
         commands.resolve(exportSessionEvidenceCommandId).availability,
         CommandAvailability.enabled,
@@ -2116,7 +2388,7 @@ void main() {
     });
 
     for (final file in ['evidence.json', 'README.md']) {
-      for (final retirement in ['exporter', 'window', 'backend']) {
+      for (final retirement in ['frontend', 'shutdown', 'backend']) {
         testWidgets('closing $retirement after a real backend $file write '
             'fences publication and cleans the unpublished handoff', (
           tester,
@@ -2138,13 +2410,24 @@ void main() {
               );
           addTearDown(subscription.cancel);
           await invoke(tester);
-          await continueExport(tester);
           await tester.runAsync(
             () => gate.entered.future.timeout(const Duration(seconds: 20)),
           );
           expect(tester.takeException(), isNull);
           expect(gate.entered.isCompleted, isTrue);
           final directory = outputRoot.listSync().single as Directory;
+          late Completer<void> deleted;
+          await tester.runAsync(() async {
+            deleted = Completer<void>();
+            final deletion = outputRoot
+                .watch(events: FileSystemEvent.delete)
+                .listen((event) {
+                  if (event.path == directory.path && !deleted.isCompleted) {
+                    deleted.complete();
+                  }
+                });
+            addTearDown(deletion.cancel);
+          });
           expect(File('${directory.path}/$file').lengthSync(), greaterThan(0));
           expect(
             directory.listSync().map((entry) => entry.uri.pathSegments.last),
@@ -2154,58 +2437,81 @@ void main() {
             ]),
           );
           expect(signals, ['changed']);
-          expect(
-            find.textContaining('Evaluation handoff ready:'),
-            findsNothing,
-          );
+          expect(find.text(_successFeedback), findsNothing);
           expect(command.availability, CommandAvailability.disabled);
+          expect(clipboard, isEmpty);
           await expectLater(
             command.invoke(),
             throwsA(isA<CommandUnavailable>()),
           );
           late Future<void> closing;
-          var closed = false;
           await tester.runAsync(() async {
-            if (retirement == 'window') {
-              window.close();
-              // Actual window teardown also closes the development exporter.
-              // The read-only context alone has no retirement notification.
-              closing = exporter.close();
-            } else {
-              closing = retirement == 'exporter'
-                  ? exporter.close()
-                  : fresh.plugins.close();
+            switch (retirement) {
+              case 'shutdown':
+                frontends.stopStarting();
+                closing = Future<void>.value();
+              case 'frontend':
+                closing = frontends.generations.single.close();
+              case 'backend':
+                closing = fresh.plugins.close();
             }
-            unawaited(closing.then((_) => closed = true));
           });
           await tester.pumpAndSettle();
           expect(gate.released, isFalse);
-          expect(closed, isFalse);
-          expect(signals, ['changed', 'closed']);
-          expect(
-            () => commands.resolve(exportSessionEvidenceCommandId),
-            throwsA(isA<CommandNotFound>()),
-          );
+          expect(command.availability, isNot(CommandAvailability.enabled));
           await expectLater(
             command.invoke(),
-            throwsA(isA<StaleExtensionBinding>()),
+            throwsA(
+              anyOf(isA<StaleExtensionBinding>(), isA<CommandUnavailable>()),
+            ),
           );
           await tester.runAsync(() => gate.release());
-          await finish(tester);
+          await finish(tester, retired: true);
           await tester.runAsync(
             () => closing.timeout(const Duration(seconds: 10)),
           );
-          expect(signals, ['changed', 'closed']);
+          // Observe real child cleanup, without backend shutdown masking a lost
+          // cancellation from frontend retirement or its stopStarting fence.
+          await tester.runAsync(
+            () => deleted.future.timeout(const Duration(seconds: 10)),
+          );
+          if (retirement != 'backend') {
+            expect(
+              fresh.plugins.backends.single.state,
+              InstalledBackendState.active,
+            );
+            expect(
+              _connection(fresh.plugins, _evaluatorPlugin).isClosed,
+              isFalse,
+            );
+            await tester.runAsync(
+              () => readSessionEvidence(
+                _client(_connection(fresh.plugins, _evaluatorPlugin)),
+                session.id.value,
+              ),
+            );
+          }
           expect(handoffs(), isEmpty);
           expect(_inspect(source, _snapshot), before);
           expect(picker.calls, 0);
+          expect(clipboard, isEmpty);
+          expectNoFeedback();
           if (retirement != 'backend') {
-            expectNoFeedback();
-          } else {
-            expect(
-              find.text('Evaluation handoff could not be prepared.'),
-              findsOneWidget,
-            );
+            await tester.runAsync(() async {
+              await gate.control.delete();
+              final completion = StreamIterator(
+                _handoffClient(
+                  _connection(fresh.plugins, _evaluatorPlugin),
+                ).prepareSession(session.id.value),
+              );
+              try {
+                final path = await readSessionEvaluationHandoff(completion);
+                expect(File(path).parent.path, handoffs().single.path);
+              } finally {
+                await completion.cancel();
+              }
+            });
+            expect(clipboard, isEmpty);
           }
         });
       }
@@ -2222,7 +2528,6 @@ void main() {
       await mount(tester, owner: fresh);
       addTearDown(gate.close);
       await invoke(tester);
-      await continueExport(tester);
       await tester.runAsync(
         () => gate.entered.future.timeout(const Duration(seconds: 20)),
       );
@@ -2232,8 +2537,9 @@ void main() {
         CommandAvailability.hidden,
       );
       await tester.runAsync(() => gate.release());
-      await finish(tester);
+      await finish(tester, retired: true);
       expectNoFeedback();
+      expect(clipboard, isEmpty);
       expect(handoffs(), hasLength(1));
       expect(_inspect(source, _snapshot), before);
     });
@@ -2307,7 +2613,6 @@ void main() {
       await mount(tester, owner: fresh);
       addTearDown(gate.close);
       await invoke(tester);
-      await continueExport(tester);
       await tester.runAsync(
         () => gate.entered.future.timeout(const Duration(seconds: 20)),
       );
@@ -2317,68 +2622,98 @@ void main() {
       await finish(tester);
       expect(handoffs(), isEmpty);
       expect(_inspect(source, _snapshot), before);
-      expect(
-        find.text('Evaluation handoff could not be prepared.'),
-        findsOneWidget,
-      );
-      expect(find.textContaining('Evaluation handoff ready:'), findsNothing);
+      expect(find.text(_failureFeedback), findsOneWidget);
+      expect(find.text(_successFeedback), findsNothing);
       expect(find.textContaining('Injected backend'), findsNothing);
       expect(find.textContaining(outputRoot.path), findsNothing);
+      expect(clipboard, isEmpty);
       expect(
         commands.resolve(exportSessionEvidenceCommandId).availability,
         CommandAvailability.enabled,
       );
     });
 
-    testWidgets('close dismisses its confirmation without creating output', (
-      tester,
-    ) async {
-      window.presentSession(session);
-      await mount(tester);
-      final command = commands.resolve(exportSessionEvidenceCommandId);
-      final signals = <String>[];
-      final subscription = command.binding.value.availabilityChanges!.listen(
-        (_) => signals.add('changed'),
-        onDone: () => signals.add('closed'),
-      );
-      addTearDown(subscription.cancel);
-      await invoke(tester);
-      expect(signals, ['changed']);
-      await tester.runAsync(exporter.close);
-      await finish(tester);
-      expect(signals, ['changed', 'closed']);
-      expect(find.byType(AlertDialog), findsNothing);
+    testWidgets('invalid evaluator frontend leaves its real backend services '
+        'callable without an evaluator Command', (tester) async {
+      final fresh = await reopenRuntime(tester);
+      final before = _inspect(source, _snapshot);
+      await tester.runAsync(() async {
+        final expected = await collect(session);
+        final root = await _install(artifacts, 'invalid-frontend', [
+          _evaluatorPlugin,
+        ]);
+        await File(
+          '${root.path}/$_evaluatorPlugin/frontend.evc',
+        ).writeAsBytes([0]);
+        await start(fresh.plugins, root);
+        final frontend = ApplicationFrontendBootstrap(
+          extensions: fresh.extensions,
+          backends: fresh.plugins,
+          sessionContext: window.context,
+          loadSettings: fresh.plugins.settingsForCatalog,
+        );
+        addTearDown(frontend.close);
+        await frontend.start(fresh.plugins.catalog!);
+        expect(
+          frontend.generations.single.state,
+          InstalledFrontendState.failed,
+        );
+        expect(frontend.generations.single.registrations, isEmpty);
+        expect(CommandResolver(fresh.extensions).discover(), isEmpty);
+        final backend = _connection(fresh.plugins, _evaluatorPlugin);
+        expect(
+          await readSessionEvidence(_client(backend), session.id.value),
+          expected,
+        );
+        final completion = StreamIterator(
+          _handoffClient(backend).prepareSession(session.id.value),
+        );
+        try {
+          final path = await readSessionEvaluationHandoff(completion);
+          final handoff = handoffs().single;
+          expect(path, '${handoff.absolute.path}/README.md');
+          expect(
+            evidence(handoff).readAsBytesSync(),
+            utf8.encode(jsonEncode(expected)),
+          );
+        } finally {
+          await completion.cancel();
+        }
+        expect(backend.isClosed, isFalse);
+      });
+      expect(clipboard, isEmpty);
       expect(picker.calls, 0);
-      expect(outputRoot.existsSync(), isFalse);
-      expectNoFeedback();
-      expect(commands.discover(), isEmpty);
+      expect(_inspect(source, _snapshot), before);
     });
 
     for (final failed in [false, true]) {
-      testWidgets('${failed ? 'failed' : 'absent'} evaluator startup leaves '
-          'no export Command even with a canonical Session', (tester) async {
+      testWidgets('${failed ? 'failed' : 'absent'} evaluator backend leaves '
+          'the prepared frontend Command disabled with a canonical Session', (
+        tester,
+      ) async {
         final fresh = await reopenRuntime(tester);
-        await mount(tester, owner: fresh);
-        await openPalette(tester);
-        expect(commands.discover(), isEmpty);
         await tester.runAsync(() async {
+          final root = await _install(
+            artifacts,
+            'backend-${failed ? 'failed' : 'absent'}',
+            [_chatPlugin, _evaluatorPlugin],
+            evaluatorFrontendOnly: !failed,
+          );
           if (failed) {
-            final broken = await _install(artifacts, 'failed-evaluator', [
-              _chatPlugin,
-              _evaluatorPlugin,
-            ]);
             await File(
-              '${broken.path}/$_evaluatorPlugin/backend.aot',
+              '${root.path}/$_evaluatorPlugin/backend.aot',
             ).writeAsString('invalid evaluator artifact');
-            fresh.plugins.configureSettingsLoader(
-              (catalog) async => PreparedSettingsSnapshot.resolve(catalog),
-            );
-            await fresh.plugins.start(
-              installationRoot: broken.path,
-              dartaotruntimeExecutable: aotRuntime,
-              hostArtifactPath: hostArtifact.path,
-            );
-            expect(fresh.plugins.state, ApplicationPluginState.ready);
+          }
+          fresh.plugins.configureSettingsLoader(
+            (catalog) async => PreparedSettingsSnapshot.resolve(catalog),
+          );
+          await fresh.plugins.start(
+            installationRoot: root.path,
+            dartaotruntimeExecutable: aotRuntime,
+            hostArtifactPath: hostArtifact.path,
+          );
+          expect(fresh.plugins.state, ApplicationPluginState.ready);
+          if (failed) {
             expect(
               fresh.plugins.backends
                   .singleWhere(
@@ -2389,22 +2724,30 @@ void main() {
                   .state,
               InstalledBackendState.failed,
             );
-            expect(_connection(fresh.plugins, _chatPlugin).isClosed, isFalse);
           } else {
-            await fresh.plugins.start(installationRoot: '');
-            expect(fresh.plugins.state, ApplicationPluginState.ready);
-            expect(fresh.plugins.backends, isEmpty);
+            expect(fresh.plugins.backends, hasLength(1));
           }
+          expect(_connection(fresh.plugins, _chatPlugin).isClosed, isFalse);
         });
+        await mount(tester, owner: fresh);
+        await openPalette(tester);
         await tester.pumpAndSettle();
-        expect(fresh.extensions.discover(commandContributions), isEmpty);
-        expect(
-          () => commands.resolve(exportSessionEvidenceCommandId),
-          throwsA(isA<CommandNotFound>()),
-        );
+        expect(fresh.extensions.discover(commandContributions), hasLength(1));
+        final command = commands.resolve(exportSessionEvidenceCommandId);
+        expect(command.availability, CommandAvailability.disabled);
+        await expectLater(command.invoke(), throwsA(isA<CommandUnavailable>()));
         expect(find.byType(CommandPalette), findsOneWidget);
-        expect(find.text('Prepare Evaluation Handoff...'), findsNothing);
+        expect(
+          tester
+              .widget<ListTile>(
+                find.widgetWithText(ListTile, 'Prepare Evaluation Handoff...'),
+              )
+              .enabled,
+          isFalse,
+        );
         expect(picker.calls, 0);
+        expect(clipboard, isEmpty);
+        expect(outputRoot.existsSync(), isFalse);
         expectNoFeedback();
         expect(tester.takeException(), isNull);
       });
@@ -2413,11 +2756,9 @@ void main() {
     testWidgets('startup and retirement refresh the open palette without '
         'duplicating or retargeting a Command', (tester) async {
       final fresh = await reopenRuntime(tester);
-      await mount(tester, owner: fresh);
-      expect(commands.discover(), isEmpty);
-      await openPalette(tester);
-      expect(find.text('Prepare Evaluation Handoff...'), findsNothing);
       await tester.runAsync(() => start(fresh.plugins, installations));
+      await mount(tester, owner: fresh);
+      await openPalette(tester);
       await tester.pumpAndSettle();
       final command = commands.resolve(exportSessionEvidenceCommandId);
       expect(command.availability, CommandAvailability.enabled);
@@ -2451,8 +2792,32 @@ void main() {
       await tester.runAsync(fresh.plugins.close);
       await tester.pumpAndSettle();
       expect(find.byType(CommandPalette), findsOneWidget);
-      expect(find.text('Prepare Evaluation Handoff...'), findsNothing);
+      expect(find.text('Prepare Evaluation Handoff...'), findsOneWidget);
+      expect(
+        tester
+            .widget<ListTile>(
+              find.widgetWithText(ListTile, 'Prepare Evaluation Handoff...'),
+            )
+            .enabled,
+        isFalse,
+      );
+      expect(fresh.extensions.discover(commandContributions), hasLength(1));
+      expect(command.availability, CommandAvailability.disabled);
+      await expectLater(command.invoke(), throwsA(isA<CommandUnavailable>()));
+      await tester.runAsync(frontends.close);
       expect(fresh.extensions.discover(commandContributions), isEmpty);
+      final replacement = ApplicationFrontendBootstrap(
+        extensions: fresh.extensions,
+        backends: fresh.plugins,
+        sessionContext: window.context,
+        loadSettings: (catalog) async =>
+            PreparedSettingsSnapshot.resolve(catalog),
+      );
+      addTearDown(replacement.close);
+      await tester.runAsync(() => replacement.start(fresh.plugins.catalog!));
+      final newCommand = commands.resolve(exportSessionEvidenceCommandId);
+      expect(newCommand.binding.isSameRegistration(command.binding), isFalse);
+      expect(newCommand.availability, CommandAvailability.disabled);
       await expectLater(
         command.invoke(),
         throwsA(isA<StaleExtensionBinding>()),
@@ -2547,17 +2912,26 @@ Future<Directory> _install(
   String name,
   List<String> plugins, {
   String? evaluatorArtifact,
+  bool evaluatorFrontendOnly = false,
+  bool browser = false,
 }) async {
   final root = await Directory('${artifacts.path}/$name').create();
   for (final plugin in plugins) {
     final directory = await Directory('${root.path}/$plugin').create();
-    await File(
-      '${artifacts.path}/${plugin == _evaluatorPlugin ? evaluatorArtifact ?? plugin : plugin}.aot',
-    ).copy('${directory.path}/backend.aot');
+    if (plugin != _evaluatorPlugin || !evaluatorFrontendOnly) {
+      await File(
+        '${artifacts.path}/${plugin == _evaluatorPlugin ? evaluatorArtifact ?? plugin : plugin}.aot',
+      ).copy('${directory.path}/backend.aot');
+    }
     if (plugin == _chatPlugin) {
       await File(
         '${Directory.current.parent.path}/plugins/chat_strategy/settings.schema.json',
       ).copy('${directory.path}/settings.schema.json');
+    }
+    if (plugin == _evaluatorPlugin) {
+      await File(
+        '${artifacts.path}/evaluator.evc',
+      ).copy('${directory.path}/frontend.evc');
     }
     await File(
       '${directory.path}/adele_plugin.installation.json',
@@ -2567,7 +2941,40 @@ Future<Directory> _install(
         'metadata': {'id': plugin, 'version': '1', 'displayName': plugin},
         if (plugin == _chatPlugin) 'settingsSchema': 'settings.schema.json',
         'components': {
-          'backend': {'artifact': 'backend.aot'},
+          if (plugin != _evaluatorPlugin || !evaluatorFrontendOnly)
+            'backend': {'artifact': 'backend.aot'},
+          if (plugin == _evaluatorPlugin)
+            'frontend': {
+              'artifact': 'frontend.evc',
+              'presentations': <Object?>[],
+              'extensions':
+                  stockFrontendExtensionDescriptors[_evaluatorPlugin]!,
+            },
+        },
+      }),
+    );
+  }
+  if (browser) {
+    final directory = await Directory('${root.path}/$_browserPlugin').create();
+    await File(
+      '${artifacts.path}/browser.evc',
+    ).copy('${directory.path}/frontend.evc');
+    await File(
+      '${directory.path}/adele_plugin.installation.json',
+    ).writeAsString(
+      jsonEncode({
+        'manifestVersion': 1,
+        'metadata': {
+          'id': _browserPlugin,
+          'version': '1',
+          'displayName': 'Task Browser',
+        },
+        'components': {
+          'frontend': {
+            'artifact': 'frontend.evc',
+            'presentations': stockFrontendDescriptors[_browserPlugin]!,
+            'extensions': <Object?>[],
+          },
         },
       }),
     );

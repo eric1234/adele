@@ -1,0 +1,23 @@
+name: session_evaluator_frontend
+description: Interpreted Session Command for preparing an evaluation handoff.
+publish_to: none
+version: 0.1.0
+
+environment:
+  sdk: ">=3.10.9 <4.0.0"
+  flutter: ">=3.38.10"
+
+resolution: workspace
+
+dependencies:
+  adele_ui: ^0.1.0
+  session_evaluator_contract: ^0.1.0
+
+dev_dependencies:
+  adele_contract: ^0.1.0
+  adele_desktop: ^0.1.0
+  dart_eval: 0.8.5
+  flutter:
+    sdk: flutter
+  flutter_test:
+    sdk: flutter

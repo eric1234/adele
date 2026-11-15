@@ -257,7 +257,7 @@ portable Git service never supplies or substitutes those identities.
 
 Every observation runs through the operation's captured process service, including
 metadata and raw-file reads. The currently supported command environment is Linux
-with `/bin/sh`, `/bin/pwd`, and `/usr/bin/{env,git,stat,head}`. These are explicit
+with `/bin/sh`, `/bin/pwd`, and `/usr/bin/{env,git,stat,head,find}`. These are explicit
 Environment-side executable prerequisites, not paths in the ADELE host checkout.
 Missing commands fail the snapshot, without a local or alternative-Environment
 fallback. A fixed shell wrapper forwards literal argv to `env -i`, retaining HOME
@@ -305,7 +305,7 @@ visible on an unmerged path, with no fabricated staged/unstaged approval materia
 A/B/A/A and A/B/C/A across baseline/HEAD/index/working retain every meaningful
 layer; matching final working content never collapses intermediate changes.
 
-GNU `stat` checks parent and leaf types, sizes, modes, identity and nanosecond
+GNU-format `stat` checks parent and leaf types, sizes, modes, identity and nanosecond
 modification/change times in bounded batches. Parents are admitted one depth at a
 time before their descendants. Each result contains the literal argv filename and
 metadata in separate NUL-terminated fields; complete record count and path ordering
@@ -671,14 +671,18 @@ constituent revision require a fresh snapshot.
 
 Deletion eligibility and mutation verification share one narrowly scoped absence
 probe through the captured buffered-process grant. Fixed shell code receives only
-literal argv and walks parents one component at a time. GNU `stat` does not
+literal argv and walks parents one component at a time. `stat` does not
 dereference each candidate; only verified directories are entered with physical
 `cd -P`, and their canonical paths and exact metadata must agree before any
 descendant inspection. This pins the current directory against later ancestor
 replacement. A symlink, special file, leaf directory, recreated regular file or
-nested `.git` marker is not absence. Only GNU stat's C-locale ENOENT diagnostic
-for a single operand is accepted as a missing component; permission, I/O, process,
-framing and other errors fail closed. A genuinely missing parent safely proves
+nested `.git` marker is not absence. A bounded-output, nonrecursive `find` checks
+one literal entry in the pinned current directory without following links. Only
+a successful directory read with no matching entry proves absence; `stat` error
+messages are never interpreted. Existing entries still require valid metadata.
+Permission, I/O, process, framing and other errors fail closed. Directory-read
+permission and GNU-compatible `find` options are required; enumeration work remains
+subject to the process deadline. A genuinely missing parent safely proves
 descendant absence without traversing the missing suffix. Existing parent metadata
 and the first missing component form a bounded NUL-framed proof, rechecked before
 snapshot publication and around mutation. These physical-path observations cannot

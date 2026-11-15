@@ -2,12 +2,15 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:ui' show AppExitResponse;
 
+import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_desktop/application.dart';
 import 'package:adele_desktop/core/credential_service.dart';
 import 'package:adele_desktop/terminal/native_adele_runtime.dart';
 import 'package:adele_platform_storage/adele_platform_storage.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+import 'support/gated_credential_storage.dart';
 
 void main() {
   for (final graceful in [true, false]) {
@@ -18,7 +21,7 @@ void main() {
           'adele-credential-owner-',
         );
         final installations = await Directory('${root.path}/plugins').create();
-        final storage = _GatedStorage();
+        final storage = GatedCredentialStorage();
         final credentials = CredentialService(storage);
         final runtime = NativeAdeleRuntime();
         final shutdownStarted = Completer<void>();
@@ -37,8 +40,6 @@ void main() {
           await tester.pumpWidget(
             AdeleApplication(
               createRuntime: () => runtime,
-              attachSessionContext: (_) =>
-                  () => shutdownStarted.complete(),
               createCredentials: () {
                 constructions++;
                 return credentials;
@@ -50,6 +51,12 @@ void main() {
               ),
             ),
           );
+          runtime.extensions
+              .discover(commandContributions)
+              .singleWhere(
+                (binding) => binding.value.id == showCommandPaletteCommandId,
+              )
+              .onRetire(shutdownStarted.complete);
           await starting;
           await tester.pumpAndSettle();
           expect(constructions, 1);
@@ -83,7 +90,7 @@ void main() {
           } else {
             await tester.pumpWidget(const SizedBox.shrink());
           }
-          // The detach notification and credential admission fence happen in
+          // Command retirement and the credential admission fence happen in
           // one synchronous close turn. Preflight need not finish in one pump.
           await shutdownStarted.future;
           rejected = expectLater(
@@ -127,28 +134,4 @@ void main() {
       }),
     );
   }
-}
-
-final class _GatedStorage implements CredentialStorageAdapter {
-  final entered = Completer<void>();
-  final release = Completer<void>();
-  var calls = 0;
-
-  @override
-  Future<bool> contains(CredentialReference reference) async {
-    calls++;
-    entered.complete();
-    await release.future;
-    return false;
-  }
-
-  @override
-  Future<String?> read(CredentialReference reference) =>
-      throw UnimplementedError();
-  @override
-  Future<void> write(CredentialReference reference, CredentialSecret secret) =>
-      throw UnimplementedError();
-  @override
-  Future<void> delete(CredentialReference reference) =>
-      throw UnimplementedError();
 }

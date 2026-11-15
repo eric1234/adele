@@ -3,8 +3,10 @@ import 'dart:ui' show AppExitResponse;
 
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_contract/adele_contract.dart';
+import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_desktop/application.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
+import 'package:adele_desktop/core/credential_service.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/terminal/environment_terminal_owner.dart';
 import 'package:adele_desktop/terminal/native_adele_runtime.dart';
@@ -14,6 +16,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:xterm2/xterm.dart';
+
+import 'support/gated_credential_storage.dart';
 
 final _providerId = ProviderId('dev.adele.test-terminal');
 final _environmentId = EnvironmentId('terminal-environment');
@@ -1173,13 +1177,17 @@ void main() {
           _environmentId,
           request: _request(),
         );
-        final cleanup = Completer<void>();
-        var detachments = 0;
+        final storage = GatedCredentialStorage();
+        final credentials = CredentialService(storage);
+        var commandRetirements = 0;
         addTearDown(() async {
-          if (!cleanup.isCompleted) cleanup.complete();
+          if (!storage.release.isCompleted) storage.release.complete();
           if (!channel.closeGate.isCompleted) channel.closeGate.complete();
           if (!channel.cancelGate!.isCompleted) channel.cancelGate!.complete();
-          final closing = runtime.close();
+          final closing = Future.wait<void>([
+            runtime.close(),
+            credentials.close(),
+          ]);
           await tester.pump(const Duration(seconds: 2));
           await tester.runAsync(
             () => closing.timeout(const Duration(seconds: 5)),
@@ -1188,17 +1196,22 @@ void main() {
         await tester.pumpWidget(
           AdeleApplication(
             createRuntime: () => runtime,
+            createCredentials: () => credentials,
             bootstrapPlugins: (_) async {},
             readChatGptConfiguration: () => null,
             exitTimeout: const Duration(milliseconds: 100),
-            attachSessionContext: (_) => () {
-              detachments++;
-              return cleanup.future;
-            },
           ),
         );
+        runtime.extensions
+            .discover(commandContributions)
+            .singleWhere(
+              (binding) => binding.value.id == showCommandPaletteCommandId,
+            )
+            .onRetire(() => commandRetirements++);
+        final admitted = credentials.contains(CredentialReference.generate());
         final opening = owner.open();
         await tester.pump();
+        await storage.entered.future;
         await opening;
         if (uncertain) {
           channel.closeGate.complete();
@@ -1217,7 +1230,7 @@ void main() {
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 200));
         expect(find.text('Exit with active work?'), findsOneWidget);
-        expect(detachments, 0);
+        expect(commandRetirements, 0);
         expect(owner.surface.isDisposed, isFalse);
         await tester.tap(find.text('Keep Working'));
         await tester.pump();
@@ -1236,7 +1249,7 @@ void main() {
         await tester.pump();
         expect(channel.writes, uncertain ? isEmpty : ['still live']);
         expect(channel.closes, uncertain ? 1 : 0);
-        expect(detachments, 0);
+        expect(commandRetirements, 0);
 
         AppExitResponse? response;
         final accepting = tester.binding.handleRequestAppExit().then((value) {
@@ -1248,8 +1261,8 @@ void main() {
         expect(find.text('Exit with active work?'), findsOneWidget);
         await tester.tap(find.text('Exit ADELE'));
         await tester.pump();
-        expect(detachments, 1);
-        expect(cleanup.isCompleted, isFalse);
+        expect(commandRetirements, 1);
+        expect(storage.release.isCompleted, isFalse);
         expect(owner.state, EnvironmentTerminalState.disposed);
         expect(owner.surface.isDisposed, isTrue);
         expect(owner.write('blocked', isActive: () => true), isFalse);
@@ -1293,11 +1306,12 @@ void main() {
           await tester.binding.handleRequestAppExit(),
           AppExitResponse.exit,
         );
-        expect(detachments, 1);
+        expect(commandRetirements, 1);
         expect(channel.closes, 1);
         expect(tester.takeException(), isNull);
-        cleanup.complete();
+        storage.release.complete();
         await tester.pump();
+        expect(await admitted, isFalse);
         expect(runtime.plugins.state, ApplicationPluginState.closed);
         await tester.pumpWidget(const SizedBox.shrink());
         expect(tester.takeException(), isNull);

@@ -39,31 +39,17 @@ and [architecture overview](../docs/architecture/overview.md) for cross-system c
 `NativeAdeleRuntime` synchronously, retains it across rebuilds, and explicitly starts
 asynchronous plugin bootstrap.
 
-The maintained Linux checkout launcher instead selects
-[`tool/development_main.dart`](tool/development_main.dart). It mounts the same
-`AdeleApplication`, with a caller-owned Navigator key and native Session-context
-consumer for development evaluation handoffs. The evaluator-specific contract
-remains outside `app/lib`; ordinary preparation includes its backend-only
-installation and ordinary bootstrap activates it. See the
-[Session Evaluator procedure](../plugins/session_evaluator/README.md#desktop-handoff)
-for Command availability, sensitive-data confirmation, directory semantics, and
-limits.
-
-[`tool/session_evidence_exporter.dart`](tool/session_evidence_exporter.dart) owns
-only the temporary native **Prepare Evaluation Handoff...** Command, sensitive-data
-confirmation, and completion path/clipboard feedback. It captures the selected
-Session and exact backend generation, invokes the plugin's generated
-`SessionEvaluationHandoffService.prepareSession`, and accepts one absolute README
-path only after successful stream completion. Window closure and backend retirement
-cancel that observation; navigation never retargets an admitted operation.
-The [Session Evaluator backend](../plugins/session_evaluator/README.md#ownership)
-owns evidence assembly, deterministic summary, retained source/Git provenance,
-README rendering, private directory writing, and cleanup. No application helper
-duplicates those rules. The generic host supplies only its existing local-state
-path policy through generation-scoped `BackendLocalStateService`; the path grants
-no filesystem-writing authority. The development launcher and this UI adapter
-remain application-specific wiring until the prepared Session Command cutover in
-S3. Confirmation and the explicit **Copy README path** action are unchanged here.
+The maintained Linux checkout launcher also selects `lib/main.dart`, including
+debug/profile/release builds. Session Evaluator participates through an ordinary
+combined backend/frontend installation; there is no evaluator-specific native
+adapter, launcher, or application attachment. Its prepared Session Command uses
+generic capture, owning-backend routing, and opted-in clipboard/feedback bridges.
+The [plugin](../plugins/session_evaluator/README.md#ownership) owns preparation,
+strict completion validation, automatic README-path copying, and safe outcome
+messages. The generic host retains its path-only `BackendLocalStateService`,
+delegating to existing local-state policy without granting filesystem-writing
+authority. See the [handoff procedure](../plugins/session_evaluator/README.md#desktop-handoff)
+for immediate sensitive-data export, directory semantics, and limitations.
 
 ```text
 Flutter application
@@ -226,6 +212,15 @@ availability invalidation. Admission passes one captured Session ID string to a
 fresh finite evaluator. Optional services use `backendForInstallation` and
 `openPresentationChannel` with the existing `OwningBackendBridge`, not a strategy
 binding or another plugin's backend. No backend is needed for an empty allowlist.
+The registration is disabled while its finite operation is pending, preventing
+duplicate admission until settlement. Independently declared `clipboardWrite` and
+`feedback` opt into [`CommandBridge`](lib/frontend/command_bridge.dart); neither is
+implied by Session identity or backend access. The bridge validates the operation
+and captured backend before clipboard submission and after OS acknowledgement,
+with write-only access and safe platform-failure results. The application renders
+bounded feedback through `_showCommandFeedback` as a selectable 15-second SnackBar
+with a close control, not a retained callback or plugin-specific action. Public
+signatures/bounds belong to [UI](../packages/ui/README.md#interpreted-bridges).
 `stopStarting` synchronously fences these operations during shutdown before the
 window awaits other cleanup; exact backend retirement also ends pending native
 waits. Registration-only retirement stops discovery observation without cancelling
@@ -694,6 +689,7 @@ infrastructure, not on-start compilation or a plugin installer.
 | Harness under `app/` | Build-time inputs in addition to `ADELE_REPOSITORY_ROOT` |
 | --- | --- |
 | [`tool/compile_chat_frontend.dart`](tool/compile_chat_frontend.dart) | `ADELE_CHAT_FRONTEND_OUTPUT` |
+| [`tool/compile_session_evaluator_frontend.dart`](tool/compile_session_evaluator_frontend.dart) | `ADELE_SESSION_EVALUATOR_FRONTEND_OUTPUT` |
 | [`tool/compile_task_browser_frontend.dart`](tool/compile_task_browser_frontend.dart) | `ADELE_TASK_BROWSER_FRONTEND_OUTPUT` |
 | [`tool/compile_source_editor_frontend.dart`](tool/compile_source_editor_frontend.dart) | `ADELE_SOURCE_EDITOR_FRONTEND_OUTPUT` |
 | [`tool/compile_diff_viewer_frontend.dart`](tool/compile_diff_viewer_frontend.dart) | `ADELE_DIFF_VIEWER_FRONTEND_OUTPUT` |
@@ -1631,23 +1627,16 @@ The synchronous observers call `ConsoleController.setSession` and
 `WindowInspection.presentSession`; `MainContentHost` receives the same canonical
 Session at build, retaining its existing workbench and attachment guards.
 
-The optional `AdeleApplication.attachSessionContext` hook supplies a separate
-read-only facade once at mount. A native consumer returns a cleanup callback for
-its own registrations/subscriptions; widget updates do not reattach it. Shutdown
-first closes the source synchronously, then invokes and joins that cleanup alongside
-the other window owners. Forced Flutter disposal starts the same cleanup without
-awaiting it. Accepted exit freezes the already-built presentation tree behind its
-existing retention gate, not a second selected-Session value. Retained inert exit
-views cannot keep context access alive. Public
+The window supplies its read-only facade directly to normal prepared frontend
+hosting; there is no external native attachment or caller-owned Navigator seam.
+Shutdown closes the source and fences frontend operations synchronously before
+awaiting window cleanup. Forced Flutter disposal initiates cleanup without awaiting
+it. Accepted exit freezes the already-built presentation tree behind its existing
+retention gate, not a second selected-Session value. Retained inert exit views cannot
+keep context access alive. Public
 snapshot/observer API belongs to [core extensions](../packages/core_extensions/README.md#window-session-context);
 cross-system invariants and deferred transport belong to the
 [canonical architecture](../docs/architecture/plugin-system.md#window-session-context).
-
-`AdeleApplication.navigatorKey` optionally accepts a caller-owned Navigator key,
-retained once at mount like the context attachment. It allows narrow native
-composition to present dialogs and feedback without exposing application State or
-adding plugin-specific callbacks. The development exporter uses both seams;
-selection remains owned solely by `WindowSessionContextHost`.
 
 ### Grouped Main Content
 
@@ -2300,4 +2289,4 @@ repository-wide deferred-feature ledger here.
 | Inspection/compact hosts | [`lib/ui/inspection/`](lib/ui/inspection/), [`lib/ui/activity/`](lib/ui/activity/) |
 | Temporary provider/model choice | [`lib/plugins/temporary_chatgpt_selection.dart`](lib/plugins/temporary_chatgpt_selection.dart) |
 | Source-checkout frontend compilation | [`tool/`](tool/): compiler harnesses listed [above](#prepared-chat-frontend) |
-| Temporary evaluation handoff UI client | [`tool/session_evidence_exporter.dart`](tool/session_evidence_exporter.dart); plugin-owned [implementation, procedure and limits](../plugins/session_evaluator/README.md#desktop-handoff) |
+| Prepared Session Command native operations | [`lib/frontend/prepared_session_command.dart`](lib/frontend/prepared_session_command.dart), [`lib/frontend/command_bridge.dart`](lib/frontend/command_bridge.dart); stock [Session Evaluator frontend](../plugins/session_evaluator/packages/frontend/README.md) owns handoff-specific behavior |

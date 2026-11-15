@@ -106,7 +106,8 @@ contracts. Native/in-process registration works independently of presentation
 contributions, as do context-free backend Commands adapted from backend-ready
 advertisements and context-free prepared frontend Commands adapted from behavioral descriptors.
 An explicitly declared Session-aware prepared form receives the captured selected
-Session ID and optional allowlisted exact owning-backend services, not host authority.
+Session ID and optional allowlisted exact owning-backend services, plus separately
+opted-in bounded clipboard-write/feedback operations, not general host authority.
 Narrow contextual prepared adapters also expose exact sibling Console creation
 and Main Content input actions; stock Terminal and Source Editor use them without
 a general Command context.

@@ -58,8 +58,9 @@ shared host AOT snapshot, stock backend AOT snapshots, and stock frontend EVCs
 before launching the Flutter run/build command, reusing verified checkout-local
 cached components when their inputs match. Backend compilation
 runs outside Flutter; frontend compilation uses Flutter build-time tooling. This also
-applies to explicit Linux debug/release modes. Linux run/build automatically select
-`app/tool/development_main.dart` for development composition, without an opt-in flag.
+applies to explicit Linux debug/release modes. Linux run/build select the ordinary
+`app/lib/main.dart` entrypoint for development composition, without an opt-in flag
+or plugin-specific launcher.
 Non-Linux commands and the explicit
 development smoke keep their existing compilation topology, with current contract
 generation before Flutter starts. `prepareDesktopPluginDefines` in
@@ -77,9 +78,10 @@ The launcher inspects its selected Flutter executable and uses that SDK's bundle
 `dart` and sibling `dartaotruntime`, not a potentially unrelated `dart` on PATH.
 It prepares the host and Git, OpenAI, Chat, AGENTS.md, Search, Filesystem Tools,
 Command Tools, Local Directory Project, and Session Evaluator backends.
-Session Evaluator is a trusted development-only backend installation with semantic
-identity `dev.adele.plugin.session-evaluator`; it has no frontend and needs no
-startup arguments or additional deployment defines. Inclusion in checkout builds,
+Session Evaluator is a trusted development-only combined installation with semantic
+identity `dev.adele.plugin.session-evaluator`; its frontend declares an ordinary
+Session Command with no presentations. It needs no startup arguments or additional
+deployment defines. Inclusion in checkout builds,
 including release mode, is not production/release packaging support.
 `tools/frontend_artifacts.dart` prepares or reuses stock EVCs with the selected
 Flutter SDK for the same installation snapshot.
@@ -106,8 +108,8 @@ app's Flutter mode does not change the component compiler arguments. Startup
 configuration is not a component compilation input.
 
 Installation directories are immediate children of the one installation root;
-Chat, Local Directory Project, Filesystem Tools, Command Tools, and OpenAI each
-share one manifest and PluginId across their independently activatable backend and
+Chat, Local Directory Project, Filesystem Tools, Command Tools, OpenAI, and Session
+Evaluator each share one manifest and PluginId across their independently activatable backend and
 frontend components. Backend-bearing installations have this layout; frontend-only
 installations occupy sibling directories:
 
@@ -144,7 +146,8 @@ installations occupy sibling directories:
     |   `-- backend.aot
     |-- session-evaluator/
     |   |-- adele_plugin.installation.json
-    |   `-- backend.aot
+    |   |-- backend.aot
+    |   `-- frontend.evc
     `-- openai/
         |-- adele_plugin.installation.json
         |-- backend.aot
@@ -154,9 +157,12 @@ installations occupy sibling directories:
 Each installed JSON manifest contains a schema version, plugin metadata, and
 independently optional `backend` and `frontend` components. Each frontend contains
 a relative artifact, required `presentations` list for Main Content, Task Browser,
-console, tool activity, or model-native activity roles, and optional separate `extensions` list supporting
-`kind: 'projectSelector'`. Empty lists are valid and both may coexist under manifest
-version 1. Main Content descriptors declare a group order and initialization and
+console, tool activity, or model-native activity roles, and an optional separate
+`extensions` list for behavioral contributions, including Project selectors and
+Commands. Session Evaluator uses `kind: 'sessionCommand'`, allowlisting its generated
+handoff service and explicitly opting into clipboard writing and feedback. Empty
+lists are valid and both may coexist under manifest version 1. Main Content
+descriptors declare a group order and initialization and
 pane entrypoints; optional `sessionExecution`, `backendServices`, and
 `strategyAffinity` request scoped services. Chat's initializer decides its own
 applicability; its pane allowlists generated `chatSessionServiceId` and uses

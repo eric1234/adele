@@ -304,6 +304,13 @@ const List<TestTarget> testTargets = <TestTarget>[
     arguments: <String>['test'],
   ),
   TestTarget(
+    name: 'session_evaluator_frontend',
+    path: 'plugins/session_evaluator/packages/frontend',
+    executable: 'flutter',
+    arguments: <String>['test'],
+    nativeToml: true,
+  ),
+  TestTarget(
     name: 'local_directory_project_backend',
     path: 'plugins/local_directory_project/packages/backend',
     executable: 'dart',
@@ -550,6 +557,11 @@ analysisTargets = <({String name, String path, bool flutter})>[
     name: 'session_evaluator_backend',
     path: 'plugins/session_evaluator/packages/backend',
     flutter: false,
+  ),
+  (
+    name: 'session_evaluator_frontend',
+    path: 'plugins/session_evaluator/packages/frontend',
+    flutter: true,
   ),
   (
     name: 'local_directory_project_backend',
@@ -878,7 +890,7 @@ Future<void> main(List<String> arguments) async {
                 if (arguments.first == 'run') '-d',
                 target,
                 '--$mode',
-                if (target == 'linux') '--target=tool/development_main.dart',
+                if (target == 'linux') '--target=lib/main.dart',
                 ...defines,
               ],
               workingDirectory: 'app',

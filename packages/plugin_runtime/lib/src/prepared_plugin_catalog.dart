@@ -256,6 +256,8 @@ final class PreparedSessionCommandExtension extends PreparedFrontendExtension {
     required this.library,
     required this.entrypoint,
     Iterable<String> backendServices = const [],
+    this.clipboardWrite = false,
+    this.feedback = false,
   }) : backendServices = List.unmodifiable(backendServices) {
     CommandContribution.validateLabel(label);
     _library(library, 'library');
@@ -280,6 +282,10 @@ final class PreparedSessionCommandExtension extends PreparedFrontendExtension {
   /// Explicit service allowlist for the exact owning backend, not a selector.
   final List<String> backendServices;
 
+  /// Narrow native operations, available only during an admitted invocation.
+  final bool clipboardWrite;
+  final bool feedback;
+
   @override
   Map<String, Object?> toJson() => {
     'kind': 'sessionCommand',
@@ -289,6 +295,8 @@ final class PreparedSessionCommandExtension extends PreparedFrontendExtension {
     'library': library,
     'entrypoint': entrypoint,
     'backendServices': [...backendServices],
+    if (clipboardWrite) 'clipboardWrite': true,
+    if (feedback) 'feedback': true,
   };
 }
 
@@ -1602,7 +1610,14 @@ PreparedFrontendExtension _extension(Object? value, String label) {
         'library',
         'entrypoint',
         'backendServices',
+        'clipboardWrite',
+        'feedback',
       });
+      for (final field in ['clipboardWrite', 'feedback']) {
+        if (value.containsKey(field) && value[field] is! bool) {
+          throw FormatException('$label.$field must be a boolean.');
+        }
+      }
       final services = value.containsKey('backendServices')
           ? value['backendServices']
           : const <String>[];
@@ -1618,6 +1633,8 @@ PreparedFrontendExtension _extension(Object? value, String label) {
           library: _library(value['library'], '$label.library'),
           entrypoint: _entrypoint(value['entrypoint'], '$label.entrypoint'),
           backendServices: services.cast<String>(),
+          clipboardWrite: value['clipboardWrite'] == true,
+          feedback: value['feedback'] == true,
         );
       } on ArgumentError catch (error) {
         throw FormatException('$label.label: ${error.message}');

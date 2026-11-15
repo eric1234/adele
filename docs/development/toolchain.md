@@ -490,11 +490,13 @@ host snapshot is beside it. Unchanged inputs reuse that root and the deployment
 paths rather than allocating a fresh `build-*` directory for every invocation.
 Backend-only, frontend-only, and combined installations use the same catalog.
 Ordinary Linux `run` and `build` commands also prepare the trusted development-only
-Session Evaluator as `session-evaluator/backend.aot`, with semantic identity
-`dev.adele.plugin.session-evaluator` and no frontend or extra startup arguments.
-No opt-in flag is required. Those commands select
-`app/tool/development_main.dart` automatically, including explicit debug/profile/release
-modes. This is development composition, not release packaging; existing absolute
+Session Evaluator as `session-evaluator/backend.aot` and
+`session-evaluator/frontend.evc`, with semantic identity
+`dev.adele.plugin.session-evaluator` and no extra startup arguments. Its frontend
+contributes only an ordinary Session Command, not presentations. No opt-in flag is
+required. Those commands select the ordinary `app/lib/main.dart`, including explicit
+debug/profile/release modes, without a plugin-specific launcher or native attachment.
+This is development composition, not release packaging; existing absolute
 artifact paths and platform/build limitations remain. Other platform commands and
 the separate runtime smoke retain their existing entrypoints and preparation paths.
 The stock Task Browser and Terminal are frontend-only and need no owning backend
@@ -513,6 +515,18 @@ Frontend compilation runs in Flutter build-time tooling, not generic runtime hos
 pure-Dart `plugin_builder` dependency graph. Normal activation loads the prepared
 artifacts; missing or invalid artifacts fail the affected support rather than
 triggering compilation or a substitute implementation.
+
+Session Evaluator preparation uses `app/tool/compile_session_evaluator_frontend.dart`
+and `session_evaluator_frontend_compiler.dart`, with `ADELE_REPOSITORY_ROOT` and
+`ADELE_SESSION_EVALUATOR_FRONTEND_OUTPUT` as build-time inputs. It compiles the
+plugin-owned finite operation and completion helper, generated eval contract, and
+public bridge stubs with compile-only `CommandDeclarations` and
+`OwningBackendDeclarations`. The stock `sessionCommand` descriptor is in
+`frontend.extensions` with an empty `presentations` list. The
+`session_evaluator_frontend` workspace package participates in maintained
+analysis/test discovery; its [local map](../../plugins/session_evaluator/packages/frontend/README.md)
+owns operation behavior and pinned-evaluator constraints. Preparation grants no
+clipboard, feedback, or backend authority.
 
 Terminal preparation uses `app/tool/compile_terminal_frontend.dart` and
 `terminal_frontend_compiler.dart`, with `ADELE_REPOSITORY_ROOT` and

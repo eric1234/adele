@@ -53,7 +53,7 @@ final class GitTaskComparisonAnchor {
 
 /// Layered change inspection using the captured process grant.
 ///
-/// Requires Linux-style /bin/sh, /bin/pwd, and /usr/bin/{env,git,stat,head}
+/// Requires Linux-style /bin/sh, /bin/pwd, and /usr/bin/{env,git,stat,head,find}
 /// in the selected Environment. No host filesystem or provider implementation is
 /// consulted. Static path checks are not an OS sandbox or a filesystem transaction.
 final class GitPortableUnstagedSnapshotService {
@@ -807,16 +807,28 @@ final class _PortableSnapshot {
       r'''
 unavailable() { printf 'unavailable\000'; exit 1; }
 probe() {
-  state=$(/usr/bin/stat --printf='%f %s %d %i %y %z' -- "$1" 2>&1)
-  result=$?
-  if [ "$result" -eq 0 ]; then return 0; fi
-  if [ "$result" -eq 1 ]; then
-    case "$state" in
-      "/usr/bin/stat: cannot statx "*": No such file or directory") return 1 ;;
+  if [ "$1" != . ]; then
+    # Observe one literal entry without interpreting stat diagnostics. Only a
+    # complete successful directory read can prove absence, not a failed stat.
+    name=${1#./}
+    pattern=
+    while [ -n "$name" ]; do
+      rest=${name#?}
+      char=${name%"$rest"}
+      case "$char" in
+        '*'|'?'|'['|']'|'\') pattern="$pattern\\$char" ;;
+        *) pattern=$pattern$char ;;
+      esac
+      name=$rest
+    done
+    entry=$(/usr/bin/find . -mindepth 1 -maxdepth 1 -name "$pattern" -printf present -quit) || exit 2
+    case "$entry" in
+      '') return 1 ;;
+      present) ;;
+      *) exit 2 ;;
     esac
   fi
-  printf '%s\n' "$state" >&2
-  exit 2
+  state=$(/usr/bin/stat --printf='%f %s %d %i %y %z' -- "$1") || exit 2
 }
 root=$1
 remaining=$2
