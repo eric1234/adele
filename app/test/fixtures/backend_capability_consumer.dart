@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:isolate';
 
 import 'package:adele_contract/adele_contract.dart';
+import 'package:adele_model_provider/adele_model_catalog.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_plugin_backend_support/adele_plugin_backend_support.dart';
 import 'package:adele_project_storage/adele_project_storage.dart';
@@ -133,6 +134,21 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
             'provider': provider(access.provider),
             'requestOnly': access.requestChannel is! AdeleStreamChannel,
           };
+        case 'listModels':
+          final snapshot = await ModelCatalogServiceClient(
+            accesses[slot]!.requestChannel,
+          ).listModels();
+          return {
+            'ok': true,
+            'models': [
+              for (final model in snapshot.models)
+                {
+                  'modelId': model.modelId,
+                  'displayName': model.displayName,
+                  'description': model.description,
+                },
+            ],
+          };
         case 'inspect':
           final inspection =
               await ResourceInspectorServiceClient(
@@ -182,6 +198,14 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
         default:
           throw StateError('Unknown consumer controller method.');
       }
+    } on ModelCatalogFailure catch (error) {
+      return {
+        'ok': false,
+        'type': 'declared',
+        'code': error.code,
+        'message': error.message,
+        'details': error.details,
+      };
     } on ResourceInspectorFailure catch (error) {
       return {
         'ok': false,

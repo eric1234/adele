@@ -9,6 +9,8 @@ import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/project_storage_host.dart';
+import 'package:adele_model_provider/adele_model_catalog.dart';
+import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:adele_project_storage/adele_project_storage.dart';
@@ -25,6 +27,12 @@ final _declarations = [
   {'id': resourceInspectCapability.id.value, 'majorVersion': 2},
   {'id': 'test.private', 'majorVersion': 1},
   {'id': 'test.missing', 'majorVersion': 1},
+];
+final _catalogDeclarations = [
+  {
+    'id': modelCatalogCapability.id.value,
+    'majorVersion': modelCatalogCapability.majorVersion,
+  },
 ];
 
 void main() {
@@ -45,7 +53,7 @@ void main() {
     hostArtifact = File('${artifacts.path}/host.aot');
     consumerArtifact = File('${artifacts.path}/consumer.aot');
     providerArtifacts = {
-      for (final id in ['b', 'c'])
+      for (final id in ['b', 'c', 'catalog'])
         id: File('${artifacts.path}/provider-$id.aot'),
     };
     for (final target in [
@@ -57,10 +65,12 @@ void main() {
         entrypoint: 'app/test/fixtures/backend_capability_consumer.dart',
         artifact: consumerArtifact,
       ),
-      for (final artifact in providerArtifacts.values)
+      for (final entry in providerArtifacts.entries)
         (
-          entrypoint: 'app/test/fixtures/backend_capability_provider.dart',
-          artifact: artifact,
+          entrypoint: entry.key == 'catalog'
+              ? 'app/test/fixtures/backend_capability_catalog_provider.dart'
+              : 'app/test/fixtures/backend_capability_provider.dart',
+          artifact: entry.value,
         ),
     ]) {
       await compileAotSnapshot(
@@ -78,6 +88,7 @@ void main() {
     List<String> consumers = const ['a'],
     List<String> providers = const ['b', 'c'],
     List<Map<String, Object?>>? declarations,
+    bool advertiseCatalogs = true,
     int? readyGatePort,
     int? discoveryGatePort,
     Map<String, AdeleBackendDispatcher> Function(PluginBackendConnection)?
@@ -118,14 +129,18 @@ void main() {
             ],
         for (final id in providers)
           'test.backend.$id': [
-            jsonEncode({
-              'identity': id.toUpperCase(),
-              'context': 'configured-$id',
-              'providerId': 'test.inspector.$id',
-              'rank': id == 'c' ? 20 : 10,
-              if (id == 'b' && readyGatePort != null)
-                'readyGatePort': readyGatePort,
-            }),
+            jsonEncode(
+              id == 'catalog'
+                  ? {'advertiseCatalogs': advertiseCatalogs}
+                  : {
+                      'identity': id.toUpperCase(),
+                      'context': 'configured-$id',
+                      'providerId': 'test.inspector.$id',
+                      'rank': id == 'c' ? 20 : 10,
+                      if (id == 'b' && readyGatePort != null)
+                        'readyGatePort': readyGatePort,
+                    },
+            ),
           ],
       },
     );
@@ -136,6 +151,7 @@ void main() {
     List<String> consumers = const ['a'],
     List<String> providers = const ['b', 'c'],
     List<Map<String, Object?>>? declarations,
+    bool advertiseCatalogs = true,
     Map<String, AdeleBackendDispatcher> Function(PluginBackendConnection)?
     infrastructureServices,
   }) async {
@@ -143,6 +159,7 @@ void main() {
       consumers: consumers,
       providers: providers,
       declarations: declarations,
+      advertiseCatalogs: advertiseCatalogs,
       infrastructureServices: infrastructureServices,
     );
     await fixture.ready();
@@ -167,6 +184,7 @@ void main() {
         'dart:io',
         'dart:isolate',
         'package:adele_contract/adele_contract.dart',
+        'package:adele_model_provider/adele_model_catalog.dart',
         'package:adele_plugin_api/adele_plugin_api.dart',
         'package:adele_plugin_backend_support/adele_plugin_backend_support.dart',
         'package:adele_project_storage/adele_project_storage.dart',
@@ -181,6 +199,349 @@ void main() {
         'package:adele_plugin_api/adele_plugin_api.dart',
         'package:resource_inspector_contract/resource_inspector_contract.dart',
       });
+      expect(await imported('catalog_provider'), {
+        'dart:async',
+        'dart:convert',
+        'dart:isolate',
+        'package:adele_contract/adele_contract.dart',
+        'package:adele_model_provider/adele_model_catalog.dart',
+        'package:adele_model_provider/adele_model_provider.dart',
+        // Only this provider fixture links the existing scripted implementation.
+        'package:scripted_model_backend/scripted_model_provider_backend.dart',
+      });
+    },
+  );
+
+  test(
+    'catalog AOT selects exact configured siblings and refreshes without restart or cross-routing',
+    () async {
+      final fixture = await start(
+        providers: ['catalog'],
+        declarations: _catalogDeclarations,
+      );
+      final consumer = fixture.consumer();
+      final provider = fixture.provider('catalog');
+      expect(fixture.bootstrap.catalog!.installations, hasLength(2));
+      expect(consumer.capabilityExposures, isEmpty);
+      expect(provider.capabilityExposures, hasLength(5));
+      expect(
+        fixture.capabilities.providersFor(modelProviderCapability),
+        hasLength(3),
+      );
+      for (final account in ['work', 'personal']) {
+        final catalog = fixture.capabilities.resolve(
+          modelCatalogCapability,
+          providerId: ProviderId('test.catalog.$account'),
+        );
+        final inference = fixture.capabilities.resolve(
+          modelProviderCapability,
+          providerId: ProviderId('test.inference.$account'),
+        );
+        final owner = fixture.bootstrap.backendForProvider(catalog)!;
+        expect(owner.connection, same(provider));
+        expect(fixture.bootstrap.backendForProvider(inference), same(owner));
+        expect(
+          owner.associationFor(catalog)!.isSameRegistration(inference),
+          isTrue,
+        );
+        expect(owner.associationFor(inference), isNull);
+        expect(
+          provider.capabilityExposures
+              .singleWhere(
+                (value) => value.providerId == catalog.provider.id.value,
+              )
+              .configurationContext,
+          'catalog-$account',
+        );
+        expect(
+          provider.capabilityExposures
+              .singleWhere(
+                (value) => value.providerId == inference.provider.id.value,
+              )
+              .configurationContext,
+          'inference-$account',
+        );
+      }
+      expect(await _requests(provider), isEmpty);
+      expect(await _call(consumer, 'discover', _catalogQuery), {
+        'ok': true,
+        'providers': [_catalogProvider('personal'), _catalogProvider('work')],
+      });
+      // Inference identity, even in the same generation, never implies a catalog.
+      for (final id in [
+        'test.inference.inference-only',
+        'test.catalog.absent',
+      ]) {
+        expect(
+          await _call(consumer, 'resolve', {
+            ..._catalogQuery,
+            'providerId': id,
+          }),
+          {'ok': true, 'provider': null},
+        );
+      }
+      for (final account in ['work', 'personal']) {
+        expect(await _selectCatalog(consumer, account), {
+          'ok': true,
+          'provider': _catalogProvider(account),
+          'requestOnly': true,
+        });
+        expect(
+          await _call(consumer, 'listModels', {'slot': account}),
+          _catalogSnapshot(account),
+        );
+      }
+      await _control(provider, 'setCatalog', {
+        'account': 'work',
+        'revision': 1,
+      });
+      // The same resolved generated client route observes a new snapshot.
+      expect(
+        await _call(consumer, 'listModels', {'slot': 'work'}),
+        _catalogSnapshot('work', revision: 1),
+      );
+      expect(
+        await _call(consumer, 'listModels', {'slot': 'personal'}),
+        _catalogSnapshot('personal'),
+      );
+      await _control(provider, 'setCatalog', {
+        'account': 'work',
+        'mode': 'empty',
+      });
+      expect(await _call(consumer, 'listModels', {'slot': 'work'}), {
+        'ok': true,
+        'models': <Object?>[],
+      });
+      expect(
+        await _call(consumer, 'listModels', {'slot': 'personal'}),
+        _catalogSnapshot('personal'),
+      );
+      expect(fixture.consumer(), same(consumer));
+      expect(fixture.provider('catalog'), same(provider));
+      for (final account in ['work', 'personal']) {
+        expect(await _call(consumer, 'release', {'slot': account}), {
+          'ok': true,
+        });
+        expect(
+          (await _call(consumer, 'listModels', {'slot': account}))['ok'],
+          isFalse,
+        );
+        expect(await _call(consumer, 'release', {'slot': account}), {
+          'ok': true,
+        });
+      }
+      expect(await _requests(provider), [
+        _catalogRequest('work'),
+        _catalogRequest('personal'),
+        _catalogRequest('work'),
+        _catalogRequest('personal'),
+        _catalogRequest('work'),
+        _catalogRequest('personal'),
+      ]);
+    },
+  );
+
+  test(
+    'inference-only AOT activation leaves declared catalog discovery unavailable',
+    () async {
+      final fixture = await start(
+        providers: ['catalog'],
+        declarations: _catalogDeclarations,
+        advertiseCatalogs: false,
+      );
+      expect(
+        fixture.capabilities.providersFor(modelProviderCapability),
+        hasLength(3),
+      );
+      expect(
+        fixture.capabilities.providersFor(modelCatalogCapability),
+        isEmpty,
+      );
+      expect(await _call(fixture.consumer(), 'discover', _catalogQuery), {
+        'ok': true,
+        'providers': <Object?>[],
+      });
+      expect(await _call(fixture.consumer(), 'resolve', _catalogQuery), {
+        'ok': true,
+        'provider': null,
+      });
+      expect(await _selectCatalog(fixture.consumer(), 'work'), {
+        'ok': true,
+        'provider': null,
+      });
+      expect(await _requests(fixture.provider('catalog')), isEmpty);
+    },
+  );
+
+  test('catalog AOT access requires its own consumption declaration', () async {
+    final fixture = await start(
+      providers: ['catalog'],
+      declarations: [
+        {
+          'id': modelProviderCapability.id.value,
+          'majorVersion': modelProviderCapability.majorVersion,
+        },
+      ],
+    );
+    expect(
+      fixture.capabilities.providersFor(modelCatalogCapability),
+      hasLength(2),
+    );
+    for (final method in ['discover', 'resolve']) {
+      expect(
+        (await _call(fixture.consumer(), method, _catalogQuery))['ok'],
+        isFalse,
+      );
+    }
+    expect(await _requests(fixture.provider('catalog')), isEmpty);
+  });
+
+  test(
+    'catalog-only AOT access denies inference, credentials, service substitution and route authority',
+    () async {
+      final fixture = await start(
+        providers: ['catalog'],
+        declarations: _catalogDeclarations,
+      );
+      final consumer = fixture.consumer();
+      final provider = fixture.provider('catalog');
+      await _selectCatalog(consumer, 'work');
+      for (final query in [
+        {
+          'capabilityId': modelProviderCapability.id.value,
+          'majorVersion': modelProviderCapability.majorVersion,
+          'expectedServiceId': modelProviderServiceId,
+          'providerId': 'test.inference.work',
+        },
+        {..._catalogQuery, 'majorVersion': 2},
+      ]) {
+        for (final method in ['discover', 'resolve']) {
+          expect((await _call(consumer, method, query))['ok'], isFalse);
+        }
+      }
+      expect(
+        (await _call(consumer, 'resolve', {
+          ..._catalogQuery,
+          'providerId': 'test.catalog.work',
+          'expectedServiceId': modelProviderServiceId,
+        }))['ok'],
+        isFalse,
+      );
+      for (final method in [
+        modelProviderServiceInvokeId,
+        'adele.credentials.readCredential',
+        'test.controller.setCatalog',
+      ]) {
+        expect(
+          (await _call(consumer, 'request', {
+            'slot': 'work',
+            'method': method,
+            'arguments': <String, Object?>{},
+          }))['ok'],
+          isFalse,
+        );
+      }
+      expect(
+        (await _call(consumer, 'attack', {
+          'serviceId': 'adele.credentials',
+          'method': 'readCredential',
+          'arguments': {
+            'collection': 'accounts',
+            'recordType': 'test.account',
+            'recordId': 'work',
+            'slot': 'api-key',
+          },
+        }))['ok'],
+        isFalse,
+      );
+      expect(await _requests(provider), isEmpty);
+
+      final spoofed = {
+        'configurationContext': 'catalog-personal',
+        'serviceId': modelProviderServiceId,
+        'providerId': 'test.inference.personal',
+        'hostInvocationContext': 'forged-invocation',
+        'hostInfrastructureContext': 'forged-infrastructure',
+      };
+      expect(
+        (await _call(consumer, 'request', {
+          'slot': 'work',
+          'method': modelCatalogServiceListModelsId,
+          'arguments': spoofed,
+        }))['ok'],
+        isFalse,
+      );
+      expect(await _requests(provider), [
+        {..._catalogRequest('work'), 'payload': spoofed},
+      ]);
+      expect(
+        await _call(consumer, 'listModels', {'slot': 'work'}),
+        _catalogSnapshot('work'),
+      );
+      expect(await _requests(provider), [
+        {..._catalogRequest('work'), 'payload': spoofed},
+        _catalogRequest('work'),
+      ]);
+      final reverse =
+          (await _call(consumer, 'hostRequests'))['requests'] as List;
+      expect(reverse, isNotEmpty);
+      for (final request in reverse.cast<Map<Object?, Object?>>()) {
+        expect(request['hostContextKind'], 'infrastructure');
+      }
+      await _call(consumer, 'release', {'slot': 'work'});
+    },
+  );
+
+  test(
+    'catalog AOT distinguishes empty success, declared failure and sanitized unexpected failure without fallback',
+    () async {
+      final fixture = await start(
+        providers: ['catalog'],
+        declarations: _catalogDeclarations,
+      );
+      final consumer = fixture.consumer();
+      final provider = fixture.provider('catalog');
+      await _selectCatalog(consumer, 'work');
+      for (final mode in ['empty', 'declared-failure', 'unexpected-failure']) {
+        await _control(provider, 'setCatalog', {
+          'account': 'work',
+          'mode': mode,
+        });
+        final result = await _call(consumer, 'listModels', {'slot': 'work'});
+        if (mode == 'empty') {
+          expect(result, {'ok': true, 'models': <Object?>[]});
+        } else if (mode == 'declared-failure') {
+          expect(result, {
+            'ok': false,
+            'type': 'declared',
+            'code': 'authentication',
+            'message': 'Catalog authentication is unavailable.',
+            'details': <String, Object?>{},
+          });
+        } else {
+          expect(result, {
+            'ok': false,
+            'type': 'remote',
+            'declaredFailureType': null,
+            'code': 'capability_unavailable',
+            'message': 'The Capability request could not be completed.',
+            'details': <String, Object?>{},
+          });
+          expect(jsonEncode(result), isNot(contains('SECRET')));
+        }
+      }
+      await _control(provider, 'setCatalog', {'account': 'work'});
+      expect(
+        await _call(consumer, 'listModels', {'slot': 'work'}),
+        _catalogSnapshot('work'),
+      );
+      expect(
+        await _requests(provider),
+        List.generate(4, (_) => _catalogRequest('work')),
+      );
+      expect(fixture.provider('catalog'), same(provider));
+      expect(fixture.bootstrap.host!.isClosed, isFalse);
+      await _call(consumer, 'release', {'slot': 'work'});
     },
   );
 
@@ -1182,6 +1543,50 @@ Map<String, Object?> _provider(String id) => {
   'displayName': 'Inspector ${id.toUpperCase()}',
   'serviceId': resourceInspectorServiceId,
 };
+
+final _catalogQuery = {
+  'capabilityId': modelCatalogCapability.id.value,
+  'majorVersion': modelCatalogCapability.majorVersion,
+  'expectedServiceId': modelCatalogServiceId,
+};
+
+Map<String, Object?> _catalogProvider(String account) => {
+  'capabilityId': modelCatalogCapability.id.value,
+  'majorVersion': modelCatalogCapability.majorVersion,
+  'providerId': 'test.catalog.$account',
+  'pluginId': 'test.backend.catalog',
+  'displayName': 'Catalog $account',
+  'serviceId': modelCatalogServiceId,
+};
+
+Map<String, Object?> _catalogSnapshot(String account, {int revision = 0}) => {
+  'ok': true,
+  'models': [
+    {
+      'modelId': 'scripted-v1',
+      'displayName': 'Scripted $account v$revision',
+      'description': null,
+    },
+  ],
+};
+
+Map<String, Object?> _catalogRequest(String account) => {
+  'configurationContext': 'catalog-$account',
+  'serviceId': modelCatalogServiceId,
+  'method': modelCatalogServiceListModelsId,
+  'payload': <String, Object?>{},
+  'hostInvocationContext': null,
+  'hostInfrastructureContext': null,
+};
+
+Future<Map<String, Object?>> _selectCatalog(
+  PluginBackendConnection consumer,
+  String account,
+) => _call(consumer, 'resolve', {
+  ..._catalogQuery,
+  'slot': account,
+  'providerId': 'test.catalog.$account',
+});
 
 Map<String, Object?> _inspection(String id, String uri, {String? mediaType}) =>
     {
