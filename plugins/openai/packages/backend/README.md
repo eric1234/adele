@@ -93,8 +93,8 @@ handles reverse responses independently of forward dispatch, and closes its host
 multiplexer before draining the router on shutdown. Configured requests do not
 follow redirects to another endpoint or downgrade to HTTP.
 
-The [configuration lifecycle](../../../../docs/architecture/profiles-and-configuration.md#configured-openai-providers)
-owns restart semantics: record creation/deletion, display name, endpoint, identity/type,
+The current [configuration lifecycle](../../../../docs/architecture/profiles-and-configuration.md#configured-openai-providers)
+captures startup state: record creation/deletion, display name, endpoint, identity/type,
 credential association, replacement and Forget require a new backend generation.
 Restart ADELE to apply them. There is no live refresh or automatic restart; a later
 credential read can fail stale instead of retargeting the old route. Already-started
@@ -109,6 +109,116 @@ cannot override their credentials or routes. `startupArgumentsOnly` continues to
 suppress inherited environment configuration; `--chatgpt-only` constrains that legacy
 startup path, not independently delivered records. The app's explicit ChatGPT
 selection and the registry's provisional default rank/ID ordering are unchanged.
+
+## Configured Model Catalogs
+
+Every valid record-backed API-key instance additionally advertises the optional
+`dev.adele.model.catalog` Capability, major 1, implemented by
+[`OpenAiConfiguredModelCatalog`](lib/src/openai_model_catalog.dart). Legacy
+environment-key and experimental ChatGPT routes remain inference-only. A missing
+or failed catalog does not remove or select an inference provider.
+
+| Record ID | Catalog `ProviderId` | Associated Inference `ProviderId` |
+| --- | --- | --- |
+| `work-openai` | `dev.adele.openai.model-catalog.work-openai` | `dev.adele.openai.api-key.work-openai` |
+| `personal-openai` | `dev.adele.openai.model-catalog.personal-openai` | `dev.adele.openai.api-key.personal-openai` |
+
+Catalog identity is deterministically `dev.adele.openai.model-catalog.<record-id>`,
+independent of name, endpoint, credential and generation. Its namespace is disjoint
+from inference identity. Each catalog declares an `AdeleProviderAssociation` naming
+`dev.adele.model.provider`, major 1, and its own exact inference Provider ID. Normal
+host activation verifies and retains the exact sibling registrations; matching
+text or sharing a context is not association evidence. Both services share that
+record's `api-key-record:<record-id>` context in the existing router, with distinct
+generated `modelCatalog` and `modelProvider` service identities.
+
+### Endpoint Policy
+
+Discovery uses only the selected configuration's validated Responses URI. For a
+query-free path ending in `/responses`, replace only that terminal segment with
+`models`, retaining scheme, authority, port and path prefix:
+
+```text
+https://api.openai.com/v1/responses -> https://api.openai.com/v1/models
+http://127.0.0.1:8080/work/responses -> http://127.0.0.1:8080/work/models
+```
+
+Other paths, trailing slashes, and **any query component, including an empty `?`**,
+produce `unsupported_discovery` before credential access or HTTP. Queries can select
+API versions/routes or carry routing tokens; neither silently dropping them nor
+assuming they apply to another operation is safe. No extra configuration field,
+alternate-path probe, public-endpoint fallback, redirect, or HTTP downgrade is used.
+The existing endpoint validation still requires HTTPS except for loopback HTTP,
+and rejects userinfo, fragments, invalid hosts and invalid ports. An inference-valid
+but nonderivable endpoint keeps its inference registration and advertises a catalog
+that explicitly reports unsupported discovery.
+
+### Observation And Lifetime
+
+Parameterless `listModels()` reads only the selected record's `providers` /
+`dev.adele.openai.api-key` / `<record-id>` / `api-key` credential through the same
+`AdeleCredentialClient` and generation grant as inference. Configuration supplies
+the shared selector helper and both paths reuse API-key validation; discovery also
+requires printable ASCII before using a key as an HTTP header. Advertisement,
+metadata discovery and association verification read no credentials. Each operation
+reads afresh; no credential or catalog cache, account fallback, automatic retry,
+polling or background refresh is introduced.
+
+After credential success, one operation-owned HTTP client issues **GET** with
+`Authorization: Bearer <key>` and `Accept: application/json`. A 30-second opening
+deadline spans connection acquisition through response headers. A separate absolute
+30-second completion deadline bounds the successful body, not a rolling inactivity
+timer. At most **4 MiB** of decoded HTTP body bytes are accumulated, enforced before
+appending each chunk, regardless of Content-Length. Strict UTF-8 and JSON decoding
+require `object: "list"`, a `data` array, and model objects with `object: "model"`
+and string `id`. Entry and snapshot constructors enforce the shared identifier,
+duplicate, count (1,024), and aggregate text bounds. Any violation rejects the whole
+observation; oversized lists are never truncated. HTTP 200 with an empty list is
+successful empty discovery.
+
+The [OpenAI models list reference](https://developers.openai.com/api/reference/resources/models/methods/list)
+supplies IDs and basic metadata, not friendly display names or descriptions. Only
+exact IDs are returned, in provider order; both optional metadata fields are null.
+Additional fields (including owner, timestamps and shutdown metadata) are ignored,
+not exposed as account information or authority. Reflected API keys or complete
+configured/catalog endpoints in IDs reject the result rather than rewriting IDs.
+Catalog inclusion **does not prove compatibility with ADELE's Responses-based
+text/tool execution**. There is no family, reasoning-effort, context, modality,
+pricing or compatibility inference from identifiers.
+
+Success, failure and backend shutdown fence callbacks, abort requests, force-close
+the operation's client and cancel its response subscription, with a one-second
+cleanup wait. Shutdown closes catalogs before draining generated dispatchers;
+pending credential completions cannot initiate late HTTP. Late connection acquisition
+is aborted before authorization headers are submitted. Platform connection acquisition
+or cancellation can outlive their wait, but cannot publish data or retry. OS credential
+waits are outside HTTP deadlines; retirement fences them rather than claiming to
+cancel a keyring prompt. Already transmitted authorization cannot be retracted.
+
+Repeated calls query current server data without restarting ADELE. Provider records
+and credential authority still belong to the current startup capture, as described
+above; general live reconfiguration is later work, not a restart requirement in the
+Model Catalog contract. The intended configuration direction remains live application.
+
+### Safe Failures
+
+Declared `ModelCatalogFailure` messages are fixed and `details` is empty. Failures
+never include raw exceptions, endpoints, credentials, headers or response bodies;
+non-200 bodies and redirect destinations are not interpreted. Generated transport
+retains its opaque handling of unexpected exceptions.
+
+| Outcome | Catalog Code |
+| --- | --- |
+| Any host credential denial/retrieval failure, invalid delivered API key, or closed catalog | `unavailable` (before HTTP, not a remote authentication rejection) |
+| Nonderivable configured endpoint | `unsupported_discovery` (before credential access or HTTP) |
+| HTTP 401 or 403 | `authentication` |
+| HTTP 429 | `rate_limited` |
+| Other non-200 status, including redirects, 404 and 5xx | `provider_failure` |
+| Network/TLS/HTTP failure, opening or body deadline | `transport` |
+| Invalid UTF-8/JSON/list/model structure, reflected private values, or body/contract limit | `malformed_response` |
+
+These outcomes never consult another account, the environment key, or ChatGPT, and
+never mutate inference selection or the generated inference request.
 
 ## Credential Failures
 
@@ -418,6 +528,26 @@ validity; backend request/replay errors retain their existing explicit failure
 semantics.
 
 ## Validation Scope
+
+`test/openai_model_catalog_test.dart` covers finite HTTP decoding, exact IDs and
+bounds, safe failures, endpoint derivation, no fallback, fresh reads and cleanup
+using controlled HTTP/credential fixtures. The configured startup/AOT suites also
+assert the complete inference/catalog exposure sets and explicit associations.
+The app's `test/core/openai_record_startup_integration_test.dart` invokes the real
+prepared OpenAI catalogs through an independently prepared public Capability consumer,
+real host credential authority and loopback model lists, alongside Responses inference.
+The generic consumer/authority matrix remains in
+`app/test/core/backend_capability_integration_test.dart` rather than being duplicated.
+
+After bootstrap/current generation, focused catalog checks are:
+
+```sh
+# Repository root
+dart tools/adele.dart test --target openai_model_provider_backend
+dart tools/adele.dart test --target adele_model_provider
+# app/
+flutter test --no-pub --concurrency 1 test/core/openai_record_startup_integration_test.dart test/core/backend_capability_integration_test.dart
+```
 
 `test/openai_streaming_reliability_test.dart` uses controlled HTTP objects, explicit
 gates, and short deadlines for inactivity, opening waits, retry/publication bounds,

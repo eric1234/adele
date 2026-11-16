@@ -1,5 +1,19 @@
 import 'dart:io';
 
+const openAiDefaultResponsesEndpoint = 'https://api.openai.com/v1/responses';
+
+/// Queries may select a different API/version or contain routing tokens. Without
+/// an explicit catalog route contract, neither forwarding nor dropping them is safe.
+Uri? openAiCatalogEndpoint(Uri? responsesEndpoint) {
+  final endpoint = validateOpenAiEndpoint(
+    responsesEndpoint ?? Uri.parse(openAiDefaultResponsesEndpoint),
+  );
+  if (endpoint.hasQuery || !endpoint.path.endsWith('/responses')) return null;
+  return endpoint.replace(
+    path: '${endpoint.path.substring(0, endpoint.path.length - 9)}models',
+  );
+}
+
 Uri validateOpenAiEndpoint(Uri value) {
   final host = value.host;
   final address = InternetAddress.tryParse(host);

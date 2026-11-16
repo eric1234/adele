@@ -10,6 +10,7 @@ import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/credential_service.dart';
 import 'package:adele_desktop/core/global_settings_service.dart';
 import 'package:adele_desktop/core/prepared_settings.dart';
+import 'package:adele_model_provider/adele_model_catalog.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:adele_platform_storage/adele_platform_storage.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
@@ -22,6 +23,8 @@ import '../../../tools/backend_artifacts.dart';
 
 const _openai = 'dev.adele.openai';
 const _recordType = 'dev.adele.openai.api-key';
+const _catalogProviderId = 'dev.adele.openai.model-catalog';
+const _catalogConsumer = 'test.openai.catalog-consumer';
 const _chatGpt = 'dev.adele.openai.chatgpt-experimental';
 
 void main() {
@@ -30,6 +33,7 @@ void main() {
   late File hostArtifact;
   late File openaiArtifact;
   late File observerArtifact;
+  late File consumerArtifact;
   late String runtime;
 
   setUpAll(() async {
@@ -43,6 +47,7 @@ void main() {
     hostArtifact = File('${artifacts.path}/host.aot');
     openaiArtifact = File('${artifacts.path}/openai.aot');
     observerArtifact = File('${artifacts.path}/observer.aot');
+    consumerArtifact = File('${artifacts.path}/consumer.aot');
     for (final target in [
       (
         entrypoint: 'packages/plugin_backend_host/bin/adele_backend_host.dart',
@@ -57,6 +62,10 @@ void main() {
         entrypoint: 'app/test/fixtures/backend_credential_consumer.dart',
         artifact: observerArtifact,
       ),
+      (
+        entrypoint: 'app/test/fixtures/backend_capability_consumer.dart',
+        artifact: consumerArtifact,
+      ),
     ]) {
       await compileAotSnapshot(
         dartExecutable: dart,
@@ -69,13 +78,21 @@ void main() {
   });
   tearDownAll(() => artifacts.delete(recursive: true));
 
-  Future<_ProviderFixture> prepareProviders({bool chatGpt = false}) async {
+  Future<_ProviderFixture> prepareProviders({
+    bool chatGpt = false,
+    bool consumeCatalog = false,
+  }) async {
     final temporary = await Directory.systemTemp.createTemp(
       'adele-configured-openai-',
     );
     final fixture = _ProviderFixture(temporary, runtime, hostArtifact.path);
     addTearDown(fixture.close);
-    await fixture.prepare(repository, openaiArtifact, chatGpt: chatGpt);
+    await fixture.prepare(
+      repository,
+      openaiArtifact,
+      chatGpt: chatGpt,
+      consumerArtifact: consumeCatalog ? consumerArtifact : null,
+    );
     return fixture;
   }
 
@@ -86,7 +103,7 @@ void main() {
       await fixture.start();
       final connection = fixture.connection;
       final exposures = connection.capabilityExposures;
-      expect(exposures, hasLength(chatGpt ? 3 : 2));
+      expect(exposures, hasLength(chatGpt ? 5 : 4));
       expect(
         exposures
             .where((entry) => entry.providerId.startsWith('$_recordType.'))
@@ -175,17 +192,117 @@ void main() {
     });
   }
 
+  test('independent AOT catalog consumer keeps exact accounts and fresh models '
+      'without changing inference', () async {
+    final fixture = await prepareProviders(chatGpt: true, consumeCatalog: true);
+    await fixture.start();
+    final connection = fixture.connection;
+    expect(connection.capabilityExposures, hasLength(5));
+    _expectCatalogAssociations(fixture.bootstrap, fixture.registry);
+    expect(await fixture.catalogCall('discover', _catalogQuery), {
+      'ok': true,
+      'providers': [_catalogProvider('personal'), _catalogProvider('work')],
+    });
+    for (final id in [_recordType, _chatGpt, '$_catalogProviderId.absent']) {
+      expect(
+        await fixture.catalogCall('resolve', {
+          ..._catalogQuery,
+          'providerId': id,
+        }),
+        {'ok': true, 'provider': null},
+      );
+    }
+    for (final id in ['work', 'personal']) {
+      await fixture.selectCatalog(id);
+    }
+    expect(fixture.storage.calls, isEmpty);
+    expect(fixture.requests, isEmpty);
+
+    _expectCompleted(await fixture.invoke('work').toList(), '/work/responses');
+    final inferenceBefore = fixture.requests.single;
+    expect(await fixture.listModels('work'), _catalogSnapshot(['work-model']));
+    expect(fixture.storage.readReferences, [
+      fixture.reference('work'),
+      fixture.reference('work'),
+    ]);
+    expect(
+      await fixture.listModels('personal'),
+      _catalogSnapshot(['personal-model']),
+    );
+    fixture.catalogModels['/work/models'] = ['Work/Exact-2026', ' work-alias '];
+    expect(
+      await fixture.listModels('work'),
+      _catalogSnapshot(['Work/Exact-2026', ' work-alias ']),
+    );
+    fixture.catalogModels['/work/models'] = [];
+    expect(await fixture.listModels('work'), _catalogSnapshot([]));
+    expect(
+      await fixture.listModels('personal'),
+      _catalogSnapshot(['personal-model']),
+    );
+    expect(fixture.storage.readReferences, [
+      for (final id in ['work', 'work', 'personal', 'work', 'work', 'personal'])
+        fixture.reference(id),
+    ]);
+    final catalogRequests = fixture.requests.skip(1).toList();
+    expect(catalogRequests, hasLength(5));
+    for (final (index, id) in [
+      'work',
+      'personal',
+      'work',
+      'work',
+      'personal',
+    ].indexed) {
+      expect(catalogRequests[index], {
+        'method': 'GET',
+        'authority': Uri.parse(
+          fixture.records[id]!.values['endpoint']! as String,
+        ).authority,
+        'path': '/$id/models',
+        'query': '',
+        'authorization': 'Bearer test-$id-key',
+        'account': null,
+        'accept': 'application/json',
+        'body': '',
+      });
+    }
+    expect(
+      catalogRequests.first['authority'],
+      isNot(catalogRequests[1]['authority']),
+    );
+    _expectCompleted(await fixture.invoke('work').toList(), '/work/responses');
+    expect(fixture.requests.last, inferenceBefore);
+    _expectCompleted(
+      await fixture.invokeChatGpt().toList(),
+      '/chatgpt/responses',
+    );
+    expect(fixture.requests.last['authorization'], 'Bearer test-chatgpt-token');
+    expect(fixture.requests.last['account'], 'test-chatgpt-account');
+    expect(fixture.connection, same(connection));
+  });
+
   test(
     'missing, invalid, unavailable and uncertain credentials never fall back',
     () async {
-      final fixture = await prepareProviders(chatGpt: true);
+      final fixture = await prepareProviders(
+        chatGpt: true,
+        consumeCatalog: true,
+      );
       final workReference = fixture.reference('work');
       final original = fixture.storage.values.remove(workReference)!;
       // A missing local key at fresh startup still advertises an independent route.
       await fixture.start();
-      expect(fixture.connection.capabilityExposures, hasLength(3));
+      expect(fixture.connection.capabilityExposures, hasLength(5));
+      await fixture.selectCatalog('work');
       expect(fixture.storage.calls, isEmpty);
-      await fixture.expectFailure('missing_locally');
+      Future<void> expectCredentialFailure(String code) async {
+        final requests = fixture.requests.length;
+        await fixture.expectFailure(code);
+        _expectCatalogFailure(await fixture.listModels('work'), 'unavailable');
+        expect(fixture.requests, hasLength(requests));
+      }
+
+      await expectCredentialFailure('missing_locally');
       expect(fixture.requests, isEmpty);
       _expectCompleted(
         await fixture.invoke('personal').toList(),
@@ -197,18 +314,18 @@ void main() {
       );
 
       fixture.storage.values[workReference] = 'invalid-protected-test-work-key';
-      await fixture.expectFailure('invalid_binding');
+      await expectCredentialFailure('invalid_binding');
       fixture.storage.values[workReference] =
           fixture.storage.values[fixture.reference('personal')]!;
-      await fixture.expectFailure('invalid_binding');
+      await expectCredentialFailure('invalid_binding');
       fixture.storage.values[workReference] = original;
       fixture.storage.failureReference = workReference;
       fixture.storage.failure = const CredentialFailure(
         CredentialFailureKind.unavailable,
       );
-      await fixture.expectFailure('storage_unavailable');
+      await expectCredentialFailure('storage_unavailable');
       fixture.storage.failure = StateError('native diagnostic test-work-key');
-      await fixture.expectFailure('access_failed');
+      await expectCredentialFailure('access_failed');
       fixture.storage.failure = null;
       fixture.storage.writeFailure = StateError(
         'uncertain write test-work-key',
@@ -219,10 +336,14 @@ void main() {
       );
       fixture.storage.writeFailure = null;
       final reads = fixture.storage.readReferences.length;
-      await fixture.expectFailure('reconciliation_required');
+      await expectCredentialFailure('reconciliation_required');
       expect(fixture.storage.readReferences, hasLength(reads));
       expect(
         fixture.requests.where((entry) => entry['path'] == '/work/responses'),
+        isEmpty,
+      );
+      expect(
+        fixture.requests.where((entry) => entry['path'] == '/work/models'),
         isEmpty,
       );
       _expectCompleted(
@@ -233,6 +354,159 @@ void main() {
         await fixture.invokeChatGpt().toList(),
         '/chatgpt/responses',
       );
+    },
+  );
+
+  test('catalog rejects an invalid delivered API key before HTTP', () async {
+    final fixture = await prepareProviders(chatGpt: true, consumeCatalog: true);
+    fixture.records['work'] = (await fixture.associations.replace(
+      fixture.records['work']!,
+      RecordCredentialSlotId('api-key'),
+      CredentialSecret('test-work-key\ninvalid-header'),
+    )).record;
+    fixture.storage.calls.clear();
+    fixture.storage.readReferences.clear();
+    await fixture.start();
+    await fixture.selectCatalog('work');
+    expect(fixture.storage.calls, isEmpty);
+    _expectCatalogFailure(await fixture.listModels('work'), 'unavailable');
+    expect(fixture.requests, isEmpty);
+    expect(fixture.storage.readReferences, [fixture.reference('work')]);
+    await fixture.selectCatalog('personal');
+    expect(
+      await fixture.listModels('personal'),
+      _catalogSnapshot(['personal-model']),
+    );
+    expect(fixture.requests.single['path'], '/personal/models');
+  });
+
+  for (final suffix in ['custom', 'responses?api-version=private']) {
+    test('catalog rejects unsupported $suffix before credentials while '
+        'inference keeps its endpoint', () async {
+      final fixture = await prepareProviders(consumeCatalog: true);
+      fixture.records['work'] = await fixture.settings
+          .updateRecord(fixture.records['work']!, {
+            ...fixture.records['work']!.values,
+            'endpoint': '${fixture.origin}/work/$suffix',
+          });
+      await fixture.start();
+      await fixture.selectCatalog('work');
+      _expectCatalogFailure(
+        await fixture.listModels('work'),
+        'unsupported_discovery',
+      );
+      expect(fixture.storage.calls, isEmpty);
+      expect(fixture.requests, isEmpty);
+      _expectCompleted(
+        await fixture.invoke('work').toList(),
+        '/work/${suffix.split('?').first}',
+      );
+      expect(fixture.storage.readReferences, [fixture.reference('work')]);
+      expect(
+        fixture.requests.single['query'],
+        suffix.contains('?') ? 'api-version=private' : '',
+      );
+      expect(fixture.requests.single['authorization'], 'Bearer test-work-key');
+    });
+  }
+
+  test(
+    'real catalog HTTP failures cross the AOT facade safely without fallback',
+    () async {
+      final fixture = await prepareProviders(
+        chatGpt: true,
+        consumeCatalog: true,
+      );
+      await fixture.start();
+      await fixture.selectCatalog('work');
+      fixture.catalogStatus = HttpStatus.unauthorized;
+      fixture.catalogBody = {
+        'error': 'test-work-key ${fixture.origin}/work/models cred1_private',
+      };
+      final rejected = await fixture.listModels('work');
+      _expectCatalogFailure(rejected, 'authentication');
+      expect(jsonEncode(rejected), isNot(contains(fixture.origin)));
+      fixture.catalogStatus = HttpStatus.ok;
+      fixture.catalogBody = {
+        'object': 'list',
+        'data': [
+          {'object': 'model', 'id': 123, 'owned_by': 'test-work-key'},
+        ],
+      };
+      _expectCatalogFailure(
+        await fixture.listModels('work'),
+        'malformed_response',
+      );
+      fixture.catalogBody = null;
+      expect(
+        await fixture.listModels('work'),
+        _catalogSnapshot(['work-model']),
+      );
+      expect(fixture.requests.map((request) => request['path']), [
+        '/work/models',
+        '/work/models',
+        '/work/models',
+      ]);
+      expect(
+        fixture.storage.readReferences,
+        List.filled(3, fixture.reference('work')),
+      );
+      _expectCompleted(
+        await fixture.invoke('work').toList(),
+        '/work/responses',
+      );
+    },
+  );
+
+  test('catalog retirement fences a pending protected credential result before '
+      'HTTP', () async {
+    final fixture = await prepareProviders(consumeCatalog: true);
+    await fixture.start();
+    await fixture.selectCatalog('work');
+    final gate = fixture.storage.gate = _ReadGate();
+    addTearDown(gate.release);
+    final pending = fixture.listModels('work');
+    await gate.entered.future;
+    expect(fixture.requests, isEmpty);
+    fixture.connection.revokeInfrastructureContext();
+    _expectCatalogFailure(await pending, 'unavailable');
+    await fixture.connection.close();
+    gate.release();
+    await gate.returned.future;
+    // Drain the uncancelable read after retirement, not a timer-based guess.
+    await fixture.backendAssociations.single.close();
+    expect(fixture.requests, isEmpty);
+    expect((await fixture.listModels('work'))['ok'], isFalse);
+    expect(fixture.storage.readReferences, [fixture.reference('work')]);
+    expect(fixture.consumer.isClosed, isFalse);
+  });
+
+  test(
+    'catalog retirement closes an admitted HTTP connection and retained access',
+    () async {
+      final fixture = await prepareProviders(consumeCatalog: true);
+      await fixture.start();
+      await fixture.selectCatalog('work');
+      final accepted = fixture.pendingCatalogSocket = Completer<Socket>();
+      final pending = fixture.listModels('work');
+      final socket = await accepted.future;
+      addTearDown(socket.destroy);
+      final disconnected = Completer<void>();
+      final subscription = socket.listen(
+        (_) {},
+        onDone: disconnected.complete,
+        onError: disconnected.completeError,
+      );
+      addTearDown(subscription.cancel);
+      await fixture.connection.close();
+      final result = await pending;
+      expect(result['ok'], isFalse);
+      _expectProviderRedacted(result);
+      await disconnected.future.timeout(const Duration(seconds: 10));
+      expect((await fixture.listModels('work'))['ok'], isFalse);
+      expect(fixture.requests.single['path'], '/work/models');
+      expect(fixture.storage.readReferences, [fixture.reference('work')]);
+      expect(fixture.consumer.isClosed, isFalse);
     },
   );
 
@@ -339,7 +613,11 @@ void main() {
       await fixture.start();
       expect(
         fixture.connection.capabilityExposures.map((entry) => entry.providerId),
-        unorderedEquals(['$_recordType.personal-openai', _chatGpt]),
+        unorderedEquals([
+          '$_recordType.personal-openai',
+          '$_catalogProviderId.personal-openai',
+          _chatGpt,
+        ]),
       );
       expect(() => fixture.client('work'), throwsA(isA<ProviderUnavailable>()));
       expect(fixture.storage.calls, isEmpty);
@@ -364,9 +642,9 @@ void main() {
       {'display-name': 'New OpenAI'},
     );
     expect(() => fixture.client('new'), throwsA(isA<ProviderUnavailable>()));
-    expect(fixture.connection.capabilityExposures, hasLength(2));
+    expect(fixture.connection.capabilityExposures, hasLength(4));
     await fixture.restart();
-    expect(fixture.connection.capabilityExposures, hasLength(3));
+    expect(fixture.connection.capabilityExposures, hasLength(6));
     await fixture.expectFailure('not_configured', id: 'new');
     expect(fixture.requests, isEmpty);
   });
@@ -653,6 +931,21 @@ void main() {
               'configurationContext': 'api-key-record:$id-openai',
               'rank': 0,
             },
+          for (final id in ['personal', 'work'])
+            {
+              'providerId': '$_catalogProviderId.$id-openai',
+              'capabilityId': modelCatalogCapability.id.value,
+              'capabilityMajorVersion': modelCatalogCapability.majorVersion,
+              'serviceId': modelCatalogServiceId,
+              'displayName': id == 'work' ? 'Work Renamed' : 'Personal',
+              'configurationContext': 'api-key-record:$id-openai',
+              'rank': 0,
+              'association': {
+                'capabilityId': modelProviderCapability.id.value,
+                'capabilityMajorVersion': modelProviderCapability.majorVersion,
+                'providerId': '$_recordType.$id-openai',
+              },
+            },
           if (chatGptConfigured)
             {
               'providerId': _chatGpt,
@@ -675,6 +968,16 @@ void main() {
           if (chatGptConfigured) _chatGpt,
         ]),
       );
+      expect(
+        registry
+            .providersFor(modelCatalogCapability)
+            .map((entry) => entry.id.value),
+        [
+          '$_catalogProviderId.personal-openai',
+          '$_catalogProviderId.work-openai',
+        ],
+      );
+      _expectCatalogAssociations(bootstrap, registry);
       expect(await chatGptFile.exists(), isFalse);
       expect(storage.calls, isEmpty);
 
@@ -903,6 +1206,13 @@ final class _ProviderFixture {
   final records = <String, RecordView>{};
   final references = <String, CredentialReference>{};
   final requests = <Map<String, Object?>>[];
+  final catalogModels = <String, List<String>>{
+    '/work/models': ['work-model'],
+    '/personal/models': ['personal-model'],
+  };
+  int catalogStatus = HttpStatus.ok;
+  Object? catalogBody;
+  Completer<Socket>? pendingCatalogSocket;
   final registry = CapabilityRegistry();
   final readers = <GlobalSettingsService>[];
   final backendAssociations = <RecordCredentialService>[];
@@ -912,12 +1222,20 @@ final class _ProviderFixture {
   late final RecordCredentialService associations;
   late final HttpServer server;
   late final StreamSubscription<HttpRequest> serverSubscription;
+  HttpServer? personalServer;
+  StreamSubscription<HttpRequest>? personalServerSubscription;
   late final Map<String, List<String>> startupArguments;
   ApplicationPluginBootstrap? _bootstrap;
 
   ApplicationPluginBootstrap get bootstrap => _bootstrap!;
-  PluginBackendConnection get connection =>
-      bootstrap.backends.single.connection!;
+  PluginBackendConnection get connection => bootstrap.backends
+      .singleWhere((entry) => entry.installation.metadata.id.value == _openai)
+      .connection!;
+  PluginBackendConnection get consumer => bootstrap.backends
+      .singleWhere(
+        (entry) => entry.installation.metadata.id.value == _catalogConsumer,
+      )
+      .connection!;
   String get origin => 'http://${server.address.address}:${server.port}';
   String get installationRoot => '${directory.path}/installations';
 
@@ -927,20 +1245,55 @@ final class _ProviderFixture {
     Directory repository,
     File artifact, {
     required bool chatGpt,
+    File? consumerArtifact,
   }) async {
     server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
-    serverSubscription = server.listen((request) {
+    void handle(HttpRequest request) {
       unawaited(() async {
-        final body = jsonDecode(await utf8.decoder.bind(request).join());
+        final rawBody = await utf8.decoder.bind(request).join();
+        final body = request.method == 'GET' ? rawBody : jsonDecode(rawBody);
         requests.add({
+          'method': request.method,
+          'authority': request.headers.value(HttpHeaders.hostHeader),
           'path': request.uri.path,
+          'query': request.uri.query,
           'authorization': request.headers.value(
             HttpHeaders.authorizationHeader,
           ),
           'account': request.headers.value('ChatGPT-Account-ID'),
+          'accept': request.headers.value(HttpHeaders.acceptHeader),
           'body': body,
         });
         final response = request.response;
+        if (request.method == 'GET') {
+          final pending = pendingCatalogSocket;
+          if (pending != null) {
+            pendingCatalogSocket = null;
+            pending.complete(await response.detachSocket(writeHeaders: false));
+            return;
+          }
+          response.statusCode = catalogStatus;
+          response.headers.contentType = ContentType.json;
+          response.write(
+            jsonEncode(
+              catalogBody ??
+                  {
+                    'object': 'list',
+                    'data': [
+                      for (final id in catalogModels[request.uri.path]!)
+                        {
+                          'object': 'model',
+                          'id': id,
+                          'created': 123,
+                          'owned_by': 'test-work-key',
+                        },
+                    ],
+                  },
+            ),
+          );
+          await response.close();
+          return;
+        }
         response.headers.contentType = ContentType(
           'text',
           'event-stream',
@@ -977,7 +1330,40 @@ final class _ProviderFixture {
         }
         await response.close();
       }());
-    });
+    }
+
+    serverSubscription = server.listen(handle);
+    if (consumerArtifact != null) {
+      personalServer = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      personalServerSubscription = personalServer!.listen(handle);
+      final consumerDirectory = await Directory(
+        '$installationRoot/catalog-consumer',
+      ).create(recursive: true);
+      await consumerArtifact.copy('${consumerDirectory.path}/backend.aot');
+      await File(
+        '${consumerDirectory.path}/adele_plugin.installation.json',
+      ).writeAsString(
+        jsonEncode({
+          'manifestVersion': 1,
+          'metadata': {
+            'id': _catalogConsumer,
+            'version': '1',
+            'displayName': 'Catalog consumer',
+          },
+          'components': {
+            'backend': {
+              'artifact': 'backend.aot',
+              'consumesCapabilities': [
+                {
+                  'id': modelCatalogCapability.id.value,
+                  'majorVersion': modelCatalogCapability.majorVersion,
+                },
+              ],
+            },
+          },
+        }),
+      );
+    }
     final installation = await Directory(
       '$installationRoot/openai',
     ).create(recursive: true);
@@ -1008,12 +1394,15 @@ final class _ProviderFixture {
       credentials: credentials,
     );
     for (final id in ['work', 'personal']) {
+      final endpointOrigin = id == 'personal' && personalServer != null
+          ? 'http://${personalServer!.address.address}:${personalServer!.port}'
+          : origin;
       final record = await settings.createRecord(
         RecordTypeId(_recordType),
         ConfigurationRecordId('$id-openai'),
         {
           'display-name': id == 'work' ? 'Work OpenAI' : 'Personal OpenAI',
-          'endpoint': '$origin/$id/responses',
+          'endpoint': '$endpointOrigin/$id/responses',
         },
       );
       records[id] = (await associations.attach(
@@ -1098,11 +1487,43 @@ final class _ProviderFixture {
     );
     expect(bootstrap.state, ApplicationPluginState.ready);
     expect(
-      bootstrap.backends.single.state,
-      InstalledBackendState.active,
-      reason: '${bootstrap.backends.single.failure}',
+      bootstrap.backends.where(
+        (entry) => entry.installation.metadata.id.value == _openai,
+      ),
+      hasLength(1),
+    );
+    for (final backend in bootstrap.backends) {
+      expect(
+        backend.state,
+        InstalledBackendState.active,
+        reason: '${backend.failure}',
+      );
+    }
+  }
+
+  Future<Map<String, Object?>> catalogCall(
+    String method, [
+    Map<String, Object?> payload = const {},
+  ]) async => Map<String, Object?>.from(
+    await consumer
+            .channelFor(consumer.defaultConfigurationContext, 'test.controller')
+            .request(method, payload)
+        as Map,
+  );
+
+  Future<void> selectCatalog(String id) async {
+    expect(
+      await catalogCall('resolve', {
+        ..._catalogQuery,
+        'providerId': '$_catalogProviderId.$id-openai',
+        'slot': id,
+      }),
+      {'ok': true, 'provider': _catalogProvider(id), 'requestOnly': true},
     );
   }
+
+  Future<Map<String, Object?>> listModels(String id) =>
+      catalogCall('listModels', {'slot': id});
 
   ModelProviderServiceClient client(String id) => ModelProviderServiceClient(
     registry
@@ -1162,7 +1583,65 @@ final class _ProviderFixture {
     await credentials.close();
     await serverSubscription.cancel();
     await server.close(force: true);
+    await personalServerSubscription?.cancel();
+    await personalServer?.close(force: true);
     await directory.delete(recursive: true);
+  }
+}
+
+final _catalogQuery = {
+  'capabilityId': modelCatalogCapability.id.value,
+  'majorVersion': modelCatalogCapability.majorVersion,
+  'expectedServiceId': modelCatalogServiceId,
+};
+
+Map<String, Object?> _catalogProvider(String id) => {
+  'capabilityId': modelCatalogCapability.id.value,
+  'majorVersion': modelCatalogCapability.majorVersion,
+  'providerId': '$_catalogProviderId.$id-openai',
+  'pluginId': _openai,
+  'displayName': id == 'work' ? 'Work OpenAI' : 'Personal OpenAI',
+  'serviceId': modelCatalogServiceId,
+};
+
+Map<String, Object?> _catalogSnapshot(List<String> ids) => {
+  'ok': true,
+  'models': [
+    for (final id in ids)
+      {'modelId': id, 'displayName': null, 'description': null},
+  ],
+};
+
+void _expectCatalogFailure(Map<String, Object?> result, String code) {
+  expect(result['ok'], isFalse);
+  expect(result['type'], 'declared');
+  expect(result['code'], code);
+  expect(result['message'], isNotEmpty);
+  expect(result['details'], isEmpty);
+  _expectProviderRedacted(result);
+}
+
+void _expectCatalogAssociations(
+  ApplicationPluginBootstrap bootstrap,
+  CapabilityRegistry registry,
+) {
+  for (final id in ['personal', 'work']) {
+    final catalog = registry.resolve(
+      modelCatalogCapability,
+      providerId: ProviderId('$_catalogProviderId.$id-openai'),
+    );
+    final inference = registry.resolve(
+      modelProviderCapability,
+      providerId: ProviderId('$_recordType.$id-openai'),
+    );
+    final owner = bootstrap.backendForProvider(catalog)!;
+    expect(owner.installation.metadata.id, PluginId(_openai));
+    expect(bootstrap.backendForProvider(inference), same(owner));
+    expect(
+      owner.associationFor(catalog)!.isSameRegistration(inference),
+      isTrue,
+    );
+    expect(owner.associationFor(inference), isNull);
   }
 }
 

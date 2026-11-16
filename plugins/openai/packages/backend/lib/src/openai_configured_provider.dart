@@ -15,15 +15,34 @@ final class OpenAiApiKeyConfiguration {
     required this.displayName,
     required this.endpoint,
   }) : providerId = ProviderId('$openAiApiKeyProviderId.$recordId'),
+       catalogProviderId = ProviderId(
+         'dev.adele.openai.model-catalog.$recordId',
+       ),
        configurationContext = 'api-key-record:$recordId' {
     adeleValidateConfigurationContext(configurationContext);
   }
 
   final String recordId;
   final ProviderId providerId;
+  final ProviderId catalogProviderId;
   final String configurationContext;
   final String displayName;
   final Uri? endpoint;
+
+  /// Both services use the same exact record selectors and generation grant.
+  Future<String> readCredential(AdeleCredentialClient? credentials) {
+    if (credentials == null) {
+      throw const AdeleCredentialFailure(
+        AdeleCredentialFailureKind.generationUnavailable,
+      );
+    }
+    return credentials.readCredential(
+      collection: 'providers',
+      recordType: openAiApiKeyProviderId,
+      recordId: recordId,
+      slot: 'api-key',
+    );
+  }
 
   /// Structural validation belongs to backend support; plugin semantics are
   /// checked independently so one unusable record cannot suppress its siblings.
@@ -139,18 +158,7 @@ final class OpenAiConfiguredModelProvider implements ModelProviderService {
     Future<void> start() async {
       final String key;
       try {
-        final credentials = _credentials;
-        if (credentials == null) {
-          throw const AdeleCredentialFailure(
-            AdeleCredentialFailureKind.generationUnavailable,
-          );
-        }
-        key = await credentials.readCredential(
-          collection: 'providers',
-          recordType: openAiApiKeyProviderId,
-          recordId: configuration.recordId,
-          slot: 'api-key',
-        );
+        key = await configuration.readCredential(_credentials);
       } on AdeleCredentialFailure catch (failure) {
         fail(_credentialFailure(failure.kind));
         return;

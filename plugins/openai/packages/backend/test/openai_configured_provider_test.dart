@@ -22,6 +22,11 @@ void main() {
           'dev.adele.openai.api-key.work',
           'dev.adele.openai.api-key.${'x' * 64}',
         ]);
+        expect(configurations.map((value) => value.catalogProviderId.value), [
+          'dev.adele.openai.model-catalog.personal',
+          'dev.adele.openai.model-catalog.work',
+          'dev.adele.openai.model-catalog.${'x' * 64}',
+        ]);
         expect(configurations.map((value) => value.configurationContext), [
           'api-key-record:personal',
           'api-key-record:work',
@@ -34,6 +39,8 @@ void main() {
           }),
         ]).single;
         expect(renamed.providerId, configurations[1].providerId);
+        expect(renamed.catalogProviderId, configurations[1].catalogProviderId);
+        expect(renamed.catalogProviderId, isNot(renamed.providerId));
         expect(
           renamed.configurationContext,
           configurations[1].configurationContext,

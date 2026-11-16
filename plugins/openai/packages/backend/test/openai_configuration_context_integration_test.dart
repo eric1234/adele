@@ -7,6 +7,7 @@ import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_contract/adele_contract.dart';
+import 'package:adele_model_provider/adele_model_catalog.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:adele_plugin_backend_support/adele_backend_credentials.dart';
 import 'package:openai_model_provider_backend/openai_model_provider_backend.dart';
@@ -171,9 +172,19 @@ void main() {
         [openAiApiKeyProviderId],
       );
       expect(
-        apiOnlyConnection.capabilityExposures.single.configurationContext,
-        'default',
+        apiOnlyConnection.capabilityExposures.map((entry) => entry.toMap()),
+        [
+          AdeleCapabilityExposure(
+            providerId: openAiApiKeyProviderId,
+            capabilityId: 'dev.adele.model.provider',
+            capabilityMajorVersion: 1,
+            serviceId: 'modelProvider',
+            displayName: 'OpenAI API Key',
+            configurationContext: 'default',
+          ).toMap(),
+        ],
       );
+      expect(apiOnlyRegistry.providersFor(modelCatalogCapability), isEmpty);
       final ProviderId unavailableChatGptProvider = ProviderId(
         openAiChatGptProviderId,
       );
@@ -257,6 +268,39 @@ void main() {
             .map((provider) => provider.id.value),
         [openAiApiKeyProviderId, openAiChatGptProviderId],
       );
+      expect(connection.capabilityExposures.map((entry) => entry.toMap()), [
+        AdeleCapabilityExposure(
+          providerId: openAiApiKeyProviderId,
+          capabilityId: 'dev.adele.model.provider',
+          capabilityMajorVersion: 1,
+          serviceId: 'modelProvider',
+          displayName: 'OpenAI API Key',
+          configurationContext: 'default',
+        ).toMap(),
+        AdeleCapabilityExposure(
+          providerId: openAiChatGptProviderId,
+          capabilityId: 'dev.adele.model.provider',
+          capabilityMajorVersion: 1,
+          serviceId: 'modelProvider',
+          displayName: 'Experimental ChatGPT',
+          configurationContext: openAiChatGptConfigurationContext,
+        ).toMap(),
+      ]);
+      expect(registry.providersFor(modelCatalogCapability), isEmpty);
+      for (final context in [apiKeyContext, chatGptContext]) {
+        await expectLater(
+          ModelCatalogServiceClient(
+            connection.channelFor(context, modelCatalogServiceId),
+          ).listModels(),
+          throwsA(
+            isA<PluginRemoteFailure>().having(
+              (error) => error.code,
+              'code',
+              'service_unavailable',
+            ),
+          ),
+        );
+      }
 
       final List<ModelProviderEvent> apiKeyEvents = await _client(
         registry,
@@ -351,10 +395,17 @@ void main() {
               .map((provider) => provider.id.value),
           [openAiChatGptProviderId],
         );
-        expect(
-          chatOnly.capabilityExposures.single.configurationContext,
-          openAiChatGptConfigurationContext,
-        );
+        expect(chatOnly.capabilityExposures.map((entry) => entry.toMap()), [
+          AdeleCapabilityExposure(
+            providerId: openAiChatGptProviderId,
+            capabilityId: 'dev.adele.model.provider',
+            capabilityMajorVersion: 1,
+            serviceId: 'modelProvider',
+            displayName: 'Experimental ChatGPT',
+            configurationContext: openAiChatGptConfigurationContext,
+          ).toMap(),
+        ]);
+        expect(chatOnlyRegistry.providersFor(modelCatalogCapability), isEmpty);
         await expectLater(
           ModelProviderServiceClient(
             chatOnly.channelFor(
@@ -544,30 +595,8 @@ void main() {
       final connection = fixture.connection;
       final exposures = connection.capabilityExposures;
       expect(
-        exposures
-            .where((entry) => entry.providerId != openAiChatGptProviderId)
-            .map((entry) => entry.toMap()),
-        [
-          for (final (id, name) in [
-            ('personal-openai', 'Personal OpenAI'),
-            ('work-openai', 'Work OpenAI'),
-          ])
-            AdeleCapabilityExposure(
-              providerId: 'dev.adele.openai.api-key.$id',
-              capabilityId: modelProviderCapability.id.value,
-              capabilityMajorVersion: modelProviderCapability.majorVersion,
-              serviceId: modelProviderServiceId,
-              displayName: name,
-              configurationContext: 'api-key-record:$id',
-            ).toMap(),
-        ],
-      );
-      expect(exposures, hasLength(3));
-      expect(
-        exposures
-            .singleWhere((entry) => entry.providerId == openAiChatGptProviderId)
-            .configurationContext,
-        openAiChatGptConfigurationContext,
+        exposures.map((entry) => entry.toMap()),
+        _recordExposures(chatGpt: true),
       );
       expect(fixture.credentials.requests, isEmpty);
       expect(fixture.responses.captured, isEmpty);
@@ -578,6 +607,18 @@ void main() {
         );
         expect(fixture.activation.owns(binding), isTrue);
         expect(fixture.activation.connection, same(connection));
+        final catalog = fixture.registry.resolve(
+          modelCatalogCapability,
+          providerId: ProviderId('dev.adele.openai.model-catalog.$id'),
+        );
+        expect(fixture.activation.owns(catalog), isTrue);
+        expect(
+          fixture.activation
+              .associationFor(catalog)!
+              .isSameRegistration(binding),
+          isTrue,
+        );
+        expect(fixture.activation.associationFor(binding), isNull);
       }
 
       // Neither a stream value nor the other account's model/input selects a key.
@@ -738,10 +779,272 @@ void main() {
   );
 
   test(
+    'AOT catalogs use record routes and fresh snapshots independently of inference',
+    () async {
+      final fixture = await configured(chatGpt: true);
+      final work = fixture.catalog('work-openai');
+      final personal = fixture.catalog('personal-openai');
+      expect(fixture.credentials.requests, isEmpty);
+      expect(fixture.responses.catalogRequests, isEmpty);
+
+      final first = await work.listModels();
+      _expectModels(first, ['work-model', ' Exact Work ID ']);
+      expect(() => first.models.clear(), throwsUnsupportedError);
+      expect(fixture.credentials.requests, [
+        _credentialSelectors('work-openai'),
+      ]);
+      fixture.responses.catalogModels['/work/models'] = [];
+      _expectModels(await work.listModels(), []);
+      _expectModels(first, ['work-model', ' Exact Work ID ']);
+      _expectModels(await personal.listModels(), ['personal-model']);
+      expect(fixture.credentials.requests, [
+        _credentialSelectors('work-openai'),
+        _credentialSelectors('work-openai'),
+        _credentialSelectors('personal-openai'),
+      ]);
+      expect(fixture.responses.catalogRequests, [
+        for (final (path, key) in [
+          ('/work/models', 'test-work-key'),
+          ('/work/models', 'test-work-key'),
+          ('/personal/models', 'test-personal-key'),
+        ])
+          {
+            'method': 'GET',
+            'path': path,
+            'authorization': 'Bearer $key',
+            'accountId': null,
+            'accept': 'application/json',
+            'body': '',
+          },
+      ]);
+      expect(fixture.responses.captured, isEmpty);
+
+      fixture.responses.catalogStatuses['/work/models'] =
+          HttpStatus.unauthorized;
+      await expectLater(
+        work.listModels(),
+        throwsA(
+          isA<ModelCatalogFailure>()
+              .having((error) => error.code, 'code', 'authentication')
+              .having(
+                (error) => error.message,
+                'message',
+                'OpenAI rejected model catalog authentication.',
+              )
+              .having((error) => error.details, 'details', isEmpty),
+        ),
+      );
+      // A rejected discovery request does not disable either inference route.
+      for (final (id, path) in [
+        ('work-openai', '/work/responses'),
+        ('personal-openai', '/personal/responses'),
+      ]) {
+        _expectCompleted(
+          await fixture.client(id).invoke(_request('not-in-catalog')).toList(),
+          path,
+        );
+      }
+      _expectCompleted(
+        await fixture.chatGpt.invoke(_request('not-in-catalog')).toList(),
+        '/chatgpt/responses',
+      );
+
+      fixture.credentials.responses['work-openai'] = {
+        'failure': 'staleConfiguration',
+      };
+      final httpBeforeFailure = fixture.responses.catalogRequests.length;
+      await expectLater(work.listModels(), throwsA(_catalogUnavailable));
+      expect(fixture.responses.catalogRequests, hasLength(httpBeforeFailure));
+      _expectModels(await personal.listModels(), ['personal-model']);
+      expect(
+        fixture.responses.catalogRequests.last['path'],
+        '/personal/models',
+      );
+      final readsBeforeInvalidRoutes = fixture.credentials.requests.length;
+      final httpBeforeInvalidRoutes = fixture.responses.catalogRequests.length;
+      for (final (context, service, code) in [
+        ('default', modelCatalogServiceId, 'configuration_context_unavailable'),
+        (
+          'api-key-record:unknown',
+          modelCatalogServiceId,
+          'configuration_context_unavailable',
+        ),
+        ('api-key-record:work-openai', 'wrong-service', 'service_unavailable'),
+        (
+          openAiChatGptConfigurationContext,
+          modelCatalogServiceId,
+          'service_unavailable',
+        ),
+      ]) {
+        await expectLater(
+          ModelCatalogServiceClient(
+            fixture.connection.channelFor(
+              fixture.connection.configurationContext(context),
+              service,
+            ),
+          ).listModels(),
+          throwsA(
+            isA<PluginRemoteFailure>().having(
+              (error) => error.code,
+              'code',
+              code,
+            ),
+          ),
+        );
+      }
+      expect(fixture.credentials.requests, hasLength(readsBeforeInvalidRoutes));
+      expect(
+        fixture.responses.catalogRequests,
+        hasLength(httpBeforeInvalidRoutes),
+      );
+      fixture.expectRedacted(fixture.responses.bodies);
+      fixture.expectRedacted(fixture.diagnostics);
+    },
+  );
+
+  test(
+    'AOT catalog retirement closes HTTP and fences pending credentials before restart',
+    () async {
+      final fixture = await configured();
+      final connection = fixture.connection;
+      final activation = fixture.activation;
+      final workBinding = fixture.registry.resolve(
+        modelCatalogCapability,
+        providerId: ProviderId('dev.adele.openai.model-catalog.work-openai'),
+      );
+      final work = fixture.catalog('work-openai');
+      final personal = fixture.catalog('personal-openai');
+      final context = connection.configurationContext(
+        'api-key-record:work-openai',
+      );
+      final credentials = _CredentialGate();
+      fixture.credentials.gates['work-openai'] = credentials;
+      final http = fixture.responses.holdCatalog('/personal/models');
+      final retired = throwsA(
+        anyOf(
+          _catalogUnavailable,
+          isA<PluginConnectionClosed>().having(
+            (error) => error.message,
+            'message',
+            'Plugin $openAiPluginId was stopped.',
+          ),
+        ),
+      );
+      final pendingCredentials = expectLater(work.listModels(), retired);
+      await credentials.entered.future;
+      final pendingHttp = expectLater(personal.listModels(), retired);
+      await http.entered.future;
+
+      // Separate services remain usable while both discovery routes are pending.
+      for (final (id, path) in [
+        ('work-openai', '/work/responses'),
+        ('personal-openai', '/personal/responses'),
+      ]) {
+        _expectCompleted(
+          await fixture
+              .client(id)
+              .invoke(_request('while-catalog-pending'))
+              .toList(),
+          path,
+        );
+      }
+      expect(
+        fixture.responses.catalogRequests.map((request) => request['path']),
+        ['/personal/models'],
+      );
+      await connection.close().timeout(const Duration(seconds: 5));
+      await Future.wait([
+        pendingCredentials,
+        pendingHttp,
+        http.closed.future,
+      ]).timeout(const Duration(seconds: 5));
+      // Shutdown completes without waiting for the host's underlying read.
+      expect(credentials.release.isCompleted, isFalse);
+      await activation.close();
+      expect(fixture.registry.providersFor(modelCatalogCapability), isEmpty);
+      expect(fixture.registry.providersFor(modelProviderCapability), isEmpty);
+      expect(
+        () => activation.associationFor(workBinding),
+        throwsA(isA<ProviderUnavailable>()),
+      );
+      credentials.release.complete();
+      await credentials.returned.future;
+
+      fixture.records.first['values'] = {
+        'display-name': 'Renamed Work',
+        'endpoint': '${fixture.responses.origin}/work-new/responses',
+      };
+      fixture.credentials.responses['work-openai'] = {
+        'secret': 'test-replacement-key',
+      };
+      fixture.responses.catalogModels['/work-new/models'] = [
+        'replacement-model',
+      ];
+      final readsBeforeRestart = fixture.credentials.requests.length;
+      await fixture.startGeneration();
+      expect(fixture.credentials.requests, hasLength(readsBeforeRestart));
+      expect(
+        fixture.connection.capabilityExposures.map((entry) => entry.toMap()),
+        _recordExposures(workName: 'Renamed Work'),
+      );
+      expect(
+        () => fixture.connection.channelFor(context, modelCatalogServiceId),
+        throwsArgumentError,
+      );
+      await expectLater(
+        work.listModels(),
+        throwsA(isA<PluginConnectionClosed>()),
+      );
+      await expectLater(
+        personal.listModels(),
+        throwsA(isA<PluginConnectionClosed>()),
+      );
+      _expectModels(await fixture.catalog('work-openai').listModels(), [
+        'replacement-model',
+      ]);
+      final replacement = fixture.registry.resolve(
+        modelCatalogCapability,
+        providerId: workBinding.provider.id,
+      );
+      expect(replacement.isSameRegistration(workBinding), isFalse);
+      expect(
+        fixture.activation
+            .associationFor(replacement)!
+            .isSameRegistration(
+              fixture.registry.resolve(
+                modelProviderCapability,
+                providerId: ProviderId('dev.adele.openai.api-key.work-openai'),
+              ),
+            ),
+        isTrue,
+      );
+      expect(
+        fixture.responses.catalogRequests.map((request) => request['path']),
+        ['/personal/models', '/work-new/models'],
+      );
+      expect(
+        fixture.responses.catalogRequests.last['authorization'],
+        'Bearer test-replacement-key',
+      );
+      _expectCompleted(
+        await fixture
+            .client('work-openai')
+            .invoke(_request('after-restart'))
+            .toList(),
+        '/work-new/responses',
+      );
+      fixture.expectRedacted(fixture.diagnostics);
+    },
+  );
+
+  test(
     'AOT configured streams cancel pending reads and SSE independently, pause, and retire',
     () async {
       final fixture = await configured();
-      expect(fixture.connection.capabilityExposures, hasLength(2));
+      expect(
+        fixture.connection.capabilityExposures.map((entry) => entry.toMap()),
+        _recordExposures(),
+      );
       expect(fixture.credentials.requests, isEmpty);
 
       final pending = _CredentialGate();
@@ -957,15 +1260,8 @@ void main() {
       expect(fixture.credentials.requests, hasLength(readsBeforeRestart));
       expect(fixture.connection, isNot(same(retiredConnection)));
       expect(
-        fixture.connection.capabilityExposures.map((entry) => entry.providerId),
-        [
-          'dev.adele.openai.api-key.personal-openai',
-          'dev.adele.openai.api-key.work-openai',
-        ],
-      );
-      expect(
-        fixture.connection.capabilityExposures.last.displayName,
-        'Renamed Work',
+        fixture.connection.capabilityExposures.map((entry) => entry.toMap()),
+        _recordExposures(workName: 'Renamed Work'),
       );
       expect(
         () => fixture.connection.channelFor(
@@ -1003,6 +1299,47 @@ void main() {
     timeout: const Timeout(Duration(minutes: 2)),
   );
 }
+
+List<Map<String, Object?>> _recordExposures({
+  bool chatGpt = false,
+  String workName = 'Work OpenAI',
+}) => [
+  if (chatGpt)
+    AdeleCapabilityExposure(
+      providerId: openAiChatGptProviderId,
+      capabilityId: 'dev.adele.model.provider',
+      capabilityMajorVersion: 1,
+      serviceId: 'modelProvider',
+      displayName: 'Experimental ChatGPT',
+      configurationContext: openAiChatGptConfigurationContext,
+    ).toMap(),
+  for (final (id, name) in [
+    ('personal-openai', 'Personal OpenAI'),
+    ('work-openai', workName),
+  ]) ...[
+    AdeleCapabilityExposure(
+      providerId: 'dev.adele.openai.api-key.$id',
+      capabilityId: 'dev.adele.model.provider',
+      capabilityMajorVersion: 1,
+      serviceId: 'modelProvider',
+      displayName: name,
+      configurationContext: 'api-key-record:$id',
+    ).toMap(),
+    AdeleCapabilityExposure(
+      providerId: 'dev.adele.openai.model-catalog.$id',
+      capabilityId: 'dev.adele.model.catalog',
+      capabilityMajorVersion: 1,
+      serviceId: 'modelCatalog',
+      displayName: name,
+      configurationContext: 'api-key-record:$id',
+      association: AdeleProviderAssociation(
+        capabilityId: 'dev.adele.model.provider',
+        capabilityMajorVersion: 1,
+        providerId: 'dev.adele.openai.api-key.$id',
+      ),
+    ).toMap(),
+  ],
+];
 
 ProviderDescriptor _descriptor(ProviderId id) => ProviderDescriptor(
   id: id,
@@ -1117,6 +1454,24 @@ void _expectCompleted(List<ModelProviderEvent> events, String text) {
   expect(events.last.terminal?.settlement, ModelProviderSettlement.completed);
   expect(events.last.terminal?.failure, isNull);
 }
+
+void _expectModels(ModelCatalogSnapshot snapshot, List<String> ids) {
+  expect(
+    snapshot.models.map(
+      (model) => (model.modelId, model.displayName, model.description),
+    ),
+    [for (final id in ids) (id, null, null)],
+  );
+}
+
+final _catalogUnavailable = isA<ModelCatalogFailure>()
+    .having((error) => error.code, 'code', 'unavailable')
+    .having(
+      (error) => error.message,
+      'message',
+      'The configured OpenAI model catalog is unavailable.',
+    )
+    .having((error) => error.details, 'details', isEmpty);
 
 Map<String, Object?> _credentialSelectors(String id) => {
   'collection': 'providers',
@@ -1249,6 +1604,15 @@ final class _ConfiguredFixture {
   ModelProviderServiceClient client(String id) =>
       _client(registry, ProviderId('dev.adele.openai.api-key.$id'));
 
+  ModelCatalogServiceClient catalog(String id) => ModelCatalogServiceClient(
+    registry
+        .resolve(
+          modelCatalogCapability,
+          providerId: ProviderId('dev.adele.openai.model-catalog.$id'),
+        )
+        .requestChannel,
+  );
+
   ModelProviderServiceClient get chatGpt =>
       _client(registry, ProviderId(openAiChatGptProviderId));
 
@@ -1335,6 +1699,13 @@ final class _ControlledResponses {
   final HttpServer server;
   final captured = <_CapturedRequest>[];
   final bodies = <Map<String, Object?>>[];
+  final catalogRequests = <Map<String, Object?>>[];
+  final catalogModels = <String, List<String>>{
+    '/work/models': ['work-model', ' Exact Work ID '],
+    '/personal/models': ['personal-model'],
+  };
+  final catalogStatuses = <String, int>{};
+  final _catalogGates = <String, _CatalogGate>{};
   final _gates = <String, _SseGate>{};
   late StreamSubscription<HttpRequest> _subscription;
 
@@ -1352,7 +1723,49 @@ final class _ControlledResponses {
 
   _SseGate hold(String model) => _gates[model] = _SseGate(model);
 
+  _CatalogGate holdCatalog(String path) => _catalogGates[path] = _CatalogGate();
+
   Future<void> _respond(HttpRequest request) async {
+    if (request.uri.path.endsWith('/models')) {
+      catalogRequests.add({
+        'method': request.method,
+        'path': request.uri.path,
+        'authorization': request.headers.value(HttpHeaders.authorizationHeader),
+        'accountId': request.headers.value('ChatGPT-Account-ID'),
+        'accept': request.headers.value(HttpHeaders.acceptHeader),
+        'body': await utf8.decoder.bind(request).join(),
+      });
+      final gate = _catalogGates[request.uri.path];
+      if (gate != null) {
+        await gate.attach(request);
+        return;
+      }
+      final status = catalogStatuses[request.uri.path] ?? HttpStatus.ok;
+      request.response.statusCode = status;
+      request.response.headers.contentType = ContentType.json;
+      request.response.write(
+        jsonEncode(
+          status == HttpStatus.ok
+              ? {
+                  'object': 'list',
+                  'data': [
+                    for (final id in catalogModels[request.uri.path]!)
+                      {
+                        'object': 'model',
+                        'id': id,
+                        'owned_by': 'not-display-metadata',
+                      },
+                  ],
+                }
+              : {
+                  'error':
+                      '${request.headers.value(HttpHeaders.authorizationHeader)} $origin',
+                },
+        ),
+      );
+      await request.response.close();
+      return;
+    }
     final body =
         jsonDecode(await utf8.decoder.bind(request).join())!
             as Map<String, Object?>;
@@ -1386,11 +1799,42 @@ final class _ControlledResponses {
   }
 
   Future<void> close() async {
+    for (final gate in _catalogGates.values) {
+      gate.socket?.destroy();
+    }
     for (final gate in _gates.values) {
       gate.socket?.destroy();
     }
     await _subscription.cancel();
     await server.close(force: true);
+  }
+}
+
+final class _CatalogGate {
+  final entered = Completer<void>();
+  final closed = Completer<void>();
+  Socket? socket;
+
+  Future<void> attach(HttpRequest request) async {
+    final connection = socket = await request.response.detachSocket(
+      writeHeaders: false,
+    );
+    void finish() {
+      if (!closed.isCompleted) closed.complete();
+    }
+
+    connection.listen((_) {}, onDone: finish, onError: (Object _) => finish());
+    connection.add(
+      utf8.encode(
+        'HTTP/1.1 200 OK\r\n'
+        'Content-Type: application/json\r\n'
+        'Content-Length: 1024\r\n'
+        'Connection: close\r\n\r\n'
+        '{"object":"list","data":[',
+      ),
+    );
+    await connection.flush();
+    entered.complete();
   }
 }
 
