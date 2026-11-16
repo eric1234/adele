@@ -2465,6 +2465,17 @@ void main() {
               anyOf(isA<StaleExtensionBinding>(), isA<CommandUnavailable>()),
             ),
           );
+          if (retirement != 'backend') {
+            // Local Command retirement starts cancellation, but its settlement
+            // is not backend receipt. Order that receipt through the same
+            // transport before releasing the independent TCP write gate.
+            await tester.runAsync(
+              () => readSessionEvidence(
+                _client(_connection(fresh.plugins, _evaluatorPlugin)),
+                session.id.value,
+              ),
+            );
+          }
           await tester.runAsync(() => gate.release());
           await finish(tester, retired: true);
           await tester.runAsync(

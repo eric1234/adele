@@ -1,4 +1,58 @@
+import 'dart:async';
 import 'dart:collection';
+
+import 'package:adele_model_tool/adele_model_tool.dart';
+import 'package:adele_plugin_api/adele_plugin_api.dart';
+import 'package:adele_product/adele_product.dart';
+
+import 'run.dart';
+
+/// Independent, zero-or-many authorization participants, not selected providers.
+final ExtensionPoint<ToolAuthorizationPolicyContribution>
+toolAuthorizationPolicies = ExtensionPoint<ToolAuthorizationPolicyContribution>(
+  'dev.adele.extension.tool-authorization-policies',
+);
+
+/// An immutable opinion, not an approval token or execution authority.
+enum ToolAuthorizationDecision { allow, deny, ask, abstain }
+
+/// Data for one normalized invocation after effect preflight.
+///
+/// The host supplies canonical Run/Session identity and validates the Session's
+/// Project association through the product graph. IDs grant no host access.
+final class ToolAuthorizationRequest {
+  ToolAuthorizationRequest({
+    required this.toolId,
+    required Map<String, Object?> canonicalArguments,
+    required this.effects,
+    required this.runId,
+    required this.sessionId,
+    required this.projectId,
+    required this.toolInvocationId,
+  }) : canonicalArguments = _freezeMap(canonicalArguments);
+
+  final ToolId toolId;
+  final Map<String, Object?> canonicalArguments;
+  final EffectDescription effects;
+  final RunId runId;
+  final SessionId sessionId;
+  final ProjectId projectId;
+  final ToolInvocationId toolInvocationId;
+}
+
+final class ToolAuthorizationPolicyContribution {
+  const ToolAuthorizationPolicyContribution({required this.evaluate});
+
+  /// Evaluates without executing the proposed tool. Throwing (including a failed
+  /// Future) is an evaluation failure, never Deny or Abstain.
+  ///
+  /// The host captures registrations per request, evaluates sequentially by
+  /// Extension ID, and validates exact bindings through completion. Deny wins
+  /// over Ask, then Allow; Abstain has no effect and zero policies yields Allow.
+  /// Completed decisions are not re-evaluated on approval resume.
+  final FutureOr<ToolAuthorizationDecision> Function(ToolAuthorizationRequest)
+  evaluate;
+}
 
 final class ProviderToolProposal {
   ProviderToolProposal({

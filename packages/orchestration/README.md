@@ -1,7 +1,7 @@
 # ADELE Orchestration
 
 `adele_orchestration` is the experimental public provider-neutral registration,
-binding, execution, read-only activity, and inference-context boundary for
+binding, execution, tool authorization, read-only activity, and inference-context boundary for
 orchestration. It is pure Dart and depends only on public `adele_contract`,
 `adele_product`, `adele_plugin_api`, and
 `adele_model_tool`. Its API is not stable. Neither this package nor its stock
@@ -39,6 +39,33 @@ getter reads `binding.value`, and `validateBinding()` calls `binding.validate()`
 Retiring the registration makes both operations throw the generic
 `StaleExtensionBinding` without wrapping it. A fresh resolution is needed after
 replacement; old bindings never silently retarget the new contribution.
+
+## Tool Authorization
+
+The public barrel exports `toolAuthorizationPolicies`, a typed
+`ExtensionPoint<ToolAuthorizationPolicyContribution>` with identity
+`dev.adele.extension.tool-authorization-policies`. Register independent evaluators
+with the existing `ExtensionRegistry`; zero or many registrations are valid.
+`evaluate` returns `FutureOr<ToolAuthorizationDecision>` with `allow`, `deny`,
+`ask`, or `abstain` (not applicable). Exceptions are failures, not decisions.
+
+`ToolAuthorizationRequest` contains `toolId`, deeply immutable
+`canonicalArguments`, the existing `EffectDescription` as `effects`, and typed
+`runId`, `sessionId`, `projectId`, and `toolInvocationId`. Application composition
+validates canonical Run/Session identity and derives the Project association from
+the product graph. These IDs and data do not convey execution or host access.
+There are no kernel objects, executable tools, Flutter types, service grants,
+transport DTOs, or permission/classifier taxonomy in this contract.
+
+The app-private `ToolAuthorizationPolicyComposer` adapts contributions to internal
+`ToolPolicy`; aggregation and binding lifetimes are defined in
+[authorization composition](../../docs/architecture/execution-model.md#authorization-composition).
+The normal Session path explicitly combines registry contributions with the
+temporary legacy `ApprovalGatedToolPolicy`. Remote policy hosting and policy
+configuration are not implemented by this native/in-process foundation.
+
+`test/tool_authorization_test.dart` covers the public contract; application composer
+and Session execution tests cover precedence, lifecycle, and real tool decisions.
 
 ## Session Feedback
 

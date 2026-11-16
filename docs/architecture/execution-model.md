@@ -323,6 +323,47 @@ user approval. Approval binds the invocation, canonical arguments, effects, and
 executable, not merely the tool name. It does not override binding or domain
 preconditions such as revision checks.
 
+### Authorization composition
+
+Public `adele_orchestration` owns the zero-or-many
+`dev.adele.extension.tool-authorization-policies` extension point. Each independent
+contribution evaluates immutable semantic Tool ID, normalized arguments, the
+existing invocation-specific effects, and canonical Run/Session/invocation IDs.
+The application validates the canonical Session and derives its Project ID through
+the existing Session-to-Task-to-Project graph. The request carries data, not kernel
+objects, executable tools, Environment access, or host-service authority.
+
+The host captures current registrations for each new authorization request and
+evaluates them sequentially in lexical Extension ID order. Deny takes precedence
+over Ask, then Allow; Abstain has no effect. The composer alone returns Allow for
+zero contributions or all Abstain. Every captured participant is evaluated even
+after Deny, so infrastructure failure cannot be hidden as an ordinary denial.
+Discovery/evaluation failures and stale registrations propagate through the
+existing policy-failure outcome, with effects known not to have occurred, rather
+than becoming Deny, Abstain, or permission to execute.
+
+Each captured registration is validated before and after its asynchronous-capable
+evaluation, and the full set is revalidated before composition completes. Retirement
+while any evaluation is unresolved invalidates that capture; a same-ID replacement
+cannot repair it. Registrations added after capture affect only later requests.
+A completed decision is retained for its exact invocation, including through an
+approval wait: it is not rediscovered, re-evaluated, or revoked by subsequent policy
+retirement/replacement. Approval still validates the retained exact executable and
+domain preconditions; a later invocation requires a new authorization request.
+
+Normal `SessionExecutionController` composition explicitly includes the unchanged
+`ApprovalGatedToolPolicy` as a **temporary legacy participant** alongside registry
+contributions. It is not a fallback for missing or failed discovery. Thus no
+contributions preserve current Conservative behavior, contributed Allow cannot
+weaken legacy Ask/Deny, and contributed Ask/Deny can further restrict operations.
+The internal `ToolPolicy` accepts synchronous or asynchronous results;
+`ToolPolicyGate` still owns effect preflight and Allow/Deny/Ask conversion into
+execution eligibility, denial, or the existing approval interruption.
+
+This foundation supports native/in-process contributions only. Remote/AOT policy
+transport, stock policy migration/installation, and policy configuration remain
+deferred; no YOLO mode is enabled.
+
 Denied or rejected work must not acquire execution authority. Remote tool
 materialization, argument validation, and description receive no effectful
 host-service authority; the authorized execute operation receives only its needed
@@ -458,6 +499,7 @@ Capture lifetimes differ:
 | Tool | Each model snapshot retains exact executable objects from its catalog. Proposal validation, approval resume, and execution use those retained bindings/dependencies, never replacement lookup. Normal catalog capture is Run-scoped as described above. |
 | Environment facets | A tool host context lazily captures coherent facets from one Session-authorized materialization. A fresh inference source context has its own lazy read-facet capture shared by that inference's sources. Neither context refreshes already captured facets; fresh contexts can obtain a restored provider generation. |
 | Context material | Source binding is required through safe capture, not for the lifetime of the resulting immutable request data. |
+| Tool authorization | Fresh exact registrations per authorization request, live through completed composition. Completed decisions survive policy retirement and approval waits without reevaluation; tool bindings remain independently required for execution. |
 
 Retirement is detected at relevant boundaries; it does not universally cause an
 immediate Run-state transition, erase terminal evidence, or undo in-flight effects.

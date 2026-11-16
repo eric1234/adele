@@ -128,7 +128,7 @@ final class ToolPolicyGate {
     }
     final ToolPolicyDecision decision;
     try {
-      decision = policy.evaluate(
+      decision = await policy.evaluate(
         ToolPolicyInput(
           invocation: invocation,
           effects: effects,

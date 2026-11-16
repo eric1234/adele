@@ -26,7 +26,7 @@ export 'package:adele_model_tool/adele_model_tool.dart'
         ToolProgress,
         ToolProgressKind;
 export 'package:adele_product/adele_product.dart'
-    show OrchestrationStrategyId, RunId, SessionId, Session;
+    show OrchestrationStrategyId, ProjectId, RunId, SessionId, Session;
 
 export 'session_feedback.dart';
 export 'src/activity.dart';
