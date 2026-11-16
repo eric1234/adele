@@ -193,7 +193,7 @@ void main() {
   }
 
   test('independent AOT catalog consumer keeps exact accounts and fresh models '
-      'without changing inference', () async {
+      'with explicit and omitted inference effort', () async {
     final fixture = await prepareProviders(chatGpt: true, consumeCatalog: true);
     await fixture.start();
     final connection = fixture.connection;
@@ -218,8 +218,14 @@ void main() {
     expect(fixture.storage.calls, isEmpty);
     expect(fixture.requests, isEmpty);
 
-    _expectCompleted(await fixture.invoke('work').toList(), '/work/responses');
+    _expectCompleted(
+      await fixture.invoke('work', model: 'gpt-5.4').toList(),
+      '/work/responses',
+    );
     final inferenceBefore = fixture.requests.single;
+    expect(inferenceBefore['authorization'], 'Bearer test-work-key');
+    expect((inferenceBefore['body']! as Map)['model'], 'gpt-5.4');
+    expect((inferenceBefore['body']! as Map)['reasoning'], {'summary': 'auto'});
     expect(await fixture.listModels('work'), _catalogSnapshot(['work-model']));
     expect(fixture.storage.readReferences, [
       fixture.reference('work'),
@@ -270,8 +276,45 @@ void main() {
       catalogRequests.first['authority'],
       isNot(catalogRequests[1]['authority']),
     );
-    _expectCompleted(await fixture.invoke('work').toList(), '/work/responses');
+    _expectCompleted(
+      await fixture
+          .invoke(
+            'work',
+            model: 'gpt-5.4',
+            reasoningEffort: ModelReasoningEffort.high,
+          )
+          .toList(),
+      '/work/responses',
+    );
+    expect(fixture.requests.last, {
+      ...inferenceBefore,
+      'body': {
+        ...inferenceBefore['body']! as Map,
+        'reasoning': {'summary': 'auto', 'effort': 'high'},
+      },
+    });
+    expect(fixture.storage.readReferences.last, fixture.reference('work'));
+    _expectCompleted(
+      await fixture.invoke('work', model: 'gpt-5.4').toList(),
+      '/work/responses',
+    );
     expect(fixture.requests.last, inferenceBefore);
+    _expectCompleted(
+      await fixture
+          .invoke('personal', reasoningEffort: ModelReasoningEffort.none)
+          .toList(),
+      '/personal/responses',
+    );
+    expect(fixture.requests.last['authorization'], 'Bearer test-personal-key');
+    expect((fixture.requests.last['body']! as Map)['model'], 'same-model');
+    expect((fixture.requests.last['body']! as Map)['reasoning'], {
+      'effort': 'none',
+    });
+    expect(fixture.storage.readReferences.last, fixture.reference('personal'));
+    expect(
+      await fixture.listModels('personal'),
+      _catalogSnapshot(['personal-model']),
+    );
     _expectCompleted(
       await fixture.invokeChatGpt().toList(),
       '/chatgpt/responses',
@@ -1534,8 +1577,13 @@ final class _ProviderFixture {
         .streamChannel,
   );
 
-  Stream<ModelProviderEvent> invoke(String id, {String model = 'same-model'}) =>
-      client(id).invoke(_providerRequest(model));
+  Stream<ModelProviderEvent> invoke(
+    String id, {
+    String model = 'same-model',
+    ModelReasoningEffort? reasoningEffort,
+  }) => client(
+    id,
+  ).invoke(_providerRequest(model, reasoningEffort: reasoningEffort));
 
   Stream<ModelProviderEvent> invokeChatGpt() => ModelProviderServiceClient(
     registry
@@ -1645,8 +1693,12 @@ void _expectCatalogAssociations(
   }
 }
 
-ModelProviderRequest _providerRequest(String model) => ModelProviderRequest(
+ModelProviderRequest _providerRequest(
+  String model, {
+  ModelReasoningEffort? reasoningEffort,
+}) => ModelProviderRequest(
   model: model,
+  reasoningEffort: reasoningEffort,
   instructions: 'Use only the exact capability binding.',
   input: [
     ModelProviderInput(

@@ -709,6 +709,7 @@ ModelProviderRequest _request() => ModelProviderRequest(
   tools: const [],
   toolChoice: ModelProviderToolChoice.auto,
   maxOutputTokens: null,
+  reasoningEffort: null,
   providerOptions: const {},
   nativeState: null,
   affinity: null,

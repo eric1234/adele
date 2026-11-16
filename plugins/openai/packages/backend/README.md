@@ -335,6 +335,45 @@ optional fields; the backend does not make them required or replace absence with
 `null`. Tool argument validation remains authoritative in the tool implementation,
 not in provider schema rewriting or model adherence to the schema.
 
+## Reasoning Effort Requests
+
+Both API-key and experimental ChatGPT profiles lower explicit
+`ModelProviderRequest.reasoningEffort` through the same Responses request path to
+`reasoning.effort`, using the exact strings `none`, `minimal`, `low`, `medium`,
+`high`, `xhigh`, and `max`. Null omits the effort key and leaves the provider's
+model-dependent default intact; it is not an alias for explicit `none`.
+Effort is independent of the exact-model summary policy below: an explicit value
+combines with `summary: 'auto'` only for that existing set, and otherwise sends
+an effort-only reasoning object. Null with an unlisted model omits `reasoning`
+entirely, not an empty object.
+
+The current public [Responses create reference](https://developers.openai.com/api/reference/resources/responses/methods/create)
+and [reasoning guide](https://developers.openai.com/api/docs/guides/reasoning#reasoning-effort)
+document these wire values and model-dependent support/defaults. ADELE does not
+infer effort compatibility from model IDs, prefixes, the summary set, or catalog
+membership. It forwards an explicit choice unchanged, including `none`, and lets
+the selected endpoint reject unsupported combinations. HTTP 400 retains the
+existing failed `invalidRequest` terminal; no downgrade, option removal, model
+substitution, or retry follows that rejection. Nonempty `providerOptions` remain
+unsupported, and the ChatGPT profile still rejects an explicit output-token cap.
+
+ChatGPT effort support is based on first-party interoperability evidence, not an
+assumption that the public API documents the subscription endpoint. At Codex
+commit `7f01a84effccef40d4726c3ca12e6c839ec98d7a`,
+[`Reasoning` and `ResponsesApiRequest`](https://github.com/openai/codex/blob/7f01a84effccef40d4726c3ca12e6c839ec98d7a/codex-rs/codex-api/src/common.rs)
+carry optional effort alongside summary;
+[`ReasoningEffort`](https://github.com/openai/codex/blob/7f01a84effccef40d4726c3ca12e6c839ec98d7a/codex-rs/protocol/src/openai_models.rs)
+serializes all seven exact strings. The shared
+[`build_reasoning`, `build_responses_request`, and `stream_responses_api`](https://github.com/openai/codex/blob/7f01a84effccef40d4726c3ca12e6c839ec98d7a/codex-rs/core/src/client.rs)
+path carries effort into classic HTTP Responses with ChatGPT authentication, and
+the [client tests](https://github.com/openai/codex/blob/7f01a84effccef40d4726c3ca12e6c839ec98d7a/codex-rs/core/tests/suite/client.rs)
+cover the ChatGPT HTTP route (`chatgpt_auth_sends_correct_request`) and explicit
+`max` serialization (`includes_configured_max_effort_in_request`). This supports
+using ADELE's existing shared lowering rather than rejecting all explicit effort
+for ChatGPT. It does not establish every account/model/effort combination, a stable
+third-party contract, or live-provider acceptance. ADELE does not copy Codex's
+default selection, effort normalization, Responses Lite, or workflow policies.
+
 ## Reasoning Summary Requests
 
 The backend requests provider-supplied reasoning summaries with
@@ -351,8 +390,8 @@ The backend requests provider-supplied reasoning summaries with
 This guard applies to both existing request profiles. Other IDs, including
 unlisted aliases or snapshots, retain the prior request policy without the
 `reasoning.summary` field. It is not a prefix rule, a complete model catalog, an
-assertion that every model supports summaries, or a new provider-neutral model
-option. It changes neither reasoning effort nor context policy. There is no
+assertion that every model supports summaries, or an effort-support allowlist.
+Summary opt-in changes neither reasoning effort nor context policy. There is no
 automatic retry that removes the option after a provider error.
 
 The request choice is based on OpenAI's current
@@ -581,8 +620,9 @@ real Secret Service tests.
 
 Backend tests in `test/openai_native_presentation_test.dart` and
 `test/openai_model_provider_backend_test.dart` cover raw classification,
-projection, processing bounds, preservation, guarded summary request lowering in
-both profiles, unchanged requests for unlisted models,
+projection, processing bounds, preservation, all seven explicit effort values and
+null across both profiles and summary/non-summary models, exact request bodies and
+auth headers, rejected options, HTTP 400 without retries, guarded summary lowering,
 ordered native/encrypted replay, safe projection, malformed/unsupported/empty
 summaries, and compact/full display bounds. The separate app
 `test/core/normal_chatgpt_run_integration_test.dart` uses real host/Git/OpenAI

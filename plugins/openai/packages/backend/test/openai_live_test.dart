@@ -41,6 +41,7 @@ void main() {
               tools: const <ModelProviderTool>[],
               toolChoice: ModelProviderToolChoice.none,
               maxOutputTokens: 64,
+              reasoningEffort: null,
               providerOptions: const <String, Object?>{},
               nativeState: null,
               affinity: null,

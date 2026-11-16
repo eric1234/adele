@@ -256,6 +256,7 @@ ModelProviderRequest _request() => ModelProviderRequest(
   tools: const <ModelProviderTool>[],
   toolChoice: ModelProviderToolChoice.none,
   maxOutputTokens: null,
+  reasoningEffort: null,
   providerOptions: const <String, Object?>{},
   nativeState: null,
   affinity: null,
