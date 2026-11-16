@@ -1945,7 +1945,17 @@ instruction sources. The retained strategy selection passes into
 `createSessionOrchestrationRun`. Detailed capture/continuation semantics belong to
 the [execution model](../docs/architecture/execution-model.md) and [Chat README](../plugins/chat_strategy/README.md).
 
-Current `ApprovalGatedToolPolicy` allows a single certain source-read or read-only
+`SessionExecutionController` supplies the app-private
+[`ToolAuthorizationPolicyComposer`](lib/core/tool_authorization_policy_composer.dart)
+to the existing host/kernel policy gate. It discovers public orchestration
+authorization contributions per request and explicitly combines them with
+`ApprovalGatedToolPolicy` as a temporary legacy participant, not a discovery
+fallback. No concrete policy plugin is imported. Precedence, failure, and capture
+lifetimes belong to [authorization composition](../docs/architecture/execution-model.md#authorization-composition);
+remote policy hosting, policy configuration, and stock-policy migration remain
+deferred.
+
+The unchanged legacy `ApprovalGatedToolPolicy` allows a single certain source-read or read-only
 resource-inspection effect, asks for a single certain source-mutation effect or
 a single process-execution effect,
 and denies other combinations. Approvals are host-owned exact-invocation

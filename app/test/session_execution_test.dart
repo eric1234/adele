@@ -13,6 +13,7 @@ import 'package:adele_desktop/frontend/prepared_session_services.dart';
 import 'package:adele_desktop/frontend/session_execution_bridge.dart';
 import 'package:adele_desktop/frontend/session_execution_source.dart';
 import 'package:adele_desktop/frontend/structured_bridge_data.dart';
+import 'package:adele_desktop/ui/execution/pending_tool_approval.dart';
 import 'package:adele_desktop/ui/execution/run_execution_status.dart';
 import 'package:adele_desktop/ui/execution/session_execution_controller.dart';
 import 'package:adele_desktop/ui/execution/session_execution_owners.dart';
@@ -1566,6 +1567,550 @@ Future<Object?> snapshot() => requestOwningBackend('probe', 'snapshot', <String,
     },
   );
 
+  group('public tool authorization', () {
+    ExtensionRegistration registerPolicy(
+      String name,
+      FutureOr<ToolAuthorizationDecision> Function(ToolAuthorizationRequest)
+      evaluate,
+    ) {
+      final registration = fixture.runtime.extensions.register(
+        point: toolAuthorizationPolicies,
+        id: ExtensionId('dev.adele.test.authorization.$name'),
+        value: ToolAuthorizationPolicyContribution(evaluate: evaluate),
+      );
+      addTearDown(registration.close);
+      return registration;
+    }
+
+    for (final decision in [
+      ToolAuthorizationDecision.allow,
+      ToolAuthorizationDecision.abstain,
+    ]) {
+      for (final denied in [false, true]) {
+        test(
+          '${decision.name} cannot weaken legacy ${denied ? 'deny' : 'ask'}',
+          () async {
+            if (denied) fixture.tool.uncertainty = EffectUncertainty.uncertain;
+            var evaluations = 0;
+            registerPolicy('opinion', (_) {
+              evaluations++;
+              return decision;
+            });
+            final controller = fixture.controller();
+            await controller.startRun();
+            var advancing = controller.activeRunFuture!;
+            final call = await fixture.model.callAt(0);
+            call.propose('legacy');
+            call.settle();
+            if (!denied) {
+              await advancing;
+              expect(controller.currentRun!.run.state, RunState.waiting);
+              expect(fixture.tool.executions, 0);
+              expect(
+                controller.resolveApproval(
+                  controller.pendingApproval!,
+                  approved: true,
+                ),
+                isTrue,
+              );
+              advancing = controller.activeRunFuture!;
+            }
+            final continuation = await fixture.model.callAt(1);
+            expect(
+              continuation.outcomes.single['status'],
+              denied ? 'rejected' : 'success',
+            );
+            continuation.settle();
+            await advancing;
+            final events = _events(controller.currentRun!.run);
+            expect(
+              events.whereType<ToolPolicyEvaluated>().single.decision,
+              denied ? ToolPolicyDecision.deny : ToolPolicyDecision.ask,
+            );
+            expect(events.whereType<ToolPolicyFailed>(), isEmpty);
+            expect(controller.pendingApproval, isNull);
+            expect(fixture.tool.executions, denied ? 0 : 1);
+            expect(evaluations, 1);
+            expect(controller.failure, isNull);
+          },
+        );
+      }
+    }
+
+    test(
+      'deny restricts real reads and patches without executing either',
+      () async {
+        final filesystem = const FilesystemToolsPlugin().activate(
+          fixture.runtime.extensions,
+        );
+        addTearDown(filesystem.close);
+        final requests = <ToolAuthorizationRequest>[];
+        registerPolicy('deny', (request) {
+          requests.add(request);
+          return ToolAuthorizationDecision.deny;
+        });
+        final controller = fixture.controller();
+        await controller.startRun();
+        final advancing = controller.activeRunFuture!;
+        final call = await fixture.model.callAt(0);
+        call.propose(
+          'read',
+          alias: 'read_file',
+          arguments: {'relativePath': _EnvironmentChannel.sourcePath},
+        );
+        call.propose(
+          'patch',
+          alias: 'apply_patch',
+          arguments: {
+            'relativePath': _EnvironmentChannel.sourcePath,
+            'expectedRevision': fixture.environment.revision,
+            'edits': [
+              {'search': 'before', 'replace': 'after'},
+            ],
+          },
+        );
+        call.settle();
+        final continuation = await fixture.model.callAt(1);
+        expect(
+          continuation.outcomes.map((item) => (item['callId'], item['status'])),
+          [('read', 'rejected'), ('patch', 'rejected')],
+        );
+        continuation.settle();
+        await advancing;
+        expect(requests.map((request) => request.toolId), [
+          ToolId('dev.adele.plugin.filesystem-tools.read-file'),
+          applyPatchToolId,
+        ]);
+        final events = _events(controller.currentRun!.run);
+        expect(events.whereType<RunInterrupted>(), isEmpty);
+        expect(events.whereType<ToolExecutionStarted>(), isEmpty);
+        expect(events.whereType<ToolInvocationCompleted>(), hasLength(2));
+        for (final result in events.whereType<ToolInvocationCompleted>()) {
+          expect(
+            result.outcome.disposition,
+            ToolOutcomeDisposition.policyDenied,
+          );
+          expect(
+            result.outcome.effectCertainty,
+            EffectCertainty.knownNotOccurred,
+          );
+        }
+        expect(fixture.environment.reads, isEmpty);
+        expect(fixture.environment.writes, isEmpty);
+        expect(fixture.environment.text, _EnvironmentChannel.initialText);
+        expect(controller.pendingApproval, isNull);
+        expect(controller.failure, isNull);
+      },
+    );
+
+    test(
+      'ask gates normalized reads with exact single-use approvals',
+      () async {
+        final filesystem = const FilesystemToolsPlugin().activate(
+          fixture.runtime.extensions,
+        );
+        addTearDown(filesystem.close);
+        final requests = <ToolAuthorizationRequest>[];
+        registerPolicy('ask', (request) {
+          requests.add(request);
+          return ToolAuthorizationDecision.ask;
+        });
+        final controller = fixture.controller();
+        final runId = await controller.startRun();
+        final advancing = controller.activeRunFuture!;
+        final call = await fixture.model.callAt(0);
+        for (final callId in ['first', 'second']) {
+          call.propose(
+            callId,
+            alias: 'read_file',
+            arguments: {'relativePath': './lib//example.dart'},
+          );
+        }
+        call.settle();
+        await advancing;
+        final run = controller.currentRun!.run;
+        final first = controller.pendingApproval!;
+        final request = requests.single;
+        final prepared = _events(
+          run,
+        ).whereType<ToolInvocationPrepared>().single;
+        final policy = _events(run).whereType<ToolPolicyEvaluated>().single;
+        expect(run.state, RunState.waiting);
+        expect(fixture.environment.reads, isEmpty);
+        expect(
+          request.toolId,
+          ToolId('dev.adele.plugin.filesystem-tools.read-file'),
+        );
+        expect(request.runId, runId);
+        expect(request.sessionId, fixture.session.id);
+        expect(
+          request.projectId,
+          fixture.runtime.store.task(fixture.session.taskId)!.projectId,
+        );
+        expect(request.toolInvocationId, prepared.invocation.id);
+        expect(request.canonicalArguments, {
+          'relativePath': _EnvironmentChannel.sourcePath,
+        });
+        expect(
+          request.canonicalArguments,
+          prepared.invocation.canonicalArguments,
+        );
+        expect(
+          jsonDecode(first.canonicalArgumentsJson),
+          request.canonicalArguments,
+        );
+        expect(request.effects, same(policy.effects));
+        expect(request.effects.effects, {ToolEffect.sourceRead});
+        expect(request.effects.uncertainty, EffectUncertainty.none);
+        expect(
+          request.effects.targets.single.uri.path,
+          endsWith('/${_EnvironmentChannel.sourcePath}'),
+        );
+        expect(
+          () => request.canonicalArguments.clear(),
+          throwsUnsupportedError,
+        );
+        final copied = PendingToolApproval(
+          _events(run).whereType<RunInterrupted>().single.interruption
+              as ToolApprovalInterruption,
+        );
+        expect(controller.resolveApproval(copied, approved: true), isFalse);
+        expect(controller.pendingApproval, same(first));
+        expect(controller.resolveApproval(first, approved: true), isTrue);
+        expect(controller.resolveApproval(first, approved: true), isFalse);
+        await controller.activeRunFuture!;
+        final second = controller.pendingApproval!;
+        expect(second, isNot(same(first)));
+        expect(second.canonicalArgumentsJson, first.canonicalArgumentsJson);
+        expect(requests, hasLength(2));
+        expect(requests[1].toolInvocationId, isNot(request.toolInvocationId));
+        expect(requests[1].canonicalArguments, request.canonicalArguments);
+        expect(fixture.environment.reads, hasLength(1));
+        expect(controller.resolveApproval(first, approved: true), isFalse);
+        expect(controller.resolveApproval(second, approved: false), isTrue);
+        final resuming = controller.activeRunFuture!;
+        final continuation = await fixture.model.callAt(1);
+        expect(
+          continuation.outcomes.map((item) => (item['callId'], item['status'])),
+          [('first', 'success'), ('second', 'rejected')],
+        );
+        continuation.settle();
+        await resuming;
+        expect(requests, hasLength(2));
+        expect(fixture.environment.reads, hasLength(1));
+        expect(_events(run).whereType<ToolExecutionStarted>(), hasLength(1));
+        expect(_events(run).whereType<RunInterrupted>(), hasLength(2));
+        expect(controller.failure, isNull);
+      },
+    );
+
+    for (final asynchronous in [false, true]) {
+      test(
+        '${asynchronous ? 'asynchronous' : 'synchronous'} failure is infrastructure even after deny',
+        () async {
+          final filesystem = const FilesystemToolsPlugin().activate(
+            fixture.runtime.extensions,
+          );
+          addTearDown(filesystem.close);
+          final entered = Completer<ToolAuthorizationRequest>();
+          final decision = Completer<ToolAuthorizationDecision>();
+          addTearDown(() {
+            if (!decision.isCompleted) {
+              decision.complete(ToolAuthorizationDecision.allow);
+            }
+          });
+          final failure = StateError('private policy failure');
+          registerPolicy('a-deny', (_) => ToolAuthorizationDecision.deny);
+          registerPolicy('b-failure', (request) {
+            entered.complete(request);
+            if (!asynchronous) throw failure;
+            return decision.future;
+          });
+          final controller = fixture.controller();
+          final runId = await controller.startRun();
+          final advancing = controller.activeRunFuture!;
+          final call = await fixture.model.callAt(0);
+          call.propose(
+            'read',
+            alias: 'read_file',
+            arguments: {'relativePath': _EnvironmentChannel.sourcePath},
+          );
+          call.settle();
+          final request = await entered.future;
+          if (asynchronous) {
+            expect(controller.pendingApproval, isNull);
+            expect(fixture.environment.reads, isEmpty);
+            expect(
+              _events(
+                controller.currentRun!.run,
+              ).whereType<ToolPolicyEvaluated>(),
+              isEmpty,
+            );
+            decision.completeError(failure);
+          }
+          final continuation = await fixture.model.callAt(1);
+          expect(continuation.outcomes.single['status'], 'failed');
+          continuation.settle();
+          await advancing;
+          final events = _events(controller.currentRun!.run);
+          final failed = events.whereType<ToolPolicyFailed>().single;
+          expect(failed.invocationId, request.toolInvocationId);
+          expect(failed.effects, same(request.effects));
+          final outcome = events
+              .whereType<ToolInvocationCompleted>()
+              .single
+              .outcome;
+          expect(outcome.disposition, ToolOutcomeDisposition.failure);
+          expect(outcome.failureKind, ToolFailureKind.infrastructure);
+          expect(outcome.effectCertainty, EffectCertainty.knownNotOccurred);
+          expect(events.whereType<ToolPolicyEvaluated>(), isEmpty);
+          expect(events.whereType<RunInterrupted>(), isEmpty);
+          expect(events.whereType<ToolExecutionStarted>(), isEmpty);
+          expect(fixture.environment.reads, isEmpty);
+          expect(fixture.environment.writes, isEmpty);
+          final activity = controller.activityForRun(runId)!.tools.single;
+          expect(activity.changes.map((change) => change.kind), [
+            ToolActivityKind.prepared,
+            ToolActivityKind.policyFailed,
+            ToolActivityKind.completed,
+          ]);
+          expect(activity.outcome!.failureKind, ToolFailureKind.infrastructure);
+          expect(
+            activity.outcome!.effectCertainty,
+            EffectCertainty.knownNotOccurred,
+          );
+          expect(controller.pendingApproval, isNull);
+          expect(controller.failure, isNull);
+        },
+      );
+    }
+
+    for (final retirement in [
+      'before callback',
+      'during callback',
+      'after callback',
+    ]) {
+      test('retirement $retirement fails the captured evaluation', () async {
+        final entered = Completer<void>();
+        final decision = Completer<ToolAuthorizationDecision>();
+        addTearDown(() {
+          if (!decision.isCompleted) {
+            decision.complete(ToolAuthorizationDecision.allow);
+          }
+        });
+        var firstCalls = 0;
+        var secondCalls = 0;
+        var replacementCalls = 0;
+        final first = registerPolicy('a-captured', (_) {
+          firstCalls++;
+          if (retirement == 'after callback') {
+            return ToolAuthorizationDecision.deny;
+          }
+          entered.complete();
+          return decision.future;
+        });
+        final second = registerPolicy('b-captured', (_) {
+          secondCalls++;
+          if (retirement != 'after callback') {
+            return ToolAuthorizationDecision.allow;
+          }
+          entered.complete();
+          return decision.future;
+        });
+        final controller = fixture.controller();
+        final runId = await controller.startRun();
+        final advancing = controller.activeRunFuture!;
+        final call = await fixture.model.callAt(0);
+        call.propose('retired-policy');
+        call.settle();
+        await entered.future;
+        expect(fixture.tool.executions, 0);
+        expect(controller.pendingApproval, isNull);
+        final retireSecond = retirement == 'before callback';
+        await (retireSecond ? second : first).close();
+        registerPolicy(retireSecond ? 'b-captured' : 'a-captured', (_) {
+          replacementCalls++;
+          return ToolAuthorizationDecision.allow;
+        });
+        decision.complete(ToolAuthorizationDecision.allow);
+        final continuation = await fixture.model.callAt(1);
+        expect(continuation.outcomes.single['status'], 'failed');
+        continuation.settle();
+        await advancing;
+        final events = _events(controller.currentRun!.run);
+        expect(events.whereType<ToolPolicyFailed>(), hasLength(1));
+        expect(events.whereType<ToolPolicyEvaluated>(), isEmpty);
+        expect(events.whereType<ToolExecutionStarted>(), isEmpty);
+        expect(events.whereType<RunInterrupted>(), isEmpty);
+        final outcome = events
+            .whereType<ToolInvocationCompleted>()
+            .single
+            .outcome;
+        expect(outcome.disposition, ToolOutcomeDisposition.failure);
+        expect(outcome.failureKind, ToolFailureKind.infrastructure);
+        expect(outcome.effectCertainty, EffectCertainty.knownNotOccurred);
+        expect(
+          controller
+              .activityForRun(runId)!
+              .tools
+              .single
+              .changes
+              .map((change) => change.kind),
+          contains(ToolActivityKind.policyFailed),
+        );
+        expect(firstCalls, 1);
+        expect(secondCalls, retirement == 'after callback' ? 1 : 0);
+        expect(replacementCalls, 0);
+        expect(fixture.tool.executions, 0);
+        expect(controller.pendingApproval, isNull);
+        expect(controller.failure, isNull);
+      });
+    }
+
+    test(
+      'registrations added during evaluation affect only the next request',
+      () async {
+        final filesystem = const FilesystemToolsPlugin().activate(
+          fixture.runtime.extensions,
+        );
+        addTearDown(filesystem.close);
+        final entered = Completer<void>();
+        final decision = Completer<ToolAuthorizationDecision>();
+        addTearDown(() {
+          if (!decision.isCompleted) {
+            decision.complete(ToolAuthorizationDecision.allow);
+          }
+        });
+        var capturedCalls = 0;
+        var addedCalls = 0;
+        registerPolicy('a-captured', (_) {
+          capturedCalls++;
+          if (!entered.isCompleted) entered.complete();
+          return decision.future;
+        });
+        final controller = fixture.controller();
+        await controller.startRun();
+        final advancing = controller.activeRunFuture!;
+        final first = await fixture.model.callAt(0);
+        first.propose(
+          'first',
+          alias: 'read_file',
+          arguments: {'relativePath': _EnvironmentChannel.sourcePath},
+        );
+        first.settle();
+        await entered.future;
+        registerPolicy('b-added', (_) {
+          addedCalls++;
+          return ToolAuthorizationDecision.deny;
+        });
+        decision.complete(ToolAuthorizationDecision.allow);
+        final second = await fixture.model.callAt(1);
+        expect(second.outcomes.single['status'], 'success');
+        expect(addedCalls, 0);
+        second.propose(
+          'second',
+          alias: 'read_file',
+          arguments: {'relativePath': _EnvironmentChannel.sourcePath},
+        );
+        second.settle();
+        final continuation = await fixture.model.callAt(2);
+        expect(
+          continuation.outcomes.map((item) => (item['callId'], item['status'])),
+          [('first', 'success'), ('second', 'rejected')],
+        );
+        continuation.settle();
+        await advancing;
+        expect(capturedCalls, 2);
+        expect(addedCalls, 1);
+        expect(fixture.environment.reads, hasLength(1));
+        expect(controller.failure, isNull);
+      },
+    );
+
+    for (final replace in [false, true]) {
+      test(
+        'completed ask survives ${replace ? 'replacement' : 'retirement'} during approval without reevaluation',
+        () async {
+          final filesystem = const FilesystemToolsPlugin().activate(
+            fixture.runtime.extensions,
+          );
+          addTearDown(filesystem.close);
+          var originalCalls = 0;
+          var replacementCalls = 0;
+          final original = registerPolicy('opinion', (_) {
+            originalCalls++;
+            return ToolAuthorizationDecision.ask;
+          });
+          final controller = fixture.controller();
+          await controller.startRun();
+          final advancing = controller.activeRunFuture!;
+          final first = await fixture.model.callAt(0);
+          first.propose(
+            'first',
+            alias: 'read_file',
+            arguments: {'relativePath': _EnvironmentChannel.sourcePath},
+          );
+          first.settle();
+          await advancing;
+          final approval = controller.pendingApproval!;
+          expect(fixture.environment.reads, isEmpty);
+          await original.close();
+          if (replace) {
+            registerPolicy('opinion', (_) {
+              replacementCalls++;
+              return ToolAuthorizationDecision.deny;
+            });
+          }
+          expect(controller.resolveApproval(approval, approved: true), isTrue);
+          final resuming = controller.activeRunFuture!;
+          final second = await fixture.model.callAt(1);
+          expect(second.outcomes.single['status'], 'success');
+          expect(originalCalls, 1);
+          expect(replacementCalls, 0);
+          expect(fixture.environment.reads, hasLength(1));
+          expect(controller.resolveApproval(approval, approved: true), isFalse);
+          second.propose(
+            'second',
+            alias: 'read_file',
+            arguments: {'relativePath': _EnvironmentChannel.sourcePath},
+          );
+          second.settle();
+          final continuation = await fixture.model.callAt(2);
+          expect(
+            continuation.outcomes.map(
+              (item) => (item['callId'], item['status']),
+            ),
+            [
+              ('first', 'success'),
+              ('second', replace ? 'rejected' : 'success'),
+            ],
+          );
+          continuation.settle();
+          await resuming;
+          final events = _events(controller.currentRun!.run);
+          expect(events.whereType<ToolPolicyFailed>(), isEmpty);
+          expect(events.whereType<RunInterrupted>(), hasLength(1));
+          expect(
+            events.whereType<ToolPolicyEvaluated>().map(
+              (event) => event.decision,
+            ),
+            [
+              ToolPolicyDecision.ask,
+              replace ? ToolPolicyDecision.deny : ToolPolicyDecision.allow,
+            ],
+          );
+          final prepared = events.whereType<ToolInvocationPrepared>().toList();
+          expect(prepared[1].invocation.id, isNot(prepared[0].invocation.id));
+          expect(originalCalls, 1);
+          expect(replacementCalls, replace ? 1 : 0);
+          expect(fixture.environment.reads, hasLength(replace ? 1 : 2));
+          expect(controller.pendingApproval, isNull);
+          expect(controller.failure, isNull);
+        },
+      );
+    }
+  });
+
   for (final failure in ['revision changed', 'Environment retired']) {
     test(
       'approval cannot override $failure while a real patch is pending',
@@ -3041,6 +3586,7 @@ final class _Tool implements ModelToolContribution, ToolExecutable {
   int executions = 0;
   String summary = 'Mutate fixture source';
   List<EffectTarget> targets = [];
+  EffectUncertainty uncertainty = EffectUncertainty.none;
   Completer<void>? gate;
   final entered = Completer<void>();
   Completer<void>? materializeGate;
@@ -3087,6 +3633,7 @@ final class _Tool implements ModelToolContribution, ToolExecutable {
     effects: const [ToolEffect.sourceMutation],
     targets: targets,
     summary: summary,
+    uncertainty: uncertainty,
   );
   @override
   Stream<ToolExecutionEvent> execute(

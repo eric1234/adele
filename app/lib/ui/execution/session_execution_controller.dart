@@ -9,6 +9,7 @@ import 'package:adele_desktop/core/orchestration_host.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/resource_cleanup.dart';
 import 'package:adele_desktop/core/run_id_source.dart';
+import 'package:adele_desktop/core/tool_authorization_policy_composer.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_product/adele_product.dart' show RunTerminalState;
@@ -440,7 +441,14 @@ final class SessionExecutionController extends ChangeNotifier {
           contextComposer: _runtime.contextComposer,
           model: adapter,
           toolCatalog: tools,
-          policy: const ApprovalGatedToolPolicy(),
+          policy: ToolAuthorizationPolicyComposer(
+            extensions: _runtime.extensions,
+            lifecycle: _runtime.lifecycle,
+            session: session,
+            runId: runId,
+            // Temporary legacy participant; never a failed-discovery fallback.
+            legacyPolicy: const ApprovalGatedToolPolicy(),
+          ),
           applicationExitFence: _applicationExitFence,
         );
         _ownedExecution = execution;

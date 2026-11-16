@@ -171,6 +171,7 @@ Examples illustrate different contracts, not a universal rule:
 | --- | --- |
 | Orchestration strategy | [Orchestration](../../packages/orchestration/README.md) requires exact unique resolution for an explicit strategy ID; missing and ambiguous are distinct failures. |
 | Inference-context sources | [Inference context](../../packages/orchestration/README.md#inference-context) composes zero or many sources under its own capture, ordering, and required/optional failure rules. |
+| Tool authorization policies | [Authorization composition](execution-model.md#authorization-composition) captures zero or many independent in-process evaluators per request, ordered by Extension ID; Deny wins over Ask/Allow, Abstain is neutral, and infrastructure failures prevent authorization. Normal execution explicitly retains a temporary legacy participant. |
 | Model tools | [Model-tool API](../../packages/model_tool/) defines contextual contributions; its composition has distinct tool-identity and model-alias collision semantics. |
 | Project selectors | [Core extension contracts](../../packages/core_extensions/README.md) expose independent actions, not interchangeable default providers. |
 | Project providers | The same public package defines backing preparation through an explicitly selected capability provider, without default substitution. |

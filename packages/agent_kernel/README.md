@@ -62,6 +62,12 @@ Policy and journal mechanics are in `run.dart`, not separate subsystems or
 strategy implementations. Tool execution context identifies Run/Session only;
 application adapters capture authorized Environment facets outside the kernel.
 
+`ToolPolicy.evaluate` may return a decision synchronously or asynchronously.
+`ToolPolicyGate` awaits the decision before returning execution eligibility,
+denial, or an approval request. Synchronous and asynchronous policy failures
+preserve their cause and described effects as `ToolPolicyEvaluationFailed`,
+distinct from `ToolEffectDescriptionFailed`.
+
 ## Journal
 
 `RunJournal` records deterministic Run-local sequence numbers and supports

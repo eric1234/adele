@@ -430,6 +430,102 @@ void main() {
   });
 
   group('policy and approval', () {
+    for (final ToolPolicyDecision decision in ToolPolicyDecision.values) {
+      test('awaits async ${decision.name} without early execution', () async {
+        final TestExecutable executable = TestExecutable();
+        final ToolInvocation invocation = await testInvocation(executable);
+        final Completer<ToolPolicyInput> evaluating =
+            Completer<ToolPolicyInput>();
+        final Completer<ToolPolicyDecision> evaluation =
+            Completer<ToolPolicyDecision>();
+        final RunInterruptionId interruptionId = RunInterruptionId(
+          'approval-1',
+        );
+        bool completed = false;
+        final Future<ToolPolicyGateResult> pending = const ToolPolicyGate()
+            .evaluate(
+              invocation: invocation,
+              policy: _CallbackPolicy((input) {
+                evaluating.complete(input);
+                return evaluation.future;
+              }),
+              interruptionId: interruptionId,
+            )
+            .then((result) {
+              completed = true;
+              return result;
+            });
+
+        final ToolPolicyInput input = await evaluating.future;
+        expect(input.invocation, same(invocation));
+        expect(input.context, same(invocation.context));
+        expect(completed, isFalse);
+        expect(executable.descriptions, 1);
+        expect(executable.executions, 0);
+
+        evaluation.complete(decision);
+        final ToolPolicyGateResult result = await pending;
+        expect(result.invocation, same(invocation));
+        expect(result.effects, same(input.effects));
+        expect(executable.executions, 0);
+        final AgentRun run = AgentRun(
+          id: invocation.context.runId,
+          sessionId: invocation.context.sessionId,
+        )..start();
+
+        switch (decision) {
+          case ToolPolicyDecision.allow:
+            final ToolExecutionObservation observation =
+                await collectToolExecution(
+                  run
+                      .startToolExecution(result as ToolExecutionAllowed)
+                      .events(),
+                );
+            expect(
+              observation.outcome.disposition,
+              ToolOutcomeDisposition.success,
+            );
+            expect(run.interruptions, isEmpty);
+            expect(executable.executions, 1);
+          case ToolPolicyDecision.deny:
+            final ToolOutcome outcome = (result as ToolExecutionDenied).outcome;
+            expect(outcome.disposition, ToolOutcomeDisposition.policyDenied);
+            expect(outcome.effectCertainty, EffectCertainty.knownNotOccurred);
+            expect(run.interruptions, isEmpty);
+            expect(executable.executions, 0);
+          case ToolPolicyDecision.ask:
+            final ToolApprovalRequired required =
+                result as ToolApprovalRequired;
+            expect(required.interruption.id, interruptionId);
+            expect(required.interruption.invocation, same(invocation));
+            expect(required.interruption.effects, same(input.effects));
+            run.interrupt(required.interruption);
+            expect(run.state, RunState.waiting);
+            expect(executable.executions, 0);
+            final ResolvedRunInterruption resolved = run.resolveInterruption(
+              ToolApprovalResolution(
+                interruptionId: interruptionId,
+                toolInvocationId: invocation.id,
+                approved: true,
+              ),
+            );
+            final ToolExecutionObservation observation =
+                await collectToolExecution(
+                  run
+                      .startToolExecution(
+                        const ToolPolicyGate().approve(resolved),
+                      )
+                      .events(),
+                );
+            expect(
+              observation.outcome.disposition,
+              ToolOutcomeDisposition.success,
+            );
+            expect(executable.executions, 1);
+        }
+      });
+    }
+
     test('allow authorizes execution without interruption', () async {
       final TestExecutable executable = TestExecutable();
       final ToolPolicyGateResult result = await const ToolPolicyGate().evaluate(
@@ -567,6 +663,39 @@ void main() {
         throwsA(isA<ToolPolicyEvaluationFailed>()),
       );
     });
+
+    for (final bool asynchronous in [false, true]) {
+      test(
+        '${asynchronous ? 'async' : 'sync'} policy failure preserves cause and effects',
+        () async {
+          final TestExecutable executable = TestExecutable();
+          final ToolInvocation invocation = await testInvocation(executable);
+          final StateError cause = StateError('policy failed');
+          late final ToolPolicyInput input;
+          final ToolPolicy policy = _CallbackPolicy((value) {
+            input = value;
+            if (asynchronous) {
+              return Future<ToolPolicyDecision>.microtask(() => throw cause);
+            }
+            throw cause;
+          });
+
+          try {
+            await const ToolPolicyGate().evaluate(
+              invocation: invocation,
+              policy: policy,
+              interruptionId: RunInterruptionId('unused-approval'),
+            );
+            fail('Policy failure must not produce a decision.');
+          } on ToolPolicyEvaluationFailed catch (error) {
+            expect(error.cause, same(cause));
+            expect(error.effects, same(input.effects));
+          }
+          expect(executable.descriptions, 1);
+          expect(executable.executions, 0);
+        },
+      );
+    }
   });
 
   group('execution outcomes', () {
@@ -809,6 +938,16 @@ void main() {
       );
     });
   });
+}
+
+final class _CallbackPolicy implements ToolPolicy {
+  const _CallbackPolicy(this.callback);
+
+  final FutureOr<ToolPolicyDecision> Function(ToolPolicyInput) callback;
+
+  @override
+  FutureOr<ToolPolicyDecision> evaluate(ToolPolicyInput input) =>
+      callback(input);
 }
 
 final class _HostContext implements ModelToolHostContext {

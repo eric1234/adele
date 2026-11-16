@@ -298,7 +298,7 @@ final class ToolPolicyInput {
 enum ToolPolicyDecision { allow, deny, ask }
 
 abstract interface class ToolPolicy {
-  ToolPolicyDecision evaluate(ToolPolicyInput input);
+  FutureOr<ToolPolicyDecision> evaluate(ToolPolicyInput input);
 }
 
 final class ToolExecutionAlreadyStarted implements Exception {
