@@ -25,6 +25,7 @@ final class ModelProviderCapabilityAdapter implements ModelPort {
     this._binding, {
     required String selectedModel,
     this.maxOutputTokens,
+    this.reasoningEffort,
     this.toolChoice = ModelProviderToolChoice.auto,
     Map<String, Object?> providerOptions = const <String, Object?>{},
     ModelProviderRoutingAffinity? routingAffinity,
@@ -35,6 +36,7 @@ final class ModelProviderCapabilityAdapter implements ModelPort {
   final ProviderBinding _binding;
   final String selectedModel;
   final int? maxOutputTokens;
+  final ModelReasoningEffort? reasoningEffort;
   final ModelProviderToolChoice toolChoice;
   final Map<String, Object?> providerOptions;
   final ModelProviderRoutingAffinity _routingAffinity;
@@ -229,6 +231,7 @@ ModelProviderRequest _toProviderRequest(
       .toList(growable: false),
   toolChoice: adapter.toolChoice,
   maxOutputTokens: adapter.maxOutputTokens,
+  reasoningEffort: adapter.reasoningEffort,
   providerOptions: adapter.providerOptions,
   // Invocation-native reuse needs explicit Session/Run ownership and
   // compatibility policy; canonical semantic replay remains authoritative.

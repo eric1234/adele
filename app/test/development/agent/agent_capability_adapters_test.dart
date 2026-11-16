@@ -49,6 +49,7 @@ void main() {
       expect(events.single, isA<ModelInvocationSettledEvent>());
       final Map<Object?, Object?> encoded =
           channel.lastPayload!['request']! as Map<Object?, Object?>;
+      expect(encoded, containsPair('reasoningEffort', null));
       expect(encoded['input'], <Object?>[
         <String, Object?>{
           'kind': 'toolOutcome',
@@ -232,6 +233,7 @@ void main() {
           _binding(channel),
           selectedModel: 'scripted-v1',
           maxOutputTokens: 200,
+          reasoningEffort: ModelReasoningEffort.high,
           toolChoice: ModelProviderToolChoice.none,
           providerOptions: const <String, Object?>{'fixture': true},
         );
@@ -268,6 +270,7 @@ void main() {
           'tools',
           'toolChoice',
           'maxOutputTokens',
+          'reasoningEffort',
           'providerOptions',
           'nativeState',
           'affinity',
@@ -337,6 +340,7 @@ void main() {
         ],
         'toolChoice': 'none',
         'maxOutputTokens': 200,
+        'reasoningEffort': 'high',
         'providerOptions': <String, Object?>{'fixture': true},
         'nativeState': null,
         'affinity': <String, Object?>{
@@ -472,7 +476,7 @@ void main() {
   );
 
   test(
-    'fresh Run adapters share routing identity but never provider state',
+    'fresh Run adapters share routing identity but isolate state and effort',
     () async {
       final routing = ModelProviderRoutingAffinity();
       final firstState = _affinityState('first-run');
@@ -492,12 +496,14 @@ void main() {
         binding,
         selectedModel: 'scripted-v1',
         routingAffinity: routing,
+        reasoningEffort: ModelReasoningEffort.high,
       );
       await first.invoke(_request()).toList();
       final second = ModelProviderCapabilityAdapter(
         binding,
         selectedModel: 'scripted-v1',
         routingAffinity: routing,
+        reasoningEffort: ModelReasoningEffort.none,
       );
       await second.invoke(_request()).toList();
       await first.invoke(_request('first-continuation')).toList();
@@ -516,6 +522,14 @@ void main() {
         _encodeNative(firstState),
         _encodeNative(secondState),
       ]);
+      expect(channel.requests.map((request) => request['reasoningEffort']), [
+        'high',
+        'none',
+        'high',
+        'none',
+      ]);
+      expect(first.reasoningEffort, ModelReasoningEffort.high);
+      expect(second.reasoningEffort, ModelReasoningEffort.none);
       expect(
         channel.requests.map((request) => request['nativeState']),
         everyElement(isNull),
@@ -655,28 +669,60 @@ void main() {
   }
 
   test(
-    'common adapter preserves multiple proposals and metadata through replay',
+    'common adapter retains effort across model/tool/model with exact replay',
     () async {
-      final _ProviderChannel channel = _ProviderChannel(
-        events: Stream<ModelProviderEvent>.fromIterable(<ModelProviderEvent>[
-          _delta('Inspecting '),
-          _native('native-1', 'reasoning-v1'),
-          _text('Inspecting.', 'text-1'),
-          _proposal('call-z', 'item-z', 'file:///tmp/first.dart'),
-          _proposal('call-a', 'item-a', 'file:///tmp/second.dart'),
-          _terminal(),
-        ]),
+      late final _ProviderChannel channel;
+      channel = _ProviderChannel(
+        events: Stream<ModelProviderEvent>.multi((controller) {
+          if (channel.streamCount == 1) {
+            controller.add(_delta('Inspecting '));
+            controller.add(_native('native-1', 'reasoning-v1'));
+            controller.add(_text('Inspecting.', 'text-1'));
+            controller.add(
+              _proposal('call-z', 'item-z', 'file:///tmp/first.dart'),
+            );
+            controller.add(
+              _proposal('call-a', 'item-a', 'file:///tmp/second.dart'),
+            );
+          } else {
+            controller.add(_text('Inspected.', 'text-2'));
+          }
+          controller.add(_terminal(affinityState: _affinityState('retained')));
+          controller.close();
+        }),
       );
+      final ToolCatalog catalog = ToolCatalog()
+        ..register(
+          ResourceInspectorToolExecutable(_resourceBinding()).registration,
+        );
+      final MaterializedToolSet tools = catalog.materialize();
+      final SemanticModelRequest initialRequest = SemanticModelRequest(
+        invocationId: ModelInvocationId('initial-proposals'),
+        context: _request().context,
+        tools: tools,
+      );
+      ModelReasoningEffort effort = ModelReasoningEffort.none;
       final ModelProviderCapabilityAdapter adapter =
           ModelProviderCapabilityAdapter(
             _binding(channel),
             selectedModel: 'scripted-v1',
             maxOutputTokens: 200,
+            reasoningEffort: effort,
             toolChoice: ModelProviderToolChoice.none,
             providerOptions: const <String, Object?>{'fixture': true},
           );
 
-      final List<ModelEvent> events = await adapter.invoke(_request()).toList();
+      effort = ModelReasoningEffort.max;
+      final List<ModelEvent> events = await adapter
+          .invoke(initialRequest)
+          .toList();
+      final Map<Object?, Object?> initialWire = channel.requests.single;
+      expect(effort, ModelReasoningEffort.max);
+      expect(adapter.reasoningEffort, ModelReasoningEffort.none);
+      expect(
+        events.map((event) => event.invocationId),
+        everyElement(same(initialRequest.invocationId)),
+      );
 
       expect(channel.requestCount, 0);
       expect(channel.streamCount, 1);
@@ -735,35 +781,71 @@ void main() {
         });
       }
 
-      final _ProviderChannel replayChannel = _ProviderChannel(
-        events: Stream<ModelProviderEvent>.value(_terminal()),
+      final ToolOutcome outcome = ToolOutcome(
+        disposition: ToolOutcomeDisposition.success,
+        effectCertainty: EffectCertainty.knownOccurred,
+        modelContent: 'Inspected.',
+        hostData: const {'private': 'host-only'},
       );
-      await ModelProviderCapabilityAdapter(
-            _binding(replayChannel),
-            selectedModel: 'scripted-v1',
-          )
-          .invoke(
-            SemanticModelRequest(
-              invocationId: ModelInvocationId('replay-proposals'),
-              context: InferenceContextSnapshot.fromStrategy(
-                StrategyInferenceMaterial(
-                  input: <SemanticModelInputItem>[
-                    for (final ModelToolProposalOutput output in proposals)
-                      SemanticToolProposalInput(
-                        proposal: output.proposal,
-                        providerItemId: output.providerItemId,
-                        providerNativeMetadata: output.providerNativeMetadata,
-                      ),
-                  ],
+      final SemanticModelRequest continuation = SemanticModelRequest(
+        invocationId: ModelInvocationId('tool-continuation'),
+        context: InferenceContextSnapshot.fromStrategy(
+          StrategyInferenceMaterial(
+            instructions: 'Fresh continuation context.',
+            input: <SemanticModelInputItem>[
+              ...initialRequest.context.input,
+              for (final ModelToolProposalOutput output in proposals)
+                SemanticToolProposalInput(
+                  proposal: output.proposal,
+                  providerItemId: output.providerItemId,
+                  providerNativeMetadata: output.providerNativeMetadata,
                 ),
-              ),
-              tools: MaterializedToolSet(const <MaterializedTool>[]),
-            ),
-          )
+              for (final ModelToolProposalOutput output in proposals)
+                SemanticToolOutcomeInput(
+                  providerCallId: output.proposal.providerCallId,
+                  outcome: outcome,
+                ),
+            ],
+          ),
+        ),
+        tools: tools,
+      );
+      final List<ModelEvent> continued = await adapter
+          .invoke(continuation)
           .toList();
-      final Map<Object?, Object?> replayRequest =
-          replayChannel.lastPayload!['request']! as Map<Object?, Object?>;
+      expect(continued.last, isA<ModelInvocationSettledEvent>());
+      expect(
+        continued.map((event) => event.invocationId),
+        everyElement(same(continuation.invocationId)),
+      );
+      final Map<Object?, Object?> replayRequest = channel.requests.last;
+      expect(adapter.invocationCount, 2);
+      expect(channel.streamCount, 2);
+      expect(channel.requestCount, 0);
+      expect(initialWire['reasoningEffort'], 'none');
+      expect(replayRequest['reasoningEffort'], 'none');
+      expect(initialWire['instructions'], 'Be concise.');
+      expect(replayRequest['instructions'], 'Fresh continuation context.');
+      for (final String key in [
+        'model',
+        'tools',
+        'toolChoice',
+        'maxOutputTokens',
+        'providerOptions',
+        'nativeState',
+      ]) {
+        expect(replayRequest[key], initialWire[key], reason: key);
+      }
+      expect(initialWire['tools'], hasLength(1));
+      final Map<Object?, Object?> initialAffinity =
+          initialWire['affinity']! as Map<Object?, Object?>;
+      expect(initialAffinity['state'], isNull);
+      expect(replayRequest['affinity'], {
+        'id': initialAffinity['id'],
+        'state': _encodeNative(_affinityState('retained')),
+      });
       expect(replayRequest['input'], <Object?>[
+        ...(initialWire['input']! as List<Object?>),
         for (final ModelToolProposalOutput output in proposals)
           <String, Object?>{
             'kind': 'toolProposal',
@@ -782,6 +864,19 @@ void main() {
                 'signed': '${output.proposal.providerCallId}-signature',
               },
             },
+          },
+        for (final ModelToolProposalOutput output in proposals)
+          <String, Object?>{
+            'kind': 'toolOutcome',
+            'message': null,
+            'toolProposal': null,
+            'toolOutcome': <String, Object?>{
+              'callId': output.proposal.providerCallId,
+              'status': 'success',
+              'content': 'Inspected.',
+            },
+            'itemId': null,
+            'nativeMetadata': null,
           },
       ]);
     },

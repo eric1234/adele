@@ -48,6 +48,14 @@ final class ScriptedCommonModelProvider implements ModelProviderService {
       );
       return;
     }
+    if (request.reasoningEffort != null) {
+      yield _failure(
+        ModelProviderFailureKind.unsupportedRequest,
+        'unsupported_reasoning_effort',
+        'The scripted provider does not support explicit reasoning effort.',
+      );
+      return;
+    }
     final List<ModelProviderInput> outcomes = request.input
         .where((ModelProviderInput item) => item.toolOutcome != null)
         .toList(growable: false);

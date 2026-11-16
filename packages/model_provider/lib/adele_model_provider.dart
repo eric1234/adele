@@ -28,6 +28,9 @@ enum ModelProviderToolOutcomeStatus {
 
 enum ModelProviderToolChoice { auto, none }
 
+/// Requested reasoning effort, not a guarantee of provider/model support.
+enum ModelReasoningEffort { none, minimal, low, medium, high, xhigh, max }
+
 enum ModelProviderEventKind { observation, output, terminal }
 
 enum ModelProviderObservationKind { textDelta }
@@ -226,6 +229,7 @@ final class ModelProviderRequest {
     required List<ModelProviderTool> tools,
     required this.toolChoice,
     required this.maxOutputTokens,
+    required this.reasoningEffort,
     required Map<String, Object?> providerOptions,
     required this.nativeState,
     required this.affinity,
@@ -244,6 +248,11 @@ final class ModelProviderRequest {
   final List<ModelProviderTool> tools;
   final ModelProviderToolChoice toolChoice;
   final int? maxOutputTokens;
+
+  /// Null leaves effort unspecified; [ModelReasoningEffort.none] is explicit.
+  /// Providers must honor an explicit effort or fail, never silently substitute.
+  final ModelReasoningEffort? reasoningEffort;
+
   final Map<String, Object?> providerOptions;
   final ModelProviderNativeEnvelope? nativeState;
   final ModelProviderAffinity? affinity;

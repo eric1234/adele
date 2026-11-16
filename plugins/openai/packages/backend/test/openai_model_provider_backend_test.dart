@@ -995,88 +995,259 @@ void main() {
         ('gpt-5.4-mini', false),
         ('unknown-model', false),
       ]) {
-        test('$profile summary request policy for $model', () async {
-          late Map<String, Object?> captured;
-          final _FakeServer server = await _FakeServer.start((request) async {
-            captured = await _jsonBody(request);
-            _sse(
-              request.response,
-              _outputDone(_message('msg_policy', 'Ready.')),
+        test(
+          '$profile reasoning effort and summary policy for $model',
+          () async {
+            late Map<String, Object?> captured;
+            int attempts = 0;
+            final _FakeServer server = await _FakeServer.start((request) async {
+              attempts++;
+              expect(request.method, 'POST');
+              expect(request.uri.path, '/v1/responses');
+              expect(
+                request.headers.value(HttpHeaders.authorizationHeader),
+                chatGpt ? 'Bearer summary-access' : 'Bearer fake-openai-key',
+              );
+              expect(
+                request.headers.value('ChatGPT-Account-ID'),
+                chatGpt ? 'summary-account' : null,
+              );
+              expect(request.headers.value('session-id'), isNull);
+              expect(request.headers.value('x-codex-turn-state'), isNull);
+              captured = await _jsonBody(request);
+              _sse(
+                request.response,
+                _outputDone(_message('msg_policy', 'Ready.')),
+              );
+              _sse(request.response, _completed('resp_policy'));
+              await request.response.close();
+            });
+            addTearDown(server.close);
+            final OpenAiModelProvider provider = await _testProvider(
+              server,
+              chatGpt: chatGpt,
             );
-            _sse(request.response, _completed('resp_policy'));
-            await request.response.close();
-          });
-          addTearDown(server.close);
-          final OpenAiModelProvider provider = await _testProvider(
-            server,
-            chatGpt: chatGpt,
-          );
-          final List<ModelProviderEvent> events = await provider
-              .invoke(
-                _request(
-                  model: model,
-                  toolChoice: ModelProviderToolChoice.none,
-                  maxOutputTokens: chatGpt ? null : 42,
-                ),
-              )
-              .toList();
+            const efforts = <(ModelReasoningEffort?, String?)>[
+              (null, null),
+              (ModelReasoningEffort.none, 'none'),
+              (ModelReasoningEffort.minimal, 'minimal'),
+              (ModelReasoningEffort.low, 'low'),
+              (ModelReasoningEffort.medium, 'medium'),
+              (ModelReasoningEffort.high, 'high'),
+              (ModelReasoningEffort.xhigh, 'xhigh'),
+              (ModelReasoningEffort.max, 'max'),
+            ];
+            final Map<String, Object?> nativeItem = _reasoning(
+              'rs_replay',
+              'ENCRYPTED-REPLAY',
+              summary: <String>['Prior summary.'],
+            );
+            for (final (ModelReasoningEffort? effort, String? wireEffort)
+                in efforts) {
+              final List<ModelProviderEvent> events = await provider
+                  .invoke(
+                    _request(
+                      model: model,
+                      reasoningEffort: effort,
+                      input: <ModelProviderInput>[
+                        _userInput(),
+                        ModelProviderInput(
+                          kind: ModelProviderInputKind.nativeItem,
+                          message: null,
+                          toolProposal: null,
+                          toolOutcome: null,
+                          itemId: 'rs_replay',
+                          nativeMetadata: ModelProviderNativeEnvelope(
+                            kind: openAiResponsesItemKind,
+                            compatibility: const <String, Object?>{
+                              'version': openAiResponsesItemVersion,
+                            },
+                            data: <String, Object?>{'item': nativeItem},
+                          ),
+                        ),
+                      ],
+                      toolChoice: ModelProviderToolChoice.none,
+                      maxOutputTokens: chatGpt ? null : 42,
+                    ),
+                  )
+                  .toList();
 
-          expect(
-            events.last.terminal?.settlement,
-            ModelProviderSettlement.completed,
-          );
-          expect(captured['model'], model);
-          expect(captured.containsKey('reasoning'), supported);
-          if (supported) {
-            expect(captured['reasoning'], <String, Object?>{'summary': 'auto'});
-          }
-          expect(captured['store'], isFalse);
-          expect(captured['stream'], isTrue);
-          expect(captured['include'], <Object?>['reasoning.encrypted_content']);
-          expect(captured['parallel_tool_calls'], isTrue);
-          expect(captured['tool_choice'], 'none');
-          expect(captured['max_output_tokens'], chatGpt ? null : 42);
-          expect(captured.containsKey('max_output_tokens'), !chatGpt);
-        });
+              expect(
+                events.last.terminal?.settlement,
+                ModelProviderSettlement.completed,
+              );
+              expect(captured, <String, Object?>{
+                'model': model,
+                'instructions': 'Follow test instructions.',
+                'input': <Object?>[
+                  <String, Object?>{
+                    'type': 'message',
+                    'role': 'user',
+                    'content': <Object?>[
+                      <String, Object?>{
+                        'type': 'input_text',
+                        'text': 'Inspect this.',
+                      },
+                    ],
+                  },
+                  nativeItem,
+                ],
+                'tools': <Object?>[
+                  <String, Object?>{
+                    'type': 'function',
+                    'name': 'inspect_resource',
+                    'description': 'Inspect a resource.',
+                    'parameters': <String, Object?>{'type': 'object'},
+                    'strict': false,
+                  },
+                ],
+                'tool_choice': 'none',
+                'parallel_tool_calls': true,
+                if (!chatGpt) 'max_output_tokens': 42,
+                if (supported || wireEffort != null)
+                  'reasoning': <String, Object?>{
+                    if (supported) 'summary': 'auto',
+                    'effort': ?wireEffort,
+                  },
+                'include': <String>['reasoning.encrypted_content'],
+                'store': false,
+                'stream': true,
+              }, reason: 'reasoningEffort: $effort');
+            }
+            expect(attempts, efforts.length);
+          },
+        );
       }
 
-      test('$profile does not retry rejected summary requests', () async {
+      for (final (
+            String model,
+            ModelReasoningEffort? effort,
+            String parameter,
+            Map<String, Object?> reasoning,
+          )
+          in <(String, ModelReasoningEffort?, String, Map<String, Object?>)>[
+            (
+              'gpt-6-astra',
+              null,
+              'reasoning.summary',
+              <String, Object?>{'summary': 'auto'},
+            ),
+            (
+              'gpt-6-astra',
+              ModelReasoningEffort.none,
+              'reasoning.effort',
+              <String, Object?>{'summary': 'auto', 'effort': 'none'},
+            ),
+            (
+              'unknown-model',
+              ModelReasoningEffort.max,
+              'reasoning.effort',
+              <String, Object?>{'effort': 'max'},
+            ),
+          ]) {
+        test(
+          '$profile does not retry rejected $parameter for $model',
+          () async {
+            int attempts = 0;
+            final _FakeServer server = await _FakeServer.start((request) async {
+              attempts++;
+              final body = await _jsonBody(request);
+              expect(body['model'], model);
+              expect(body['reasoning'], reasoning);
+              request.response.statusCode = HttpStatus.badRequest;
+              request.response.write(
+                jsonEncode(<String, Object?>{
+                  'error': <String, Object?>{
+                    'code': 'unsupported_parameter',
+                    'message': '$parameter is not supported.',
+                    'param': parameter,
+                  },
+                }),
+              );
+              await request.response.close();
+            });
+            addTearDown(server.close);
+            final OpenAiModelProvider provider = await _testProvider(
+              server,
+              chatGpt: chatGpt,
+            );
+            final List<ModelProviderEvent> events = await provider
+                .invoke(_request(model: model, reasoningEffort: effort))
+                .toList();
+
+            expect(attempts, 1);
+            expect(events, hasLength(1));
+            expect(events.single.kind, ModelProviderEventKind.terminal);
+            expect(
+              events.single.terminal!.settlement,
+              ModelProviderSettlement.failed,
+            );
+            expect(
+              events.single.terminal?.failure?.kind,
+              ModelProviderFailureKind.invalidRequest,
+            );
+            expect(
+              events.single.terminal?.failure?.providerCode,
+              'unsupported_parameter',
+            );
+            expect(
+              events.single.terminal!.failure!.providerDetails,
+              containsPair('httpAttemptCount', 1),
+            );
+            expect(
+              events.single.terminal!.failure!.providerDetails,
+              containsPair('transportRetryCount', 0),
+            );
+          },
+        );
+      }
+
+      test('$profile effort does not enable provider options', () async {
         int attempts = 0;
         final _FakeServer server = await _FakeServer.start((request) async {
           attempts++;
-          expect((await _jsonBody(request))['reasoning'], <String, Object?>{
-            'summary': 'auto',
-          });
-          request.response.statusCode = HttpStatus.badRequest;
-          request.response.write(
-            jsonEncode(<String, Object?>{
-              'error': <String, Object?>{
-                'code': 'unsupported_parameter',
-                'message': 'reasoning.summary is not supported.',
-              },
-            }),
-          );
+          await request.drain<void>();
+          _sse(request.response, _completed('resp_unexpected'));
           await request.response.close();
         });
         addTearDown(server.close);
-        final OpenAiModelProvider provider = await _testProvider(
-          server,
-          chatGpt: chatGpt,
-        );
-        final List<ModelProviderEvent> events = await provider
-            .invoke(_request(model: 'gpt-6-astra'))
-            .toList();
-
-        expect(attempts, 1);
-        expect(events, hasLength(1));
-        expect(
-          events.single.terminal?.failure?.kind,
-          ModelProviderFailureKind.invalidRequest,
-        );
-        expect(
-          events.single.terminal?.failure?.providerCode,
-          'unsupported_parameter',
-        );
+        final provider = await _testProvider(server, chatGpt: chatGpt);
+        for (final ModelReasoningEffort? effort in <ModelReasoningEffort?>[
+          null,
+          ModelReasoningEffort.high,
+        ]) {
+          for (final options in <Map<String, Object?>>[
+            <String, Object?>{'x': true},
+            <String, Object?>{
+              'reasoning': <String, Object?>{'effort': 'low'},
+            },
+          ]) {
+            final event =
+                (await provider
+                        .invoke(
+                          _request(
+                            reasoningEffort: effort,
+                            providerOptions: options,
+                          ),
+                        )
+                        .toList())
+                    .single;
+            expect(event.kind, ModelProviderEventKind.terminal);
+            expect(event.terminal!.settlement, ModelProviderSettlement.failed);
+            final failure = event.terminal!.failure!;
+            expect(failure.kind, ModelProviderFailureKind.unsupportedRequest);
+            expect(failure.providerCode, 'unsupported_provider_options');
+            expect(
+              failure.providerMessage,
+              'OpenAI provider options are not supported in this phase.',
+            );
+            expect(
+              failure.providerDetails,
+              containsPair('httpAttemptCount', 0),
+            );
+          }
+        }
+        expect(attempts, 0);
       });
 
       test(
@@ -3807,18 +3978,31 @@ void main() {
         expect(capturedRequest.headers.value('originator'), isNull);
         expect(capturedRequest.headers.value('x-codex-turn-state'), isNull);
 
-        final ModelProviderTerminal unsupported =
-            (await provider.invoke(_request(maxOutputTokens: 10)).toList())
-                .single
-                .terminal!;
-        expect(
-          unsupported.failure?.kind,
-          ModelProviderFailureKind.unsupportedRequest,
-        );
-        expect(
-          unsupported.failure?.providerCode,
-          'chatgpt_max_output_tokens_unsupported',
-        );
+        for (final ModelReasoningEffort? effort in <ModelReasoningEffort?>[
+          null,
+          ModelReasoningEffort.high,
+        ]) {
+          final ModelProviderTerminal unsupported =
+              (await provider
+                      .invoke(
+                        _request(maxOutputTokens: 10, reasoningEffort: effort),
+                      )
+                      .toList())
+                  .single
+                  .terminal!;
+          expect(
+            unsupported.failure?.kind,
+            ModelProviderFailureKind.unsupportedRequest,
+          );
+          expect(
+            unsupported.failure?.providerCode,
+            'chatgpt_max_output_tokens_unsupported',
+          );
+          expect(
+            unsupported.failure!.providerDetails,
+            containsPair('httpAttemptCount', 0),
+          );
+        }
       },
     );
 
@@ -4755,6 +4939,7 @@ ModelProviderRequest _request({
   List<ModelProviderInput>? input,
   List<ModelProviderTool>? tools,
   int? maxOutputTokens,
+  ModelReasoningEffort? reasoningEffort,
   Map<String, Object?> providerOptions = const <String, Object?>{},
   ModelProviderToolChoice toolChoice = ModelProviderToolChoice.auto,
   ModelProviderAffinity? affinity,
@@ -4773,6 +4958,7 @@ ModelProviderRequest _request({
       ],
   toolChoice: toolChoice,
   maxOutputTokens: maxOutputTokens,
+  reasoningEffort: reasoningEffort,
   providerOptions: providerOptions,
   nativeState: null,
   affinity: affinity,

@@ -1383,6 +1383,7 @@ ModelProviderRequest _request(String semanticRouteSpoof) =>
       tools: const <ModelProviderTool>[],
       toolChoice: ModelProviderToolChoice.none,
       maxOutputTokens: null,
+      reasoningEffort: null,
       providerOptions: const <String, Object?>{},
       nativeState: null,
       affinity: null,

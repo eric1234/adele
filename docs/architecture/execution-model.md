@@ -260,6 +260,14 @@ and [`adele_model_provider`](../../packages/model_provider/) for that boundary;
 [ADRs 0024](../adr/0024-common-model-provider-capability.md) and
 [0025](../adr/0025-ordered-provider-native-model-items.md) record its rationale.
 
+Reasoning effort is a provider-neutral request control, distinct from opaque
+reasoning output or native continuation state. Application composition captures it
+with the Run's model adapter; every model/tool continuation retains that value,
+while a fresh adapter captures independently. Providers own exact lowering and
+support failures under the [request contract](../../packages/model_provider/README.md#reasoning-effort),
+not silent substitution. This does not introduce Session preferences or strategy-owned
+model configuration.
+
 ## Tools and proposals
 
 ### Identity and materialization
