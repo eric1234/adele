@@ -135,6 +135,37 @@ See [`capabilities`](../../packages/capabilities/README.md) for registry behavio
 and [profiles and configuration](profiles-and-configuration.md) for the separate
 configuration/preference model.
 
+### Model Catalog
+
+Model Catalog (`dev.adele.model.catalog`, major 1) is an independently optional
+callable Capability, separate from streaming ModelProvider inference. Its generated
+`modelCatalog` service returns a finite typed observation through `listModels()`.
+Inference availability does not imply discovery, and zero installed catalogs is a
+valid application configuration. Provider-reported model IDs retain exact spelling;
+optional display metadata remains unknown when absent. Inclusion is not confirmed
+compatibility with ADELE's text/tool inference workflow or future availability.
+
+The catalog registration declares an `AdeleProviderAssociation` to its exact sibling
+ModelProvider registration in the same activation. The provider owns the semantic
+configured-account relationship; the host validates provenance and captures the two
+exact registrations under the rules below. Identical Provider IDs, Plugin IDs, or
+configuration-context strings do not establish an association or account identity.
+`listModels()` accepts no routing or authority parameters: the resolved binding
+retains its connection, configured context, and generated service.
+
+Successful empty catalogs, declared semantic discovery failures, malformed transport,
+and unavailable resolution remain distinct. Explicit selection never falls back.
+Catalog access grants no inference, credential, or host execution authority.
+Snapshots are immutable observations, not application-lifetime caches: another call
+on an available route may observe changes without restart. Newly registered routes
+are available to fresh discovery/resolution, while retired access never migrates to
+a same-ID replacement. Prepared backend consumption uses the ordinary request-only
+path and its release/admitted-call lifetime rules below. The generic consumer does
+not yet expose sibling-association lookup; host/runtime registration evidence proves
+the relationship without inventing a future routing lookup API. Exact DTO bounds,
+failure codes, and generated APIs belong to
+[`model_provider`](../../packages/model_provider/README.md).
+
 ### Provider associations and Environment eligibility
 
 An advertised callable provider may explicitly associate with one direct sibling
