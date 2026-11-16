@@ -18,7 +18,16 @@ abstract interface class StartupCredentialReader {
   Future<void> releaseStartupRecords(StartupRecordsView snapshot);
 }
 
-/// One immutable, exact-installation startup projection, never an edit baseline.
+/// App-private fresh observation seam; it carries no credential authority.
+typedef CurrentRecordsLoader =
+    Future<StartupRecordsView> Function(
+      PreparedPluginCatalog catalog,
+      PreparedPluginInstallation installation,
+    );
+
+/// An immutable, exact-installation projection, never an edit baseline.
+/// Live observations reuse this validated data view without a startup authority
+/// batch; constructing a view alone never grants credential access.
 final class StartupRecordsView {
   factory StartupRecordsView.fromProjection(
     PreparedPluginCatalog catalog,

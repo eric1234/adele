@@ -106,7 +106,8 @@ Separately, it projects declared scalar values from the shared
 `startPlugin(settings: ...)` call before that backend advertises readiness.
 Backends opting into owned record types also receive a separately validated
 nonsecret `records` projection through the same startup call, not scalar Settings
-or a record service. See [startup records](#startup-records).
+or a mutable record service. Separately authorized runtime reads are described in
+[live record observations](#live-record-observations).
 Ready advertisements are adapted by `PluginBackendActivation.registerAdvertised`
 and `createRemoteExtensionAdapters` into existing registries, not an app-specific
 stock activation table.
@@ -458,8 +459,8 @@ authenticate a provider, change Chat selection, or alter temporary
 environment-variable startup. Restart captures updated records; the OpenAI backend
 then materializes its valid API-key records into independent provider routes without
 reading credentials. Explicit backend credential retrieval is separately scoped
-as described below. Record/credential changes require restart, not Settings Reload
-alone; record-based OAuth, Profiles,
+as described below. Applying OpenAI record/credential changes still requires restart,
+not Settings Reload or a nonsecret observation alone; record-based OAuth, Profiles,
 Agent configuration, narrower scopes, runtime restart commands, and live editor
 reconfiguration remain unimplemented.
 
@@ -489,7 +490,8 @@ values, host paths, document/baseline objects and handles. Bootstrap checks the
 snapshot's exact owner and startup admission fence before `startPlugin(records: ...)`;
 the runtime, shared host and public `AdeleBackendRecords` decoder each validate
 and defensively copy the bounded payload. It lasts for one backend generation,
-with no live update, record RPC, file watcher or automatic restart.
+without retroactive updates, file watching or automatic restart. Explicit live
+observations are separate from this startup capture.
 
 The stock OpenAI backend materializes valid API-key records into independent
 provider/context routes in that single backend generation. The plugin owns the
@@ -500,6 +502,39 @@ do not prove local key availability or successful authentication. The separately
 configured ChatGPT route remains independent, and normal Session execution still
 selects it explicitly. See the [configuration lifecycle](../docs/architecture/profiles-and-configuration.md#configured-openai-providers)
 for restart and no-fallback rules.
+
+### Live record observations
+
+`AdeleApplication` binds `configureCurrentRecordsLoader` to the same retained
+`GlobalSettingsService.loadCurrentRecords`. `ApplicationPluginBootstrap` installs
+[`BackendConfigurationHost`](lib/core/backend_configuration_host.dart) only for
+nonempty exact `consumesRecordTypes`, alongside the existing infrastructure services.
+Standalone composition must explicitly supply the live loader; a startup loader
+alone is not substituted. The caller sends no scope selectors. The host captures the
+actual connection, catalog and installation, rechecks generation access before and
+after the read, and validates the returned view's exact ownership.
+
+The worker shares startup projection's enumeration and schema validation, but never
+captures a startup credential batch or strict credential file identity. It does not
+call editable collection Reload or replace draft/save baselines. Worker serialization
+orders live reads with ordinary Settings CRUD across owners. Closing Settings fences
+admission and late successful live results while draining admitted work; backend
+retirement settles reverse requests without waiting for that drain.
+
+The public `AdeleConfigurationClient.currentRecords()` returns independently
+immutable records and a safe completeness flag, never raw host diagnostics. Invalid
+entries are omitted with host diagnostics retained; collection-wide or transport-bound
+failures remain failures, not empty snapshots. See the
+[public facade](../packages/plugin_backend_support/README.md#current-records) for the
+wire grammar and safe failures. The AOT
+[`backend_record_startup_integration_test.dart`](test/core/backend_record_startup_integration_test.dart)
+also exercises repeated persisted create/update/delete observations on one connection.
+
+This is observation only. It does not update scalar startup settings, UI subscriptions,
+OpenAI registrations, credentials, or existing provider/Run bindings. Startup credential
+authority below remains bound to its original capture, even after a backend observes
+new or edited records. Credential-authority renewal and dynamic provider application
+remain separate work.
 
 ### Backend credentials
 

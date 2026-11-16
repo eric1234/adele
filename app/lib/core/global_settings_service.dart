@@ -78,7 +78,21 @@ base class GlobalSettingsService {
   Future<StartupRecordsView> loadStartupRecords(
     PreparedPluginCatalog prepared,
     PreparedPluginInstallation installation,
-  ) {
+  ) => _loadRecordProjection(prepared, installation, startup: true);
+
+  /// Fresh read-only values for this exact installation's opted-in types.
+  /// Reuses the validated projection without capturing credential authority or
+  /// changing startup captures or UI edit baselines. Close fences late results.
+  Future<StartupRecordsView> loadCurrentRecords(
+    PreparedPluginCatalog prepared,
+    PreparedPluginInstallation installation,
+  ) => _loadRecordProjection(prepared, installation, startup: false);
+
+  Future<StartupRecordsView> _loadRecordProjection(
+    PreparedPluginCatalog prepared,
+    PreparedPluginInstallation installation, {
+    required bool startup,
+  }) {
     if (_closing != null) {
       return Future.error(StateError('The settings service is closed.'));
     }
@@ -103,14 +117,19 @@ base class GlobalSettingsService {
         }
       }
       return _enqueue<_StartupRecordValues>(
-        _Operation.loadStartupRecords,
+        _Operation.loadRecordProjection,
         startupRecordTypes: installation.backendConsumedRecordTypes,
         startupCredentialSlots: {
-          for (final declaration in installation.backendConsumedCredentialSlots)
-            if (declaration.slots.isNotEmpty)
-              declaration.recordType: declaration.slots,
+          if (startup)
+            for (final declaration
+                in installation.backendConsumedCredentialSlots)
+              if (declaration.slots.isNotEmpty)
+                declaration.recordType: declaration.slots,
         },
       ).then((loaded) {
+        if (!startup && _closing != null) {
+          throw StateError('The settings service is closed.');
+        }
         final view = StartupRecordsView.fromProjection(
           prepared,
           installation,
@@ -347,7 +366,7 @@ enum _Operation {
   save,
   reset,
   loadRecords,
-  loadStartupRecords,
+  loadRecordProjection,
   inspectStartupCredential,
   releaseStartupRecords,
   createRecord,
@@ -686,7 +705,7 @@ final class _SettingsOwner {
 
   Future<Object?> apply(_Request request) async {
     switch (request.operation) {
-      case _Operation.loadStartupRecords:
+      case _Operation.loadRecordProjection:
         final slots = request.startupCredentialSlots!;
         final types = {
           for (final id in request.startupRecordTypes!)

@@ -14,7 +14,9 @@ credential slot. Record creation, editing, and guarded deletion are implemented.
 Global Settings manages declared credential slots through the app-private association
 coordinator, with nonsecret TOML references and Linux x64 Secret Service storage.
 Opted-in backends receive immutable nonsecret record metadata at startup and may
-explicitly retrieve captured credentials through generation-scoped host access.
+explicitly observe fresh nonsecret records or retrieve captured credentials through
+separate generation-scoped host services. Observations do not apply provider changes
+or renew credential authority.
 OpenAI materializes independently addressable API-key providers from its records,
 with lazy credential retrieval on each invocation. Advertisement is not proof of
 successful authentication. Session provider/model selection, record-based OAuth,
@@ -285,13 +287,55 @@ There is no keyring operation, even when valid credential associations exist.
 The snapshot belongs to one exact installation and backend generation. Accepted
 application shutdown synchronously fences new starts before draining existing work;
 bootstrap rechecks this fence after pending reads so shutdown cannot spawn a late backend. Later
-record edits do not update running generations; a subsequent generation may capture
-new values. No live notification, record RPC, watcher or restart automation exists.
+record edits do not update this capture; a subsequent generation may capture
+new values. Running backends can separately request the live observations below.
+No live notification, watcher or restart automation exists.
 Record identity is neither configured-provider identity nor credential authority.
 The receiving plugin owns any interpretation into configured providers and live
 routing contexts. OpenAI uses that boundary for independent API-key routes; neither
 the generic snapshot transport nor the separate credential permission registers a
 provider on its behalf.
+
+### Live record observations
+
+Live application is the intended Settings direction, but observation and runtime
+application are separate boundaries. An already running backend can explicitly pull
+current nonsecret records through `AdeleConfigurationClient.currentRecords()`, using
+the existing generation-scoped infrastructure grant rather than a provider Capability.
+Its exact installation's nonempty `consumesRecordTypes` authorizes the same types as
+startup; there is no second permission list. Host composition fixes the installation,
+declarations and global scope. The request has no caller-selected identity, type,
+collection, credential or configuration-context selector.
+
+`GlobalSettingsService.loadCurrentRecords` reuses the same serialized worker,
+`ConfigurationRecordStore`, validated `StartupRecordsView` projection and bounded
+record grammar. It independently enumerates current persisted data without UI Reload,
+edit-baseline mutation, credential capture or vault access. Each delivered observation
+is a copied immutable value, ordered by collection, type and stable ID. Earlier values
+do not change; no implicit caching, polling, subscription or filesystem watcher exists.
+Serialization orders host-managed reads and writes, not an atomic multi-file snapshot
+against uncooperative external writers.
+
+Healthy authorized records survive malformed siblings. `isComplete: false` safely
+indicates omitted invalid entries in any scanned collection, including malformed or
+unknown types that cannot reliably be attributed to an owner. It exposes no filename,
+identity, count, raw exception or field value from those diagnostics. An all-invalid
+collection can therefore produce partial `[]`, distinct from clean empty `[]`.
+Whole-directory, scan-limit and bounded-projection failures reject the observation,
+never silently returning empty or truncated success. Detailed diagnostics stay host-side.
+
+The actual connection grant is checked at service entry and after worker completion.
+Retirement fences new admission and late successful publication, without pretending to
+cancel native work; Settings closure fences and drains its own admitted work. A copied
+projection cannot mint, refresh or retarget startup credential authority. Newly observed
+records are not thereby credential-authorized, and mutated old captures remain stale.
+
+Reading does not register or retire providers, change routes or invalidate a Run. The
+plugin owns interpretation and safe application; host resolution and exact captured
+execution bindings remain authoritative. Future application must not silently replace
+a running Run's account, endpoint, model or reasoning effort. Live credential renewal
+and dynamic provider registration are separate mechanisms, not implied by this API.
+OpenAI continues to use its startup configuration and the restart workflow below.
 
 ### Backend credential delivery
 
@@ -455,9 +499,10 @@ Reset removes a supported scalar override instead of writing a default. The dial
 loads current disk contents when opened; Reload deliberately replaces the editing
 snapshot and discards drafts. These snapshots are separate from startup consumer
 values. Opening or dismissing Settings does not navigate a Session or reconstruct
-its workbench. Saved changes require restarting ADELE, including for later Chat
-Runs and Source editors opened in the same application; no live notification or
-reconfiguration is implemented.
+its workbench. Applying scalar changes requires restarting ADELE, including for later
+Chat Runs and Source editors opened in the same application. Backends can explicitly
+observe fresh records as described above, but no live UI notification or automatic
+runtime reconfiguration is implemented.
 
 Malformed TOML and I/O failures prevent editing, rather than becoming an empty
 document. Invalid known overrides have no displayed effective value and can be

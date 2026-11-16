@@ -71,36 +71,34 @@ void main() {
       ).create();
       await observer.copy('${installed.path}/backend.aot');
       final collection = id == _independent ? 'runners' : 'jobs';
-      if (id != _empty) {
-        await File('${installed.path}/records.json').writeAsString(
-          jsonEncode({
-            'schemaVersion': 1,
-            'recordTypes': [
-              for (final suffix in ['record', if (id == _owner) 'private'])
-                {
-                  'id': '$id.$suffix',
-                  'collection': collection,
-                  'collectionLabel': collection,
-                  'label': suffix,
-                  'fields': [
-                    {
-                      'id': 'name',
-                      'label': 'Name',
-                      'type': 'string',
-                      'required': true,
-                    },
-                    {
-                      'id': 'enabled',
-                      'label': 'Enabled',
-                      'type': 'boolean',
-                      'required': false,
-                    },
-                  ],
-                },
-            ],
-          }),
-        );
-      }
+      await File('${installed.path}/records.json').writeAsString(
+        jsonEncode({
+          'schemaVersion': 1,
+          'recordTypes': [
+            for (final suffix in ['record', if (id == _owner) 'private'])
+              {
+                'id': '$id.$suffix',
+                'collection': collection,
+                'collectionLabel': collection,
+                'label': suffix,
+                'fields': [
+                  {
+                    'id': 'name',
+                    'label': 'Name',
+                    'type': 'string',
+                    'required': true,
+                  },
+                  {
+                    'id': 'enabled',
+                    'label': 'Enabled',
+                    'type': 'boolean',
+                    'required': false,
+                  },
+                ],
+              },
+          ],
+        }),
+      );
       await File('${installed.path}/settings.json').writeAsString(
         jsonEncode({
           'schemaVersion': 1,
@@ -123,7 +121,7 @@ void main() {
           'manifestVersion': 1,
           'metadata': {'id': id, 'version': '1', 'displayName': id},
           'settingsSchema': 'settings.json',
-          if (id != _empty) 'recordsSchema': 'records.json',
+          'recordsSchema': 'records.json',
           'components': {
             'backend': {
               'artifact': 'backend.aot',
@@ -232,6 +230,403 @@ void main() {
   );
 
   test(
+    'live AOT reads observe host CRUD on one connection and retain old snapshots',
+    () async {
+      final fixture = await prepare();
+      GlobalSettingsService? reader;
+      late GlobalSettingsService settings;
+      late RecordView work;
+      final liveLoads = <String>[];
+      final bootstrap = fixture.bootstrap(
+        (catalog, installation) async {
+          if (reader == null) {
+            reader = fixture.service(catalog);
+            settings = fixture.service(catalog);
+            work = await settings.createRecord(
+              RecordTypeId('$_owner.record'),
+              ConfigurationRecordId('work'),
+              {'name': 'Original', 'enabled': false},
+            );
+            for (final id in [_nested, _empty, _independent]) {
+              await settings.createRecord(
+                RecordTypeId('$id.record'),
+                ConfigurationRecordId('peer-${id.split('.').last}'),
+                {'name': id},
+              );
+            }
+            await settings.createRecord(
+              RecordTypeId('$_owner.private'),
+              ConfigurationRecordId('private'),
+              {'name': 'Not consumed'},
+            );
+          }
+          return reader!.loadStartupRecords(catalog, installation);
+        },
+        currentLoader: (catalog, installation) {
+          liveLoads.add(installation.metadata.id.value);
+          return reader!.loadCurrentRecords(catalog, installation);
+        },
+      );
+      await fixture.start(bootstrap);
+      expect(bootstrap.catalog!.issues, isEmpty);
+      expect(liveLoads, isEmpty);
+      final connection = _backend(bootstrap, _owner).connection!;
+      final unrelated = CapabilityKey(
+        id: CapabilityId('test.unrelated'),
+        majorVersion: 1,
+      );
+      const endpoint = _UnrelatedEndpoint();
+      final registration = bootstrap.registry.register(
+        provider: ProviderDescriptor(
+          id: ProviderId('test.unrelated.provider'),
+          capability: unrelated,
+          pluginId: 'test.unrelated',
+          displayName: 'Unrelated native provider',
+          serviceId: endpoint.serviceId,
+        ),
+        endpoint: endpoint,
+      );
+      addTearDown(registration.close);
+      final binding = bootstrap.registry.resolve(unrelated);
+      var registryChanges = 0;
+      final subscription = bootstrap.registry.changes.listen(
+        (_) => registryChanges++,
+      );
+      addTearDown(subscription.cancel);
+      void expectUnrelatedProviderUnchanged() {
+        expect(registryChanges, 0);
+        expect(registration.isClosed, isFalse);
+        expect(binding.endpointAs<_UnrelatedEndpoint>(), same(endpoint));
+        expect(
+          bootstrap.registry.resolve(unrelated).isSameRegistration(binding),
+          isTrue,
+        );
+        expect(bootstrap.registry.providersFor(unrelated), [binding.provider]);
+      }
+
+      final scalarBaseline = await settings.load();
+      final original = _record('work', {'name': 'Original', 'enabled': false});
+      expect(await _records(bootstrap, _owner), [original]);
+      final first = await _request(bootstrap, _owner, 'currentRecords');
+      expect(first, {
+        'records': [original],
+        'isComplete': true,
+      });
+      expectUnrelatedProviderUnchanged();
+      final created = await settings.createRecord(
+        RecordTypeId('$_owner.record'),
+        ConfigurationRecordId('zulu'),
+        {'name': 'Created'},
+      );
+      final afterCreate = await _request(bootstrap, _owner, 'currentRecords');
+      expect(afterCreate, {
+        'records': [
+          original,
+          _record('zulu', {'name': 'Created'}),
+        ],
+        'isComplete': true,
+      });
+      expectUnrelatedProviderUnchanged();
+      // Reads through a separate owner must not retire Settings edit baselines.
+      work = await settings.updateRecord(work, {'name': 'Updated'});
+      final updated = _record('work', {'name': 'Updated'});
+      final afterUpdate = await _request(bootstrap, _owner, 'currentRecords');
+      expect(afterUpdate, {
+        'records': [
+          updated,
+          _record('zulu', {'name': 'Created'}),
+        ],
+        'isComplete': true,
+      });
+      expectUnrelatedProviderUnchanged();
+      await settings.deleteRecord(created);
+      expect(
+        File('${fixture.roots.configurationRoot}/jobs/zulu.toml').existsSync(),
+        isFalse,
+      );
+      final afterDelete = await _request(bootstrap, _owner, 'currentRecords');
+      expect(afterDelete, {
+        'records': [updated],
+        'isComplete': true,
+      });
+      expectUnrelatedProviderUnchanged();
+      expect(await _request(bootstrap, _owner, 'retained'), {
+        'observations': [first, afterCreate, afterUpdate, afterDelete],
+        'immutable': true,
+        'exactRequests': true,
+      });
+      expect(await _records(bootstrap, _owner), [original]);
+      expect(
+        identical(_backend(bootstrap, _owner).connection, connection),
+        isTrue,
+      );
+      expect(connection.isClosed, isFalse);
+      expect(liveLoads, [_owner, _owner, _owner, _owner]);
+      for (final id in [_nested, _independent]) {
+        expect(await _request(bootstrap, id, 'currentRecords'), {
+          'records': [
+            _record(
+              'peer-${id.split('.').last}',
+              {'name': id},
+              owner: id,
+              collection: id == _independent ? 'runners' : 'jobs',
+            ),
+          ],
+          'isComplete': true,
+        });
+      }
+      _expectFailure(
+        await _request(bootstrap, _empty, 'currentRecords'),
+        'notAuthorized',
+      );
+      expect(liveLoads, isNot(contains(_empty)));
+      await settings.save(scalarBaseline, SettingId('$_owner.count'), 11);
+      expect(await _request(bootstrap, _owner, 'settings'), {
+        '$_owner.count': 7,
+      });
+      for (final backend in bootstrap.backends) {
+        expect(backend.state, InstalledBackendState.active);
+        expect(backend.connection!.capabilityExposures, isEmpty);
+        expect(backend.connection!.extensionExposures, isEmpty);
+      }
+      expectUnrelatedProviderUnchanged();
+    },
+  );
+
+  test('live service is absent without a configured loader', () async {
+    final fixture = await prepare();
+    GlobalSettingsService? reader;
+    final bootstrap = fixture.bootstrap((catalog, installation) {
+      reader ??= fixture.service(catalog);
+      return reader!.loadStartupRecords(catalog, installation);
+    });
+    await fixture.start(bootstrap);
+    for (final id in [_owner, _nested, _empty, _independent]) {
+      expect(_backend(bootstrap, id).state, InstalledBackendState.active);
+      _expectFailure(
+        await _request(bootstrap, id, 'currentRecords'),
+        'notAuthorized',
+      );
+    }
+    expect(Directory(fixture.roots.configurationRoot).existsSync(), isFalse);
+    expect(
+      () => bootstrap.configureCurrentRecordsLoader(reader!.loadCurrentRecords),
+      throwsStateError,
+    );
+  });
+
+  test(
+    'live reads distinguish partial and all-invalid from clean empty and unavailable',
+    () async {
+      final fixture = await prepare();
+      GlobalSettingsService? reader;
+      final bootstrap = fixture.bootstrap(
+        (catalog, installation) {
+          reader ??= fixture.service(catalog);
+          return reader!.loadStartupRecords(catalog, installation);
+        },
+        currentLoader: (catalog, installation) =>
+            reader!.loadCurrentRecords(catalog, installation),
+      );
+      await fixture.start(bootstrap);
+      expect(await _request(bootstrap, _owner, 'currentRecords'), {
+        'records': <Object?>[],
+        'isComplete': true,
+      });
+      expect(Directory(fixture.roots.configurationRoot).existsSync(), isFalse);
+      final healthy = await reader!.createRecord(
+        RecordTypeId('$_owner.record'),
+        ConfigurationRecordId('healthy'),
+        {'name': 'Healthy'},
+      );
+      final jobs = Directory('${fixture.roots.configurationRoot}/jobs');
+      final invalidFiles = <File, String>{
+        File('${jobs.path}/broken-marker.toml'): 'invalid = [',
+        File('${jobs.path}/unknown-marker.toml'):
+            'recordVersion = 1\nrecordType = "test.unknown.record"\n'
+            '[values]\nname = "Unknown marker"\n',
+        File('${jobs.path}/invalid-marker.toml'):
+            'recordVersion = 1\nrecordType = "$_owner.record"\n'
+            '[values]\nname = 42\n',
+      };
+      for (final entry in invalidFiles.entries) {
+        await entry.key.writeAsString(entry.value);
+      }
+      expect(await _request(bootstrap, _owner, 'currentRecords'), {
+        'records': [
+          _record('healthy', {'name': 'Healthy'}),
+        ],
+        'isComplete': false,
+      });
+      await reader!.deleteRecord(healthy);
+      expect(await _request(bootstrap, _owner, 'currentRecords'), {
+        'records': <Object?>[],
+        'isComplete': false,
+      });
+      for (final entry in invalidFiles.entries) {
+        expect(await entry.key.readAsString(), entry.value);
+        await entry.key.delete();
+      }
+      expect(await _request(bootstrap, _owner, 'currentRecords'), {
+        'records': <Object?>[],
+        'isComplete': true,
+      });
+      await jobs.delete();
+      await File(jobs.path).writeAsString('directory-unavailable-marker');
+      _expectFailure(
+        await _request(bootstrap, _owner, 'currentRecords'),
+        'configurationUnavailable',
+      );
+      expect(await _request(bootstrap, _independent, 'currentRecords'), {
+        'records': <Object?>[],
+        'isComplete': true,
+      });
+      expect(await _records(bootstrap, _owner), isEmpty);
+      expect(_backend(bootstrap, _owner).state, InstalledBackendState.active);
+    },
+  );
+
+  test(
+    'live raw selectors and mutation methods are rejected before loading',
+    () async {
+      final fixture = await prepare();
+      GlobalSettingsService? reader;
+      var liveLoads = 0;
+      final bootstrap = fixture.bootstrap((catalog, installation) {
+        reader ??= fixture.service(catalog);
+        return reader!.loadStartupRecords(catalog, installation);
+      });
+      bootstrap.configureCurrentRecordsLoader((catalog, installation) {
+        liveLoads++;
+        return reader!.loadCurrentRecords(catalog, installation);
+      });
+      await fixture.start(bootstrap);
+      for (final selectors in <Map<String, Object?>>[
+        {'owner': _nested},
+        {'collection': 'jobs'},
+        {'recordType': '$_owner.private'},
+        {'recordType': '$_nested.record'},
+        {'recordId': 'work'},
+        {'path': fixture.roots.configurationRoot},
+        {'records': []},
+        {'selector': null},
+      ]) {
+        _expectFailure(
+          await _request(bootstrap, _owner, 'attack', {'arguments': selectors}),
+          'notAuthorized',
+        );
+      }
+      _expectFailure(
+        await _request(bootstrap, _owner, 'attack', {
+          'method': 'deleteRecord',
+          'arguments': <String, Object?>{},
+        }),
+        'notAuthorized',
+      );
+      expect(liveLoads, 0);
+      expect(await _request(bootstrap, _owner, 'currentRecords'), {
+        'records': <Object?>[],
+        'isComplete': true,
+      });
+      expect(liveLoads, 1);
+    },
+  );
+
+  for (final closeBootstrap in [false, true]) {
+    test('retirement settles a pending live observation and suppresses late data '
+        '(bootstrap close: $closeBootstrap)', () async {
+      final fixture = await prepare();
+      GlobalSettingsService? reader;
+      late RecordView work;
+      final entered = Completer<StartupRecordsView>();
+      final release = Completer<void>();
+      final returned = Completer<void>();
+      var gateNext = false;
+      var liveLoads = 0;
+      final bootstrap = fixture.bootstrap(
+        (catalog, installation) async {
+          if (reader == null) {
+            reader = fixture.service(catalog);
+            work = await reader!.createRecord(
+              RecordTypeId('$_owner.record'),
+              ConfigurationRecordId('work'),
+              {'name': 'Before'},
+            );
+          }
+          return reader!.loadStartupRecords(catalog, installation);
+        },
+        currentLoader: (catalog, installation) async {
+          liveLoads++;
+          final observed = await reader!.loadCurrentRecords(
+            catalog,
+            installation,
+          );
+          if (gateNext) {
+            entered.complete(observed);
+            await release.future;
+            returned.complete();
+          }
+          return observed;
+        },
+      );
+      // Unblock even after an assertion failure before bootstrap/worker teardown.
+      addTearDown(() {
+        if (!release.isCompleted) release.complete();
+      });
+      await fixture.start(bootstrap);
+      final first = await _request(bootstrap, _owner, 'currentRecords');
+      await reader!.updateRecord(work, {'name': 'Late result'});
+      gateNext = true;
+      final connection = _backend(bootstrap, _owner).connection!;
+      final pending = _request(bootstrap, _owner, 'currentRecords')
+          .then<Object?>(
+            (result) => result,
+            onError: (Object error) {
+              expect(error, isA<PluginConnectionClosed>());
+              return {'closed': true};
+            },
+          );
+      expect((await entered.future).records, [
+        _record('work', {'name': 'Late result'}),
+      ]);
+      Future<void>? closing;
+      if (closeBootstrap) {
+        closing = bootstrap.close();
+      } else {
+        connection.revokeInfrastructureContext();
+      }
+      final result = await pending.timeout(const Duration(seconds: 10));
+      if (closeBootstrap && result is Map && result['closed'] == true) {
+        expect(connection.isClosed, isTrue);
+      } else {
+        _expectFailure(
+          Map<String, Object?>.from(result! as Map),
+          'generationUnavailable',
+        );
+      }
+      expect(returned.isCompleted, isFalse);
+      release.complete();
+      await returned.future;
+      await closing;
+      if (closeBootstrap) {
+        expect(connection.isClosed, isTrue);
+        expect(bootstrap.state, ApplicationPluginState.closed);
+      } else {
+        _expectFailure(
+          await _request(bootstrap, _owner, 'currentRecords'),
+          'generationUnavailable',
+        );
+        expect(await _request(bootstrap, _owner, 'retained'), {
+          'observations': [first],
+          'immutable': true,
+          'exactRequests': true,
+        });
+      }
+      expect(liveLoads, 2);
+    });
+  }
+
+  test(
     'directory failure is not empty and unrelated collection still starts',
     () async {
       final fixture = await prepare();
@@ -284,6 +679,77 @@ void main() {
       expect(bootstrap.state, ApplicationPluginState.closed);
       expect(Directory(fixture.roots.configurationRoot).existsSync(), isFalse);
     },
+  );
+
+  testWidgets(
+    'application default live loader observes separate Settings owner creation',
+    (tester) => tester.runAsync(() async {
+      final fixture = await prepare();
+      final appRuntime = NativeAdeleRuntime();
+      final storage = GatedCredentialStorage()..release.complete();
+      final credentials = CredentialService(storage);
+      late Future<void> starting;
+      try {
+        await tester.pumpWidget(
+          AdeleApplication(
+            createRuntime: () => appRuntime,
+            createCredentials: () => credentials,
+            configurationRoots: fixture.roots,
+            readChatGptConfiguration: () => null,
+            bootstrapPlugins: (plugins) => starting = fixture.start(plugins),
+          ),
+        );
+        await starting;
+        final plugins = appRuntime.plugins;
+        expect(plugins.state, ApplicationPluginState.ready);
+        expect(plugins.catalog!.issues, isEmpty);
+        final connection = _backend(plugins, _owner).connection!;
+        final empty = await _request(plugins, _owner, 'currentRecords');
+        expect(empty, {'records': <Object?>[], 'isComplete': true});
+        expect(
+          Directory(fixture.roots.configurationRoot).existsSync(),
+          isFalse,
+        );
+        // This owner uses the app's exact discovered declarations and real worker,
+        // while both startup and live reads retain the application's own loaders.
+        final settings = fixture.service(plugins.catalog!);
+        await settings.createRecord(
+          RecordTypeId('$_owner.record'),
+          ConfigurationRecordId('created-in-settings'),
+          {'name': 'From Settings', 'enabled': false},
+        );
+        final current = await _request(plugins, _owner, 'currentRecords');
+        expect(current, {
+          'records': [
+            _record('created-in-settings', {
+              'name': 'From Settings',
+              'enabled': false,
+            }),
+          ],
+          'isComplete': true,
+        });
+        expect(await _records(plugins, _owner), isEmpty);
+        expect(_backend(plugins, _owner).connection, same(connection));
+        expect(connection.isClosed, isFalse);
+        expect(await _request(plugins, _owner, 'retained'), {
+          'observations': [empty, current],
+          'immutable': true,
+          'exactRequests': true,
+        });
+        expect(storage.calls, 0);
+        expect(storage.entered.isCompleted, isFalse);
+        expect(
+          await tester.binding.handleRequestAppExit(),
+          AppExitResponse.exit,
+        );
+        expect(plugins.state, ApplicationPluginState.closed);
+        expect(tester.takeException(), isNull);
+      } finally {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await appRuntime.close();
+        await credentials.close();
+      }
+    }),
   );
 
   testWidgets(
@@ -425,6 +891,44 @@ Future<List<Object?>> _records(
   return (result['records'] as List).cast<Object?>();
 }
 
+Future<Map<String, Object?>> _request(
+  ApplicationPluginBootstrap bootstrap,
+  String id,
+  String method, [
+  Map<String, Object?> payload = const {},
+]) async => Map<String, Object?>.from(
+  await _backend(bootstrap, id).connection!.request(method, payload) as Map,
+);
+
+Map<String, Object> _record(
+  String id,
+  Map<String, Object> values, {
+  String owner = _owner,
+  String collection = 'jobs',
+}) => {
+  'collection': collection,
+  'type': '$owner.record',
+  'id': id,
+  'values': values,
+};
+
+void _expectFailure(Map<String, Object?> result, String kind) {
+  expect(result, {
+    'failure': kind,
+    'display': 'Configuration access failed ($kind).',
+  });
+}
+
+final class _UnrelatedEndpoint implements CapabilityEndpoint {
+  const _UnrelatedEndpoint();
+
+  @override
+  bool get isAvailable => true;
+
+  @override
+  String get serviceId => 'test.unrelated.service';
+}
+
 final class _Fixture {
   _Fixture(this.installations, this.roots, this.runtime, this.host);
 
@@ -448,14 +952,20 @@ final class _Fixture {
       PreparedPluginCatalog,
       PreparedPluginInstallation,
     )?
-    loader,
-  ) {
+    loader, {
+    Future<StartupRecordsView> Function(
+      PreparedPluginCatalog,
+      PreparedPluginInstallation,
+    )?
+    currentLoader,
+  }) {
     final bootstrap = ApplicationPluginBootstrap(
       CapabilityRegistry(),
       ExtensionRegistry(),
       loadSettings: (catalog) async =>
           PreparedSettingsSnapshot.resolve(catalog),
       loadRecords: loader,
+      loadCurrentRecords: currentLoader,
     );
     addTearDown(bootstrap.close);
     return bootstrap;

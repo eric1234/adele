@@ -9,6 +9,8 @@ facade lets generated plugin
 clients use declared context-free unary access without importing runtime packages.
 Its credential client reads explicitly declared record slots through the existing
 generation infrastructure grant, without native credential-store dependencies.
+Its configuration client obtains fresh nonsecret record observations through that
+grant, separately from startup snapshots and credential authority.
 Its generated local-state service provides path-only host location lookup.
 
 ## Bootstrap Settings
@@ -67,6 +69,53 @@ captured generation and does not change readiness or exposures.
 [`backend_records_test.dart`](test/backend_records_test.dart) covers strict shape,
 identities, duplicate rejection, all bounds, safe errors, and immutable copies.
 The shared host exercises real AOT transport and independent generation capture.
+
+## Current Records
+
+[`adele_backend_configuration.dart`](lib/adele_backend_configuration.dart), also
+exported from the package root, supplies the explicit pull-based read:
+
+```dart
+final configuration = AdeleConfigurationClient(
+  hostRequests: hostRequests,
+  hostInfrastructureContext: bootstrap['hostInfrastructureContext'] as String,
+);
+final observation = await configuration.currentRecords();
+```
+
+Send the backend ready handshake before awaiting a live read. Use the generation's
+existing multiplexer and continue handling its responses while the read is pending.
+The finite unary operation binds `adele.configuration`
+(`backendConfigurationServiceId`) and sends exactly an empty `currentRecords`
+payload. There is no owner, type, collection, context, credential selector or mutation
+operation. Only installed backends with nonempty validated `consumesRecordTypes`
+receive the application's service grant; binding a client does not confer access.
+
+`AdeleRecordObservation.records` reuses the bounded `{collection,type,id,values}`
+grammar above and is deeply copied and immutable. Each request reads current
+persisted configuration; earlier observations and bootstrap records never change.
+`isComplete` is false if any entries in the scanned collections could not be
+validated, including entries whose type cannot safely be determined. Healthy
+authorized records remain available. The flag reveals no failed identity or count.
+An empty list with `isComplete: true` is a trustworthy empty observation; an empty
+partial observation is not proof that records were deleted.
+
+Whole-collection I/O, enumeration or projection-bound failures throw rather than
+return empty or truncated success. `AdeleConfigurationFailure` retains only its
+`AdeleConfigurationFailureKind`: `notAuthorized`, `configurationUnavailable`,
+`generationUnavailable`, or `configurationAccessFailed`. The latter covers malformed
+responses and unexpected transport failures. Host diagnostics, paths, native errors,
+unknown TOML content, credential associations and secret values are never returned.
+The wire result is exactly `{'records': [...], 'isComplete': bool}` or
+`{'failure': '<fixed-kind>'}`; plain containers cross the AOT isolate boundary.
+
+Observation does not apply configuration, renew credentials, update provider
+registrations, or change captured Run/model bindings. The plugin chooses when it is
+safe to inspect and apply data through its own lifecycle. There is no implicit
+cache, subscription, polling, or restart. Retirement fences new reads and late
+successful publication; a retained client cannot extend its generation's grant.
+See [configuration observations](../../docs/architecture/profiles-and-configuration.md#live-record-observations)
+for the host boundary and credential separation.
 
 ## Host Calls
 

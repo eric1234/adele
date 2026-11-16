@@ -169,7 +169,9 @@ neither defines canonical strategy state nor grants execution or approval author
 Global declarative scalar settings and configuration records are implemented;
 Profiles remain accepted architecture ahead of implementation. Installed backends
 and frontends consume their own immutable startup settings, independently of
-component availability. Project identity/source, Tasks, Environment records/provider-state
+component availability. Declared backend record consumers can also explicitly obtain
+fresh nonsecret observations without applying provider or credential changes.
+Project identity/source, Tasks, Environment records/provider-state
 snapshots, Sessions, their semantic Environment associations, terminal Run records,
 and committed partial/final public activity use host-owned per-Project SQLite with provider-selected
 backing. Product and execution have separate schema owners and restore paths.

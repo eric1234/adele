@@ -116,6 +116,23 @@ void main() {
   Future<StartupRecordsView> project() =>
       service.loadStartupRecords(catalog, installation);
 
+  Future<StartupRecordsView> observe() =>
+      service.loadCurrentRecords(catalog, installation);
+
+  void testProjections(
+    String description,
+    Future<void> Function(Future<StartupRecordsView> Function() project) body, {
+    bool skip = false,
+  }) {
+    for (final current in [false, true]) {
+      test(
+        '${current ? 'current' : 'startup'}: $description',
+        () => body(current ? observe : project),
+        skip: skip,
+      );
+    }
+  }
+
   void expectNoStorageArtifacts() {
     expect(storage.calls, 0);
     expect(Directory(roots.localStateRoot).existsSync(), isFalse);
@@ -124,9 +141,9 @@ void main() {
     expect(File(service.filePath).existsSync(), isFalse);
   }
 
-  test(
+  testProjections(
     'projects exact opted-in declarations off UI, without credentials or writes',
-    () async {
+    (project) async {
       final files = [
         seed('alpha', type: _lastType),
         seed(
@@ -214,10 +231,13 @@ void main() {
     },
   );
 
-  test(
+  testProjections(
     'malformed siblings are omitted with app-only attributable diagnostics',
-    () async {
-      seed('healthy', suffix: '\n[credentials]\ntoken = "$_reference"\n');
+    (project) async {
+      final healthy = seed(
+        'healthy',
+        suffix: '\n[credentials]\ntoken = "$_reference"\n',
+      );
       final badFiles = [
         seed(
           'bad-reference',
@@ -263,6 +283,14 @@ void main() {
       for (final file in badFiles) {
         expect(file.readAsBytesSync(), before[file.path]);
       }
+      healthy.deleteSync();
+      final invalidOnly = await project();
+      expect(invalidOnly.records, isEmpty);
+      expect(
+        invalidOnly.diagnostics.map((item) => item.fileName),
+        snapshot.diagnostics.map((item) => item.fileName),
+      );
+      expect(snapshot.records.single['id'], 'healthy');
       expectNoStorageArtifacts();
     },
   );
@@ -275,9 +303,14 @@ void main() {
       final empty = catalog.installations.singleWhere(
         (entry) => entry.metadata.id.value == 'dev.example.empty',
       );
-      final snapshot = await service.loadStartupRecords(catalog, empty);
-      expect(snapshot.recordsForInstallation(catalog, empty), isEmpty);
-      expect(snapshot.diagnostics, isEmpty);
+      for (final load in [
+        service.loadStartupRecords,
+        service.loadCurrentRecords,
+      ]) {
+        final snapshot = await load(catalog, empty);
+        expect(snapshot.recordsForInstallation(catalog, empty), isEmpty);
+        expect(snapshot.diagnostics, isEmpty);
+      }
       expect(obstruction.readAsStringSync(), 'blocked');
       expectNoStorageArtifacts();
       await service.close();
@@ -285,12 +318,16 @@ void main() {
         service.loadStartupRecords(catalog, empty),
         throwsStateError,
       );
+      await expectLater(
+        service.loadCurrentRecords(catalog, empty),
+        throwsStateError,
+      );
     },
   );
 
-  test(
+  testProjections(
     'absent opted-in collections return empty without creating directories',
-    () async {
+    (project) async {
       final snapshot = await project();
       expect(snapshot.records, isEmpty);
       expect(snapshot.diagnostics, isEmpty);
@@ -308,27 +345,26 @@ void main() {
       final copied = rediscovered.installations.singleWhere(
         (entry) => entry.metadata.id.value == _owner,
       );
-      await expectLater(
-        service.loadStartupRecords(catalog, copied),
-        throwsArgumentError,
-      );
-      await expectLater(
-        service.loadStartupRecords(rediscovered, installation),
-        throwsArgumentError,
-      );
-      await expectLater(
-        service.loadStartupRecords(rediscovered, copied),
-        throwsArgumentError,
-      );
+      for (final load in [
+        service.loadStartupRecords,
+        service.loadCurrentRecords,
+      ]) {
+        await expectLater(load(catalog, copied), throwsArgumentError);
+        await expectLater(
+          load(rediscovered, installation),
+          throwsArgumentError,
+        );
+        await expectLater(load(rediscovered, copied), throwsArgumentError);
+      }
       // Matching semantic IDs and paths cannot substitute for the captured schema.
       expect(Directory(roots.configurationRoot).existsSync(), isFalse);
       expectNoStorageArtifacts();
     },
   );
 
-  test(
+  testProjections(
     'projection preserves scalar and record UI baselines and pending edits',
-    () async {
+    (project) async {
       seed('first');
       seed('second');
       final records = await service.loadRecords(_jobs);
@@ -359,9 +395,9 @@ void main() {
     skip: !Platform.isLinux,
   );
 
-  test(
+  testProjections(
     'collection failure rejects projection without retiring UI handles',
-    () async {
+    (project) async {
       final file = seed('first');
       seed('healthy', type: _archiveType, collection: 'archive');
       final original = file.readAsStringSync();
@@ -385,9 +421,9 @@ void main() {
     skip: !Platform.isLinux,
   );
 
-  test(
+  testProjections(
     'projection never adopts an external replacement as an editing baseline',
-    () async {
+    (project) async {
       final file = seed('first');
       final baseline = (await service.loadRecords(_jobs)).records.single;
       seed('first', values: 'name = "External"\n');
@@ -402,9 +438,9 @@ void main() {
     skip: !Platform.isLinux,
   );
 
-  test(
-    'oversized startup payload fails without retiring an editable record',
-    () async {
+  testProjections(
+    'oversized payload fails without retiring an editable record',
+    (project) async {
       final text = 'x' * (AdeleBackendRecords.maxStringLength + 1);
       final file = seed('first', values: 'name = "$text"\n');
       final baseline = (await service.loadRecords(_jobs)).records.single;
@@ -413,6 +449,54 @@ void main() {
       expect(file.readAsStringSync(), contains(text));
       final saved = await service.updateRecord(baseline, {'name': 'Bounded'});
       expect(saved.values, {'name': 'Bounded'});
+    },
+    skip: !Platform.isLinux,
+  );
+
+  test(
+    'current reads observe real CRUD across owners without changing prior views',
+    () async {
+      final startup = await project();
+      final empty = await observe();
+      final first = await service.createRecord(
+        RecordTypeId(_firstType),
+        ConfigurationRecordId('first'),
+        {'name': 'Created'},
+      );
+      final created = await observe();
+      expect(created.records.single['values'], {'name': 'Created'});
+      final other = GlobalSettingsService(
+        catalog: scalars,
+        records: catalog.records,
+        roots: roots,
+      );
+      addTearDown(other.close);
+      final second = await other.createRecord(
+        RecordTypeId(_lastType),
+        ConfigurationRecordId('second'),
+        {'name': 'Other owner'},
+      );
+      final both = await observe();
+      expect(both.records.map((record) => record['id']), ['first', 'second']);
+      final updating = other.updateRecord(second, {
+        'name': 'Updated elsewhere',
+      });
+      final reading = observe();
+      final updated = await updating;
+      final changed = await reading;
+      expect(changed.records.last['values'], updated.values);
+      final deleting = other.deleteRecord(updated);
+      final readingDeleted = observe();
+      await deleting;
+      expect((await readingDeleted).records.single['id'], 'first');
+      await service.deleteRecord(first);
+      expect((await observe()).records, isEmpty);
+      expect(startup.records, isEmpty);
+      expect(empty.records, isEmpty);
+      expect(created.records.single['values'], {'name': 'Created'});
+      expect(both.records.last['values'], {'name': 'Other owner'});
+      expect(changed.records.last['values'], {'name': 'Updated elsewhere'});
+      expect(storage.calls, 0);
     },
     skip: !Platform.isLinux,
   );
@@ -540,7 +624,7 @@ void main() {
   );
 
   test(
-    'lock-blocked projection shares admission and shutdown drains pending edits',
+    'lock-blocked projections drain edits but close fences live publication',
     () async {
       seed('first');
       final baseline = (await service.loadRecords(_jobs)).records.single;
@@ -574,6 +658,12 @@ void main() {
         projected = true;
         return value;
       });
+      var observed = false;
+      final observing = observe().then((value) {
+        observed = true;
+        return value;
+      });
+      final rejected = expectLater(observing, throwsStateError);
       final updating = service.updateRecord(baseline, {'name': 'Drained edit'});
       final saving = other.save(scalar, enabled, true);
       var closed = false;
@@ -582,8 +672,10 @@ void main() {
         other.close(),
       ]).then((_) => closed = true);
       await expectLater(project(), throwsStateError);
+      await expectLater(observe(), throwsStateError);
       await Future<void>.delayed(Duration.zero);
       expect(projected, isFalse);
+      expect(observed, isFalse);
       expect(closed, isFalse);
       expect(
         IsolateNameServer.lookupPortByName('dev.adele.global-settings-owner'),
@@ -593,10 +685,12 @@ void main() {
       await process.stdin.flush();
       expect(await process.exitCode, 0, reason: await stderr);
       expect((await projecting).records.single['values'], {'name': 'Original'});
+      await rejected;
       expect((await updating).values, {'name': 'Drained edit'});
       expect((await saving).values[enabled]!.value, true);
       await closing;
       expect(closed, isTrue);
+      expect(observed, isFalse);
       expect(
         IsolateNameServer.lookupPortByName('dev.adele.global-settings-owner'),
         isNull,

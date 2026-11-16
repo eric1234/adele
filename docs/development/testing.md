@@ -451,6 +451,24 @@ iteration after bootstrap uses:
 flutter test --no-pub --concurrency 1 test/core/startup_record_projection_test.dart test/core/backend_record_startup_integration_test.dart test/core/openai_record_startup_integration_test.dart test/core/application_plugin_bootstrap_test.dart
 ```
 
+Live nonsecret reads reuse these projection and AOT suites. The projection suite
+also checks current reads against separate Settings owners, concurrent writes,
+unchanged UI edit baselines, all-invalid partial results and close-time publication
+fencing. The AOT observer retains earlier immutable observations while ordinary host
+CRUD creates, updates and deletes records on the same connection. It also exercises
+missing grants, strict selector-free requests, partial versus empty/unavailable
+configuration, and pending-read retirement. No fixture substitutes an in-memory
+persistence map. `app/test/core/backend_configuration_host_test.dart` checks exact
+installation binding, fixed diagnostic redaction and dispatcher lifetime; public
+`backend_configuration_test.dart` belongs to the existing backend-support target.
+The startup credential-authority suite checks that live observations neither obtain
+credential authority nor refresh old captures. Focused host iteration adds:
+
+```sh
+# app/
+flutter test --no-pub --concurrency 1 test/core/backend_configuration_host_test.dart test/core/startup_credential_authority_test.dart test/core/backend_credential_integration_test.dart
+```
+
 Retain existing Settings/credential service and application lifecycle suites,
 Source/Review retention tests and normal configured-provider tests.
 Production backend startup packaging changes also require the maintained

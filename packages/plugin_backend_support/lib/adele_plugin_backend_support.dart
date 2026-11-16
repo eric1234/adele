@@ -5,6 +5,7 @@ import 'dart:async';
 
 import 'package:adele_contract/adele_contract.dart';
 
+export 'adele_backend_configuration.dart';
 export 'adele_backend_credentials.dart';
 export 'adele_backend_records.dart';
 export 'adele_backend_settings.dart';
