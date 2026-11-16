@@ -11,6 +11,37 @@ This public, pure-Dart package owns two separate provider-neutral contracts:
 Neither contract imports concrete providers or host implementations. An inference
 provider need not advertise a catalog, and the application needs no catalog to run.
 
+## Reasoning Effort
+
+`ModelProviderRequest.reasoningEffort` carries the provider-neutral
+`ModelReasoningEffort` values `none`, `minimal`, `low`, `medium`, `high`, `xhigh`,
+and `max`. Null means unspecified and leaves provider defaults unchanged; `none`
+is an explicit request, not absence. An explicit value must be honored or fail,
+never silently ignored, downgraded, or replaced. The vocabulary does not guarantee
+that every provider, route, or model supports every value. Concrete lowering and
+support failures belong to the provider.
+
+Effort is independent of model identity, reasoning-summary presentation, and
+output-token limits. Equal enum values do not promise equal computation, latency,
+or cost across providers. It is invocation configuration, not tool authority,
+an orchestration strategy, or Session identity.
+
+Effort uses the existing generated inference transport, separate from
+`providerOptions`, routing affinity, native continuation state, and catalog
+metadata. The wire carries the exact enum name or explicit null and rejects
+unknown values or malformed types. Request collection and structured-data
+snapshots retain their existing immutability guarantees.
+Like other nullable generated DTO fields, the constructor argument and wire key
+are required; callers supply null when unspecified. Prepared consumers must be
+rebuilt together under the existing pre-release transport policy, without
+mixed-schema compatibility fallbacks.
+
+The application adapter captures effort immutably alongside its selected model
+and forwards it for every invocation, including tool continuations; new adapters
+capture independently. This adds no Session preference, model preset, persistence,
+selection UI, or catalog support inference. See the
+[model invocation boundary](../../docs/architecture/execution-model.md#model-invocation).
+
 ## Model Catalog
 
 `listModels()` takes no arguments. Its exact resolved Capability binding selects

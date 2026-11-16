@@ -5,6 +5,30 @@ import 'package:test/test.dart';
 void main() {
   final ScriptedCommonModelProvider provider = ScriptedCommonModelProvider();
 
+  for (final ModelReasoningEffort effort in ModelReasoningEffort.values) {
+    test('reasoning effort ${effort.name} is explicitly unsupported', () async {
+      final List<ModelProviderEvent> events = await provider
+          .invoke(_request(reasoningEffort: effort))
+          .toList();
+      expect(events, hasLength(1));
+      expect(events.single.kind, ModelProviderEventKind.terminal);
+      expect(events.single.observation, isNull);
+      expect(events.single.output, isNull);
+      expect(
+        events.single.terminal!.settlement,
+        ModelProviderSettlement.failed,
+      );
+      expect(
+        events.single.terminal!.failure!.kind,
+        ModelProviderFailureKind.unsupportedRequest,
+      );
+      expect(
+        events.single.terminal!.failure!.providerCode,
+        'unsupported_reasoning_effort',
+      );
+    });
+  }
+
   test('tool choice none completes without proposing a tool', () async {
     final List<ModelProviderEvent> events = await provider
         .invoke(_request(toolChoice: ModelProviderToolChoice.none))
@@ -526,6 +550,7 @@ ModelProviderRequest _request({
   ModelProviderToolChoice toolChoice = ModelProviderToolChoice.auto,
   List<ModelProviderInput>? input,
   int? maxOutputTokens,
+  ModelReasoningEffort? reasoningEffort,
 }) => ModelProviderRequest(
   model: ScriptedCommonModelProvider.model,
   instructions: '',
@@ -539,6 +564,7 @@ ModelProviderRequest _request({
   ],
   toolChoice: toolChoice,
   maxOutputTokens: maxOutputTokens,
+  reasoningEffort: reasoningEffort,
   providerOptions: const <String, Object?>{},
   nativeState: null,
   affinity: null,

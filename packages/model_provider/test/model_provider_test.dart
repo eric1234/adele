@@ -30,6 +30,79 @@ void main() {
     expect(request.nativeState!.data, const <String, Object?>{'cursor': 'abc'});
   });
 
+  for (final ModelReasoningEffort? effort in <ModelReasoningEffort?>[
+    null,
+    ...ModelReasoningEffort.values,
+  ]) {
+    test('generated request round-trips reasoning effort $effort', () async {
+      final ModelProviderRequest request = _request(reasoningEffort: effort);
+      final _EventService service = _EventService(_terminal());
+      final Map<String, Object?> frame = await _dispatchEvent(
+        service,
+        request: request,
+        mutateRequest: (wire) {
+          expect(wire, containsPair('reasoningEffort', effort?.name));
+        },
+      );
+
+      expect(frame['kind'], 'streamItem');
+      final ModelProviderRequest decoded = service.request!;
+      expect(decoded.reasoningEffort, effort);
+      expect(decoded.model, request.model);
+      expect(decoded.instructions, request.instructions);
+      expect(
+        decoded.input.map((item) => item.kind),
+        request.input.map((item) => item.kind),
+      );
+      expect(decoded.input[1].toolProposal!.callId, 'call-1');
+      expect(decoded.input[1].itemId, 'item-9');
+      expect(decoded.input[1].nativeMetadata!.kind, 'item-v1');
+      expect(decoded.tools.single.name, request.tools.single.name);
+      expect(
+        decoded.tools.single.argumentsSchema,
+        request.tools.single.argumentsSchema,
+      );
+      expect(decoded.toolChoice, request.toolChoice);
+      expect(decoded.maxOutputTokens, request.maxOutputTokens);
+      expect(decoded.providerOptions, request.providerOptions);
+      expect(decoded.nativeState!.data, request.nativeState!.data);
+      expect(decoded.affinity, isNull);
+      expect(() => decoded.input.clear(), throwsUnsupportedError);
+      expect(() => decoded.tools.clear(), throwsUnsupportedError);
+      expect(() => decoded.providerOptions.clear(), throwsUnsupportedError);
+    });
+  }
+
+  test('generated request rejects malformed reasoning effort', () async {
+    for (final Object invalid in <Object>[
+      '',
+      'unknown',
+      'HIGH',
+      ' high ',
+      0,
+      true,
+      <Object?>[],
+      <String, Object?>{},
+    ]) {
+      final _EventService service = _EventService(_terminal());
+      final Map<String, Object?> frame = await _dispatchEvent(
+        service,
+        mutateRequest: (wire) => wire['reasoningEffort'] = invalid,
+      );
+      expect(frame['kind'], 'streamFailure');
+      expect(service.request, isNull);
+    }
+    final _EventService service = _EventService(_terminal());
+    expect(
+      (await _dispatchEvent(
+        service,
+        mutateRequest: (wire) => wire.remove('reasoningEffort'),
+      ))['kind'],
+      'streamFailure',
+    );
+    expect(service.request, isNull);
+  });
+
   test('consecutive native-only items remain distinct and ordered', () {
     final List<ModelProviderInput> input = <ModelProviderInput>[
       _nativeInput('native-1', 'first-v1'),
@@ -781,6 +854,7 @@ void main() {
         'nested': nestedOptions,
         'list': optionList,
       };
+      ModelReasoningEffort effort = ModelReasoningEffort.high;
       final ModelProviderRequest request = ModelProviderRequest(
         model: 'scripted-v1',
         instructions: '',
@@ -788,6 +862,7 @@ void main() {
         tools: tools,
         toolChoice: ModelProviderToolChoice.auto,
         maxOutputTokens: null,
+        reasoningEffort: effort,
         providerOptions: providerOptions,
         nativeState: null,
         affinity: null,
@@ -798,6 +873,7 @@ void main() {
       ).invoke(request);
 
       input.clear();
+      effort = ModelReasoningEffort.none;
       tools.clear();
       providerOptions['late'] = true;
       nestedOptions['enabled'] = false;
@@ -816,6 +892,9 @@ void main() {
       await stream.toList();
 
       final Map<String, Object?> encoded = channel.encodedRequest!;
+      expect(effort, ModelReasoningEffort.none);
+      expect(request.reasoningEffort, ModelReasoningEffort.high);
+      expect(encoded['reasoningEffort'], 'high');
       final List<Object?> encodedInput = encoded['input']! as List<Object?>;
       expect(encodedInput, hasLength(2));
       expect(
@@ -972,74 +1051,78 @@ ModelProviderRequest _optionsRequest(Map<String, Object?> options) =>
       tools: const <ModelProviderTool>[],
       toolChoice: ModelProviderToolChoice.none,
       maxOutputTokens: null,
+      reasoningEffort: null,
       providerOptions: options,
       nativeState: null,
       affinity: null,
     );
 
-ModelProviderRequest _request({ModelProviderAffinity? affinity}) =>
-    ModelProviderRequest(
-      model: 'scripted-v1',
-      instructions: '',
-      input: <ModelProviderInput>[
-        ModelProviderInput(
-          kind: ModelProviderInputKind.message,
-          itemId: null,
-          message: ModelProviderMessage(
-            role: ModelProviderMessageRole.user,
-            content: <ModelProviderContent>[
-              ModelProviderContent(
-                kind: ModelProviderContentKind.text,
-                text: 'Inspect.',
-              ),
-            ],
+ModelProviderRequest _request({
+  ModelProviderAffinity? affinity,
+  ModelReasoningEffort? reasoningEffort,
+}) => ModelProviderRequest(
+  model: 'scripted-v1',
+  instructions: '',
+  input: <ModelProviderInput>[
+    ModelProviderInput(
+      kind: ModelProviderInputKind.message,
+      itemId: null,
+      message: ModelProviderMessage(
+        role: ModelProviderMessageRole.user,
+        content: <ModelProviderContent>[
+          ModelProviderContent(
+            kind: ModelProviderContentKind.text,
+            text: 'Inspect.',
           ),
-          toolProposal: null,
-          toolOutcome: null,
-          nativeMetadata: null,
-        ),
-        ModelProviderInput(
-          kind: ModelProviderInputKind.toolProposal,
-          itemId: 'item-9',
-          message: null,
-          toolProposal: ModelProviderToolProposal(
-            callId: 'call-1',
-            name: 'inspect_resource',
-            arguments: const <String, Object?>{'uri': 'file:///tmp/a'},
-          ),
-          toolOutcome: null,
-          nativeMetadata: _native('item'),
-        ),
-        ModelProviderInput(
-          kind: ModelProviderInputKind.toolOutcome,
-          itemId: null,
-          message: null,
-          toolProposal: null,
-          toolOutcome: ModelProviderToolOutcome(
-            callId: 'call-1',
-            status: ModelProviderToolOutcomeStatus.success,
-            content: 'ok',
-          ),
-          nativeMetadata: null,
-        ),
-      ],
-      tools: <ModelProviderTool>[
-        ModelProviderTool(
-          name: 'inspect_resource',
-          description: 'Inspect one resource.',
-          argumentsSchema: const <String, Object?>{'type': 'object'},
-        ),
-      ],
-      toolChoice: ModelProviderToolChoice.auto,
-      maxOutputTokens: 100,
-      providerOptions: const <String, Object?>{'mode': 'fixture'},
-      affinity: affinity,
-      nativeState: ModelProviderNativeEnvelope(
-        kind: 'cursor-v1',
-        compatibility: const <String, Object?>{'model': 'scripted-v1'},
-        data: const <String, Object?>{'cursor': 'abc'},
+        ],
       ),
-    );
+      toolProposal: null,
+      toolOutcome: null,
+      nativeMetadata: null,
+    ),
+    ModelProviderInput(
+      kind: ModelProviderInputKind.toolProposal,
+      itemId: 'item-9',
+      message: null,
+      toolProposal: ModelProviderToolProposal(
+        callId: 'call-1',
+        name: 'inspect_resource',
+        arguments: const <String, Object?>{'uri': 'file:///tmp/a'},
+      ),
+      toolOutcome: null,
+      nativeMetadata: _native('item'),
+    ),
+    ModelProviderInput(
+      kind: ModelProviderInputKind.toolOutcome,
+      itemId: null,
+      message: null,
+      toolProposal: null,
+      toolOutcome: ModelProviderToolOutcome(
+        callId: 'call-1',
+        status: ModelProviderToolOutcomeStatus.success,
+        content: 'ok',
+      ),
+      nativeMetadata: null,
+    ),
+  ],
+  tools: <ModelProviderTool>[
+    ModelProviderTool(
+      name: 'inspect_resource',
+      description: 'Inspect one resource.',
+      argumentsSchema: const <String, Object?>{'type': 'object'},
+    ),
+  ],
+  toolChoice: ModelProviderToolChoice.auto,
+  maxOutputTokens: 100,
+  reasoningEffort: reasoningEffort,
+  providerOptions: const <String, Object?>{'mode': 'fixture'},
+  affinity: affinity,
+  nativeState: ModelProviderNativeEnvelope(
+    kind: 'cursor-v1',
+    compatibility: const <String, Object?>{'model': 'scripted-v1'},
+    data: const <String, Object?>{'cursor': 'abc'},
+  ),
+);
 
 ModelProviderEvent _proposal(String callId, String itemId) =>
     ModelProviderEvent(

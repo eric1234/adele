@@ -25,7 +25,7 @@ const String _semanticMetadataKind = 'openai.responses.semantic-item.v1';
 const int _maximumErrorBodyBytes = 16 * 1024;
 
 // Exact maintained IDs with summary support in OpenAI's reasoning guide and
-// first-party Codex catalog; unknown models retain the previous request policy.
+// first-party Codex catalog; explicit effort is lowered independently below.
 // https://developers.openai.com/api/docs/guides/reasoning#reasoning-summaries
 // https://github.com/openai/codex/blob/7f01a84effccef40d4726c3ca12e6c839ec98d7a/codex-rs/models-manager/models.json
 const Set<String> _reasoningSummaryModels = <String>{
@@ -865,6 +865,19 @@ Map<String, Object?> _lowerRequest(
       'The experimental ChatGPT Responses profile does not support an explicit output-token cap.',
     );
   }
+  final Map<String, Object?> reasoning = <String, Object?>{
+    if (_reasoningSummaryModels.contains(request.model)) 'summary': 'auto',
+    if (request.reasoningEffort case final ModelReasoningEffort effort)
+      'effort': switch (effort) {
+        ModelReasoningEffort.none => 'none',
+        ModelReasoningEffort.minimal => 'minimal',
+        ModelReasoningEffort.low => 'low',
+        ModelReasoningEffort.medium => 'medium',
+        ModelReasoningEffort.high => 'high',
+        ModelReasoningEffort.xhigh => 'xhigh',
+        ModelReasoningEffort.max => 'max',
+      },
+  };
   return <String, Object?>{
     'model': request.model,
     'instructions': request.instructions,
@@ -889,8 +902,7 @@ Map<String, Object?> _lowerRequest(
     'parallel_tool_calls': true,
     if (request.maxOutputTokens != null)
       'max_output_tokens': request.maxOutputTokens,
-    if (_reasoningSummaryModels.contains(request.model))
-      'reasoning': <String, Object?>{'summary': 'auto'},
+    if (reasoning.isNotEmpty) 'reasoning': reasoning,
     'include': <String>['reasoning.encrypted_content'],
     'store': false,
     'stream': true,

@@ -1524,6 +1524,7 @@ ModelProviderRequest _request({ModelProviderAffinity? affinity}) =>
       tools: const <ModelProviderTool>[],
       toolChoice: ModelProviderToolChoice.auto,
       maxOutputTokens: null,
+      reasoningEffort: null,
       providerOptions: const <String, Object?>{},
       nativeState: null,
       affinity: affinity,

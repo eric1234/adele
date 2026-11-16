@@ -120,6 +120,7 @@ void main() {
                     ? ModelProviderToolChoice.auto
                     : ModelProviderToolChoice.none,
                 maxOutputTokens: null,
+                reasoningEffort: null,
                 providerOptions: const <String, Object?>{},
                 nativeState: null,
                 affinity: null,
