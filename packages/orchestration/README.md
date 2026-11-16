@@ -61,11 +61,35 @@ The app-private `ToolAuthorizationPolicyComposer` adapts contributions to intern
 `ToolPolicy`; aggregation and binding lifetimes are defined in
 [authorization composition](../../docs/architecture/execution-model.md#authorization-composition).
 The normal Session path explicitly combines registry contributions with the
-temporary legacy `ApprovalGatedToolPolicy`. Remote policy hosting and policy
-configuration are not implemented by this native/in-process foundation.
+temporary legacy `ApprovalGatedToolPolicy`. There is no production policy plugin
+or policy configuration.
 
-`test/tool_authorization_test.dart` covers the public contract; application composer
-and Session execution tests cover precedence, lifecycle, and real tool decisions.
+`remote_tool_authorization.dart` is the separate generated transport library.
+`RemoteToolAuthorizationRequest.fromLocal` / `toLocal` preserve all seven public
+request fields, using structured canonical arguments and the existing model-tool
+`RemoteEffectDescription` JSON projection. Semantic constructors and generated
+codecs reject malformed payloads rather than supplying defaults.
+`RemoteToolAuthorizationPolicyService.evaluate(routeId, request)` returns the
+strict `RemoteToolAuthorizationDecision` enum, with exact public conversions for
+Allow, Deny, Ask, and Abstain. Unknown response values are protocol failures.
+
+Ordinary AOT backends advertise the existing extension point, an independent
+Extension ID, generated `remoteToolAuthorizationPolicyServiceId`, and configuration
+context. The only supported metadata is `{routeId: <string>}`: 1-256 ASCII characters,
+starting with an alphanumeric character and otherwise containing only alphanumerics,
+`.`, `_`, `:`, or `-`. Each route identifies one policy in that configured service;
+multiple contributions may share a backend generation. The app's
+`RemoteToolAuthorizationPolicyAdapter` retains the exact advertisement and uses no
+operation-scoped host services or transmitted invocation token. The canonical
+[authorization boundary](../../docs/architecture/execution-model.md#authorization-composition)
+defines authority, lifecycle, host composition, and completed-decision retention.
+
+`test/tool_authorization_test.dart` and `test/remote_tool_authorization_test.dart`
+cover public values and generated round trips. Application composer and Session
+execution tests cover precedence and real tool decisions;
+[`remote_tool_authorization_integration_test.dart`](../../app/test/core/remote_tool_authorization_integration_test.dart)
+compiles the actual shared host and a test-only AOT backend to exercise generic
+activation, routing, lifecycle failure, and the host/kernel policy gate.
 
 ## Session Feedback
 

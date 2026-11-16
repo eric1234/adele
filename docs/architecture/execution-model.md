@@ -360,9 +360,40 @@ The internal `ToolPolicy` accepts synchronous or asynchronous results;
 `ToolPolicyGate` still owns effect preflight and Allow/Deny/Ask conversion into
 execution eligibility, denial, or the existing approval interruption.
 
-This foundation supports native/in-process contributions only. Remote/AOT policy
-transport, stock policy migration/installation, and policy configuration remain
-deferred; no YOLO mode is enabled.
+Independent AOT backends contribute through the same extension point using ordinary
+`AdeleExtensionExposure` readiness advertisements and the application's generic
+remote adapter registry. Each exposure retains its independent Extension ID,
+connection-bound configuration context, generated `toolAuthorizationPolicy` service,
+and required opaque `routeId`. Plugin, extension, configuration, and route identities
+are distinct. One backend generation can advertise multiple policies; none is a
+default provider or assigned a priority. The adapter rejects unsupported service
+identities or metadata before registration.
+
+The generated unary transport in
+[`remote_tool_authorization.dart`](../../packages/orchestration/lib/remote_tool_authorization.dart)
+carries the complete semantic request and one of the four decisions. Canonical
+arguments remain structured values, and effects reuse the model-tool transport's
+validated `RemoteEffectDescription` projection. Invalid identities, malformed
+payloads, unknown decisions, and evaluator exceptions are failures, never Abstain.
+The adapter only converts and routes; host-owned composition is unchanged.
+
+Remote evaluation validates the captured registration/connection before and after
+the awaited call. Retirement or termination during evaluation cannot publish a
+successful decision; a late result cannot repair the failed capture, and a same-ID
+replacement cannot retarget it. Registration retirement fences publication without
+adding cancellation of the outstanding unary call. Completed composed decisions
+retain the invocation lifetime described above, including human approval waits.
+
+The operation has an empty host-service allowlist and sends no host invocation
+context token. Policy evaluators receive no executable tool, approval token, or
+operation-scoped Environment filesystem/process/shell access. Contextual IDs cannot
+select host authority. This constrains ADELE-mediated access; it is not OS sandbox
+isolation for native backend code or revocation of separately granted infrastructure
+access. No universal deadline, retry, or cancellation mechanism is introduced.
+
+There is no production authorization plugin or policy configuration. The temporary
+legacy participant remains explicit; stock policy migration/installation and policy
+Settings remain deferred, and no YOLO mode is enabled.
 
 Denied or rejected work must not acquire execution authority. Remote tool
 materialization, argument validation, and description receive no effectful

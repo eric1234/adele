@@ -1951,9 +1951,13 @@ to the existing host/kernel policy gate. It discovers public orchestration
 authorization contributions per request and explicitly combines them with
 `ApprovalGatedToolPolicy` as a temporary legacy participant, not a discovery
 fallback. No concrete policy plugin is imported. Precedence, failure, and capture
-lifetimes belong to [authorization composition](../docs/architecture/execution-model.md#authorization-composition);
-remote policy hosting, policy configuration, and stock-policy migration remain
-deferred.
+lifetimes belong to [authorization composition](../docs/architecture/execution-model.md#authorization-composition).
+[`RemoteToolAuthorizationPolicyAdapter`](lib/core/remote_tool_authorization_host.dart)
+adapts ordinary AOT advertisements through `createRemoteExtensionAdapters()` using
+the public [authorization transport](../packages/orchestration/README.md#tool-authorization).
+It owns no composition policy or Environment authority. Policy configuration and
+stock-policy migration remain deferred; no production authorization backend is
+installed by normal startup.
 
 The unchanged legacy `ApprovalGatedToolPolicy` allows a single certain source-read or read-only
 resource-inspection effect, asks for a single certain source-mutation effect or
@@ -2292,7 +2296,7 @@ repository-wide deferred-feature ledger here.
 | Model-provider adaptation | [`lib/core/model_provider_host.dart`](lib/core/model_provider_host.dart): `ModelProviderCapabilityAdapter` |
 | Model-tool hosting | [`lib/core/model_tool_host.dart`](lib/core/model_tool_host.dart): `buildModelToolCatalogForSession`, `SessionModelToolHostContext` |
 | Inference-context hosting | [`lib/core/inference_context_host.dart`](lib/core/inference_context_host.dart): `SessionInferenceContextSourceContext` |
-| Remote extension adapters | [`lib/core/remote_command_host.dart`](lib/core/remote_command_host.dart), [`lib/core/remote_inference_context_host.dart`](lib/core/remote_inference_context_host.dart), [`lib/core/remote_model_tool_host.dart`](lib/core/remote_model_tool_host.dart), [`lib/core/remote_orchestration_host.dart`](lib/core/remote_orchestration_host.dart) |
+| Remote extension adapters | [`lib/core/remote_command_host.dart`](lib/core/remote_command_host.dart), [`lib/core/remote_inference_context_host.dart`](lib/core/remote_inference_context_host.dart), [`lib/core/remote_model_tool_host.dart`](lib/core/remote_model_tool_host.dart), [`lib/core/remote_orchestration_host.dart`](lib/core/remote_orchestration_host.dart), [`lib/core/remote_tool_authorization_host.dart`](lib/core/remote_tool_authorization_host.dart) |
 | Run activity projection | [`lib/core/run_activity_projection.dart`](lib/core/run_activity_projection.dart): `RunActivityProjection` |
 | Policy/common execution UI | [`lib/core/approval_gated_tool_policy.dart`](lib/core/approval_gated_tool_policy.dart), [`lib/ui/execution/`](lib/ui/execution/) |
 | Project selector/native picker and shell | [`lib/frontend/directory_picker_bridge.dart`](lib/frontend/directory_picker_bridge.dart), [`lib/ui/shell/`](lib/ui/shell/), `AdeleApplication` |

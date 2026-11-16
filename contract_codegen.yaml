@@ -7,6 +7,7 @@ sources:
   - packages/model_tool/lib/remote_model_tool.dart
   - packages/orchestration/lib/remote_inference_context.dart
   - packages/orchestration/lib/remote_orchestration.dart
+  - packages/orchestration/lib/remote_tool_authorization.dart
   - packages/orchestration/lib/session_feedback.dart
   - packages/plugin_backend_support/lib/backend_local_state.dart
   - packages/plugin_backend_support/lib/capability_consumer.dart
