@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:isolate';
 
 import 'package:adele_contract/adele_contract.dart';
+import 'package:adele_model_provider/adele_model_catalog.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:adele_plugin_backend_support/adele_plugin_backend_support.dart';
 import 'package:openai_model_provider_backend/openai_model_provider_backend.dart';
@@ -127,6 +128,7 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
   final ReceivePort requests = ReceivePort();
   final hostRequests = AdeleHostRequestMultiplexer(send: responsePort.send);
   AdeleConfigurationContextRouter? router;
+  final catalogs = <OpenAiConfiguredModelCatalog>[];
   try {
     if (apiKeyProvider != null &&
         ((chatGptProvider != null &&
@@ -146,6 +148,14 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
             hostInfrastructureContext: infrastructureContext,
           )
         : null;
+    for (final configuration in configurations) {
+      catalogs.add(
+        OpenAiConfiguredModelCatalog(
+          configuration: configuration,
+          credentials: credentials,
+        ),
+      );
+    }
     router = AdeleConfigurationContextRouter(
       contexts: <String, Map<String, AdeleBackendDispatcher>>{
         if (apiKeyProvider != null)
@@ -160,13 +170,16 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
               chatGptProvider,
             ),
           },
-        for (final configuration in configurations)
+        for (final (index, configuration) in configurations.indexed)
           configuration.configurationContext: <String, AdeleBackendDispatcher>{
             modelProviderServiceId: ModelProviderServiceDispatcher(
               OpenAiConfiguredModelProvider(
                 configuration: configuration,
                 credentials: credentials,
               ),
+            ),
+            modelCatalogServiceId: ModelCatalogServiceDispatcher(
+              catalogs[index],
             ),
           },
       },
@@ -194,7 +207,7 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
             displayName: 'Experimental ChatGPT',
             configurationContext: openAiChatGptConfigurationContext,
           ).toMap(),
-        for (final configuration in configurations)
+        for (final configuration in configurations) ...[
           AdeleCapabilityExposure(
             providerId: configuration.providerId.value,
             capabilityId: modelProviderCapability.id.value,
@@ -203,6 +216,20 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
             displayName: configuration.displayName,
             configurationContext: configuration.configurationContext,
           ).toMap(),
+          AdeleCapabilityExposure(
+            providerId: configuration.catalogProviderId.value,
+            capabilityId: modelCatalogCapability.id.value,
+            capabilityMajorVersion: modelCatalogCapability.majorVersion,
+            serviceId: modelCatalogServiceId,
+            displayName: configuration.displayName,
+            configurationContext: configuration.configurationContext,
+            association: AdeleProviderAssociation(
+              capabilityId: modelProviderCapability.id.value,
+              capabilityMajorVersion: modelProviderCapability.majorVersion,
+              providerId: configuration.providerId.value,
+            ),
+          ).toMap(),
+        ],
       ],
     });
     await for (final Object? request in requests) {
@@ -210,6 +237,9 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
       if (request is! Map) continue;
       if (request['method'] == 'shutdown' && request['requestId'] is int) {
         hostRequests.close();
+        for (final catalog in catalogs) {
+          catalog.close();
+        }
         await router.close();
         responsePort.send(<String, Object?>{
           'kind': 'response',
@@ -224,6 +254,9 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
     }
   } finally {
     hostRequests.close();
+    for (final catalog in catalogs) {
+      catalog.close();
+    }
     try {
       await router?.close();
     } finally {

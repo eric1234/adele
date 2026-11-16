@@ -61,6 +61,12 @@ and `modelCatalogServiceId`, and constructs `ModelCatalogServiceClient` over its
 request-only channel. Release the access when finished. Catalog access supplies
 neither inference execution nor credential/authentication authority.
 
+The stock [OpenAI backend](../../plugins/openai/packages/backend/README.md#configured-model-catalogs)
+implements this contract for record-backed API-key instances, associating each
+catalog with its own configured inference provider. Its endpoint derivation,
+credential/HTTP lifecycle, safe failures and metadata limitations are provider-owned;
+legacy environment-key and experimental ChatGPT routes remain inference-only.
+
 ## Validation
 
 After the repository's pinned-toolchain bootstrap, use

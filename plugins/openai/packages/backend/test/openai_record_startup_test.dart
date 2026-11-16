@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:isolate';
 
+import 'package:adele_contract/adele_contract.dart';
 import 'package:test/test.dart';
 
 import '../bin/openai_model_provider_backend.dart' as backend;
@@ -113,21 +114,40 @@ void main() {
         final message = await ready.first as Map;
         expect(message['kind'], 'ready');
         final exposures = message['capabilityExposures'] as List;
-        expect(exposures.map((dynamic value) => (value as Map)['providerId']), [
-          if (arguments.length == 2) 'dev.adele.openai.chatgpt-experimental',
-          'dev.adele.openai.api-key.personal',
-          'dev.adele.openai.api-key.work',
-        ]);
-        expect(
-          exposures.map(
-            (dynamic value) => (value as Map)['configurationContext'],
-          ),
-          [
-            if (arguments.length == 2) 'chatgpt-experimental',
-            'api-key-record:personal',
-            'api-key-record:work',
+        expect(exposures, [
+          if (arguments.length == 2)
+            AdeleCapabilityExposure(
+              providerId: 'dev.adele.openai.chatgpt-experimental',
+              capabilityId: 'dev.adele.model.provider',
+              capabilityMajorVersion: 1,
+              serviceId: 'modelProvider',
+              displayName: 'Experimental ChatGPT',
+              configurationContext: 'chatgpt-experimental',
+            ).toMap(),
+          for (final id in ['personal', 'work']) ...[
+            AdeleCapabilityExposure(
+              providerId: 'dev.adele.openai.api-key.$id',
+              capabilityId: 'dev.adele.model.provider',
+              capabilityMajorVersion: 1,
+              serviceId: 'modelProvider',
+              displayName: id,
+              configurationContext: 'api-key-record:$id',
+            ).toMap(),
+            AdeleCapabilityExposure(
+              providerId: 'dev.adele.openai.model-catalog.$id',
+              capabilityId: 'dev.adele.model.catalog',
+              capabilityMajorVersion: 1,
+              serviceId: 'modelCatalog',
+              displayName: id,
+              configurationContext: 'api-key-record:$id',
+              association: AdeleProviderAssociation(
+                capabilityId: 'dev.adele.model.provider',
+                capabilityMajorVersion: 1,
+                providerId: 'dev.adele.openai.api-key.$id',
+              ),
+            ).toMap(),
           ],
-        );
+        ]);
         expect(message.keys.toSet(), {
           'kind',
           'commandPort',

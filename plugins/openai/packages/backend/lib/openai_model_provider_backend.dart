@@ -7,11 +7,13 @@ import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:openai_contract/openai_contract.dart'
     show openAiResponsesItemKind, openAiResponsesItemVersion;
 
+import 'src/openai_api_key.dart';
 import 'src/openai_chatgpt_auth.dart';
 import 'src/openai_endpoint.dart';
 import 'src/openai_native_presentation.dart';
 
 export 'src/openai_configured_provider.dart';
+export 'src/openai_model_catalog.dart';
 
 // Plugin-owned runtime identities, temporarily mirrored by stock app bootstrap.
 // Future discovery/activation metadata should replace that hard-coded app knowledge.
@@ -44,11 +46,11 @@ final class OpenAiModelProvider implements ModelProviderService {
     this.inactivityTimeout = const Duration(minutes: 5),
     this.transportRetryDelay = const Duration(milliseconds: 200),
     this.cleanupTimeout = const Duration(seconds: 1),
-  }) : _apiKey = _validateApiKey(apiKey),
+  }) : _apiKey = validateOpenAiApiKey(apiKey),
        _chatGptAuth = null,
        _profile = _OpenAiRequestProfile.apiKey,
        _endpoint = validateOpenAiEndpoint(
-         endpoint ?? Uri.parse('https://api.openai.com/v1/responses'),
+         endpoint ?? Uri.parse(openAiDefaultResponsesEndpoint),
        ),
        _httpClient = httpClient ?? HttpClient(),
        _ownsHttpClient = httpClient == null;
@@ -836,16 +838,6 @@ bool _safeAffinityHeader(Object? value, {int maximumLength = 8192}) =>
     value.length <= maximumLength &&
     value == value.trim() &&
     value.codeUnits.every((int code) => code >= 0x20 && code <= 0x7e);
-
-String _validateApiKey(String apiKey) {
-  if (apiKey.trim().isEmpty || apiKey != apiKey.trim()) {
-    throw const FormatException('OpenAI API key must be nonempty and trimmed.');
-  }
-  if (apiKey.contains('\r') || apiKey.contains('\n')) {
-    throw const FormatException('OpenAI API key contains invalid characters.');
-  }
-  return apiKey;
-}
 
 Map<String, Object?> _lowerRequest(
   ModelProviderRequest request,
