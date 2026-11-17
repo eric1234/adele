@@ -273,6 +273,12 @@ const List<TestTarget> testTargets = <TestTarget>[
     arguments: <String>['test'],
   ),
   TestTarget(
+    name: 'conservative_tool_policy_backend',
+    path: 'plugins/conservative_tool_policy/packages/backend',
+    executable: 'dart',
+    arguments: <String>['test'],
+  ),
+  TestTarget(
     name: 'chat_strategy_contract',
     path: 'plugins/chat_strategy/packages/contract',
     executable: 'dart',
@@ -531,6 +537,11 @@ analysisTargets = <({String name, String path, bool flutter})>[
   (
     name: 'agents_md_backend',
     path: 'plugins/agents_md/packages/backend',
+    flutter: false,
+  ),
+  (
+    name: 'conservative_tool_policy_backend',
+    path: 'plugins/conservative_tool_policy/packages/backend',
     flutter: false,
   ),
   (

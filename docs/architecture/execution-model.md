@@ -399,9 +399,21 @@ select host authority. This constrains ADELE-mediated access; it is not OS sandb
 isolation for native backend code or revocation of separately granted infrastructure
 access. No universal deadline, retry, or cancellation mechanism is introduced.
 
-There is no production authorization plugin or policy configuration. The temporary
-legacy participant remains explicit; stock policy migration/installation and policy
-Settings remain deferred, and no YOLO mode is enabled.
+The independently optional stock
+[Conservative policy](../../plugins/conservative_tool_policy/README.md) is an ordinary
+backend-only installation. Normal preparation publishes its AOT artifact and normal
+backend readiness registers its single authorization contribution through the same
+generic adapter. It evaluates only the supplied semantic request and requests no
+Environment or execution host services. Its exact effect/uncertainty decision table
+belongs to the plugin's local documentation.
+
+Normal execution temporarily evaluates both that stock contribution, when installed,
+and the explicit legacy participant. The stock implementation is not yet the sole
+production authorization policy. Omitting or retiring the optional installation
+leaves legacy behavior intact without recreating a plugin or selecting a fallback;
+a participating stock evaluator's failure still propagates as infrastructure failure.
+The S4 authorization cutover remains deferred. There is no policy configuration,
+enable/disable control, or YOLO mode.
 
 Denied or rejected work must not acquire execution authority. Remote tool
 materialization, argument validation, and description receive no effectful

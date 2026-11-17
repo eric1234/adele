@@ -43,6 +43,8 @@ const String _openaiEntrypoint =
     'plugins/openai/packages/backend/bin/openai_model_provider_backend.dart';
 const String _agentsMdEntrypoint =
     'plugins/agents_md/packages/backend/bin/agents_md_backend.dart';
+const String _conservativeToolPolicyEntrypoint =
+    'plugins/conservative_tool_policy/packages/backend/bin/conservative_tool_policy_backend.dart';
 const String _searchToolsEntrypoint =
     'plugins/search_tools/packages/backend/bin/search_tools_backend.dart';
 const String _filesystemToolsEntrypoint =
@@ -62,6 +64,7 @@ const _backendEntrypoints = [
   _gitEntrypoint,
   _openaiEntrypoint,
   _agentsMdEntrypoint,
+  _conservativeToolPolicyEntrypoint,
   _searchToolsEntrypoint,
   _filesystemToolsEntrypoint,
   _commandToolsEntrypoint,
@@ -91,6 +94,7 @@ const _backendStages = {
   'git-compilation': _gitEntrypoint,
   'openai-compilation': _openaiEntrypoint,
   'agents-md-compilation': _agentsMdEntrypoint,
+  'conservative-tool-policy-compilation': _conservativeToolPolicyEntrypoint,
   'search-tools-compilation': _searchToolsEntrypoint,
   'filesystem-tools-compilation': _filesystemToolsEntrypoint,
   'command-tools-compilation': _commandToolsEntrypoint,
@@ -1376,6 +1380,7 @@ TZ=UTC touch -m -t 200001010000 '${override.parent.path}'
           'adele_tools',
           'adele_plugin_backend_support',
           'agents_md_backend',
+          'conservative_tool_policy_backend',
           'search_tools_backend',
           'filesystem_tools_backend',
           'command_tools_backend',
@@ -2098,6 +2103,9 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
     'Linux development launcher prepares evaluator and existing stock catalog without opt-in',
     () async {
       for (final path in [
+        _conservativeToolPolicyEntrypoint,
+        'plugins/conservative_tool_policy/packages/backend/lib/conservative_tool_policy_backend.dart',
+        'plugins/conservative_tool_policy/packages/backend/pubspec.yaml',
         _sessionEvaluatorEntrypoint,
         'plugins/session_evaluator/packages/frontend/lib/session_evaluator_frontend.dart',
         'plugins/session_evaluator/packages/frontend/lib/src/read_prepared_handoff.dart',
@@ -2164,6 +2172,8 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
             'compiled|$_openaiEntrypoint',
             'compile|$_agentsMdEntrypoint',
             'compiled|$_agentsMdEntrypoint',
+            'compile|$_conservativeToolPolicyEntrypoint',
+            'compiled|$_conservativeToolPolicyEntrypoint',
             'compile|$_searchToolsEntrypoint',
             'compiled|$_searchToolsEntrypoint',
             'compile|$_filesystemToolsEntrypoint',
@@ -2264,6 +2274,9 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         final File agentsMd = File.fromUri(
           installations.uri.resolve('agents-md/backend.aot'),
         );
+        final File conservativeToolPolicy = File.fromUri(
+          installations.uri.resolve('conservative-tool-policy/backend.aot'),
+        );
         final File searchTools = File.fromUri(
           installations.uri.resolve('search-tools/backend.aot'),
         );
@@ -2286,6 +2299,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         expect(git.uri.isAbsolute, isTrue);
         expect(openai.uri.isAbsolute, isTrue);
         expect(agentsMd.uri.isAbsolute, isTrue);
+        expect(conservativeToolPolicy.uri.isAbsolute, isTrue);
         expect(searchTools.uri.isAbsolute, isTrue);
         expect(filesystemTools.uri.isAbsolute, isTrue);
         expect(commandTools.uri.isAbsolute, isTrue);
@@ -2294,6 +2308,10 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         expect(git.path, endsWith('/git/backend.aot'));
         expect(openai.path, endsWith('/openai/backend.aot'));
         expect(agentsMd.path, endsWith('/agents-md/backend.aot'));
+        expect(
+          conservativeToolPolicy.path,
+          endsWith('/conservative-tool-policy/backend.aot'),
+        );
         expect(searchTools.path, endsWith('/search-tools/backend.aot'));
         expect(filesystemTools.path, endsWith('/filesystem-tools/backend.aot'));
         expect(commandTools.path, endsWith('/command-tools/backend.aot'));
@@ -2321,6 +2339,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
             'git',
             'openai',
             'agents-md',
+            'conservative-tool-policy',
             'search-tools',
             'chat-strategy',
             'filesystem-tools',
@@ -2351,6 +2370,12 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
             directory: 'agents-md',
             id: 'dev.adele.plugin.agents-md',
             name: 'AGENTS.md',
+            backend: true,
+          ),
+          (
+            directory: 'conservative-tool-policy',
+            id: 'dev.adele.plugin.conservative-tool-policy',
+            name: 'Conservative Tool Policy',
             backend: true,
           ),
           (
@@ -2487,7 +2512,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
             retainedArtifacts[file.path] = file.readAsStringSync();
           }
         }
-        expect(installedIds, hasLength(13));
+        expect(installedIds, hasLength(14));
         final catalog = await PreparedPluginCatalog.discover(
           installations.path,
         );
@@ -2502,7 +2527,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           catalog.installations.where(
             (installation) => installation.backendArtifactUri != null,
           ),
-          hasLength(10),
+          hasLength(11),
         );
         expect(
           catalog.installations.where(
@@ -2510,6 +2535,18 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           ),
           hasLength(10),
         );
+        final conservative = catalog.installations.singleWhere(
+          (installation) =>
+              installation.metadata.id.value ==
+              'dev.adele.plugin.conservative-tool-policy',
+        );
+        expect(conservative.backendArtifactUri, conservativeToolPolicy.uri);
+        expect(conservative.frontend, isNull);
+        expect(conservative.settingsSchema, isNull);
+        expect(conservative.recordsSchema, isNull);
+        expect(conservative.backendConsumedCapabilities, isEmpty);
+        expect(conservative.backendConsumedRecordTypes, isEmpty);
+        expect(conservative.backendConsumedCredentialSlots, isEmpty);
         final recordsInstallation = catalog.installations.singleWhere(
           (installation) => installation.recordsSchema != null,
         );
@@ -2895,6 +2932,10 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         expect(openai.readAsStringSync(), 'snapshot $_openaiEntrypoint\n');
         expect(agentsMd.readAsStringSync(), 'snapshot $_agentsMdEntrypoint\n');
         expect(
+          conservativeToolPolicy.readAsStringSync(),
+          'snapshot $_conservativeToolPolicyEntrypoint\n',
+        );
+        expect(
           searchTools.readAsStringSync(),
           'snapshot $_searchToolsEntrypoint\n',
         );
@@ -2983,7 +3024,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         ).delete();
 
         final catalog = await PreparedPluginCatalog.discover(rootPath);
-        expect(catalog.installations, hasLength(13));
+        expect(catalog.installations, hasLength(14));
         expect(catalog.issues.single.component, missing);
         final command = catalog.installations.singleWhere(
           (installation) =>
@@ -3002,7 +3043,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           catalog.installations.where(
             (installation) => installation.backendArtifactUri != null,
           ),
-          hasLength(missing == PreparedPluginComponent.backend ? 9 : 10),
+          hasLength(missing == PreparedPluginComponent.backend ? 10 : 11),
         );
         expect(
           catalog.installations.where(
@@ -3028,7 +3069,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
     await File('$rootPath/local-directory-project/frontend.evc').delete();
 
     final catalog = await PreparedPluginCatalog.discover(rootPath);
-    expect(catalog.installations, hasLength(13));
+    expect(catalog.installations, hasLength(14));
     expect(catalog.issues.single.component, PreparedPluginComponent.frontend);
     final localDirectoryProject = catalog.installations.singleWhere(
       (installation) =>
@@ -3108,7 +3149,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
             .where(
               (file) => file.path.endsWith('adele_plugin.installation.json'),
             );
-        expect(manifests, hasLength(13));
+        expect(manifests, hasLength(14));
         for (final manifest in manifests) {
           for (final forbidden in [
             'secret-',
@@ -3314,6 +3355,8 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
               'compiled|$_openaiEntrypoint',
               'compile|$_agentsMdEntrypoint',
               'compiled|$_agentsMdEntrypoint',
+              'compile|$_conservativeToolPolicyEntrypoint',
+              'compiled|$_conservativeToolPolicyEntrypoint',
               'compile|$_searchToolsEntrypoint',
               'compiled|$_searchToolsEntrypoint',
               'compile|$_filesystemToolsEntrypoint',
@@ -3367,6 +3410,10 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
 
   for (final mutation in [
     (path: _gitEntrypoint, expected: [_gitEntrypoint]),
+    (
+      path: _conservativeToolPolicyEntrypoint,
+      expected: [_conservativeToolPolicyEntrypoint],
+    ),
     (path: _chatSource, expected: [_frontendHarness]),
     (path: _chatCompiler, expected: [_frontendHarness]),
     (path: _frontendBridge, expected: _frontendCompilations.values.toList()),
@@ -3818,7 +3865,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
       final receipts = files.where(
         (file) => file.uri.pathSegments.last == 'receipt.json',
       );
-      expect(receipts, hasLength(26));
+      expect(receipts, hasLength(27));
       for (final receipt in receipts) {
         final decoded =
             jsonDecode(receipt.readAsStringSync()) as Map<String, dynamic>;
@@ -4053,7 +4100,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           launchDefines()['ADELE_PLUGIN_INSTALLATION_ROOT']!,
         );
         expect(catalog.issues, isEmpty);
-        expect(catalog.installations, hasLength(13));
+        expect(catalog.installations, hasLength(14));
         final stable = launchDefines();
         expect(await prepare(), stable);
         expect(compilations(), isEmpty);
