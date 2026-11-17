@@ -17,6 +17,8 @@ import '../../configuration_store/test/support.dart';
 void main() {
   final providers = RecordCollectionId('providers');
   final openai = RecordTypeId('dev.adele.openai.api-key');
+  final agents = RecordCollectionId('agents');
+  final agent = RecordTypeId('dev.adele.plugin.agent-configuration.agent');
   final work = ConfigurationRecordId('work-openai');
   final personal = ConfigurationRecordId('personal-openai');
   final apiKey = RecordCredentialSlotId('api-key');
@@ -46,11 +48,24 @@ void main() {
       pluginId: 'dev.adele.openai',
       displayName: 'OpenAI',
     );
+    await publishStockPluginInstallation(
+      repositoryRoot: repository,
+      installationDirectory: Directory(
+        p.join(installations.path, 'agent-configuration'),
+      ),
+      pluginId: 'dev.adele.plugin.agent-configuration',
+      displayName: 'Agent Configuration',
+    );
     final prepared = await PreparedPluginCatalog.discover(installations.path);
     expect(prepared.issues, isEmpty);
     catalog = prepared.records;
     expect(catalog.definition(openai).owner, PluginId('dev.adele.openai'));
     expect(catalog.definition(openai).credentialSlots.single.id, apiKey);
+    expect(
+      catalog.definition(agent).owner,
+      PluginId('dev.adele.plugin.agent-configuration'),
+    );
+    expect(catalog.definition(agent).credentialSlots, isEmpty);
   });
   tearDownAll(() => installations.deleteSync(recursive: true));
 
@@ -185,6 +200,13 @@ void main() {
       host.load(providers, work),
       throwsA(isA<ConfigurationRecordNotFound>()),
     );
+    expect(temporary.listSync(), isEmpty);
+  });
+
+  test('empty Agents collection requires no initialization', () async {
+    final result = await host.enumerate(agents);
+    expect(result.records, isEmpty);
+    expect(result.diagnostics, isEmpty);
     expect(temporary.listSync(), isEmpty);
   });
 
@@ -727,6 +749,146 @@ void main() {
   }, skip: !Platform.isLinux);
 
   group('conditional record CRUD', () {
+    test(
+      'real Agent definitions retain Markdown and identity across rename deletion and restart',
+      () async {
+        final reviewer = ConfigurationRecordId('reviewer');
+        final writer = ConfigurationRecordId('writer');
+        final reviewerFile = File(
+          p.join(roots.configurationRoot, 'agents', 'reviewer.toml'),
+        );
+        final writerFile = File(
+          p.join(roots.configurationRoot, 'agents', 'writer.toml'),
+        );
+        const reviewValues = {
+          'name': 'Reviewer',
+          'description':
+              '# Review\n\nExplain **risks**, "quotes", and `C:\\repo`.',
+          'when-to-use':
+              'For a pull request:\n- Review changes.\n- Check tests.\n',
+          'instructions': r'''# Instructions
+
+Keep "double quotes", 'single quotes', and backslashes: C:\repo\src.
+
+```dart
+final path = r'C:\repo';
+print("Review the diff");
+```
+
+Return **findings** before the summary.
+''',
+        };
+        const writerValues = {
+          'name': 'Writer',
+          'instructions':
+              'Write a focused patch.\n\nPreserve existing behavior.',
+        };
+        await host.create(agent, reviewer, reviewValues);
+        await host.create(agent, writer, writerValues);
+        final writerBytes = writerFile.readAsBytesSync();
+
+        host = ConfigurationRecordStore(
+          store: ConfigurationStore(roots),
+          catalog: catalog,
+        );
+        var result = await host.enumerate(agents);
+        expect(result.diagnostics, isEmpty);
+        expect(result.records.map((record) => record.id), [reviewer, writer]);
+        var review = await host.load(agents, reviewer);
+        final writing = await host.load(agents, writer);
+        expect(review.values, reviewValues);
+        expect(writing.values, writerValues);
+        expect(review.credentials, isEmpty);
+        expect(review.hasCredentialEntries, isFalse);
+
+        review = await host.update(review, {
+          ...reviewValues,
+          'name': 'Renamed Reviewer',
+        });
+        expect(review.id, reviewer);
+        expect(review.collection, agents);
+        expect(review.type.id, agent);
+        expect(reviewerFile.existsSync(), isTrue);
+        expect(
+          reviewerFile.parent.listSync().map((entry) => p.basename(entry.path)),
+          unorderedEquals(['reviewer.toml', 'writer.toml']),
+        );
+        expect(writerFile.readAsBytesSync(), writerBytes);
+        final reviewBytes = reviewerFile.readAsBytesSync();
+
+        await host.delete(writing);
+        expect(writerFile.existsSync(), isFalse);
+        expect(reviewerFile.readAsBytesSync(), reviewBytes);
+        host = ConfigurationRecordStore(
+          store: ConfigurationStore(roots),
+          catalog: catalog,
+        );
+        result = await host.enumerate(agents);
+        expect(result.diagnostics, isEmpty);
+        expect(result.records.single.id, reviewer);
+        expect(result.records.single.values, {
+          ...reviewValues,
+          'name': 'Renamed Reviewer',
+        });
+        await expectLater(
+          host.load(agents, writer),
+          throwsA(isA<ConfigurationRecordNotFound>()),
+        );
+
+        await host.delete(result.records.single);
+        host = ConfigurationRecordStore(
+          store: ConfigurationStore(roots),
+          catalog: catalog,
+        );
+        result = await host.enumerate(agents);
+        expect(result.records, isEmpty);
+        expect(result.diagnostics, isEmpty);
+        expect(reviewerFile.parent.listSync(), isEmpty);
+        expect(File(persistence.filePath).existsSync(), isFalse);
+        expect(Directory(roots.localDataRoot).existsSync(), isFalse);
+        expect(Directory(roots.cacheRoot).existsSync(), isFalse);
+      },
+    );
+
+    test(
+      'Agent required strings use presence and both optional strings preserve absence versus empty',
+      () async {
+        final id = ConfigurationRecordId('minimal');
+        for (final missing in ['name', 'instructions']) {
+          await expectLater(
+            host.create(agent, id, {
+              if (missing != 'name') 'name': '',
+              if (missing != 'instructions') 'instructions': '',
+            }),
+            throwsA(
+              isA<InvalidRecordValue>().having(
+                (error) => error.fieldId,
+                'missing field',
+                RecordFieldId(missing),
+              ),
+            ),
+          );
+        }
+        expect(temporary.listSync(), isEmpty);
+
+        const requiredValues = {'name': '', 'instructions': ''};
+        var record = await host.create(agent, id, requiredValues);
+        expect((await host.load(agents, id)).values, requiredValues);
+        record = await host.update(record, {
+          ...requiredValues,
+          'description': '',
+          'when-to-use': '',
+        });
+        expect((await host.load(agents, id)).values, {
+          ...requiredValues,
+          'description': '',
+          'when-to-use': '',
+        });
+        await host.update(record, requiredValues);
+        expect((await host.load(agents, id)).values, requiredValues);
+      },
+    );
+
     group('exact directory capacity', () {
       void fillWithUserFiles(Directory directory, int totalEntries) {
         directory.createSync(recursive: true);
