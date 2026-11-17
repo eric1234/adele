@@ -196,6 +196,51 @@ final class RemoteEffectDescription {
   final String summary;
   final RemoteEffectUncertainty uncertainty;
 
+  /// The same wire fields for contracts that cannot import this value schema.
+  Map<String, Object?> toJson() => {
+    'effects': [for (final effect in effects) effect.name],
+    'targetUris': [for (final uri in targetUris) uri.toString()],
+    'summary': summary,
+    'uncertainty': uncertainty.name,
+  };
+
+  static RemoteEffectDescription fromJson(Map<String, Object?> value) {
+    final effects = value['effects'];
+    final targetUris = value['targetUris'];
+    final summary = value['summary'];
+    final uncertainty = value['uncertainty'];
+    if (value.length != 4 ||
+        effects is! List<Object?> ||
+        targetUris is! List<Object?> ||
+        summary is! String ||
+        uncertainty is! String) {
+      throw const FormatException('Invalid effect description fields.');
+    }
+
+    T enumValue<T extends Enum>(List<T> values, Object? name) {
+      for (final value in values) {
+        if (value.name == name) return value;
+      }
+      throw const FormatException('Invalid effect description enum.');
+    }
+
+    return RemoteEffectDescription(
+      effects: [
+        for (final effect in effects)
+          enumValue(RemoteToolEffect.values, effect),
+      ],
+      targetUris: [
+        for (final uri in targetUris)
+          if (uri is String)
+            Uri.parse(uri)
+          else
+            throw const FormatException('Invalid effect target URI type.'),
+      ],
+      summary: summary,
+      uncertainty: enumValue(RemoteEffectUncertainty.values, uncertainty),
+    );
+  }
+
   static RemoteEffectDescription fromLocal(local.EffectDescription value) =>
       RemoteEffectDescription(
         effects: [

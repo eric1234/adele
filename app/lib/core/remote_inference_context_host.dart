@@ -7,6 +7,7 @@ import 'package:plugin_runtime/plugin_runtime.dart';
 import 'remote_command_host.dart';
 import 'remote_model_tool_host.dart';
 import 'remote_orchestration_host.dart';
+import 'remote_tool_authorization_host.dart';
 
 RemoteExtensionAdapterRegistry createRemoteExtensionAdapters() =>
     RemoteExtensionAdapterRegistry([
@@ -14,6 +15,7 @@ RemoteExtensionAdapterRegistry createRemoteExtensionAdapters() =>
       const RemoteInferenceContextSourceAdapter(),
       const RemoteModelToolAdapter(),
       const RemoteOrchestrationStrategyAdapter(),
+      const RemoteToolAuthorizationPolicyAdapter(),
     ]);
 
 /// Transport adaptation only; composition policy stays in the public composer.

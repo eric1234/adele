@@ -223,6 +223,22 @@ void main() {
         expect(effect.targetUris, [Uri.parse('environment://authorized/lib')]);
         expect(effect.summary, 'Inspect authorized source');
         expect(effect.uncertainty, RemoteEffectUncertainty.uncertain);
+        final wire = Map<String, Object?>.from(
+          channel.response!['payload']! as Map,
+        );
+        expect(effect.toJson(), wire);
+        final projected = RemoteEffectDescription.fromJson(wire);
+        expect(projected.toJson(), wire);
+        expect(projected.toLocal().effects, effect.toLocal().effects);
+        expect(
+          projected.toLocal().targets.map((target) => target.uri),
+          effect.targetUris,
+        );
+        expect(projected.toLocal().summary, effect.summary);
+        expect(
+          projected.toLocal().uncertainty,
+          local.EffectUncertainty.uncertain,
+        );
         expect(() => effect.effects.clear(), throwsUnsupportedError);
         expect(() => effect.targetUris.clear(), throwsUnsupportedError);
       }
