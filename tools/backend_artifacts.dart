@@ -24,6 +24,12 @@ const _stockSchemaSources = {
   'dev.adele.openai': {'records': 'plugins/openai/records.schema.json'},
 };
 
+const _stockAuthorizationPolicies = {
+  'dev.adele.plugin.conservative-tool-policy': [
+    {'extensionId': 'dev.adele.plugin.conservative-tool-policy.authorization'},
+  ],
+};
+
 const _stockBackendConsumedRecordTypes = {
   'dev.adele.openai': ['dev.adele.openai.api-key'],
 };
@@ -589,6 +595,7 @@ Future<void> publishStockPluginInstallation({
       },
       for (final schema in schemaSources.keys)
         '${schema}Schema': '$schema.schema.json',
+      'authorizationPolicies': ?_stockAuthorizationPolicies[pluginId],
       'components': <String, Object?>{
         if (backend)
           'backend': <String, Object?>{

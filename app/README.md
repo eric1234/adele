@@ -1990,8 +1990,14 @@ the [execution model](../docs/architecture/execution-model.md) and [Chat README]
 to the existing host/kernel policy gate. It discovers public orchestration
 authorization contributions per request and explicitly combines them with
 `ApprovalGatedToolPolicy` as a temporary legacy participant, not a discovery
-fallback. No concrete policy plugin is imported. Precedence, failure, and capture
-lifetimes belong to [authorization composition](../docs/architecture/execution-model.md#authorization-composition).
+fallback. `ApplicationPluginBootstrap.expectedToolAuthorizationPolicies` retains
+an immutable installation-owned snapshot from the prepared catalog before backend
+startup. `captureExpectedToolAuthorizationPolicies` validates readiness and exact
+registration provenance, returning a check of the captured origins for composition
+completion without rediscovery. Malformed expected-participation metadata also
+fails closed through catalog diagnostics. No concrete policy plugin is imported.
+Precedence, failure, and capture lifetimes belong to
+[authorization composition](../docs/architecture/execution-model.md#authorization-composition).
 [`RemoteToolAuthorizationPolicyAdapter`](lib/core/remote_tool_authorization_host.dart)
 adapts ordinary AOT advertisements through `createRemoteExtensionAdapters()` using
 the public [authorization transport](../packages/orchestration/README.md#tool-authorization).
@@ -2000,9 +2006,10 @@ includes the optional backend-only
 [Conservative policy](../plugins/conservative_tool_policy/README.md), activated by
 the same generic bootstrap with no application-specific wiring. Its contribution
 and the explicit legacy participant coexist; omitting it leaves legacy behavior
-intact, while its evaluation failures are not swallowed. The stock implementation
-is not yet the sole production policy. The S4 cutover and policy configuration
-remain deferred.
+intact. Its declared participation survives startup failure and retirement, so
+neither can silently fall back to legacy-only execution. The stock implementation
+is not yet the sole production policy. S4b removal of the legacy participant and
+actual policy enable/disable and contextual configuration remain deferred.
 
 The unchanged legacy `ApprovalGatedToolPolicy` allows a single certain source-read or read-only
 resource-inspection effect, asks for a single certain source-mutation effect or

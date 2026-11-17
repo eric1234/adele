@@ -20,6 +20,15 @@ contract. It does not import the application, kernel, internal host, or Flutter.
 is the ordinary shared-host AOT entrypoint. Normal preparation publishes
 `installations/conservative-tool-policy/backend.aot` in the prepared snapshot as a
 backend-only installation.
+[`publishStockPluginInstallation`](../../tools/backend_artifacts.dart) also
+publishes installation-level `authorizationPolicies` with exactly
+`[{"extensionId":"dev.adele.plugin.conservative-tool-policy.authorization"}]`.
+This expectation is independent of backend availability: discovery retains it
+when the backend component is absent or rejected, with component diagnostics for
+missing artifacts or invalid backend metadata. Omitting the optional installation
+contributes no expectation; other stock plugins do not declare this policy.
+The declaration is neither a live registration nor execution authority.
+
 Readiness advertises exactly one `AdeleExtensionExposure`, bound to the supplied
 default configuration context, with only `{'routeId': 'conservative'}` metadata.
 Plugin identity belongs to the installation and connection, not the exposure.
@@ -63,10 +72,11 @@ execution. This is an ADELE-mediated authority boundary, not an OS sandbox.
 
 Normal execution still includes the temporary legacy `ApprovalGatedToolPolicy`
 alongside this optional stock contribution. Installing it does not yet make it
-the sole production policy. Omitting or retiring the installation leaves the
-explicit legacy participant intact; a participating backend failure is not
-silently replaced by legacy behavior. The S4 authorization cutover is deferred;
-this plugin adds no enable/disable control, policy configuration, or YOLO mode.
+the sole production policy. Omitting the installation leaves the explicit legacy
+participant intact; failure or retirement of a declared policy is not equivalent
+to optional absence and is not silently replaced by legacy behavior. The full
+authorization cutover is deferred; this plugin adds no enable/disable control,
+policy configuration, or YOLO mode.
 The canonical composition and lifetime rules belong to
 [authorization composition](../../docs/architecture/execution-model.md#authorization-composition).
 
@@ -82,3 +92,7 @@ entrypoint readiness/routing without host-service authority. The application-own
 proves prepared AOT installation, generic activation, unmasked legacy parity,
 normal Chat authorization/approval continuation, retirement, and optional absence.
 Package tests alone do not establish those integration boundaries.
+The stock publication and catalog-discovery checks in
+[`backend_artifacts_test.dart`](../../test/tools/backend_artifacts_test.dart)
+cover the exact installed declaration, unrelated/optional absence, and retained
+expectations with missing or invalid backend components without activating code.

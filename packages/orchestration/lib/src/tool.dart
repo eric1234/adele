@@ -48,7 +48,8 @@ final class ToolAuthorizationPolicyContribution {
   ///
   /// The host captures registrations per request, evaluates sequentially by
   /// Extension ID, and validates exact bindings through completion. Deny wins
-  /// over Ask, then Allow; Abstain has no effect and zero policies yields Allow.
+  /// over Ask, then Allow; Abstain has no effect. Zero policies yields Allow only
+  /// after the host validates any applicable expected participation.
   /// Completed decisions are not re-evaluated on approval resume.
   final FutureOr<ToolAuthorizationDecision> Function(ToolAuthorizationRequest)
   evaluate;

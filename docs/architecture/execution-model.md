@@ -343,17 +343,39 @@ objects, executable tools, Environment access, or host-service authority.
 
 The host captures current registrations for each new authorization request and
 evaluates them sequentially in lexical Extension ID order. Deny takes precedence
-over Ask, then Allow; Abstain has no effect. The composer alone returns Allow for
-zero contributions or all Abstain. Every captured participant is evaluated even
-after Deny, so infrastructure failure cannot be hidden as an ordinary denial.
+over Ask, then Allow; Abstain has no effect. After validating expected participation,
+the composer alone returns Allow for zero contributions or all Abstain. Every
+captured participant is evaluated even after Deny, so infrastructure failure cannot
+be hidden as an ordinary denial.
 Discovery/evaluation failures and stale registrations propagate through the
 existing policy-failure outcome, with effects known not to have occurred, rather
 than becoming Deny, Abstain, or permission to execute.
+
+The application captures an immutable expected-policy snapshot from the
+authoritative prepared catalog before backend activation. These
+[narrow installation declarations](plugin-layout.md#expected-authorization-participation)
+are independent of live advertisements. For each request, the host validates the
+canonical Run/Session context and requires every applicable expectation to match
+a live registration owned by that exact prepared installation's backend. A matching
+Extension ID from another installation, another catalog snapshot, or an in-process
+registration does not satisfy that provenance check. Independently registered
+policies still participate without needing a prepared declaration.
+
+Missing advertisements, startup failures, termination, retirement, and malformed
+expected-participation metadata fail through the existing tool-policy evaluation
+failure path, even if another policy would Deny. They do not produce a policy
+opinion or substitute the legacy participant. Expected participation currently uses
+only the startup/global activation boundary; future contextual enablement must
+resolve applicability from authoritative execution/configuration context, not
+caller-selected IDs. No Project or Agent policy-selection hierarchy is introduced.
 
 Each captured registration is validated before and after its asynchronous-capable
 evaluation, and the full set is revalidated before composition completes. Retirement
 while any evaluation is unresolved invalidates that capture; a same-ID replacement
 cannot repair it. Registrations added after capture affect only later requests.
+Expected backend origins are also captured and revalidated without replacement
+lookup. A later successful activation can satisfy a fresh request against its
+authoritative snapshot, but cannot repair an older failed evaluation.
 A completed decision is retained for its exact invocation, including through an
 approval wait: it is not rediscovered, re-evaluated, or revoked by subsequent policy
 retirement/replacement. Approval still validates the retained exact executable and
@@ -409,11 +431,13 @@ belongs to the plugin's local documentation.
 
 Normal execution temporarily evaluates both that stock contribution, when installed,
 and the explicit legacy participant. The stock implementation is not yet the sole
-production authorization policy. Omitting or retiring the optional installation
-leaves legacy behavior intact without recreating a plugin or selecting a fallback;
-a participating stock evaluator's failure still propagates as infrastructure failure.
-The S4 authorization cutover remains deferred. There is no policy configuration,
-enable/disable control, or YOLO mode.
+production authorization policy. Omitting the optional installation removes its
+expectation and leaves legacy behavior intact without recreating a plugin or
+selecting a fallback. An installed expected stock policy that fails activation or
+retires instead makes new authorization requests fail readiness; the legacy
+participant cannot hide that failure. Completed approval decisions retain their
+existing lifetime. The S4b legacy-policy cutover and actual enable/disable and
+contextual configuration remain deferred. There is no YOLO mode.
 
 Denied or rejected work must not acquire execution authority. Remote tool
 materialization, argument validation, and description receive no effectful

@@ -173,6 +173,12 @@ void main() {
         reason: '${backend.failure}',
       );
       expect(backend.installation.metadata.id.value, _pluginId);
+      expect(backend.installation.authorizationPolicies, [
+        ExtensionId(_extensionId),
+      ]);
+      expect(plugins.expectedToolAuthorizationPolicies, {
+        backend.installation: [ExtensionId(_extensionId)],
+      });
       expect(backend.installation.frontend, isNull);
       expect(
         backend.installation.backendArtifactUri!.path,
@@ -196,6 +202,7 @@ void main() {
       );
     } else {
       expect(plugins.host, isNull);
+      expect(plugins.expectedToolAuthorizationPolicies, isEmpty);
       expect(runtime.extensions.discover(toolAuthorizationPolicies), isEmpty);
     }
     return plugins;
@@ -222,14 +229,118 @@ void main() {
     return (result as ResolvedToolProposal).invocation;
   }
 
-  ToolAuthorizationPolicyComposer composer({bool legacy = true}) =>
-      ToolAuthorizationPolicyComposer(
-        extensions: runtime.extensions,
-        lifecycle: runtime.lifecycle,
-        session: session,
-        runId: _runId,
-        legacyPolicy: legacy ? const ApprovalGatedToolPolicy() : null,
+  ToolAuthorizationPolicyComposer composer({
+    bool legacy = true,
+    ApplicationPluginBootstrap? plugins,
+  }) => ToolAuthorizationPolicyComposer(
+    extensions: runtime.extensions,
+    plugins: plugins ?? runtime.plugins,
+    lifecycle: runtime.lifecycle,
+    session: session,
+    runId: _runId,
+    legacyPolicy: legacy ? const ApprovalGatedToolPolicy() : null,
+  );
+
+  for (final failure in ['startup', 'termination']) {
+    test(
+      'expected stock $failure fails normal authorization even with Deny',
+      () async {
+        if (failure == 'startup') {
+          runtime.plugins.configureSettingsLoader(
+            (catalog) async => PreparedSettingsSnapshot.resolve(catalog),
+          );
+          await runtime.plugins.start(
+            installationRoot: installations.path,
+            dartaotruntimeExecutable: aotRuntime,
+            hostArtifactPath: hostArtifact.path,
+            // The actual stock entrypoint rejects arguments before advertising ready.
+            startupArguments: const {
+              _pluginId: ['unsupported'],
+            },
+          );
+          expect(runtime.plugins.state, ApplicationPluginState.ready);
+          expect(
+            runtime.plugins.backends.single.state,
+            InstalledBackendState.failed,
+          );
+        } else {
+          await start();
+          final backend = runtime.plugins.backends.single;
+          final terminated = runtime.plugins.changes.firstWhere(
+            (_) => backend.state == InstalledBackendState.terminated,
+          );
+          await backend.connection!.close();
+          await terminated.timeout(_bound);
+        }
+        expect(runtime.plugins.expectedToolAuthorizationPolicies, hasLength(1));
+        expect(runtime.extensions.discover(toolAuthorizationPolicies), isEmpty);
+        addTearDown(
+          runtime.extensions
+              .register(
+                point: toolAuthorizationPolicies,
+                id: ExtensionId('dev.adele.test.independent-deny'),
+                value: ToolAuthorizationPolicyContribution(
+                  evaluate: (_) => ToolAuthorizationDecision.deny,
+                ),
+              )
+              .close,
+        );
+        tool.effects = _effects([ToolEffect.sourceMutation]);
+        chat.sessions
+            .obtain(session.id)
+            .appendUserMessage('Exercise the tool.');
+        final controller = SessionExecutionController(
+          runtime: runtime,
+          session: session,
+          providerId: _modelId,
+          model: 'fixture-model',
+        );
+        addTearDown(controller.close);
+        final runId = await controller.startRun();
+        await controller.activeRunFuture;
+        final outcome = controller.activityForRun(runId)!.tools.single.outcome!;
+        expect(outcome.disposition, ToolOutcomeDisposition.failure);
+        expect(outcome.failureKind, ToolFailureKind.infrastructure);
+        expect(outcome.effectCertainty, EffectCertainty.knownNotOccurred);
+        expect(controller.pendingApproval, isNull);
+        expect(tool.executions, 0);
+      },
+    );
+  }
+
+  test(
+    'expected stock and independent native policies compose normally',
+    () async {
+      await start();
+      final invocation = await resolve();
+      final input = ToolPolicyInput(
+        invocation: invocation,
+        effects: tool.effects,
+        context: invocation.context,
       );
+      for (final decision in ToolAuthorizationDecision.values) {
+        var calls = 0;
+        final registration = runtime.extensions.register(
+          point: toolAuthorizationPolicies,
+          id: ExtensionId('dev.adele.test.independent-policy'),
+          value: ToolAuthorizationPolicyContribution(
+            evaluate: (_) {
+              calls++;
+              return decision;
+            },
+          ),
+        );
+        addTearDown(registration.close);
+        expect(await composer().evaluate(input), switch (decision) {
+          ToolAuthorizationDecision.deny => ToolPolicyDecision.deny,
+          ToolAuthorizationDecision.ask => ToolPolicyDecision.ask,
+          _ => ToolPolicyDecision.allow,
+        });
+        expect(calls, 1);
+        await registration.close();
+      }
+    },
+  );
 
   test(
     'prepared AOT policy independently matches all 32 legacy decisions',
@@ -375,12 +486,13 @@ void main() {
       // A legacy and stock Deny must not hide infrastructure failure.
       tool.effects = _effects(ToolEffect.values);
       final invocation = await resolve();
-      Future<ToolPolicyGateResult> evaluate() =>
-          const ToolPolicyGate().evaluate(
-            invocation: invocation,
-            policy: composer(),
-            interruptionId: RunInterruptionId('retirement'),
-          );
+      Future<ToolPolicyGateResult> evaluate({
+        ApplicationPluginBootstrap? plugins,
+      }) => const ToolPolicyGate().evaluate(
+        invocation: invocation,
+        policy: composer(plugins: plugins),
+        interruptionId: RunInterruptionId('retirement'),
+      );
       final pending = expectLater(
         evaluate(),
         throwsA(
@@ -414,7 +526,10 @@ void main() {
       expect(fresh.isSameRegistration(old), isFalse);
       release.complete();
       await pending.timeout(_bound);
-      expect(await evaluate(), isA<ToolExecutionDenied>());
+      // The retired authoritative snapshot cannot borrow a foreign installation,
+      // even if its metadata, artifact, and Extension ID are identical.
+      await expectLater(evaluate(), throwsA(isA<ToolPolicyEvaluationFailed>()));
+      expect(await evaluate(plugins: replacement), isA<ToolExecutionDenied>());
       expect(tool.executions, 0);
     },
   );

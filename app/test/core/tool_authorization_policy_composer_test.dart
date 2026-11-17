@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:adele_capabilities/adele_capabilities.dart';
+import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/approval_gated_tool_policy.dart';
 import 'package:adele_desktop/core/tool_authorization_policy_composer.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
@@ -91,6 +93,29 @@ void main() {
   test('zero contributions allow without a legacy participant', () async {
     expect(await composer.evaluate(input), ToolPolicyDecision.allow);
   });
+
+  test(
+    'empty prepared participation does not require a stock implementation',
+    () async {
+      final plugins = ApplicationPluginBootstrap(
+        CapabilityRegistry(),
+        extensions,
+      );
+      addTearDown(plugins.close);
+      await plugins.start(installationRoot: '');
+      composer = ToolAuthorizationPolicyComposer(
+        extensions: extensions,
+        plugins: plugins,
+        lifecycle: topology.lifecycle,
+        session: session,
+        runId: runId,
+      );
+      expect(plugins.expectedToolAuthorizationPolicies, isEmpty);
+      expect(await composer.evaluate(input), ToolPolicyDecision.allow);
+      register('independent', (_) => ToolAuthorizationDecision.ask);
+      expect(await composer.evaluate(input), ToolPolicyDecision.ask);
+    },
+  );
 
   // Every ordered combination through three participants, including repeated
   // opinions and all-abstain, exercises precedence independently of order.

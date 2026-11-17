@@ -1966,7 +1966,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
   );
 
   test(
-    'stock catalog without OpenAI keeps records absent and settings intact',
+    'stock catalog without OpenAI or Conservative keeps their declarations absent',
     () async {
       final installations = Directory('${root.path}/published');
       for (final plugin in [
@@ -1998,6 +1998,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
                 )
                 as Map<String, dynamic>;
         expect(manifest.containsKey('recordsSchema'), isFalse);
+        expect(manifest.containsKey('authorizationPolicies'), isFalse);
         expect(
           File.fromUri(
             directory.uri.resolve('records.schema.json'),
@@ -2008,6 +2009,10 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
       final catalog = await PreparedPluginCatalog.discover(installations.path);
       expect(catalog.issues, isEmpty);
       expect(catalog.installations, hasLength(2));
+      expect(
+        catalog.installations.expand((item) => item.authorizationPolicies),
+        isEmpty,
+      );
       expect(catalog.records.definitions, isEmpty);
       expect(catalog.installations.map((item) => item.recordsSchema), [
         null,
@@ -2097,6 +2102,98 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         },
       );
     }
+  }
+
+  for (final backend in ['available', 'absent', 'missing', 'invalid']) {
+    test(
+      'stock Conservative authorization expectation with $backend backend',
+      () async {
+        final installations = Directory('${root.path}/published');
+        final directory = Directory.fromUri(
+          installations.uri.resolve('conservative-tool-policy/'),
+        );
+        await publishStockPluginInstallation(
+          repositoryRoot: root,
+          installationDirectory: directory,
+          pluginId: 'dev.adele.plugin.conservative-tool-policy',
+          displayName: 'Conservative Tool Policy',
+          backend: backend != 'absent',
+        );
+        final manifestFile = File.fromUri(
+          directory.uri.resolve('adele_plugin.installation.json'),
+        );
+        final manifest =
+            jsonDecode(await manifestFile.readAsString())
+                as Map<String, Object?>;
+        expect(manifest, {
+          'manifestVersion': 1,
+          'metadata': {
+            'id': 'dev.adele.plugin.conservative-tool-policy',
+            'version': '0.1.0',
+            'displayName': 'Conservative Tool Policy',
+          },
+          'authorizationPolicies': [
+            {
+              'extensionId':
+                  'dev.adele.plugin.conservative-tool-policy.authorization',
+            },
+          ],
+          'components': {
+            if (backend != 'absent') 'backend': {'artifact': 'backend.aot'},
+          },
+        });
+        final artifact = File.fromUri(directory.uri.resolve('backend.aot'));
+        if (backend == 'available' || backend == 'invalid') {
+          await artifact.writeAsString(
+            'Not executable; discovery must not activate it.',
+          );
+        }
+        if (backend == 'invalid') {
+          manifest['components'] = {
+            'backend': {'artifact': '../backend.aot'},
+          };
+          await manifestFile.writeAsString(jsonEncode(manifest));
+        }
+
+        final catalog = await PreparedPluginCatalog.discover(
+          installations.path,
+        );
+        final installation = catalog.installations.single;
+        expect(
+          installation.metadata.id.value,
+          'dev.adele.plugin.conservative-tool-policy',
+        );
+        expect(installation.authorizationPolicies.map((id) => id.value), [
+          'dev.adele.plugin.conservative-tool-policy.authorization',
+        ]);
+        expect(
+          installation.backendArtifactUri,
+          backend == 'available' ? artifact.uri : isNull,
+        );
+        expect(installation.frontend, isNull);
+        if (backend != 'available') {
+          final issue = catalog.issues.single;
+          expect(issue.pluginId, installation.metadata.id);
+          expect(issue.installationDirectory.uri, directory.uri);
+          expect(issue.isAuthorizationPolicyIssue, isTrue);
+          expect(
+            issue.component,
+            backend == 'absent' ? isNull : PreparedPluginComponent.backend,
+          );
+          expect(
+            issue.message,
+            contains(switch (backend) {
+              'absent' => 'authorizationPolicies',
+              'invalid' => 'backend.artifact',
+              _ => 'backend.aot',
+            }),
+          );
+        } else {
+          expect(catalog.issues, isEmpty);
+        }
+        expect(commands.existsSync(), isFalse);
+      },
+    );
   }
 
   test(
@@ -2468,6 +2565,13 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
               'settingsSchema': 'settings.schema.json',
             if (plugin.directory == 'openai')
               'recordsSchema': 'records.schema.json',
+            if (plugin.directory == 'conservative-tool-policy')
+              'authorizationPolicies': [
+                {
+                  'extensionId':
+                      'dev.adele.plugin.conservative-tool-policy.authorization',
+                },
+              ],
             'components': {
               if (plugin.backend)
                 'backend': {
@@ -2547,6 +2651,15 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         expect(conservative.backendConsumedCapabilities, isEmpty);
         expect(conservative.backendConsumedRecordTypes, isEmpty);
         expect(conservative.backendConsumedCredentialSlots, isEmpty);
+        expect(conservative.authorizationPolicies.map((id) => id.value), [
+          'dev.adele.plugin.conservative-tool-policy.authorization',
+        ]);
+        expect(
+          catalog.installations.where(
+            (installation) => installation.authorizationPolicies.isNotEmpty,
+          ),
+          [conservative],
+        );
         final recordsInstallation = catalog.installations.singleWhere(
           (installation) => installation.recordsSchema != null,
         );

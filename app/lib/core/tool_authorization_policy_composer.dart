@@ -2,6 +2,7 @@ import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:agent_kernel/agent_kernel.dart';
 
+import 'application_plugin_bootstrap.dart';
 import 'product_lifecycle.dart';
 
 /// Host-owned authorization composition for one canonical Run and Session.
@@ -11,6 +12,7 @@ final class ToolAuthorizationPolicyComposer implements ToolPolicy {
     required this.lifecycle,
     required this.session,
     required this.runId,
+    this.plugins,
     this.legacyPolicy,
   });
 
@@ -18,6 +20,10 @@ final class ToolAuthorizationPolicyComposer implements ToolPolicy {
   final ProductLifecycleCoordinator lifecycle;
   final Session session;
   final RunId runId;
+
+  /// Authoritative prepared participation and exact backend registration owners.
+  /// Omitted only by standalone composition without prepared installations.
+  final ApplicationPluginBootstrap? plugins;
 
   /// Explicit transitional participant, not a discovery/failure fallback.
   /// Normal Session execution supplies ApprovalGatedToolPolicy until migration.
@@ -42,6 +48,9 @@ final class ToolAuthorizationPolicyComposer implements ToolPolicy {
     );
     final bindings = extensions.discover(toolAuthorizationPolicies).toList()
       ..sort((a, b) => a.id.value.compareTo(b.id.value));
+    final validateExpected = plugins?.captureExpectedToolAuthorizationPolicies(
+      bindings,
+    );
     var effective = legacyPolicy == null
         ? ToolPolicyDecision.allow
         : await legacyPolicy!.evaluate(input);
@@ -66,6 +75,7 @@ final class ToolAuthorizationPolicyComposer implements ToolPolicy {
     for (final binding in bindings) {
       binding.validate();
     }
+    validateExpected?.call();
     lifecycle.validateSessionInput(session);
     return effective;
   }
