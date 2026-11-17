@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -49,6 +50,607 @@ void main() {
     'configurationContext': 'shared',
     'association': associationA,
   };
+
+  group('capability groups', () {
+    late PluginCapabilityActivation activation;
+    late CapabilityRegistry registry;
+    late PluginBackendConnection connection;
+
+    List<AdeleCapabilityExposure> exposures(
+      List<Map<String, Object?>> values,
+    ) => AdeleCapabilityExposure.fromReady({'capabilityExposures': values});
+
+    List<AdeleCapabilityExposure> pair([String context = 'shared']) =>
+        exposures([
+          {...associatedExposure, 'configurationContext': context},
+          {...environmentA, 'configurationContext': context},
+        ]);
+
+    ProviderBinding source() => registry.resolve(
+      capability,
+      providerId: ProviderId(firstExposure['providerId']! as String),
+    );
+
+    setUp(() async {
+      final fake = _FakeHost.create(
+        contextEcho: true,
+        readyFields: {
+          'capabilityExposures': [
+            associatedExposure,
+            environmentA,
+            secondExposure,
+          ],
+        },
+      );
+      addTearDown(fake.dispose);
+      final host = await fake.start();
+      addTearDown(host.close);
+      connection = await host.startPlugin(
+        pluginId: 'dev.adele.provider',
+        artifactUri: Uri.file('/unused.aot'),
+      );
+      registry = CapabilityRegistry();
+      activation = await PluginCapabilityActivation.registerAdvertised(
+        connection: connection,
+        registry: registry,
+      );
+      addTearDown(activation.close);
+    });
+
+    test(
+      'adoption compares full metadata and association-closed original occurrences',
+      () async {
+        final original = source();
+        final target = registry.resolve(environment);
+        for (final changes in <Map<String, Object?>>[
+          {'providerId': 'dev.adele.provider.foreign'},
+          {'capabilityId': 'dev.adele.other'},
+          {'capabilityMajorVersion': 2},
+          {'serviceId': 'another'},
+          {'displayName': 'Different'},
+          {'configurationContext': 'another'},
+          {'rank': 12},
+          {
+            'association': {
+              ...associationA,
+              'providerId': 'dev.adele.environment.foreign',
+            },
+          },
+          {
+            'environmentHostServices': ['read'],
+          },
+        ]) {
+          expect(
+            () => activation.adoptAdvertisedCapabilityGroup(
+              expected: exposures([
+                {...associatedExposure, ...changes},
+                environmentA,
+              ]),
+            ),
+            throwsA(isA<InvalidProviderRegistration>()),
+            reason: changes.toString(),
+          );
+        }
+        final independentlyBound = {...associatedExposure}
+          ..remove('association');
+        expect(
+          () => activation.adoptAdvertisedCapabilityGroup(
+            expected: exposures([
+              {...independentlyBound, 'environmentBound': true},
+              environmentA,
+            ]),
+          ),
+          throwsA(isA<InvalidProviderRegistration>()),
+        );
+        for (final incomplete in [
+          [associatedExposure],
+          [environmentA],
+          [associatedExposure, environmentA, associatedExposure],
+        ]) {
+          expect(
+            () => activation.adoptAdvertisedCapabilityGroup(
+              expected: exposures(incomplete),
+            ),
+            throwsA(isA<InvalidProviderRegistration>()),
+          );
+        }
+        final group = activation.adoptAdvertisedCapabilityGroup(
+          expected: pair(),
+        );
+        expect(group.isRetired, isFalse);
+        expect(source().isSameRegistration(original), isTrue);
+        expect(
+          activation.associationFor(original)!.isSameRegistration(target),
+          isTrue,
+        );
+        expect(
+          () => activation.adoptAdvertisedCapabilityGroup(expected: pair()),
+          throwsA(isA<InvalidProviderRegistration>()),
+        );
+        await activation.retireCapabilityGroup(group);
+        expect(group.isRetired, isTrue);
+        expect(activation.registrations.length, 1);
+        expect(
+          () => activation.adoptAdvertisedCapabilityGroup(expected: pair()),
+          throwsA(isA<InvalidProviderRegistration>()),
+        );
+        final dynamic = await activation.publishCapabilityGroup(
+          exposures: pair(),
+        );
+        expect(
+          () => activation.adoptAdvertisedCapabilityGroup(expected: pair()),
+          throwsA(isA<InvalidProviderRegistration>()),
+        );
+        await activation.retireCapabilityGroup(group);
+        expect(dynamic.isRetired, isFalse);
+      },
+    );
+
+    test(
+      'initial and dynamic replacement retains ownership and bounded live inventory',
+      () async {
+        var group = activation.adoptAdvertisedCapabilityGroup(expected: pair());
+        final sibling = registry.resolve(capability);
+        final originalGroup = group;
+        for (var index = 0; index < 30; index++) {
+          final oldSource = source();
+          final oldTarget = registry.resolve(environment);
+          final oldGroup = group;
+          Future<void>? reentrant;
+          oldTarget.onRetire(() {
+            expect(oldGroup.isRetired, isTrue);
+            expect(
+              () => oldSource.requestChannel,
+              throwsA(isA<ProviderUnavailable>()),
+            );
+            expect(
+              () => oldTarget.requestChannel,
+              throwsA(isA<ProviderUnavailable>()),
+            );
+            expect(activation.owns(sibling), isTrue);
+            reentrant = activation.retireCapabilityGroup(oldGroup);
+          });
+          group = await activation.replaceCapabilityGroup(
+            expected: oldGroup,
+            exposures: pair('route-$index'),
+          );
+          await reentrant;
+          expect(group, isNot(same(oldGroup)));
+          expect(group.isRetired, isFalse);
+          expect(oldGroup.isRetired, isTrue);
+          expect(source().isSameRegistration(oldSource), isFalse);
+          expect(activation.owns(source()), isTrue);
+          expect(
+            activation
+                .associationFor(source())!
+                .isSameRegistration(registry.resolve(environment)),
+            isTrue,
+          );
+          expect(activation.registrations.length, 3);
+          await activation.retireCapabilityGroup(oldGroup);
+          expect(group.isRetired, isFalse);
+        }
+        expect(await source().requestChannel.request('inspect', {}), {
+          'configurationContext': 'route-29',
+          'serviceId': 'resourceInspector',
+          'payload': <String, Object?>{},
+        });
+        expect(activation.owns(sibling), isTrue);
+        await activation.retireCapabilityGroup(originalGroup);
+        await activation.retireCapabilityGroup(group);
+        expect(activation.registrations.length, 1);
+        expect(connection.validateInfrastructureContext, returnsNormally);
+      },
+    );
+
+    test(
+      'preflight rejects invalid associations and unavailable collisions before retirement',
+      () async {
+        final group = activation.adoptAdvertisedCapabilityGroup(
+          expected: pair(),
+        );
+        final original = source();
+        for (final candidate in [
+          [associatedExposure],
+          [associatedExposure, environmentA, environmentA],
+          [
+            {
+              ...associatedExposure,
+              'association': {
+                'capabilityId': capability.id.value,
+                'capabilityMajorVersion': 1,
+                'providerId': secondExposure['providerId'],
+              },
+            },
+            environmentA,
+          ],
+          [
+            {
+              ...associatedExposure,
+              'association': {
+                'capabilityId': capability.id.value,
+                'capabilityMajorVersion': 1,
+                'providerId': firstExposure['providerId'],
+              },
+            },
+            environmentA,
+          ],
+          [
+            associatedExposure,
+            {
+              ...environmentA,
+              'association': {
+                'capabilityId': capability.id.value,
+                'capabilityMajorVersion': 1,
+                'providerId': firstExposure['providerId'],
+              },
+            },
+          ],
+        ]) {
+          await expectLater(
+            activation.replaceCapabilityGroup(
+              expected: group,
+              exposures: exposures(candidate),
+            ),
+            throwsA(isA<CapabilityException>()),
+          );
+          expect(group.isRetired, isFalse);
+          expect(source().isSameRegistration(original), isTrue);
+        }
+        var available = true;
+        final hidden = registry.register(
+          provider: _provider(capability, 'dev.adele.provider.hidden'),
+          endpoint: AdeleRequestChannelEndpoint(
+            channel: original.requestChannel,
+            serviceId: original.provider.serviceId,
+            isAvailable: () => available,
+          ),
+        );
+        addTearDown(hidden.close);
+        available = false;
+        await expectLater(
+          activation.replaceCapabilityGroup(
+            expected: group,
+            exposures: [
+              ...pair(),
+              ...exposures([
+                {...firstExposure, 'providerId': 'dev.adele.provider.hidden'},
+              ]),
+            ],
+          ),
+          throwsA(isA<DuplicateProviderRegistration>()),
+        );
+        expect(hidden.isClosed, isFalse);
+        expect(group.isRetired, isFalse);
+        expect(source().isSameRegistration(original), isTrue);
+      },
+    );
+
+    test(
+      'post-retirement collision rolls back new members without reviving old IDs',
+      () async {
+        final group = activation.adoptAdvertisedCapabilityGroup(
+          expected: pair(),
+        );
+        final oldSource = source();
+        final oldTarget = registry.resolve(environment);
+        final endpoint = oldTarget.endpointAs<AdeleRequestChannelEndpoint>();
+        CapabilityRegistration? blocker;
+        oldTarget.onRetire(() {
+          blocker = registry.register(
+            provider: oldTarget.provider,
+            endpoint: endpoint,
+          );
+        });
+        await expectLater(
+          activation.replaceCapabilityGroup(
+            expected: group,
+            exposures: pair('new'),
+          ),
+          throwsA(isA<DuplicateProviderRegistration>()),
+        );
+        addTearDown(blocker!.close);
+        expect(group.isRetired, isTrue);
+        expect(
+          () => oldSource.requestChannel,
+          throwsA(isA<ProviderUnavailable>()),
+        );
+        expect(() => source(), throwsA(isA<ProviderUnavailable>()));
+        expect(activation.registrations.length, 1);
+        expect(activation.owns(registry.resolve(environment)), isFalse);
+        await activation.retireCapabilityGroup(group);
+        expect(blocker!.isClosed, isFalse);
+        await blocker!.close();
+        final recovered = await activation.publishCapabilityGroup(
+          exposures: pair('recovered'),
+        );
+        expect(recovered.isRetired, isFalse);
+        expect(activation.registrations.length, 3);
+      },
+    );
+
+    test(
+      'observer errors fence the entire old group and never revive it',
+      () async {
+        final group = activation.adoptAdvertisedCapabilityGroup(
+          expected: pair(),
+        );
+        final sourceBinding = source();
+        final target = registry.resolve(environment);
+        final failure = StateError('Old observer failed');
+        var observed = 0;
+        target.onRetire(() => throw failure);
+        sourceBinding.onRetire(() => observed++);
+        await expectLater(
+          activation.replaceCapabilityGroup(
+            expected: group,
+            exposures: pair('new'),
+          ),
+          throwsA(same(failure)),
+        );
+        expect(group.isRetired, isTrue);
+        expect(observed, 1);
+        expect(activation.registrations.length, 1);
+        await expectLater(
+          activation.retireCapabilityGroup(group),
+          throwsA(same(failure)),
+        );
+        expect(observed, 1);
+        expect(() => source(), throwsA(isA<ProviderUnavailable>()));
+        final next = await activation.publishCapabilityGroup(
+          exposures: pair('next'),
+        );
+        expect(next.isRetired, isFalse);
+      },
+    );
+
+    test(
+      'generation retirement interrupts replacement and queued publication reentrantly',
+      () async {
+        final group = activation.adoptAdvertisedCapabilityGroup(
+          expected: pair(),
+        );
+        Future<void>? retiring;
+        source().onRetire(() {
+          retiring = activation.retire();
+          expect(activation.retire(), same(retiring));
+          expect(registry.providersFor(capability), isEmpty);
+          expect(registry.providersFor(environment), isEmpty);
+        });
+        final replacing = activation.replaceCapabilityGroup(
+          expected: group,
+          exposures: pair('new'),
+        );
+        final publishing = activation.publishCapabilityGroup(
+          exposures: exposures([
+            {...firstExposure, 'providerId': 'dev.adele.provider.late'},
+          ]),
+        );
+        await Future.wait([
+          expectLater(replacing, throwsA(isA<PluginConnectionClosed>())),
+          expectLater(publishing, throwsA(isA<PluginConnectionClosed>())),
+        ]);
+        await retiring;
+        expect(group.isRetired, isTrue);
+        expect(activation.registrations.length, 0);
+        await activation.retireCapabilityGroup(group);
+      },
+    );
+
+    test(
+      'publication attaches before yield and shutdown fences every acquired member',
+      () async {
+        ProviderBinding? acquired;
+        final publishing = activation.publishCapabilityGroup(
+          exposures: exposures([
+            {...firstExposure, 'providerId': 'dev.adele.provider.dynamic'},
+          ]),
+        );
+        Future<void>? retiring;
+        scheduleMicrotask(() {
+          acquired = registry.resolve(
+            capability,
+            providerId: ProviderId('dev.adele.provider.dynamic'),
+          );
+          expect(activation.owns(acquired!), isTrue);
+          expect(activation.registrations.length, 4);
+          retiring = activation.retire();
+          expect(activation.registrations.length, 0);
+        });
+        final published = await publishing;
+        await retiring;
+        expect(acquired, isNotNull);
+        expect(published.isRetired, isTrue);
+        expect(
+          () => acquired!.requestChannel,
+          throwsA(isA<ProviderUnavailable>()),
+        );
+      },
+    );
+
+    test(
+      'admission fencing stops queued mutations before registration cleanup',
+      () async {
+        final group = activation.adoptAdvertisedCapabilityGroup(
+          expected: pair(),
+        );
+        final retained = source();
+        var notifications = 0;
+        retained.onRetire(() => notifications++);
+        final queued = activation.publishCapabilityGroup(
+          exposures: pair('late'),
+        );
+        final rejected = expectLater(
+          queued,
+          throwsA(isA<PluginConnectionClosed>()),
+        );
+        activation.fenceAdmission();
+        activation.fenceAdmission();
+        expect(activation.registrations.length, 3);
+        expect(notifications, 0);
+        expect(group.isRetired, isFalse);
+        expect(registry.providersFor(capability), isEmpty);
+        expect(
+          () => retained.requestChannel,
+          throwsA(isA<ProviderEndpointUnavailable>()),
+        );
+        expect(
+          () => activation.owns(retained),
+          throwsA(isA<ProviderEndpointUnavailable>()),
+        );
+        expect(
+          () => activation.publishCapabilityGroup(exposures: pair()),
+          throwsA(isA<PluginConnectionClosed>()),
+        );
+        expect(
+          () => activation.retireProvider(retained),
+          throwsA(isA<InvalidProviderRegistration>()),
+        );
+        await rejected;
+        await activation.retire();
+        expect(notifications, 1);
+        expect(group.isRetired, isTrue);
+        expect(activation.registrations.length, 0);
+        expect(
+          () => retained.requestChannel,
+          throwsA(isA<ProviderUnavailable>()),
+        );
+      },
+    );
+
+    test(
+      'standalone close fences provider admission before infrastructure observers',
+      () async {
+        final retained = source();
+        var revocations = 0;
+        connection.onInfrastructureRevoked(() {
+          revocations++;
+          expect(activation.registrations.length, 3);
+          expect(
+            () => retained.requestChannel,
+            throwsA(isA<ProviderEndpointUnavailable>()),
+          );
+        });
+        await activation.close();
+        expect(revocations, 1);
+        expect(activation.registrations.length, 0);
+        expect(
+          () => retained.requestChannel,
+          throwsA(isA<ProviderUnavailable>()),
+        );
+      },
+    );
+
+    test(
+      'direct registration cleanup exposes retired groups before unrelated observers',
+      () async {
+        final group = activation.adoptAdvertisedCapabilityGroup(
+          expected: pair(),
+        );
+        registry.resolve(capability).onRetire(() {
+          expect(group.isRetired, isTrue);
+        });
+        await activation.registrations.close();
+        expect(activation.registrations.length, 0);
+        await activation.retireCapabilityGroup(group);
+        await activation.retireCapabilityGroup(group);
+        expect(
+          () => activation.publishCapabilityGroup(exposures: pair('late')),
+          throwsA(isA<PluginConnectionClosed>()),
+        );
+        expect(registry.providersFor(capability), isEmpty);
+        expect(registry.providersFor(environment), isEmpty);
+      },
+    );
+
+    test('generation retirement immediately fences a queued publish', () async {
+      final publishing = activation.publishCapabilityGroup(
+        exposures: exposures([
+          {...firstExposure, 'providerId': 'dev.adele.provider.queued'},
+        ]),
+      );
+      final rejected = expectLater(
+        publishing,
+        throwsA(isA<PluginConnectionClosed>()),
+      );
+      final retiring = activation.retire();
+      expect(activation.registrations.length, 0);
+      expect(registry.providersFor(capability), isEmpty);
+      await rejected;
+      await retiring;
+      expect(registry.providersFor(capability), isEmpty);
+    });
+
+    test(
+      'individual retirement invalidates a group without touching replacements',
+      () async {
+        final group = activation.adoptAdvertisedCapabilityGroup(
+          expected: pair(),
+        );
+        final original = source();
+        final target = registry.resolve(environment);
+        await activation.retireProvider(target);
+        expect(group.isRetired, isTrue);
+        expect(activation.owns(original), isTrue);
+        expect(
+          () => activation.replaceCapabilityGroup(
+            expected: group,
+            exposures: pair(),
+          ),
+          throwsA(isA<InvalidProviderRegistration>()),
+        );
+        final next = await activation.publishCapabilityGroup(
+          exposures: exposures([environmentA]),
+        );
+        final fresh = registry.resolve(environment);
+        expect(
+          () => activation.associationFor(original),
+          throwsA(isA<ProviderUnavailable>()),
+        );
+        expect(
+          () => activation.retireProvider(target),
+          throwsA(isA<ProviderUnavailable>()),
+        );
+        await activation.retireCapabilityGroup(group);
+        await activation.retireCapabilityGroup(group);
+        expect(next.isRetired, isFalse);
+        expect(activation.owns(fresh), isTrue);
+        expect(activation.registrations.length, 2);
+      },
+    );
+
+    test(
+      'concurrent group mutations serialize and reject stale replace without substitution',
+      () async {
+        final group = activation.adoptAdvertisedCapabilityGroup(
+          expected: pair(),
+        );
+        final replacing = activation.replaceCapabilityGroup(
+          expected: group,
+          exposures: pair('winner'),
+        );
+        final stale = activation.replaceCapabilityGroup(
+          expected: group,
+          exposures: pair('loser'),
+        );
+        final retiring = activation.retireCapabilityGroup(group);
+        await expectLater(stale, throwsA(isA<InvalidProviderRegistration>()));
+        final next = await replacing;
+        await retiring;
+        expect(next.isRetired, isFalse);
+        expect(activation.owns(source()), isTrue);
+        final freshRetire = activation.retireCapabilityGroup(next);
+        final published = activation.publishCapabilityGroup(
+          exposures: pair('after-retire'),
+        );
+        await freshRetire;
+        final after = await published;
+        expect(next.isRetired, isTrue);
+        expect(after.isRetired, isFalse);
+        expect(activation.registrations.length, 3);
+      },
+    );
+  });
 
   for (final advertised in [false, true]) {
     test(
@@ -1076,24 +1678,25 @@ void main() {
         var visits = 0;
         unrelated.onRetire(() {
           visits++;
-          // S and T are still registered when unrelated U retires first.
-          expect(() => source.requestChannel, returnsNormally);
-          expect(() => target.requestChannel, returnsNormally);
-          expect(activation.owns(source), isFalse);
-          expect(activation.owns(target), isFalse);
+          // The complete set is fenced before the first reentrant observer.
+          final stale = throwsA(isA<ProviderUnavailable>());
+          expect(() => source.requestChannel, stale);
+          expect(() => target.requestChannel, stale);
+          expect(() => activation.owns(source), stale);
+          expect(() => activation.owns(target), stale);
           expect(
             () => activation.retireProvider(source),
             throwsA(isA<InvalidProviderRegistration>()),
           );
-          expect(activation.associationFor(source), isNull);
-          expect(() => independent.requestChannel, returnsNormally);
-          expect(activation.isEnvironmentBound(independent), isFalse);
+          expect(() => activation.associationFor(source), stale);
+          expect(() => independent.requestChannel, stale);
+          expect(() => activation.isEnvironmentBound(independent), stale);
           expect(
             () => activation.resolveAssociatedProvider(
               capability,
               associatedWith: target,
             ),
-            throwsA(isA<InvalidProviderRegistration>()),
+            stale,
           );
           reentrant = activation.retire();
           expect(activation.retire(), same(reentrant));
@@ -1149,7 +1752,7 @@ void main() {
       Future<Object?>? admitted;
       CapabilityRegistration? replacement;
       target.onRetire(() {
-        // Group retirement fences the last registered target before the source.
+        // Individual retirement leaves the source callable, but not associated.
         expect(activation.owns(source), isTrue);
         expect(() => source.requestChannel, returnsNormally);
         expect(
@@ -1183,13 +1786,14 @@ void main() {
           const {},
         );
       });
-      await activation.registrations.close();
+      await activation.retireProvider(target);
       expect(await admitted, isA<Map<String, Object?>>());
       expect(replacement!.isClosed, isFalse);
       expect(
         () => activation.associationFor(source),
         throwsA(isA<ProviderUnavailable>()),
       );
+      await activation.registrations.close();
       await activation.retire();
       expect(replacement!.isClosed, isFalse);
       await replacement!.close();

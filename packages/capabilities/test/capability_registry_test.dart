@@ -18,6 +18,158 @@ void main() {
   });
 
   test(
+    'preflight sees unavailable collisions and exempts exact occurrences only',
+    () async {
+      final registry = CapabilityRegistry();
+      final provider = _provider(capability, 'dev.adele.inspector.alpha');
+      final endpoint = _Endpoint();
+      final registration = registry.register(
+        provider: provider,
+        endpoint: endpoint,
+      );
+      final original = registration.binding;
+      final foreign = CapabilityRegistry().register(
+        provider: provider,
+        endpoint: _Endpoint(),
+      );
+      addTearDown(foreign.close);
+      endpoint.isAvailable = false;
+      expect(registry.providersFor(capability), isEmpty);
+      var changes = 0;
+      final subscription = registry.changes.listen((_) => changes++);
+      addTearDown(subscription.cancel);
+      for (final replacing in [
+        <ProviderBinding>[],
+        [foreign.binding],
+      ]) {
+        expect(
+          () => registry.validateRegistration(
+            provider: provider,
+            endpoint: _Endpoint(),
+            replacing: replacing,
+          ),
+          throwsA(isA<DuplicateProviderRegistration>()),
+        );
+      }
+      registry.validateRegistration(
+        provider: provider,
+        endpoint: _Endpoint(),
+        replacing: [original],
+      );
+      expect(registration.isClosed, isFalse);
+      expect(
+        () => registry.validateRegistration(
+          provider: provider,
+          endpoint: _Endpoint(serviceId: 'wrong'),
+          replacing: [original],
+        ),
+        throwsA(isA<CapabilityContractMismatch>()),
+      );
+      expect(
+        () => registry.validateRegistration(
+          provider: provider,
+          endpoint: endpoint,
+          replacing: [original],
+        ),
+        throwsA(isA<InvalidProviderRegistration>()),
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(changes, 0);
+      await registration.close();
+      final replacement = registry.register(
+        provider: provider,
+        endpoint: _Endpoint(),
+      );
+      addTearDown(replacement.close);
+      expect(
+        () => registry.validateRegistration(
+          provider: provider,
+          endpoint: _Endpoint(),
+          replacing: [original],
+        ),
+        throwsA(isA<DuplicateProviderRegistration>()),
+      );
+      registry.validateRegistration(
+        provider: provider,
+        endpoint: _Endpoint(),
+        replacing: [replacement.binding],
+      );
+    },
+  );
+
+  test(
+    'group fences every member before observers and reentrant cleanup',
+    () async {
+      final registry = CapabilityRegistry();
+      final group = CapabilityRegistrationGroup();
+      final members = [
+        for (var index = 0; index < 3; index++)
+          registry.register(
+            provider: _provider(
+              capability,
+              'dev.adele.inspector.member-$index',
+            ),
+            endpoint: _Endpoint(),
+          ),
+      ];
+      for (final member in members) {
+        group.add(member);
+      }
+      Future<void>? reentrant;
+      members.last.binding.onRetire(() {
+        expect(group.length, 0);
+        expect(registry.providersFor(capability), isEmpty);
+        for (final member in members) {
+          expect(member.isClosed, isTrue);
+          expect(
+            () => member.binding.endpointAs<CapabilityEndpoint>(),
+            throwsA(isA<ProviderUnavailable>()),
+          );
+        }
+        reentrant = group.close();
+        throw StateError('Observer failure does not skip the other observers.');
+      });
+      var observed = 0;
+      members.first.binding.onRetire(() => observed++);
+      final closing = group.close();
+      expect(observed, 1);
+      await expectLater(closing, throwsStateError);
+      await reentrant;
+      expect(group.length, 0);
+    },
+  );
+
+  test(
+    'registration group retains live cleanup only across repeated replacement',
+    () async {
+      final registry = CapabilityRegistry();
+      final group = CapabilityRegistrationGroup();
+      for (var index = 0; index < 100; index++) {
+        final registration = registry.register(
+          provider: _provider(capability, 'dev.adele.inspector.alpha'),
+          endpoint: _Endpoint(),
+        );
+        group.add(registration);
+        group.add(registration);
+        expect(group.length, 1);
+        final binding = registration.binding;
+        await group.retire(binding);
+        expect(group.length, 0);
+        expect(group.owns(binding), isTrue);
+        expect(
+          () => group.retire(binding),
+          throwsA(isA<ProviderUnavailable>()),
+        );
+        expect(
+          () => group.add(registration),
+          throwsA(isA<InvalidProviderRegistration>()),
+        );
+      }
+      await group.close();
+    },
+  );
+
+  test(
     'changes broadcast asynchronously after registration and retirement',
     () async {
       final registry = CapabilityRegistry();

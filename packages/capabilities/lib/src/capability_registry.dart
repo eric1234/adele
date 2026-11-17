@@ -149,6 +149,9 @@ final class CapabilityRegistration {
 
   bool get isClosed => !_registration.active;
 
+  /// Captures this occurrence without resolving a semantic ID again.
+  ProviderBinding get binding => ProviderBinding._(_registration);
+
   /// Exact ownership survives retirement; callers must separately check liveness.
   bool owns(ProviderBinding binding) =>
       identical(_registration, binding._registration);
@@ -161,10 +164,16 @@ final class CapabilityRegistration {
 final class CapabilityRegistrationGroup {
   final List<CapabilityRegistration> _registrations =
       <CapabilityRegistration>[];
+  final Object _identity = Object();
   bool _closed = false;
 
+  bool get isClosed => _closed;
+
+  /// Number of registrations still retained for cleanup, not historical members.
+  int get length => _registrations.length;
+
   bool owns(ProviderBinding binding) =>
-      _registrations.any((registration) => registration.owns(binding));
+      binding._registration.owners.contains(_identity);
 
   void add(CapabilityRegistration registration) {
     if (_closed) {
@@ -172,7 +181,16 @@ final class CapabilityRegistrationGroup {
         'A closed registration group cannot accept registrations.',
       );
     }
+    if (registration.isClosed) {
+      throw const InvalidProviderRegistration(
+        'A retired registration cannot join a registration group.',
+      );
+    }
+    if (!registration._registration.owners.add(_identity)) return;
     _registrations.add(registration);
+    registration._registration.retirementListeners[_identity] = () {
+      _registrations.remove(registration);
+    };
   }
 
   /// Retires one exact live owned registration, not a same-ID replacement.
@@ -184,18 +202,16 @@ final class CapabilityRegistrationGroup {
         'The registration group is closed.',
       );
     }
-    for (final registration in _registrations) {
-      if (registration.owns(binding)) {
-        if (registration.isClosed) {
-          throw ProviderUnavailable(
-            capability: binding.provider.capability,
-            providerId: binding.provider.id,
-            availableProviderIds: const <Object>[],
-            stale: true,
-          );
-        }
-        return registration.close();
+    if (owns(binding)) {
+      if (!binding._registration.active) {
+        throw ProviderUnavailable(
+          capability: binding.provider.capability,
+          providerId: binding.provider.id,
+          availableProviderIds: const <Object>[],
+          stale: true,
+        );
       }
+      return _registrations.singleWhere((entry) => entry.owns(binding)).close();
     }
     throw const InvalidProviderRegistration(
       'The provider is not owned by this registration group.',
@@ -205,11 +221,19 @@ final class CapabilityRegistrationGroup {
   Future<void> close() async {
     if (_closed) return;
     _closed = true;
+    final retiring = _registrations.reversed.toList();
+    _registrations.clear();
+    // Fence the complete set before invoking any reentrant retirement observer.
+    final fenced = [
+      for (final registration in retiring)
+        if (registration._registry._fence(registration._registration))
+          registration,
+    ];
     Object? firstError;
     StackTrace? firstStack;
-    for (final CapabilityRegistration registration in _registrations.reversed) {
+    for (final registration in fenced) {
       try {
-        await registration.close();
+        registration._registry._notifyRetired(registration._registration);
       } catch (error, stack) {
         firstError ??= error;
         firstStack ??= stack;
@@ -232,6 +256,25 @@ final class CapabilityRegistry {
     required ProviderDescriptor provider,
     required CapabilityEndpoint endpoint,
   }) {
+    validateRegistration(provider: provider, endpoint: endpoint);
+    final capabilityProviders = _providers.putIfAbsent(
+      provider.capability,
+      () => <ProviderId, _ActiveRegistration>{},
+    );
+    final registration = _ActiveRegistration(provider, endpoint);
+    capabilityProviders[provider.id] = registration;
+    _changes.add(null);
+    return CapabilityRegistration._(this, registration);
+  }
+
+  /// Dry-run the same checks as [register], including unavailable registrations.
+  /// Only the exact current occurrences in [replacing] exempt a collision. This
+  /// reserves nothing; callers must still register after retiring those members.
+  void validateRegistration({
+    required ProviderDescriptor provider,
+    required CapabilityEndpoint endpoint,
+    Iterable<ProviderBinding> replacing = const [],
+  }) {
     if (!endpoint.isAvailable) {
       throw InvalidProviderRegistration(
         'Provider ${provider.id} endpoint is unavailable.',
@@ -244,24 +287,16 @@ final class CapabilityRegistry {
         actualServiceId: endpoint.serviceId,
       );
     }
-    final Map<ProviderId, _ActiveRegistration> capabilityProviders = _providers
-        .putIfAbsent(
-          provider.capability,
-          () => <ProviderId, _ActiveRegistration>{},
-        );
-    if (capabilityProviders.containsKey(provider.id)) {
+    final current = _providers[provider.capability]?[provider.id];
+    if (current != null &&
+        !replacing.any(
+          (binding) => identical(binding._registration, current),
+        )) {
       throw DuplicateProviderRegistration(
         'Provider ${provider.id} is already active for '
         '${provider.capability}.',
       );
     }
-    final _ActiveRegistration registration = _ActiveRegistration(
-      provider,
-      endpoint,
-    );
-    capabilityProviders[provider.id] = registration;
-    _changes.add(null);
-    return CapabilityRegistration._(this, registration);
   }
 
   List<ProviderDescriptor> providersFor(CapabilityKey capability) {
@@ -325,7 +360,11 @@ final class CapabilityRegistry {
   }
 
   void _remove(_ActiveRegistration registration) {
-    if (!registration.active) return;
+    if (_fence(registration)) _notifyRetired(registration);
+  }
+
+  bool _fence(_ActiveRegistration registration) {
+    if (!registration.active) return false;
     registration.active = false;
     final Map<ProviderId, _ActiveRegistration>? capabilityProviders =
         _providers[registration.provider.capability];
@@ -338,8 +377,12 @@ final class CapabilityRegistry {
         _providers.remove(registration.provider.capability);
       }
     }
-    final listeners = registration.retirementListeners.values.toList();
     _changes.add(null);
+    return true;
+  }
+
+  void _notifyRetired(_ActiveRegistration registration) {
+    final listeners = registration.retirementListeners.values.toList();
     registration.retirementListeners.clear();
     Object? firstError;
     StackTrace? firstStack;
@@ -361,6 +404,7 @@ final class _ActiveRegistration {
   final ProviderDescriptor provider;
   final CapabilityEndpoint endpoint;
   bool active = true;
+  final Set<Object> owners = {};
   final Map<Object, void Function()> retirementListeners = {};
 }
 

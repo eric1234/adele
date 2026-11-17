@@ -82,6 +82,35 @@ their existing behavior. The concrete operation-local adapter and host-call
 channel live in [`plugin_backend_support`](../plugin_backend_support/README.md),
 not generated contract code.
 
+`registerContext(services: ...)` adds an immutable service-map snapshot and returns
+an `AdeleConfigurationContextRegistration` with an opaque `configurationContext`
+and idempotent `retire()`. Generated contexts are monotonically allocated within
+the router, skip constructor-provided identities, and never reuse retired
+identities; removal does not retain a growing tombstone collection. Dynamic
+service IDs use the existing service-ID grammar, and allocated contexts respect
+the existing context bounds. Each dynamic dispatcher must be uniquely owned,
+including across active or draining routes. Static constructor routes keep their
+existing snapshot and dispatcher-sharing behavior.
+
+Retirement synchronously fences new requests and stream opens. Admitted calls keep
+their exact dispatcher, and existing streams retain credit/cancel routing even
+after a replacement is registered. Dispatchers close only after their handler
+futures and transport stream lifetimes settle; a model/domain terminal payload is
+not transport termination, and a sent cancellation terminal alone does not imply
+handler cleanup is complete. Retired route/dispatcher bookkeeping is removed after
+cleanup. A backend must keep receiving transport controls while awaiting retirement;
+an unresponsive unary handler or an uncancelled paused stream can keep it pending.
+Plugin-owned dependencies may be released after `retire()` settles, not when the
+route is first fenced. Replacement always requires a fresh registration, never
+mutation of an existing route.
+
+Router `close()` is separate shutdown behavior: it synchronously fences additions
+and admission, invokes every owned dispatcher's close (once, including draining
+routes), and waits for dispatcher and handler cleanup. Generated dispatchers cancel
+streams on close; shutdown does not wait for normal transport EOF first. Both close
+and retirement memoize their result, including cleanup failures. Focused lifecycle
+coverage is in [`test/configuration_context_router_test.dart`](test/configuration_context_router_test.dart).
+
 Phase II contract source is an intentionally constrained IDL embedded in Dart,
 not arbitrary Dart API source. Every schema-participating declaration and member
 uses a public ASCII identifier matching `[A-Za-z][A-Za-z0-9_]*`; private,

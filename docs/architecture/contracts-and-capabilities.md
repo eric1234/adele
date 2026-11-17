@@ -312,6 +312,75 @@ retirement mechanics belong to
 See [plugin layout](plugin-layout.md#prepared-installation-snapshot) for the
 installed-metadata boundary.
 
+### Dynamic Capability publication
+
+A running backend can add, replace, and retire its own callable provider groups
+without changing its connection or backend generation. The public
+`AdeleCapabilityPublisher` uses the existing generation-scoped infrastructure
+transport. Normal application bootstrap grants this service as a continuation of
+ready-advertisement authority: backends already choose the callable providers they
+advertise, and changing the time of advertisement does not grant another domain's
+authority. A separate prepared opt-in would not narrow that existing authority.
+Standalone hosts still choose whether to install the mediator. No consumption,
+credential, Environment execution, frontend, or dynamic extension permission follows.
+
+The host binds the mediator to the actual connection, then attaches its exact
+successful `PluginBackendActivation`. Before attachment publication fails explicitly;
+readiness alone does not complete registration. Caller-supplied plugin/generation
+selectors are rejected. Private group handles identify exact owned registration
+occurrences, never a Provider ID lookup into another backend's registrations.
+
+Initial ready registrations and later publications share the same capability owner,
+registry, provider ownership checks, retirement observers, and consumer resolution.
+Adopting an initial group verifies original live registration occurrences and their
+full advertised metadata without re-registering them. The subset must include both
+ends of every association it touches. Later publication groups are likewise
+association-closed: an association must resolve to an exact member of that candidate
+group, not a matching provider from another account, group, or generation. Retirement
+of either exact member invalidates the relationship; same-ID replacement never repairs it.
+
+Replacement has explicit ordering, not transactionally invisible publication:
+
+1. The backend prepares new services and immutable routes before requesting change.
+2. The host validates identities, service/context grammar, ownership, candidate
+   associations, and collisions, including unavailable-but-still-registered entries.
+3. The host fences the exact old registrations and notifies retirement observers.
+4. It registers the candidate as fresh exact bindings and captures its associations.
+5. The backend retires the old routes and releases resources after their admitted
+   work settles, independently of fresh host selection.
+
+Mutations are serialized for the activation; generation retirement fences pending
+and future mutation without waiting behind it. Invalid or conflicting candidates
+leave healthy prior registrations untouched where rejection is knowable before
+retirement. Failure after retirement rolls back only new registrations acquired by
+that attempt and reports an explicit unavailable replacement; it never resurrects
+old bindings or selects a fallback. Reentrant observers can make a previously valid
+candidate fail. The synchronous registry does not provide a cross-registry transaction
+or reserve a preflight result. Unrelated providers and extension registrations remain
+owned and active. Backend retirement removes initial and dynamic registrations.
+
+Stable semantic Provider IDs may remain equal across replacement, while
+`old.isSameRegistration(new)` is false. An existing Run retains its exact provider,
+model and reasoning effort. Later invocations through its retired binding fail
+explicitly, without re-resolution; an already-admitted operation may settle on its
+old transport. Deliberate retirement or credential revocation can still interrupt
+affected work and does not promise effect rollback. Unrelated providers and Runs
+are not retired by the group operation.
+
+The mediator has bounded live handles, request sizes, queued mutations, and fixed
+value-free failures. It releases retired group bookkeeping rather than accumulating
+replacement history. A lost acknowledgement is an uncertain outcome, not evidence
+of rollback or permission for automatic retry. Registration ownership remains with
+the activation even if a publication handle is lost, so generation shutdown cleans
+up every acquired registration.
+
+See [backend support](../../packages/plugin_backend_support/README.md#capability-publication)
+for the public facade and failure vocabulary, and
+[`plugin_runtime`](../../packages/plugin_runtime/README.md) for native lifecycle APIs.
+This mechanism does not implement live OpenAI configuration, Settings notifications,
+record comparison, or capture ownership. The OpenAI backend still uses startup
+configuration until it explicitly adopts this lifecycle.
+
 ### Configuration context
 
 A configured semantic/provider instance is a persistent/logical concept. Its live
@@ -328,6 +397,19 @@ management are not established by these live routes. See
 [ADR 0027](../adr/0027-generation-bound-plugin-configuration-contexts.md),
 [profiles and configuration](profiles-and-configuration.md), and
 [`capabilities`](../../packages/capabilities/README.md).
+
+`AdeleConfigurationContextRouter.registerContext` installs a service-map snapshot
+after startup and allocates a fresh opaque route identity. Dynamic contexts are
+never reused within that router, and their dispatchers cannot be shared with another
+active or draining route. An old route is never rebound to new configuration.
+Route retirement synchronously bars new requests/stream opens but retains exact
+admitted dispatcher ownership. Stream credit, cancellation, and transport terminals
+continue to the original dispatcher regardless of replacement. The route drains
+handler cleanup and transport stream lifetime before closing its dispatchers;
+a domain-level terminal event alone is not transport completion. Whole-router close
+instead fences all admission and force-closes active and retiring dispatchers under
+the existing shutdown semantics. A paused stream or hung operation can delay graceful
+retirement indefinitely; no timeout silently retargets work or frees its dependencies.
 
 Backend startup may additionally carry installation-owned nonsecret configuration
 records explicitly requested by `consumesRecordTypes`. The application captures

@@ -8,10 +8,12 @@ import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_plugin_backend_support/adele_backend_configuration.dart';
 import 'package:adele_plugin_backend_support/adele_backend_credentials.dart';
+import 'package:adele_plugin_backend_support/adele_capability_publisher.dart';
 import 'package:adele_plugin_backend_support/capability_consumer.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
 import 'backend_capability_host.dart';
+import 'backend_capability_publication_host.dart';
 import 'backend_configuration_host.dart';
 import 'backend_credential_host.dart';
 import 'prepared_records.dart';
@@ -49,6 +51,7 @@ final class InstalledBackendActivation {
   PluginBackendActivation? _activation;
   BackendCredentialHost? _credentials;
   BackendConfigurationHost? _configuration;
+  BackendCapabilityPublicationHost? _publication;
 
   InstalledBackendState get state => _state;
   Object? get failure => _failure;
@@ -507,6 +510,17 @@ final class ApplicationPluginBootstrap {
                 ...?createInfrastructureServices?.call(connection),
               };
               final allowed = backend.installation.backendConsumedCapabilities;
+              if (services.containsKey(backendCapabilityPublicationServiceId)) {
+                throw StateError(
+                  'Capability publication is already configured.',
+                );
+              }
+              // Publication continues the backend's existing advertisement
+              // authority, scoped to its actual connection, not consumption.
+              services[backendCapabilityPublicationServiceId] =
+                  backend._publication = BackendCapabilityPublicationHost(
+                    connection: connection,
+                  );
               if (services.containsKey(backendCapabilityConsumerServiceId)) {
                 throw StateError(
                   'Capability mediation service is already configured.',
@@ -568,6 +582,7 @@ final class ApplicationPluginBootstrap {
           if (connection.isClosed) {
             throw StateError('Backend terminated during activation.');
           }
+          backend._publication!.attach(activation);
           backend._state = InstalledBackendState.active;
           unawaited(
             connection.terminated.then(
@@ -701,10 +716,12 @@ final class ApplicationPluginBootstrap {
       // the credential owner's drain of an uncancelable native unlock prompt.
       (backend.connection ??
               backend._credentials?.connection ??
-              backend._configuration?.connection)
+              backend._configuration?.connection ??
+              backend._publication?.connection)
           ?.revokeInfrastructureContext();
       unawaited(backend._credentials?.close());
       unawaited(backend._configuration?.close());
+      unawaited(backend._publication?.close());
     }
     return _closing = _close();
   }
@@ -742,6 +759,8 @@ final class ApplicationPluginBootstrap {
       if (backend._credentials case final credentials?) credentials.close,
     for (final backend in _backends.reversed)
       if (backend._configuration case final configuration?) configuration.close,
+    for (final backend in _backends.reversed)
+      if (backend._publication case final publication?) publication.close,
     for (final backend in _backends.reversed)
       if (backend.connection case final connection?)
         () =>
