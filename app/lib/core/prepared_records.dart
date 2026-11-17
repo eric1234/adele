@@ -6,6 +6,13 @@ import 'package:plugin_runtime/plugin_runtime.dart';
 /// Implementations accept only their own genuine worker captures, never a copied
 /// presentation view. No native persistence authority crosses this interface.
 abstract interface class StartupCredentialReader {
+  /// Captures fresh values and private slot authority together on the existing
+  /// Settings worker. This cannot upgrade a nonsecret observation or copied map.
+  Future<StartupRecordsView> captureCurrentConfiguration(
+    PreparedPluginCatalog catalog,
+    PreparedPluginInstallation installation,
+  );
+
   Future<String> readStartupCredential(
     StartupRecordsView snapshot, {
     required String collection,

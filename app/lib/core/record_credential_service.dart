@@ -67,7 +67,59 @@ final class RecordCredentialService implements StartupCredentialReader {
   final Set<(RecordCollectionId, ConfigurationRecordId)> _active = {};
   Future<void> _pending = Future<void>.value();
   Future<void>? _closing;
-  final Set<Future<void>> _startupReads = {};
+  final Set<Future<void>> _backendOperations = {};
+
+  @override
+  Future<StartupRecordsView> captureCurrentConfiguration(
+    PreparedPluginCatalog catalog,
+    PreparedPluginInstallation installation,
+  ) {
+    void validate() {
+      if (_closing != null || _settings._closing != null) {
+        throw const AdeleCredentialFailure(
+          AdeleCredentialFailureKind.generationUnavailable,
+        );
+      }
+    }
+
+    final result = () async {
+      validate();
+      if (installation.backendConsumedRecordTypes.isEmpty ||
+          !installation.backendConsumedCredentialSlots.any(
+            (declaration) => declaration.slots.isNotEmpty,
+          )) {
+        throw const AdeleCredentialFailure(
+          AdeleCredentialFailureKind.notAuthorized,
+        );
+      }
+      // The startup projection already captures ordinary values and private
+      // bindings from the same validated worker snapshots, with no vault access.
+      final view = await _settings.loadStartupRecords(catalog, installation);
+      try {
+        validate();
+        if (_settings._startupAuthorities[view] == null) {
+          throw const AdeleCredentialFailure(
+            AdeleCredentialFailureKind.notAuthorized,
+          );
+        }
+        return view;
+      } on Object {
+        final release = _settings.releaseStartupRecords(view);
+        // Settings close drains this operation and then drops the entire owner.
+        // Joining that same close here would form a drain cycle.
+        if (_settings._closing == null) await release;
+        rethrow;
+      }
+    }();
+    final settled = result.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace _) {},
+    );
+    _backendOperations.add(settled);
+    _settings._trackStartupRead(settled);
+    unawaited(settled.then((_) => _backendOperations.remove(settled)));
+    return result;
+  }
 
   @override
   Future<void> releaseStartupRecords(StartupRecordsView snapshot) =>
@@ -94,6 +146,8 @@ final class RecordCredentialService implements StartupCredentialReader {
       }
       try {
         validateGeneration();
+      } on AdeleCredentialFailure {
+        rethrow;
       } on Object {
         throw const AdeleCredentialFailure(
           AdeleCredentialFailureKind.generationUnavailable,
@@ -239,12 +293,12 @@ final class RecordCredentialService implements StartupCredentialReader {
       (_) {},
       onError: (Object _, StackTrace _) {},
     );
-    _startupReads.add(settled);
+    _backendOperations.add(settled);
     authority?.reads.add(settled);
     _settings._trackStartupRead(settled);
     unawaited(
       settled.then((_) {
-        _startupReads.remove(settled);
+        _backendOperations.remove(settled);
         authority?.reads.remove(settled);
       }),
     );
@@ -525,7 +579,7 @@ final class RecordCredentialService implements StartupCredentialReader {
   /// Fence immediately, then drain admitted workflows before closing dependencies.
   /// A blocked OS unlock prompt cannot be canceled or rolled back by a timeout.
   Future<void> close() =>
-      _closing ??= Future.wait([_pending, ..._startupReads]).then((_) {});
+      _closing ??= Future.wait([_pending, ..._backendOperations]).then((_) {});
 }
 
 /// No native documents cross this boundary. Each request retains the same owner

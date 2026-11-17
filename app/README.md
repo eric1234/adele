@@ -299,7 +299,7 @@ failure. A backend that consumes a missing required setting still fails explicit
 before readiness; a frontend read of an undeclared setting also fails.
 Startup never creates or rewrites `settings.toml` or materializes defaults.
 
-Consumer configuration is captured at startup, without watching or live refresh.
+Consumer scalar settings are captured at startup, without watching or live refresh.
 Edit global `settings.toml` manually or through Global Settings and restart ADELE
 to apply changes, including to later Chat Runs and subsequently opened Source
 editors. For Chat, use **Agents / Execution / Maximum Model Invocations per Run**;
@@ -533,8 +533,8 @@ also exercises repeated persisted create/update/delete observations on one conne
 This is observation only. It does not update scalar startup settings, UI subscriptions,
 OpenAI registrations, credentials, or existing provider/Run bindings. Startup credential
 authority below remains bound to its original capture, even after a backend observes
-new or edited records. Credential-authority renewal and dynamic provider application
-remain separate work.
+new or edited records. Fresh credential authority requires the separate explicit
+capture below; dynamic provider application is not supplied by either operation.
 
 ### Backend credentials
 
@@ -546,27 +546,32 @@ bootstrap must explicitly supply the matching coordinator. The app-private
 `StartupCredentialReader` seam keeps the Flutter worker out of `AdeleRuntime`'s
 pure-Dart graph. Registration performs no vault access.
 
-The Settings worker retains a separate authority batch alongside its startup
+The Settings worker retains a separate authority batch alongside its record
 projection, never replacing editable record handles. The coordinator accepts only
-genuine captures owned by that worker. The dispatcher binds one capture to one
-actual connection and permits only captured records and declared slots, through
-the existing reverse infrastructure transport. The backend chooses four selectors,
-never a credential reference or native key.
+genuine captures owned by that worker. The dispatcher binds startup authority and
+independently releasable live captures to the actual connection, permitting only
+captured records and declared slots through the existing reverse infrastructure
+transport. `RecordCredentialService.captureCurrentConfiguration` reuses
+`GlobalSettingsService.loadStartupRecords` for a fresh batch without vault access;
+it never upgrades `loadCurrentRecords` observations. The backend chooses four read
+selectors, never a credential reference or native key; live handles remain private
+to the public capture facade.
 
 `readStartupCredential` reuses protected-envelope decoding and P1 nonreconciling
 reads, with worker checks before/after storage and generation checks after waits.
 Separate drain tracking allows ordinary Settings operations while a backend read
 waits for OS unlock. Same-reference replacement and ordinary configuration changes
-invalidate old authority instead of rebinding a running backend. Close revokes
-publication synchronously and releases its batch without pretending to cancel the
-native operation; the application drains admitted operations before owner disposal.
+invalidate old authority instead of rebinding it. Explicit release revokes only its
+live scope; close revokes all scopes and pending publication synchronously, then
+drains captures and batch cleanup without pretending to cancel native operations.
+The application drains admitted operations before owner disposal.
 
 The [canonical credential model](../docs/architecture/profiles-and-configuration.md#backend-credential-delivery)
 owns capture, staleness, external-writer limits and the inability to revoke a secret
-already delivered in memory. OpenAI invokes this existing boundary lazily for each
-subscribed configured-provider request; it does not receive the app-private service
-or native storage access. Failure remains with that selected instance, never an
-account fallback. The [public contract](../packages/plugin_backend_support/README.md)
+already delivered in memory. OpenAI still invokes the startup-scope read lazily for
+each subscribed configured-provider request; it does not receive the app-private
+service or native storage access. Failure remains with that selected instance, never
+an account fallback. The [public contract](../packages/plugin_backend_support/README.md)
 owns usage and fixed failures. Local test ownership is split between
 [`backend_credential_host_test.dart`](test/core/backend_credential_host_test.dart),
 [`startup_credential_authority_test.dart`](test/core/startup_credential_authority_test.dart)

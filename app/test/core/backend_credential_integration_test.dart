@@ -30,6 +30,7 @@ const _type = '$_owner.account';
 const _workSecret = 'test-only-work-credential';
 const _personalSecret = 'test-only-personal-credential';
 const _replacementSecret = 'test-only-replacement-credential';
+const _createdSecret = 'test-only-live-created-credential';
 final _slot = RecordCredentialSlotId('key');
 
 void main() {
@@ -290,6 +291,322 @@ void main() {
   );
 
   test(
+    'live captures renew exact record authority without replacing the generation',
+    () async {
+      final fixture = await prepare();
+      await fixture.start();
+      final connection = fixture.backend(_owner).connection!;
+      final context = await fixture.request(_owner, 'context');
+      final startup = await fixture.request(_owner, 'snapshot');
+      final scalarBaseline = await fixture.settings.load();
+      final unrelated = CapabilityKey(
+        id: CapabilityId('test.unrelated'),
+        majorVersion: 1,
+      );
+      const endpoint = _UnrelatedEndpoint();
+      final registration = fixture.bootstrap.registry.register(
+        provider: ProviderDescriptor(
+          id: ProviderId('test.unrelated.provider'),
+          capability: unrelated,
+          pluginId: 'test.unrelated',
+          displayName: 'Unrelated native provider',
+          serviceId: endpoint.serviceId,
+        ),
+        endpoint: endpoint,
+      );
+      addTearDown(registration.close);
+      final binding = fixture.bootstrap.registry.resolve(unrelated);
+      var registryChanges = 0;
+      final subscription = fixture.bootstrap.registry.changes.listen(
+        (_) => registryChanges++,
+      );
+      addTearDown(subscription.cancel);
+
+      final original = await fixture.request(_owner, 'capture');
+      _expectRedacted(original, fixture);
+      expect(original, {
+        'index': 0,
+        'records': startup['records'],
+        'isComplete': false,
+      });
+      expect(fixture.storage.calls, isEmpty);
+      await fixture.expectSecret('work', _workSecret, capture: 0);
+      await fixture.expectSecret('personal', _personalSecret, capture: 0);
+
+      var created = await fixture.settings.createRecord(
+        RecordTypeId(_type),
+        ConfigurationRecordId('live-created'),
+        {'name': 'Created while running'},
+      );
+      created = (await fixture.associations.attach(
+        created,
+        _slot,
+        CredentialSecret(_createdSecret),
+      )).record;
+      fixture.records['live-created'] = created;
+      fixture.storage.calls.clear();
+      _expectFailure(
+        await fixture.request(_owner, 'read', _selectors('live-created')),
+        'notAuthorized',
+        fixture,
+      );
+      _expectFailure(
+        await fixture.request(_owner, 'readCaptured', {
+          'index': 0,
+          ..._selectors('live-created'),
+        }),
+        'notAuthorized',
+        fixture,
+      );
+      final afterCreate = await fixture.request(_owner, 'capture');
+      _expectRedacted(afterCreate, fixture);
+      expect(afterCreate, {
+        'index': 1,
+        'records': [
+          _record('live-created', 'Created while running'),
+          for (final id in ['personal', 'unconfigured', 'work'])
+            _record(id, id),
+        ],
+        'isComplete': false,
+      });
+      expect(fixture.storage.calls, isEmpty);
+      await fixture.expectSecret('live-created', _createdSecret, capture: 1);
+      await fixture.expectSecret('work', _workSecret, capture: 0);
+
+      final beforeReplace = await fixture.file('work').readAsBytes();
+      final reference = fixture.storage.referenceFor('work');
+      fixture.records['work'] = (await fixture.associations.replace(
+        fixture.records['work']!,
+        _slot,
+        CredentialSecret(_replacementSecret),
+      )).record;
+      expect(fixture.storage.referenceFor('work'), reference);
+      expect(await fixture.file('work').readAsBytes(), beforeReplace);
+      fixture.storage.calls.clear();
+      for (final index in [0, 1]) {
+        _expectFailure(
+          await fixture.request(_owner, 'readCaptured', {
+            'index': index,
+            ..._selectors('work'),
+          }),
+          'staleConfiguration',
+          fixture,
+        );
+      }
+      _expectFailure(
+        await fixture.request(_owner, 'read', _selectors('work')),
+        'staleConfiguration',
+        fixture,
+      );
+      final afterReplace = await fixture.request(_owner, 'capture');
+      expect(afterReplace, {...afterCreate, 'index': 2});
+      expect(fixture.storage.calls, isEmpty);
+      await fixture.expectSecret('work', _replacementSecret, capture: 2);
+      for (final index in [0, 1, 2]) {
+        await fixture.expectSecret('personal', _personalSecret, capture: index);
+      }
+
+      fixture.records['work'] = (await fixture.associations.forget(
+        fixture.records['work']!,
+        _slot,
+      )).record;
+      fixture.storage.calls.clear();
+      _expectFailure(
+        await fixture.request(_owner, 'readCaptured', {
+          'index': 2,
+          ..._selectors('work'),
+        }),
+        'staleConfiguration',
+        fixture,
+      );
+      final afterForget = await fixture.request(_owner, 'capture');
+      expect(afterForget, {...afterCreate, 'index': 3});
+      _expectFailure(
+        await fixture.request(_owner, 'readCaptured', {
+          'index': 3,
+          ..._selectors('work'),
+        }),
+        'notConfigured',
+        fixture,
+      );
+      expect(fixture.storage.calls, isEmpty);
+      await fixture.expectSecret('personal', _personalSecret, capture: 3);
+      expect(await fixture.request(_owner, 'release', {'index': 3}), {
+        'released': true,
+      });
+      fixture.storage.calls.clear();
+      _expectFailure(
+        await fixture.request(_owner, 'readCaptured', {
+          'index': 3,
+          ..._selectors('personal'),
+        }),
+        'staleConfiguration',
+        fixture,
+      );
+      expect(fixture.storage.calls, isEmpty);
+      await fixture.expectSecret('personal', _personalSecret, capture: 0);
+      await fixture.expectSecret('live-created', _createdSecret, capture: 1);
+      await fixture.expectSecret('personal', _personalSecret);
+
+      final retained = await fixture.request(_owner, 'retained');
+      _expectRedacted(retained, fixture);
+      expect(retained, {
+        'captures': [original, afterCreate, afterReplace, afterForget],
+        'immutable': true,
+        'exactRequests': true,
+      });
+      await fixture.settings.save(
+        scalarBaseline,
+        SettingId('$_owner.count'),
+        11,
+      );
+      expect(await fixture.request(_owner, 'snapshot'), startup);
+      expect(await fixture.request(_owner, 'context'), context);
+      expect(fixture.backend(_owner).connection, same(connection));
+      expect(connection.isClosed, isFalse);
+      expect(fixture.factoryCalls, 2);
+      for (final backend in fixture.bootstrap.backends) {
+        expect(backend.state, InstalledBackendState.active);
+        expect(backend.connection!.capabilityExposures, isEmpty);
+        expect(backend.connection!.extensionExposures, isEmpty);
+      }
+      expect(registryChanges, 0);
+      expect(registration.isClosed, isFalse);
+      expect(binding.endpointAs<_UnrelatedEndpoint>(), same(endpoint));
+      expect(
+        fixture.bootstrap.registry
+            .resolve(unrelated)
+            .isSameRegistration(binding),
+        isTrue,
+      );
+      expect(fixture.bootstrap.registry.providersFor(unrelated), [
+        binding.provider,
+      ]);
+    },
+  );
+
+  test(
+    'live captures distinguish partial, clean and failed scans without vault reads',
+    () async {
+      final fixture = await prepare();
+      await fixture.start();
+      final partial = await fixture.request(_owner, 'capture');
+      _expectRedacted(partial, fixture);
+      expect(partial['index'], 0);
+      expect(partial['isComplete'], isFalse);
+      expect(partial['records'], [
+        for (final id in ['personal', 'unconfigured', 'work']) _record(id, id),
+      ]);
+      _expectFailure(
+        await fixture.request(_owner, 'readCaptured', {
+          'index': 0,
+          ..._selectors('malformed'),
+        }),
+        'notAuthorized',
+        fixture,
+      );
+      await fixture.file('malformed').delete();
+      final complete = await fixture.request(_owner, 'capture');
+      expect(complete, {...partial, 'index': 1, 'isComplete': true});
+
+      final directory = Directory(
+        '${fixture.roots.configurationRoot}/providers',
+      );
+      final moved = await directory.rename('${directory.path}-saved');
+      try {
+        final empty = await fixture.request(_owner, 'capture');
+        expect(empty, {'index': 2, 'records': <Object?>[], 'isComplete': true});
+        expect(await directory.exists(), isFalse);
+        await directory.create();
+        await fixture.file('invalid-only').writeAsString('not valid TOML = [');
+        final allInvalid = await fixture.request(_owner, 'capture');
+        expect(allInvalid, {
+          'index': 3,
+          'records': <Object?>[],
+          'isComplete': false,
+        });
+        await directory.delete(recursive: true);
+        await File(directory.path).writeAsString('capture scan unavailable');
+        _expectFailure(
+          await fixture.request(_owner, 'capture'),
+          'credentialAccessFailed',
+          fixture,
+        );
+        expect(await fixture.request(_owner, 'retained'), {
+          'captures': [partial, complete, empty, allInvalid],
+          'immutable': true,
+          'exactRequests': true,
+        });
+      } finally {
+        if (await File(directory.path).exists()) {
+          await File(directory.path).delete();
+        }
+        if (await directory.exists()) await directory.delete(recursive: true);
+        await moved.rename(directory.path);
+      }
+      final recovered = await fixture.request(_owner, 'capture');
+      expect(recovered, {...complete, 'index': 4});
+      for (final owner in [_noOptIn, _emptyOptIn]) {
+        _expectFailure(
+          await fixture.request(owner, 'capture'),
+          'notAuthorized',
+          fixture,
+        );
+      }
+      expect(fixture.storage.calls, isEmpty);
+      await fixture.expectSecret('personal', _personalSecret, capture: 4);
+      expect(fixture.backend(_owner).state, InstalledBackendState.active);
+    },
+  );
+
+  test(
+    'live capture protocol rejects selectors and invalid handles before storage',
+    () async {
+      final fixture = await prepare();
+      await fixture.start();
+      const unknownHandle = '00000000000000000000000000000000-0000000000000000';
+      for (final arguments in <Map<String, Object?>>[
+        {'owner': _owner},
+        {'collection': 'providers'},
+        {'capture': unknownHandle},
+      ]) {
+        _expectFailure(
+          await fixture.request(_owner, 'attack', {
+            'method': 'captureCurrentConfiguration',
+            'arguments': arguments,
+          }),
+          'notAuthorized',
+          fixture,
+        );
+      }
+      for (final handle in <Object?>[
+        null,
+        0,
+        '',
+        'not-a-handle',
+        'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA-AAAAAAAAAAAAAAAA',
+        unknownHandle,
+        '00000000000000000000000000000000-0000000000000001',
+      ]) {
+        for (final method in ['readCapturedCredential', 'releaseCapture']) {
+          _expectFailure(
+            await fixture.request(_owner, 'attack', {
+              'method': method,
+              'arguments': {
+                'capture': handle,
+                if (method == 'readCapturedCredential') ..._selectors('work'),
+              },
+            }),
+            'notAuthorized',
+            fixture,
+          );
+        }
+      }
+      expect(fixture.storage.calls, isEmpty);
+    },
+  );
+
+  test(
     'standalone opt-in requires a coordinator but absent and empty opt-ins do not',
     () async {
       final fixture = await prepare();
@@ -403,43 +720,108 @@ void main() {
     },
   );
 
-  for (final closeBootstrap in [false, true]) {
-    test('retirement settles a pending OS read and discards its late secret '
-        '(bootstrap close: $closeBootstrap)', () async {
+  test(
+    'releasing a live capture fences a pending read without waiting for storage',
+    () async {
       final fixture = await prepare();
       await fixture.start();
+      final first = await fixture.request(_owner, 'capture');
+      final second = await fixture.request(_owner, 'capture');
+      expect(first['index'], 0);
+      expect(second['index'], 1);
       final gate = fixture.storage.gate = _ReadGate();
       addTearDown(gate.release);
-      final pending = fixture.request(_owner, 'read', _selectors('work'));
+      final pending = fixture.request(_owner, 'readCaptured', {
+        'index': 0,
+        ..._selectors('work'),
+      });
       await gate.entered.future;
-      final connection = fixture.backend(_owner).connection!;
-      var closed = false;
-      Future<void>? closing;
-      if (closeBootstrap) {
-        closing = fixture.bootstrap.close().then((_) => closed = true);
-      } else {
-        connection.revokeInfrastructureContext();
-      }
-      _expectFailure(await pending, 'generationUnavailable', fixture);
+      expect(await fixture.request(_owner, 'release', {'index': 0}), {
+        'released': true,
+      });
       expect(gate.returned.isCompleted, isFalse);
-      expect(closed, isFalse);
       _expectFailure(
-        await fixture.request(_owner, 'read', _selectors('work')),
-        'generationUnavailable',
+        await fixture.request(_owner, 'readCaptured', {
+          'index': 0,
+          ..._selectors('personal'),
+        }),
+        'staleConfiguration',
         fixture,
       );
-      gate.release();
-      await gate.returned.future;
-      await fixture.associations.close();
-      await closing;
       expect(fixture.storage.calls, ['read']);
-      if (closeBootstrap) {
-        expect(closed, isTrue);
-        expect(connection.isClosed, isTrue);
-      } else {
-        _expectRedacted(await fixture.request(_owner, 'snapshot'), fixture);
-      }
-    });
+      final settings = await fixture.settings.load();
+      await fixture.settings.save(settings, SettingId('$_owner.count'), 12);
+      expect(gate.returned.isCompleted, isFalse);
+      gate.release();
+      _expectFailure(await pending, 'staleConfiguration', fixture);
+      await gate.returned.future;
+      await fixture.expectSecret('work', _workSecret, capture: 1);
+      await fixture.expectSecret('personal', _personalSecret);
+      expect(fixture.storage.calls, ['read', 'read', 'read']);
+      expect(await fixture.request(_owner, 'retained'), {
+        'captures': [first, second],
+        'immutable': true,
+        'exactRequests': true,
+      });
+      expect(fixture.backend(_owner).connection!.isClosed, isFalse);
+    },
+  );
+
+  for (final (closeBootstrap, liveCapture) in [
+    for (final close in [false, true])
+      for (final live in [false, true]) (close, live),
+  ]) {
+    test(
+      'retirement settles a pending OS read and discards its late secret '
+      '(bootstrap close: $closeBootstrap, live capture: $liveCapture)',
+      () async {
+        final fixture = await prepare();
+        await fixture.start();
+        if (liveCapture) {
+          expect((await fixture.request(_owner, 'capture'))['index'], 0);
+        }
+        final gate = fixture.storage.gate = _ReadGate();
+        addTearDown(gate.release);
+        final method = liveCapture ? 'readCaptured' : 'read';
+        final selectors = {if (liveCapture) 'index': 0, ..._selectors('work')};
+        final pending = fixture.request(_owner, method, selectors);
+        await gate.entered.future;
+        final connection = fixture.backend(_owner).connection!;
+        var closed = false;
+        Future<void>? closing;
+        if (closeBootstrap) {
+          closing = fixture.bootstrap.close().then((_) => closed = true);
+        } else {
+          connection.revokeInfrastructureContext();
+        }
+        _expectFailure(await pending, 'generationUnavailable', fixture);
+        expect(gate.returned.isCompleted, isFalse);
+        expect(closed, isFalse);
+        _expectFailure(
+          await fixture.request(_owner, method, selectors),
+          'generationUnavailable',
+          fixture,
+        );
+        if (liveCapture) {
+          _expectFailure(
+            await fixture.request(_owner, 'capture'),
+            'generationUnavailable',
+            fixture,
+          );
+        }
+        gate.release();
+        await gate.returned.future;
+        await fixture.associations.close();
+        await closing;
+        expect(fixture.storage.calls, ['read']);
+        if (closeBootstrap) {
+          expect(closed, isTrue);
+          expect(connection.isClosed, isTrue);
+        } else {
+          _expectRedacted(await fixture.request(_owner, 'snapshot'), fixture);
+        }
+      },
+    );
   }
 
   testWidgets(
@@ -646,6 +1028,13 @@ Map<String, Object?> _selectors(
   'slot': slot,
 };
 
+Map<String, Object?> _record(String id, String name) => {
+  'collection': 'providers',
+  'type': _type,
+  'id': id,
+  'values': {'name': name},
+};
+
 void _expectFailure(
   Map<String, Object?> result,
   String kind,
@@ -664,6 +1053,7 @@ void _expectRedacted(Object? value, _Fixture fixture) {
     _workSecret,
     _personalSecret,
     _replacementSecret,
+    _createdSecret,
     'cred1_',
     fixture.roots.configurationRoot,
     'native diagnostic',
@@ -675,6 +1065,21 @@ void _expectRedacted(Object? value, _Fixture fixture) {
       reason: 'Credential detail escaped its authorized response.',
     );
   }
+  expect(
+    RegExp(r'[0-9a-f]{32}-[0-9a-f]{16}').hasMatch(text),
+    isFalse,
+    reason: 'An opaque capture handle escaped its private facade.',
+  );
+}
+
+final class _UnrelatedEndpoint implements CapabilityEndpoint {
+  const _UnrelatedEndpoint();
+
+  @override
+  bool get isAvailable => true;
+
+  @override
+  String get serviceId => 'test.unrelated.service';
 }
 
 final class _Fixture {
@@ -779,8 +1184,12 @@ final class _Fixture {
     await backend(owner).connection!.request(method, payload) as Map,
   );
 
-  Future<void> expectSecret(String id, String expected) async {
-    final result = await request(_owner, 'read', _selectors(id));
+  Future<void> expectSecret(String id, String expected, {int? capture}) async {
+    final result = await request(
+      _owner,
+      capture == null ? 'read' : 'readCaptured',
+      {'index': ?capture, ..._selectors(id)},
+    );
     expect(
       result.length == 1 && result['secret'] == expected,
       isTrue,

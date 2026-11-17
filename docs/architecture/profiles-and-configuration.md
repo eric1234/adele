@@ -14,13 +14,13 @@ credential slot. Record creation, editing, and guarded deletion are implemented.
 Global Settings manages declared credential slots through the app-private association
 coordinator, with nonsecret TOML references and Linux x64 Secret Service storage.
 Opted-in backends receive immutable nonsecret record metadata at startup and may
-explicitly observe fresh nonsecret records or retrieve captured credentials through
-separate generation-scoped host services. Observations do not apply provider changes
-or renew credential authority.
-OpenAI materializes independently addressable API-key providers from its records,
-with lazy credential retrieval on each invocation. Advertisement is not proof of
-successful authentication. Session provider/model selection, record-based OAuth,
-Profiles, and Agent configuration remain unimplemented.
+explicitly observe fresh nonsecret records or capture current records with a fresh
+credential scope through separate generation-scoped host services. Nonsecret
+observations do not renew credential authority; neither operation applies provider
+changes. OpenAI still materializes independently addressable API-key providers from
+its startup records, with lazy startup-scope credential retrieval on each invocation.
+Advertisement is not proof of successful authentication. Session provider/model
+selection, record-based OAuth, Profiles, and Agent configuration remain unimplemented.
 
 This document defines how Profiles, activation, ordinary configuration, configured
 providers, credentials, workbench state, and execution-time configuration relate
@@ -288,7 +288,8 @@ The snapshot belongs to one exact installation and backend generation. Accepted
 application shutdown synchronously fences new starts before draining existing work;
 bootstrap rechecks this fence after pending reads so shutdown cannot spawn a late backend. Later
 record edits do not update this capture; a subsequent generation may capture
-new values. Running backends can separately request the live observations below.
+new values. Running backends can separately request live observations or explicitly
+capture fresh credential authority as described below.
 No live notification, watcher or restart automation exists.
 Record identity is neither configured-provider identity nor credential authority.
 The receiving plugin owns any interpretation into configured providers and live
@@ -333,8 +334,9 @@ records are not thereby credential-authorized, and mutated old captures remain s
 Reading does not register or retire providers, change routes or invalidate a Run. The
 plugin owns interpretation and safe application; host resolution and exact captured
 execution bindings remain authoritative. Future application must not silently replace
-a running Run's account, endpoint, model or reasoning effort. Live credential renewal
-and dynamic provider registration are separate mechanisms, not implied by this API.
+a running Run's account, endpoint, model or reasoning effort. Fresh credential authority
+requires a separate [live capture](#live-credential-captures); dynamic provider
+application is not supplied by either read.
 OpenAI continues to use its startup configuration and the restart workflow below.
 
 ### Backend credential delivery
@@ -350,14 +352,16 @@ syntax and limits; the [transport boundary](contracts-and-capabilities.md#backen
 owns the narrow request contract.
 
 For opted-in installations the Settings worker captures a separate private
-authority batch from the **same validated record snapshots** used for startup
-projection. Native documents, file baselines and association references stay in
-the trusted host; no authority token is added to `{collection,type,id,values}`.
+authority batch from the **same validated record snapshots** used for the
+corresponding record projection, at startup or on explicit live capture. Native
+documents, file baselines, association references and mutation epochs stay in the
+trusted host; no authority token is added to `{collection,type,id,values}`.
 An ordinary constructed/copy of that presentation view cannot acquire the worker
 batch. The host binds it once to the actual `PluginBackendConnection` and its
 current infrastructure grant, with exact installation/type/collection/record/slot
 checks. Stable IDs and matching plugin namespaces are selectors, not authority.
-Omitted/malformed records and records created after capture are never eligible.
+Omitted/malformed records and records created later are never eligible within that
+capture.
 
 An explicit backend read first verifies the captured association and current
 configuration in the worker, then uses the existing `CredentialService` with
@@ -372,12 +376,14 @@ workflow remains authoritative.
 Ordinary field changes, reference changes, Forget, deletion, type changes and
 record replacement invalidate the old capture. Worker-shared record mutation
 epochs also fence host-managed change-and-restore and same-reference credential
-replacement, whose TOML may be byte-identical. Strict startup file observations
+replacement, whose TOML may be byte-identical. Strict credential file observations
 include device/inode and nanosecond change/modification metadata on the maintained
 Linux path; the capture brackets native loads and validation brackets baseline
 checks. Editable Settings handles retain their existing byte-baseline semantics.
-Once observed stale, a capture cannot become current again by restoring old bytes.
-A new backend generation must capture fresh authority; no live retargeting occurs.
+Once observed stale, that record's captured authority cannot become current again
+by restoring old bytes. Fresh authority requires an explicit new capture or backend
+generation; neither retargets an old capture. Unchanged sibling records retain their
+independent authority.
 Epoch keys resolve supported configuration-root aliases to the same canonical
 record path; retargeting an alias does not transfer captured authority. The worker
 also mirrors opaque mutation markers/epochs to the root isolate through its
@@ -391,10 +397,11 @@ stale record.
 The two worker checks are short serialized operations, not an exclusive Settings
 lock held through a keyring unlock prompt. Unrelated configuration work can proceed
 while the OS read waits. Existing association mutations retain their guarded
-workflow; the retained owners track and drain admitted backend reads independently.
-Accepted application exit fences new reads synchronously, suppresses late successful
-delivery and drains native work before releasing its owners. Retirement revokes only
-that generation, without waiting for or falsely canceling a stalled OS operation.
+workflow; the retained owners track and drain admitted backend captures and reads
+independently. Accepted application exit fences new work synchronously, suppresses
+late successful delivery and drains native work before releasing its owners.
+Retirement revokes only that generation, without waiting for or falsely canceling
+a stalled OS operation.
 
 These are read-only observations and in-process mutation fences, not a cross-process
 transaction or keyring CAS. An uncooperative filesystem writer can still race a
@@ -404,10 +411,50 @@ be established; ordinary startup metadata remains independently usable.
 
 A successfully delivered secret exists in backend memory and cannot be revoked
 retroactively. Transport copying and immutable Dart strings do not provide zero-copy
-transfer or complete zeroization. Provider consumers must define retirement/restart
-when credential changes must take effect; OpenAI's policy is described
-[below](#configured-openai-providers). Credential availability alone creates no
-provider, routing context, model selection or authenticated network request.
+transfer or complete zeroization. Provider consumers must define safe adoption of
+fresh captures or retirement/restart when credential changes must take effect;
+OpenAI's startup-only policy is described [below](#configured-openai-providers).
+Credential availability alone creates no provider, routing context, model selection
+or authenticated network request.
+
+### Live credential captures
+
+`AdeleCredentialClient.captureCurrentConfiguration()` explicitly obtains current
+nonsecret records and fresh credential authority within the same running backend
+generation. The host fixes the exact prepared catalog/installation and both existing
+`consumesRecordTypes` and `consumesCredentialSlots` declarations. There is no new
+permission list or caller-selected scope. Startup `readCredential` remains bound to
+its original capture; `AdeleConfigurationClient.currentRecords()` remains
+nonauthorizing, even when its values equal a credential capture's records.
+
+`RecordCredentialService.captureCurrentConfiguration` reuses
+`GlobalSettingsService.loadStartupRecords` and its genuine worker-owned batch,
+not editable collection Reload, an observation-to-authority conversion, or a second
+reader/parser. Ordinary records and the private references, baselines and mutation
+epochs are captured together from the same validated snapshots. Capture performs no
+vault access and leaves UI edit baselines intact. Serialization orders host-managed
+work, not an atomic multi-file or configuration/keyring snapshot against external
+processes; the read-time validation and mutation fences above still apply.
+
+The returned `AdeleCredentialCapture` exposes immutable `records`, `isComplete`,
+scoped `readCredential` and explicit `release`. Completeness follows the
+[live observation rules](#live-record-observations): healthy authorized records
+survive malformed siblings, partial empty results are not proof of deletion, and
+clean empty results are distinct. Whole-scan or bounded-projection failures reject
+capture with `credentialAccessFailed`, never empty or truncated success. Detailed
+diagnostics stay host-side. Completeness does not assert configured slots, available
+storage or authentication; those outcomes belong to each explicit credential read.
+
+Each capture is independently releasable without changing startup authority or
+other captures. A later capture can authorize newly created records or current
+associations, but never refreshes a stale earlier record. The
+[credential access contract](contracts-and-capabilities.md#backend-credential-access)
+owns connection-scoped handles, bounded retention, immediate release fences and
+asynchronous draining. Capturing, reading or releasing does not register/retire
+providers, change routes, alter Run/model bindings, or apply configuration on the
+plugin's behalf. OpenAI continues to use startup captures and the restart workflow
+[below](#configured-openai-providers); live provider application is not implemented
+by this infrastructure.
 
 ## Shared context, distinct composition
 

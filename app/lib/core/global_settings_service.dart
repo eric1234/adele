@@ -116,31 +116,52 @@ base class GlobalSettingsService {
           );
         }
       }
-      return _enqueue<_StartupRecordValues>(
-        _Operation.loadRecordProjection,
-        startupRecordTypes: installation.backendConsumedRecordTypes,
-        startupCredentialSlots: {
-          if (startup)
-            for (final declaration
-                in installation.backendConsumedCredentialSlots)
-              if (declaration.slots.isNotEmpty)
-                declaration.recordType: declaration.slots,
-        },
-      ).then((loaded) {
-        if (!startup && _closing != null) {
-          throw StateError('The settings service is closed.');
-        }
-        final view = StartupRecordsView.fromProjection(
-          prepared,
-          installation,
-          records: loaded.records,
-          diagnostics: loaded.diagnostics,
-        );
-        if (loaded.batch case final batch?) {
-          _startupAuthorities[view] = _StartupAuthority(batch);
-        }
-        return view;
-      });
+      final result =
+          _enqueue<_StartupRecordValues>(
+            _Operation.loadRecordProjection,
+            startupRecordTypes: installation.backendConsumedRecordTypes,
+            startupCredentialSlots: {
+              if (startup)
+                for (final declaration
+                    in installation.backendConsumedCredentialSlots)
+                  if (declaration.slots.isNotEmpty)
+                    declaration.recordType: declaration.slots,
+            },
+          ).then((loaded) async {
+            try {
+              if (!startup && _closing != null) {
+                throw StateError('The settings service is closed.');
+              }
+              final view = StartupRecordsView.fromProjection(
+                prepared,
+                installation,
+                records: loaded.records,
+                diagnostics: loaded.diagnostics,
+              );
+              if (loaded.batch case final batch?) {
+                _startupAuthorities[view] = _StartupAuthority(batch);
+              }
+              return view;
+            } on Object {
+              if (loaded.batch case final batch?) {
+                await _worker.request(
+                  _Request(
+                    owner: _owner,
+                    operation: _Operation.releaseStartupRecords,
+                    startupBatch: batch,
+                  ),
+                );
+              }
+              rethrow;
+            }
+          });
+      // Include root projection and any rollback in owner shutdown/admission,
+      // not just the worker reply that may already own a private batch.
+      _pending = result.then<void>(
+        (_) {},
+        onError: (Object _, StackTrace _) {},
+      );
+      return result;
     } on Object catch (error, stack) {
       return Future.error(error, stack);
     }
@@ -155,14 +176,17 @@ base class GlobalSettingsService {
     authority.released = true;
     if (_closing != null) return _closing!;
     final release = () async {
-      await _worker.request(
-        _Request(
-          owner: _owner,
-          operation: _Operation.releaseStartupRecords,
-          startupBatch: authority.batch,
-        ),
-      );
-      await Future.wait(authority.reads);
+      try {
+        await _worker.request(
+          _Request(
+            owner: _owner,
+            operation: _Operation.releaseStartupRecords,
+            startupBatch: authority.batch,
+          ),
+        );
+      } finally {
+        await Future.wait(authority.reads);
+      }
     }();
     authority.release = release;
     _trackStartupRead(release);

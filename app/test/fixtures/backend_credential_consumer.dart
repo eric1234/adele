@@ -21,15 +21,24 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
       exactRequests =
           exactRequests &&
           message['serviceId'] == backendCredentialServiceId &&
-          message['method'] == 'readCredential' &&
           payload is Map &&
-          payload.length == 4 &&
-          const [
-            'collection',
-            'recordType',
-            'recordId',
-            'slot',
-          ].every((key) => payload[key] is String);
+          switch (message['method']) {
+            'captureCurrentConfiguration' => payload.isEmpty,
+            'releaseCapture' =>
+              payload.length == 1 && _validCapture(payload['capture']),
+            'readCredential' || 'readCapturedCredential' =>
+              (message['method'] == 'readCredential'
+                      ? payload.length == 4
+                      : payload.length == 5 &&
+                            _validCapture(payload['capture'])) &&
+                  const [
+                    'collection',
+                    'recordType',
+                    'recordId',
+                    'slot',
+                  ].every((key) => payload[key] is String),
+            _ => false,
+          };
       responses.send(message);
     },
   );
@@ -37,6 +46,13 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
     hostRequests: hostRequests,
     hostInfrastructureContext: context ?? 'absent-test-context',
   );
+  final captures = <AdeleCredentialCapture>[];
+
+  Map<String, Object?> captured(int index) => {
+    'index': index,
+    'records': captures[index].records,
+    'isComplete': captures[index].isComplete,
+  };
 
   Map<String, Object?> failure(AdeleCredentialFailure error) => {
     'failure': error.kind.name,
@@ -71,7 +87,7 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
             return {'servicePresent': false};
           }
         case 'read':
-          // Only this explicit test request can return a successful secret.
+          // Only explicit read controls can return a successful secret.
           return {
             'secret': await client.readCredential(
               collection: payload['collection'] as String,
@@ -79,6 +95,38 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
               recordId: payload['recordId'] as String,
               slot: payload['slot'] as String,
             ),
+          };
+        case 'capture':
+          final capture = await client.captureCurrentConfiguration();
+          captures.add(capture);
+          return captured(captures.length - 1);
+        case 'readCaptured':
+          return {
+            'secret': await captures[payload['index'] as int].readCredential(
+              collection: payload['collection'] as String,
+              recordType: payload['recordType'] as String,
+              recordId: payload['recordId'] as String,
+              slot: payload['slot'] as String,
+            ),
+          };
+        case 'release':
+          await captures[payload['index'] as int].release();
+          return {'released': true};
+        case 'retained':
+          return {
+            'captures': [for (var i = 0; i < captures.length; i++) captured(i)],
+            'immutable': captures.every((capture) {
+              final records = capture.records;
+              return _rejectsMutation(() => records.length = records.length) &&
+                  records.every((record) {
+                    final values = record['values']! as Map<String, Object>;
+                    return _rejectsMutation(
+                          () => record['id'] = record['id']!,
+                        ) &&
+                        _rejectsMutation(values.clear);
+                  });
+            }),
+            'exactRequests': exactRequests,
           };
         case 'attack':
           // Negative-only bypass tests strict host parsing and stolen grants.
@@ -161,5 +209,17 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
   } finally {
     hostRequests.close();
     commands.close();
+  }
+}
+
+bool _validCapture(Object? value) =>
+    value is String && RegExp(r'^[0-9a-f]{32}-[0-9a-f]{16}$').hasMatch(value);
+
+bool _rejectsMutation(void Function() mutate) {
+  try {
+    mutate();
+    return false;
+  } on UnsupportedError {
+    return true;
   }
 }
