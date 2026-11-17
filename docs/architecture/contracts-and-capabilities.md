@@ -1094,7 +1094,8 @@ transport contracts, and their tests.
 Infrastructure services support non-execution access outside a Run operation,
 including Project storage, [local-state location](#backend-local-state-location),
 declared [backend Capability consumption](#prepared-backend-capability-consumption),
-and explicitly authorized [record credentials](#backend-credential-access).
+explicit [record observations](#backend-configuration-observation), and authorized
+[record credentials](#backend-credential-access).
 `PluginBackendHost.startPlugin` accepts a generic
 `createInfrastructureServices` factory called with the actual connection, not a
 plugin ID detached from its generation. Bootstrap carries one required opaque
@@ -1143,6 +1144,26 @@ it is not a new environment variable or plugin-controlled path override. The
 [storage-root package](../../packages/platform_storage/README.md) owns location
 policy and [dependency rules](dependency-rules.md) preserve the public/internal
 boundary.
+
+### Backend configuration observation
+
+The public backend-support `AdeleConfigurationClient.currentRecords()` uses the
+fixed `adele.configuration` infrastructure service with an empty request payload.
+It is finite, context-free and unary, with no selectors or mutation operations.
+Application bootstrap grants it only to exact prepared backend installations with
+nonempty validated `consumesRecordTypes` and a configured live Settings reader.
+The existing transport authenticates the actual generation and service allowlist;
+`BackendConfigurationHost` binds host-selected installation scope and checks access
+before reading and after asynchronous completion.
+
+The result reuses bounded nonsecret record values with one `isComplete` flag, or a
+fixed failure category. It conveys neither host diagnostics nor credential authority.
+This facade follows the existing credential service's small explicit envelope rather
+than adding a provider registry, new transport or generated serialization format.
+The [configuration architecture](profiles-and-configuration.md#live-record-observations)
+owns validation, partial/empty/unavailable semantics, worker lifetime and separation
+from provider application. The [public facade](../../packages/plugin_backend_support/README.md#current-records)
+owns exact wire shape and safe failure kinds.
 
 ### Backend credential access
 

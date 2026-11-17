@@ -84,8 +84,12 @@ revalidates before spawning, then supplies transferable copies to that isolate;
 `AdeleBackendRecords.fromBootstrap` validates and captures them again. Native
 documents, baselines, roots, credentials/references and host services are not part
 of the representation. See the [backend support contract](../plugin_backend_support/README.md)
-for exact limits. The snapshot is generation-local, with no live updates or record
-RPC; identity alone grants neither credential authority nor provider registration.
+for exact limits. The startup snapshot is generation-local and never updates in
+place; identity alone grants neither credential authority nor provider registration.
+The application may separately install the
+[live observation service](../plugin_backend_support/README.md#current-records)
+through the existing infrastructure factory for declared record consumers. Runtime
+remains unaware of configuration persistence and performs no provider refresh.
 
 ## Prepared Catalog
 

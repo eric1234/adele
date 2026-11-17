@@ -216,6 +216,66 @@ void main() {
   );
 
   test(
+    'current reads neither refresh nor acquire startup credential authority',
+    () async {
+      final first = await create('first');
+      await create('unchanged');
+      final startup = await capture();
+      final before = storage.calls;
+      final initial = await settings.loadCurrentRecords(catalog, installation);
+      expect(initial.records, startup.records);
+      expect(storage.calls, before);
+      await expectLater(
+        read(initial),
+        _failure(AdeleCredentialFailureKind.notAuthorized),
+      );
+      await settings.releaseStartupRecords(initial);
+      expect(await read(startup), _secret);
+
+      await settings.updateRecord(first, {'name': 'Edited'});
+      await create('new');
+      final calls = storage.calls;
+      final current = await settings.loadCurrentRecords(catalog, installation);
+      expect(current.records.map((record) => record['id']), [
+        'first',
+        'new',
+        'unchanged',
+      ]);
+      expect(current.records.first['values'], {'name': 'Edited'});
+      expect(startup.records.first['values'], {'name': 'first'});
+      expect(initial.records, startup.records);
+      await settings.releaseStartupRecords(current);
+      await expectLater(
+        read(startup),
+        _failure(AdeleCredentialFailureKind.staleConfiguration),
+      );
+      await expectLater(
+        read(startup, id: 'new'),
+        _failure(AdeleCredentialFailureKind.notAuthorized),
+      );
+      for (final id in ['first', 'new', 'unchanged']) {
+        await expectLater(
+          read(current, id: id),
+          _failure(AdeleCredentialFailureKind.notAuthorized),
+        );
+      }
+      expect(storage.calls, calls);
+      expect(await read(startup, id: 'unchanged'), _secret);
+      final fresh = await capture();
+      expect(await read(fresh), _secret);
+      expect(await read(fresh, id: 'new'), _secret);
+      await service.releaseStartupRecords(startup);
+      await settings.loadCurrentRecords(catalog, installation);
+      await expectLater(
+        read(startup, id: 'unchanged'),
+        _failure(AdeleCredentialFailureKind.staleConfiguration),
+      );
+      expect(await read(fresh, id: 'unchanged'), _secret);
+    },
+    skip: !Platform.isLinux,
+  );
+
+  test(
     'missing reference and local absence are distinct and never repaired',
     () async {
       final record = await create('first', attach: false);

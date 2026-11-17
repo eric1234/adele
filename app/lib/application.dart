@@ -533,6 +533,15 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     return settings.loadStartupRecords(catalog, installation);
   }
 
+  Future<StartupRecordsView> _loadCurrentRecords(
+    PreparedPluginCatalog catalog,
+    PreparedPluginInstallation installation,
+  ) async {
+    final settings = await _settingsService();
+    if (_recordsCatalogFailure case final failure?) throw failure;
+    return settings.loadCurrentRecords(catalog, installation);
+  }
+
   Future<void> _showSettings() async {
     final navigator = _navigator.currentState;
     if (!_commandsInteractive ||
@@ -754,6 +763,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     try {
       _runtime.plugins.configureSettingsLoader(_loadStartupSettings);
       _runtime.plugins.configureRecordsLoader(_loadStartupRecords);
+      _runtime.plugins.configureCurrentRecordsLoader(_loadCurrentRecords);
       _runtime.plugins.configureCredentialAssociations(
         () => _credentialAssociations!,
       );

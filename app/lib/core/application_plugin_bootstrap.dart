@@ -6,11 +6,13 @@ import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
+import 'package:adele_plugin_backend_support/adele_backend_configuration.dart';
 import 'package:adele_plugin_backend_support/adele_backend_credentials.dart';
 import 'package:adele_plugin_backend_support/capability_consumer.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
 import 'backend_capability_host.dart';
+import 'backend_configuration_host.dart';
 import 'backend_credential_host.dart';
 import 'prepared_records.dart';
 import 'prepared_settings.dart';
@@ -46,6 +48,7 @@ final class InstalledBackendActivation {
   PluginBackendConnection? _connection;
   PluginBackendActivation? _activation;
   BackendCredentialHost? _credentials;
+  BackendConfigurationHost? _configuration;
 
   InstalledBackendState get state => _state;
   Object? get failure => _failure;
@@ -188,9 +191,11 @@ final class ApplicationPluginBootstrap {
       PreparedPluginInstallation,
     )?
     loadRecords,
+    CurrentRecordsLoader? loadCurrentRecords,
     StartupCredentialReader Function()? credentialAssociations,
   }) : _loadSettings = loadSettings ?? PreparedSettingsSnapshot.load,
        _loadRecords = loadRecords,
+       _loadCurrentRecords = loadCurrentRecords,
        _credentialAssociations = credentialAssociations;
 
   final CapabilityRegistry registry;
@@ -219,6 +224,7 @@ final class ApplicationPluginBootstrap {
     PreparedPluginInstallation,
   )?
   _loadRecords;
+  CurrentRecordsLoader? _loadCurrentRecords;
   StartupCredentialReader Function()? _credentialAssociations;
 
   /// Binds the composition root's shared I/O owner before either component starts.
@@ -244,6 +250,16 @@ final class ApplicationPluginBootstrap {
       throw StateError('Plugin records must be configured before startup.');
     }
     _loadRecords = loader;
+  }
+
+  /// Supplies independent live observations, never a startup credential capture.
+  void configureCurrentRecordsLoader(CurrentRecordsLoader loader) {
+    if (_state != ApplicationPluginState.unconfigured) {
+      throw StateError(
+        'Live backend records must be configured before startup.',
+      );
+    }
+    _loadCurrentRecords = loader;
   }
 
   /// Supplies the trusted coordinator paired with the startup record worker.
@@ -501,6 +517,21 @@ final class ApplicationPluginBootstrap {
                   'Credential access service is already configured.',
                 );
               }
+              if (services.containsKey(backendConfigurationServiceId)) {
+                throw StateError(
+                  'Configuration access service is already configured.',
+                );
+              }
+              if (backend.installation.backendConsumedRecordTypes.isNotEmpty &&
+                  _loadCurrentRecords != null) {
+                services[backendConfigurationServiceId] =
+                    backend._configuration = BackendConfigurationHost(
+                      connection: connection,
+                      catalog: catalog,
+                      installation: backend.installation,
+                      loadRecords: _loadCurrentRecords!,
+                    );
+              }
               if (credentialAssociations case final associations?) {
                 services[backendCredentialServiceId] = backend._credentials =
                     BackendCredentialHost(
@@ -668,9 +699,12 @@ final class ApplicationPluginBootstrap {
     for (final backend in _backends) {
       // Revocation settles pending reverse calls now; it must not queue behind
       // the credential owner's drain of an uncancelable native unlock prompt.
-      (backend.connection ?? backend._credentials?.connection)
+      (backend.connection ??
+              backend._credentials?.connection ??
+              backend._configuration?.connection)
           ?.revokeInfrastructureContext();
       unawaited(backend._credentials?.close());
+      unawaited(backend._configuration?.close());
     }
     return _closing = _close();
   }
@@ -706,6 +740,8 @@ final class ApplicationPluginBootstrap {
       if (backend._activation case final activation?) activation.retire,
     for (final backend in _backends.reversed)
       if (backend._credentials case final credentials?) credentials.close,
+    for (final backend in _backends.reversed)
+      if (backend._configuration case final configuration?) configuration.close,
     for (final backend in _backends.reversed)
       if (backend.connection case final connection?)
         () =>
