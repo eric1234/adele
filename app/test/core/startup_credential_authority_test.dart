@@ -163,6 +163,106 @@ void main() {
   }
 
   test(
+    'live capture uses fresh genuine worker authority, not observation',
+    () async {
+      var first = await create('first');
+      await create('sibling');
+      final original = await capture();
+      first = await settings.updateRecord(first, {'name': 'Edited'});
+      first = (await service.replace(
+        first,
+        _slot,
+        CredentialSecret('replacement'),
+      )).record;
+      await create('new');
+      final before = storage.calls;
+      final observation = await settings.loadCurrentRecords(
+        catalog,
+        installation,
+      );
+      final live = await service.captureCurrentConfiguration(
+        catalog,
+        installation,
+      );
+      expect(storage.calls, before);
+      expect(live.records, observation.records);
+      expect(live.records.first['values'], {'name': 'Edited'});
+      await expectLater(
+        read(observation),
+        _failure(AdeleCredentialFailureKind.notAuthorized),
+      );
+      await expectLater(
+        read(original),
+        _failure(AdeleCredentialFailureKind.staleConfiguration),
+      );
+      await expectLater(
+        read(original, id: 'new'),
+        _failure(AdeleCredentialFailureKind.notAuthorized),
+      );
+      expect(await read(live), 'replacement');
+      expect(await read(live, id: 'new'), _secret);
+      expect(await read(original, id: 'sibling'), _secret);
+      final copied = StartupRecordsView.fromProjection(
+        catalog,
+        installation,
+        records: live.records,
+      );
+      await expectLater(
+        read(copied),
+        _failure(AdeleCredentialFailureKind.notAuthorized),
+      );
+      await service.releaseStartupRecords(live);
+      await expectLater(
+        read(live),
+        _failure(AdeleCredentialFailureKind.staleConfiguration),
+      );
+      expect(await read(original, id: 'sibling'), _secret);
+    },
+    skip: !Platform.isLinux,
+  );
+
+  for (final retiring in ['coordinator', 'settings', 'both']) {
+    test(
+      '$retiring fences and drains a pending live worker capture',
+      () async {
+        final first = await create('first');
+        storage.blockRead();
+        final replacing = service.replace(
+          first,
+          _slot,
+          CredentialSecret('replacement'),
+        );
+        await storage.entered!.future;
+        final capturing = service.captureCurrentConfiguration(
+          catalog,
+          installation,
+        );
+        final rejected = expectLater(
+          capturing,
+          _failure(AdeleCredentialFailureKind.generationUnavailable),
+        );
+        var drained = false;
+        final closing = (switch (retiring) {
+          'coordinator' => service.close(),
+          'settings' => settings.close(),
+          _ => Future.wait([service.close(), settings.close()]),
+        }).then((_) => drained = true);
+        await expectLater(
+          service.captureCurrentConfiguration(catalog, installation),
+          _failure(AdeleCredentialFailureKind.generationUnavailable),
+        );
+        expect(drained, isFalse);
+        storage.unblockRead();
+        await replacing;
+        await rejected;
+        await closing;
+        expect(drained, isTrue);
+      },
+      skip: !Platform.isLinux,
+    );
+  }
+
+  test(
     'exact capture is nonsecret and reads only its opted-in member and slot',
     () async {
       await create('first');

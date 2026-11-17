@@ -1168,39 +1168,71 @@ owns exact wire shape and safe failure kinds.
 ### Backend credential access
 
 `AdeleCredentialClient` in the Flutter-free backend-support package binds the
-existing infrastructure context to the fixed `adele.credentials` service. Its sole
-`readCredential` method accepts exactly `collection`, `recordType`, `recordId` and
-`slot`. These select within a captured authorization scope; they cannot specify a
-credential reference, native key, owner override, path, service, generation or
-configuration context. There is no enumeration, mutation, filesystem access or
-general plugin secret-storage API.
+existing infrastructure context to the fixed `adele.credentials` service. Its
+`readCredential` method retains the original startup scope and accepts exactly
+`collection`, `recordType`, `recordId` and `slot`. These select within a captured
+authorization scope; they cannot specify a credential reference, native key, owner
+override, path, service, generation or configuration context. There is no credential
+enumeration, mutation, filesystem access or general plugin secret-storage API.
 
-Normal bootstrap registers `BackendCredentialHost` only for nonempty exact slot
-permissions, alongside independently configured infrastructure services. The outer
-transport validates the actual connection generation, current grant and service
-allowlist. The dispatcher validates its captured installation and record/slot set,
+The same client can explicitly call selector-free `captureCurrentConfiguration()`
+to obtain an `AdeleCredentialCapture` with immutable nonsecret `records`, an
+`isComplete` flag, scoped `readCredential` and explicit `release`. Its opaque handle
+is private to the public facade, with no getter or caller-supplied handle API. It
+belongs to one actual connection/generation, must not be persisted or replayed, and
+cannot be transferred to a replacement generation. Nonsecret `currentRecords()`
+observations and copied record maps never confer this authority.
+
+Normal bootstrap registers `BackendCredentialHost` only for the exact prepared
+installation's validated nonempty `consumesRecordTypes` and effectively nonempty
+`consumesCredentialSlots`, alongside independently configured infrastructure services.
+The outer transport validates the actual connection generation, current grant and
+service allowlist. The dispatcher validates its captured installation and record/slot set,
 then the existing association coordinator checks worker-owned current configuration
 and the complete protected binding. See [configuration authority](profiles-and-configuration.md#backend-credential-delivery)
-for coherent capture, stale-state detection and nonreconciling reads.
+for coherent startup/live capture, stale-state detection and nonreconciling reads.
 
-The existing bounded reverse-host transport carries an ordinary successful response
-payload of exactly `{"secret":"..."}` or `{"failure":"<fixed-code>"}`. The client
-returns only validated secret text or throws `AdeleCredentialFailure`; it retains no
-raw response, native exception or private reference in failure objects. Secrets are
-nonempty, NUL-free strict UTF-8, at most 2560 bytes, with the existing protected
-envelope imposing its own whole-value bound. They are never truncated or transformed.
+All operations use the existing bounded unary reverse-host transport, not a new
+service or authority context. Captured reads add only the private capture handle to
+the four selectors; capture creation accepts `{}`, and release accepts only that
+handle. The [backend-support API](../../packages/plugin_backend_support/README.md#live-captures)
+owns exact wire shapes and structural bounds. Reads return exactly `{"secret":"..."}`;
+any operation can instead return `{"failure":"<fixed-code>"}`. Failures throw
+`AdeleCredentialFailure` with the unchanged enum; failure objects retain no raw
+response, native exception or private reference. Secrets are nonempty, NUL-free
+strict UTF-8, at most 2560 bytes, with the existing protected envelope imposing its
+own whole-value bound. They are never truncated or transformed.
 
 | Fixed Code | Meaning |
 | --- | --- |
-| `notAuthorized` | Undeclared or uncaptured record/slot, malformed request or absent service grant. |
+| `notAuthorized` | Undeclared or uncaptured record/slot, malformed request, foreign/unissued capture handle or absent service grant. |
 | `notConfigured` | Captured current record has no attached reference for that slot. |
 | `missingLocally` | Reference exists, but local protected storage confirms absence. |
 | `storageUnavailable` | Storage is unavailable/locked, or strict local authority cannot be established. |
 | `invalidCredentialBinding` | Malformed, unsupported, foreign or invalid protected value. |
 | `reconciliationRequired` | A prior uncertain mutation requires explicit Settings reconciliation. |
-| `staleConfiguration` | Captured record or association no longer matches. |
+| `staleConfiguration` | Captured record or association no longer matches, or its issued capture was released. |
 | `generationUnavailable` | Connection or authorization owner has retired/closed. |
-| `credentialAccessFailed` | Other storage/transport failure or malformed response. |
+| `credentialAccessFailed` | Capture capacity exhausted, whole-scan/projection failure, other storage/transport failure or malformed response. |
+
+`BackendCredentialHost.maxCaptures` bounds each connection's credential host to
+**8 live scopes**, separately from startup authority. Admission reserves capacity
+before worker work; pending captures and released scopes still draining admitted
+reads count toward the limit. Exhaustion fails explicitly without eviction.
+Release acknowledgements do not
+promise immediately reusable capacity: it is freed only after confirmed cleanup and
+draining. There is no timeout, expiration scheduler or automatic refresh; consumers
+must explicitly release captures they no longer need.
+
+Facade `release()` synchronously fences local admission and late publication; repeated
+calls join the same future even on failure. At the host, release immediately removes
+the scope from read admission and initiates private-batch cleanup without waiting for
+an OS unlock prompt. Repeated release of an issued handle is safe while its generation
+remains live; malformed, foreign or never-issued handles are not authorized. A host
+read pending at release fails `staleConfiguration` rather than publishing a late
+secret, or `generationUnavailable` if the generation has retired. Local facade reads
+remain `staleConfiguration` once locally released. Release affects neither sibling
+captures nor startup authority, and does not erase already delivered secrets.
 
 Errors are fixed and bounded; malformed requests are not echoed. Frame parsing,
 reverse-response validation and transport exception `toString()` paths do not
@@ -1209,17 +1241,20 @@ contains the secret: no startup records/Settings, argv/environment, ready metada
 descriptors, logs, TOML or history channel carries it.
 
 Infrastructure revocation settles pending transport responses before asynchronous
-cleanup; the credential owner also checks liveness after waits and before returning.
-Late secrets are discarded rather than published to a retired backend. This does
-not cancel an OS unlock prompt or reclaim a secret already delivered in backend
-memory. There is no zeroization guarantee or automatic provider restart. These host
+cleanup. The host fences pending capture publication and all retained scopes;
+the Settings/coordinator owners drain admitted captures, reads and cleanup before
+disposal, rechecking liveness after waits and before returning. Late secrets are
+discarded rather than published to a retired backend. This does not cancel an OS
+unlock prompt or reclaim a secret already delivered in backend memory. There is no
+zeroization guarantee or automatic provider restart. These host
 API restrictions are not an OS sandbox for native AOT code.
 
 The configured OpenAI consumer binds `AdeleCredentialClient` through the existing
 `AdeleHostRequestMultiplexer`, separately from its configuration router. Each new
-subscribed model invocation requests the captured record's exact declared slot
-before HTTP; startup and uninvoked siblings perform no credential reads. The backend
-maps fixed credential failures to safe model-provider failure terminals, never raw
+subscribed model invocation still uses startup `readCredential` for the captured
+record's exact declared slot before HTTP; startup and uninvoked siblings perform no
+credential reads. The backend maps fixed credential failures to safe model-provider
+failure terminals, never raw
 credential exceptions or an alternate account. Cancellation or generation retirement
 while the read is pending must fence subsequent HTTP without pretending to cancel
 the OS operation. The [backend README](../../plugins/openai/packages/backend/README.md#credential-failures)

@@ -7,8 +7,9 @@ server-streaming clients calling explicitly scoped host services. It imports
 neither Flutter nor internal host implementations. Its public Capability consumer
 facade lets generated plugin
 clients use declared context-free unary access without importing runtime packages.
-Its credential client reads explicitly declared record slots through the existing
-generation infrastructure grant, without native credential-store dependencies.
+Its credential client reads explicitly declared record slots from startup or fresh
+configuration captures through the existing generation infrastructure grant,
+without native credential-store dependencies.
 Its configuration client obtains fresh nonsecret record observations through that
 grant, separately from startup snapshots and credential authority.
 Its generated local-state service provides path-only host location lookup.
@@ -199,14 +200,72 @@ freshness, and exact-generation authorization. No secrets or references are adde
 to bootstrap settings or records.
 
 `readCredential(collection: ..., recordType: ..., recordId: ..., slot: ...)`
-returns `Future<String>`. The method is `readCredential`; its fresh request
-payload contains exactly those four string fields. There is no reference, key,
-owner, generation, or service override. Successful transport payloads have exactly
-`{'secret': String}` or `{'failure': String}`. The client validates secrets as
-nonempty, NUL-free, strict Unicode with at most 2560 UTF-8 bytes using only the SDK.
+returns `Future<String>` from the original startup scope. It is unchanged by later
+captures and never follows current records implicitly. Its fresh request payload
+contains exactly those four string fields. There is no reference, key, owner,
+generation, or service override. Read results have exactly `{'secret': String}` or
+`{'failure': String}`. The client validates secrets as nonempty, NUL-free, strict
+Unicode with at most 2560 UTF-8 bytes using only the SDK.
 Response containers are copied before asynchronous publication; callers must not
 log returned secrets. Requests use fresh plain maps rather than unmodifiable map
 wrappers so they can cross spawned AOT isolate groups.
+
+### Live captures
+
+`AdeleCredentialClient.captureCurrentConfiguration()` takes no arguments and returns
+`Future<AdeleCredentialCapture>`. Send the backend ready handshake first and keep
+handling the generation's existing multiplexer responses while calls are pending.
+The host requires the exact prepared installation's validated `consumesRecordTypes`
+and effectively nonempty `consumesCredentialSlots`; this is not an upgrade of a
+`currentRecords()` observation or a copied record list.
+
+| Capture API | Meaning |
+| --- | --- |
+| `records` | Deeply copied, unmodifiable nonsecret records using the bounded `{collection,type,id,values}` grammar above. |
+| `isComplete` | False when invalid entries were omitted from scanned collections, including an all-invalid result. |
+| `readCredential(collection: ..., recordType: ..., recordId: ..., slot: ...)` | Read one declared slot within this capture, never the startup scope or another capture. |
+| `release()` | Return `Future<void>` for the host acknowledgement, with synchronous local fencing of new reads and late publication. Repeated calls return the same future, including after failure; no retry is sent. |
+
+Capture reads persisted configuration without accessing the vault or changing UI
+edit baselines. Healthy authorized records survive invalid siblings. Complete empty
+records are distinct from partial empty records; neither whole-scan failures nor
+projection-bound failures become empty or truncated success. `isComplete` reports
+record validation completeness, not credential presence or successful authentication.
+Previously returned records remain unchanged, including after release.
+
+All operations use the same `adele.credentials` service and infrastructure context:
+
+| Wire method | Exact request payload | Success payload |
+| --- | --- | --- |
+| `readCredential` | `{collection: String, recordType: String, recordId: String, slot: String}` | `{secret: String}` |
+| `captureCurrentConfiguration` | `{}` | `{capture: String, records: [...], isComplete: bool}` |
+| `readCapturedCredential` | `{capture: String, collection: String, recordType: String, recordId: String, slot: String}` | `{secret: String}` |
+| `releaseCapture` | `{capture: String}` | `{released: true}` |
+
+Each operation can instead return exactly `{failure: '<fixed-kind>'}`. The opaque
+wire `capture` handle is private to `AdeleCredentialCapture`, with no public getter,
+constructor accepting a handle, or channel accessor. It is connection/generation
+scoped, not a credential reference or persistable/replayable configuration identity.
+Do not persist or replay it. No caller-selected owner, type, collection, slot or
+configuration-context selector is accepted by capture creation.
+
+Release each capture when no longer needed. Local release remains fenced even if
+its acknowledgement fails. The host also fences the scope immediately, but release
+does not cancel an admitted OS read or wait for its unlock prompt to finish. Pending
+reads cannot publish late secrets; the facade reports `staleConfiguration` once
+locally released. Host generation retirement reports `generationUnavailable`.
+Other captures and startup reads remain independent. Retention is bounded without
+eviction or scheduled expiration; a release acknowledgement does not promise that
+draining work has freed capacity. See the
+[host lifetime rules](../../docs/architecture/contracts-and-capabilities.md#backend-credential-access).
+
+Fresh capture does not update provider registrations or existing Run bindings, and
+does not repair stale earlier captures. The host's
+[capture and freshness rules](../../docs/architecture/profiles-and-configuration.md#live-credential-captures)
+own coherent authority and external-writer limits. OpenAI still uses startup
+credentials and requires restart to apply configuration changes.
+
+### Failures and validation
 
 Failures throw `AdeleCredentialFailure` with one `AdeleCredentialFailureKind`:
 `notAuthorized`, `notConfigured`, `missingLocally`, `storageUnavailable`,
@@ -214,15 +273,17 @@ Failures throw `AdeleCredentialFailure` with one `AdeleCredentialFailureKind`:
 `generationUnavailable`, or `credentialAccessFailed`. The exception retains only
 the kind and formats a fixed bounded diagnostic. Missing-service transport denial
 maps to `notAuthorized`; transport grant revocation maps to `generationUnavailable`.
-Malformed responses and other transport failures map to `credentialAccessFailed`,
-never a raw native error or payload-bearing decoder exception.
+Malformed responses, failed capture scans/projections, exhausted capture capacity
+and other transport failures use `credentialAccessFailed`, never a raw native error
+or payload-bearing decoder exception. Live capture adds no failure enum values.
 
-The facade supplies no enumeration, mutation, filesystem, keyring, Flutter, or host
-implementation access, and never renews a retired grant. See the
+The facade supplies no credential enumeration, mutation, filesystem, keyring,
+Flutter, or host implementation access, and never renews a retired grant. See the
 [configuration architecture](../../docs/architecture/profiles-and-configuration.md#credentials-and-secrets)
 for host ownership. [`backend_credentials_test.dart`](test/backend_credentials_test.dart)
-covers exact wire shape, defensive copying, all failure kinds, secret bounds, and
-redaction through the existing maintained backend-support test target.
+covers exact wire shapes, immutable bounded captures, independent request scopes,
+release and late-publication fencing, all failure kinds, secret bounds, and redaction
+through the existing maintained backend-support test target.
 
 ## Capability Consumption
 

@@ -479,9 +479,11 @@ Credential-slot consumption has distinct coverage from nonsecret record delivery
 The `plugin_runtime` target validates default-deny, exact owned types/slots, P3a
 type opt-in prerequisites, duplicates, bounds, malformed/missing schemas and
 component-local failure. Stock publication tests assert OpenAI's exact `api-key`
-permission without changing its production schema. The backend-support target
-checks the public four-selector client, fixed failures, malformed responses and
-strict secret limits. Runtime framing and shared-host suites use distinctive
+permission without changing its production schema. The backend-support target's
+`packages/plugin_backend_support/test/backend_credentials_test.dart` checks startup
+and live-capture wire shapes, bounded immutable records, independent scopes, local
+release/late-publication fencing, fixed failures, malformed responses and strict
+secret limits. Runtime framing and shared-host suites use distinctive
 synthetic secrets to check rejected-payload and exception/diagnostic redaction.
 
 `app/test/core/startup_credential_authority_test.dart` owns real worker/coordinator
@@ -492,18 +494,26 @@ aliased-root invalidation and pre/post-wait stale checks. Paused read continuati
 test mutations in the postcheck-to-publication window; identity-observer tests
 distinguish transient unavailability from actual deletion. Gated reads verify that unrelated Settings work can
 complete while OS access is pending, and that close fences delivery but drains the
-read. `adele_settings_host` separately tests strict startup identity without changing
-editable byte-baseline semantics. The maintained Linux identity observation uses
-GNU `stat` device/inode and nanosecond change metadata; it needs no live keyring.
+read. Live-capture cases in the same authority suite check fresh genuine batches
+against nonauthorizing observations/copied views, unchanged siblings, and
+coordinator/Settings close during a pending capture. `adele_settings_host` separately
+tests strict startup identity without changing editable byte-baseline semantics.
+The maintained Linux identity observation uses GNU `stat` device/inode and
+nanosecond change metadata; it needs no live keyring.
 
 `app/test/core/backend_credential_host_test.dart` isolates the exact connection
 dispatcher, request allowlist, malformed-envelope redaction and retirement against
-a scripted transport peer. `app/test/core/backend_credential_integration_test.dart`
+a scripted transport peer. Live-scope cases cover pending/draining capacity,
+issued-handle release, cross-host/generation rejection, failed cleanup and late
+publication. `app/test/core/backend_credential_integration_test.dart`
 compiles the actual shared host and a public-client AOT fixture, discovers prepared
 installations through normal bootstrap, and resolves independent Work/Personal
 credentials using the real coordinator. It covers absent grants, unknown/new/foreign
 records and slots, stolen grants, no startup reads, fixed failures, concurrent edits,
-late-response fencing and fresh subsequent generations. The stock OpenAI startup
+late-response fencing and fresh subsequent generations. Live-capture cases exercise
+create/Replace/Forget within one connection, partial versus clean-empty and failed
+scans, release during a blocked OS read, unchanged startup values/registrations, and
+generation retirement without vault access during capture. The stock OpenAI startup
 suite retains that controlled observer over its actual declarations, independently
 of the configured-provider HTTP cases below. All secrets are synthetic. The generic
 credential-host/authority fixtures perform no model-provider network requests;
