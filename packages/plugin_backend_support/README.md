@@ -12,6 +12,8 @@ configuration captures through the existing generation infrastructure grant,
 without native credential-store dependencies.
 Its configuration client obtains fresh nonsecret record observations through that
 grant, separately from startup snapshots and credential authority.
+Its Capability publisher manages exact registration groups within that same
+backend generation, independently of configuration observation and consumption.
 Its generated local-state service provides path-only host location lookup.
 
 ## Bootstrap Settings
@@ -117,6 +119,71 @@ cache, subscription, polling, or restart. Retirement fences new reads and late
 successful publication; a retained client cannot extend its generation's grant.
 See [configuration observations](../../docs/architecture/profiles-and-configuration.md#live-record-observations)
 for the host boundary and credential separation.
+
+## Capability Publication
+
+[`adele_capability_publisher.dart`](lib/adele_capability_publisher.dart), also
+exported from the package root, exposes `AdeleCapabilityPublisher` over the existing
+infrastructure multiplexer:
+
+```dart
+final publisher = AdeleCapabilityPublisher(
+  hostRequests: hostRequests,
+  hostInfrastructureContext: bootstrap['hostInfrastructureContext'] as String,
+);
+final group = await publisher.adoptAdvertised(initialExposures);
+final added = await publisher.publish(newExposures);
+final replacement = await group.replace(replacementExposures);
+await added.retire();
+```
+
+The host grants `adele.capabilityPublication` to normal application backends as a
+continuation of their existing ready-advertisement authority. Standalone hosts must
+explicitly install a mediator. This grants no Capability consumption, credential,
+Environment execution, frontend, or dynamic extension authority. The authenticated
+connection supplies Plugin ID and generation; neither is a request selector.
+
+Call only after host activation. Readiness is not registration completion: early
+calls fail `notReady` rather than waiting for activation. Initialization/shutdown
+must not await new publication calls. Continue handling reverse responses and stream
+controls while any mutation or route retirement is pending.
+
+`adoptAdvertised` verifies a complete association-closed subset of the original
+ready exposures, including route and declaration metadata. It preserves the exact
+registrations. `publish` creates a new group; `replace` consumes an exact current
+group and returns a new incarnation. Handles cannot select another backend's group
+or recover a retired incarnation from matching semantic IDs. Old-handle cleanup
+never retires the replacement. The facade memoizes retirement; it does not retry
+effectful requests automatically.
+
+Prepare the candidate service and a fresh
+[`AdeleConfigurationContextRouter.registerContext`](../contract/README.md) route
+before publication. Never swap service implementations under an existing context.
+On confirmed replacement, retire the old route separately; its retirement future
+drains admitted work before dispatcher cleanup. Do not block the receive loop on
+that future. Keep configured resources, including any future immutable credential
+capture, until all their admitted work settles. Host registration retirement alone
+does not dispose backend resources or cancel every admitted operation.
+
+Mutation inputs reuse `AdeleCapabilityExposure` with strict field allowlisting,
+1..64 members per request, strings bounded to 1024 code units, and the existing
+service/identity/association validators. The host bounds live group handles and
+pending mutations, serializes mutations, and releases consumed handles. Requests
+and responses use plain sendable containers, not a separate RPC transport.
+
+`AdeleCapabilityPublicationFailure` exposes only a fixed kind. `invalidRequest`,
+`notAuthorized`, `notReady`, `capacityExceeded`, `staleGroup`, and `rejected` describe
+bounded refusal. A rejected candidate leaves a healthy previous group unchanged.
+`replacementUnavailable` means the previous group was retired and no replacement
+was published by the attempt; old bindings are not revived. `generationUnavailable`
+fences access. `outcomeUnknown` includes a lost or malformed acknowledgement and is
+not proof of rollback: retain potentially admitted route resources until ownership
+is reconciled or the backend shuts down. `isRetired` is set only by confirmed
+retirement/replacement or a stale-group result, not an unknown outcome.
+
+This API does not observe Settings or refresh OpenAI. Configuration interpretation,
+candidate preparation, and eventual capture/route disposal remain backend-owned.
+See the canonical [publication lifecycle](../../docs/architecture/contracts-and-capabilities.md#dynamic-capability-publication).
 
 ## Host Calls
 

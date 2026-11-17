@@ -450,19 +450,42 @@ abstract interface class AdeleContextualUnaryDispatcher
   );
 }
 
+/// One immutable, router-local configuration route with uniquely owned services.
+final class AdeleConfigurationContextRegistration {
+  AdeleConfigurationContextRegistration._(
+    this.configurationContext,
+    this._onRetire,
+  );
+
+  final String configurationContext;
+  Future<void> Function()? _onRetire;
+  Future<void>? _retirement;
+
+  /// Fences new admission synchronously, then drains and closes the dispatchers.
+  /// Stream credit and cancellation remain available until transport termination.
+  Future<void> retire() {
+    if (_retirement case final retirement?) return retirement;
+    final completion = Completer<void>();
+    _retirement = completion.future;
+    final onRetire = _onRetire!;
+    _onRetire = null;
+    completion.complete(Future<void>.sync(onRetire));
+    return completion.future;
+  }
+}
+
 final class AdeleConfigurationContextRouter {
   AdeleConfigurationContextRouter({
     required Map<String, Map<String, AdeleBackendDispatcher>> contexts,
-  }) : _contexts =
-           Map<String, Map<String, AdeleBackendDispatcher>>.unmodifiable(
-             contexts.map(
-               (String context, Map<String, AdeleBackendDispatcher> services) =>
-                   MapEntry<String, Map<String, AdeleBackendDispatcher>>(
-                     context,
-                     Map<String, AdeleBackendDispatcher>.unmodifiable(services),
-                   ),
-             ),
-           ) {
+  }) : _contexts = Map<String, Map<String, AdeleBackendDispatcher>>.of(
+         contexts.map(
+           (String context, Map<String, AdeleBackendDispatcher> services) =>
+               MapEntry<String, Map<String, AdeleBackendDispatcher>>(
+                 context,
+                 Map<String, AdeleBackendDispatcher>.unmodifiable(services),
+               ),
+         ),
+       ) {
     if (_contexts.entries.any(
       (entry) =>
           entry.key.isEmpty ||
@@ -474,6 +497,14 @@ final class AdeleConfigurationContextRouter {
         'contexts',
         'Configured context IDs and service maps must be non-empty.',
       );
+    }
+    for (final services in _contexts.values) {
+      for (final dispatcher in services.values) {
+        _dispatchers.putIfAbsent(
+          dispatcher,
+          () => _ConfigurationDispatcher(dispatcher),
+        );
+      }
     }
   }
 
@@ -490,8 +521,62 @@ final class AdeleConfigurationContextRouter {
        );
 
   final Map<String, Map<String, AdeleBackendDispatcher>> _contexts;
-  final Map<int, AdeleBackendDispatcher> _streamOwners =
-      <int, AdeleBackendDispatcher>{};
+  final Map<AdeleBackendDispatcher, _ConfigurationDispatcher> _dispatchers =
+      HashMap<AdeleBackendDispatcher, _ConfigurationDispatcher>.identity();
+  final Map<int, _ConfigurationStream> _streamOwners = {};
+  int _nextContext = 0;
+  Future<void>? _closeFuture;
+
+  /// Adds a snapshot of [services] under a fresh opaque context identity.
+  ///
+  /// Dispatchers must not be shared within this map or with any active/draining
+  /// route. Constructor-provided routes retain their existing sharing behavior.
+  AdeleConfigurationContextRegistration registerContext({
+    required Map<String, AdeleBackendDispatcher> services,
+  }) {
+    if (_closeFuture != null) {
+      throw StateError('Configuration router is closed.');
+    }
+    final snapshot = Map<String, AdeleBackendDispatcher>.unmodifiable(services);
+    if (snapshot.isEmpty) {
+      throw ArgumentError('Configured service maps must be non-empty.');
+    }
+    final unique = HashSet<AdeleBackendDispatcher>.identity();
+    for (final entry in snapshot.entries) {
+      adeleValidateServiceId(entry.key);
+      if (!unique.add(entry.value) || _dispatchers.containsKey(entry.value)) {
+        throw ArgumentError('Dynamic dispatchers must be uniquely owned.');
+      }
+    }
+    String context;
+    do {
+      // Keep allocation exact on both native and JavaScript Dart, without a
+      // growing set of retired identities or integer wraparound.
+      if (_nextContext == 0x1fffffffffffff) {
+        throw StateError('Configuration context identities exhausted.');
+      }
+      context = 'dynamic:${++_nextContext}';
+    } while (_contexts.containsKey(context));
+    adeleValidateConfigurationContext(context);
+    final owners = [
+      for (final dispatcher in snapshot.values)
+        _ConfigurationDispatcher(dispatcher),
+    ];
+    for (final owner in owners) {
+      _dispatchers[owner.dispatcher] = owner;
+    }
+    _contexts[context] = snapshot;
+    return AdeleConfigurationContextRegistration._(context, () {
+      _contexts.remove(context);
+      return Future.wait<void>(
+        owners.map((owner) => owner.retire()),
+      ).whenComplete(() {
+        for (final owner in owners) {
+          _dispatchers.remove(owner.dispatcher);
+        }
+      });
+    });
+  }
 
   Future<void> handle(
     Map<Object?, Object?> command,
@@ -499,6 +584,18 @@ final class AdeleConfigurationContextRouter {
   ) {
     final Object? kind = command['kind'];
     final Object? requestId = command['requestId'];
+    if (_closeFuture != null) {
+      if (kind == 'request' || kind == 'streamOpen') {
+        _reject(
+          kind,
+          requestId,
+          'configuration_context_unavailable',
+          'The configuration router is closed.',
+          send,
+        );
+      }
+      return Future<void>.value();
+    }
     final Object? hostInvocationContext = command['hostInvocationContext'];
     final bool contextual = command.containsKey('hostInvocationContext');
     if (contextual &&
@@ -515,6 +612,7 @@ final class AdeleConfigurationContextRouter {
       return Future<void>.value();
     }
     AdeleBackendDispatcher? dispatcher;
+    _ConfigurationStream? stream;
     if (kind == 'request' || kind == 'streamOpen') {
       final Object? configurationContext = command['configurationContext'];
       if (configurationContext is! String || configurationContext.isEmpty) {
@@ -561,60 +659,118 @@ final class AdeleConfigurationContextRouter {
         );
         return Future<void>.value();
       }
-      if (kind == 'streamOpen' && requestId is int) {
-        _streamOwners[requestId] = dispatcher;
+      if (kind == 'streamOpen') {
+        if (requestId is! int || _streamOwners.containsKey(requestId)) {
+          _reject(
+            kind,
+            requestId,
+            'invalid_request',
+            'Stream request ID must be an unused integer.',
+            send,
+          );
+          return Future<void>.value();
+        }
+        final owner = _dispatchers[dispatcher]!;
+        stream = _ConfigurationStream(owner);
+        owner.streams++;
+        _streamOwners[requestId] = stream;
       }
     } else if (kind == 'streamCredit' || kind == 'streamCancel') {
-      dispatcher = requestId is int ? _streamOwners[requestId] : null;
-      if (dispatcher == null) return Future<void>.value();
+      stream = requestId is int ? _streamOwners[requestId] : null;
+      if (stream == null) return Future<void>.value();
+      dispatcher = stream.owner.dispatcher;
     } else {
       return Future<void>.value();
     }
 
+    final owner = stream?.owner ?? _dispatchers[dispatcher]!;
     final Map<Object?, Object?> generatedCommand =
         Map<Object?, Object?>.of(command)
           ..remove('configurationContext')
           ..remove('serviceId')
           ..remove('hostInvocationContext');
     bool terminalSent = false;
-    void containFailure(Object _) {
-      if (!terminalSent) _dispatchFailure(kind, requestId, send);
-    }
-
-    void forward(Map<String, Object?> event) {
-      final bool terminal =
-          event['kind'] == 'response' ||
-          event['kind'] == 'streamDone' ||
-          event['kind'] == 'streamFailure' ||
-          event['kind'] == 'streamCancelled';
-      send(event);
-      if (terminal) {
-        terminalSent = true;
+    void finishStream() {
+      if (stream == null) return;
+      stream.terminalSent = true;
+      if (identical(_streamOwners[requestId], stream)) {
         _streamOwners.remove(requestId);
+        owner.streams--;
+        owner.settle();
       }
     }
 
-    try {
-      final Future<void> handling = contextual
+    void containFailure(Object _) {
+      if (terminalSent || (stream?.terminalSent ?? false)) return;
+      try {
+        _dispatchFailure(kind, requestId, send);
+      } finally {
+        terminalSent = true;
+        finishStream();
+      }
+    }
+
+    void forward(Map<String, Object?> event) {
+      if (terminalSent || (stream?.terminalSent ?? false)) return;
+      if (stream != null &&
+          event['requestId'] == requestId &&
+          event['kind'] == 'response') {
+        // Unary-only generated dispatchers reject stream commands as responses.
+        // Contain that wrong-kind frame without stranding the admitted stream.
+        _reject(
+          kind,
+          requestId,
+          'invalid_request',
+          'The service did not accept a streaming operation.',
+          send,
+        );
+        terminalSent = true;
+        finishStream();
+        return;
+      }
+      final bool terminal =
+          event['requestId'] == requestId &&
+          (kind == 'request'
+              ? event['kind'] == 'response'
+              : event['kind'] == 'streamDone' ||
+                    event['kind'] == 'streamFailure' ||
+                    event['kind'] == 'streamCancelled');
+      send(event);
+      if (terminal) {
+        terminalSent = true;
+        finishStream();
+      }
+    }
+
+    owner.handlers++;
+    return Future<void>.sync(
+      () => contextual
           ? (dispatcher as AdeleContextualUnaryDispatcher).handleContextual(
               generatedCommand,
               hostInvocationContext as String,
               forward,
             )
-          : dispatcher.handle(generatedCommand, forward);
-      return handling.catchError(containFailure);
-    } on Object catch (error) {
-      containFailure(error);
-      return Future<void>.value();
-    }
+          : dispatcher!.handle(generatedCommand, forward),
+    ).catchError(containFailure).whenComplete(() {
+      owner.handlers--;
+      owner.settle();
+    });
   }
 
-  Future<void> close() async {
+  /// Fences all admission and force-closes dispatchers, including draining ones.
+  /// Unlike registration retirement, shutdown cancels outstanding streams.
+  Future<void> close() {
+    if (_closeFuture case final closing?) return closing;
+    final completion = Completer<void>();
+    _closeFuture = completion.future;
+    _contexts.clear();
     _streamOwners.clear();
-    final Set<AdeleBackendDispatcher> unique =
-        HashSet<AdeleBackendDispatcher>.identity()
-          ..addAll(_contexts.values.expand((services) => services.values));
-    await Future.wait<void>(unique.map((dispatcher) => dispatcher.close()));
+    completion.complete(
+      Future.wait<void>(
+        _dispatchers.values.toList().map((owner) => owner.retire(force: true)),
+      ).then<void>((_) {}).whenComplete(_dispatchers.clear),
+    );
+    return completion.future;
   }
 
   void _dispatchFailure(
@@ -622,7 +778,6 @@ final class AdeleConfigurationContextRouter {
     Object? requestId,
     void Function(Map<String, Object?> event) send,
   ) {
-    _streamOwners.remove(requestId);
     send(<String, Object?>{
       'kind': kind == 'request' ? 'response' : 'streamFailure',
       'requestId': requestId,
@@ -647,6 +802,62 @@ final class AdeleConfigurationContextRouter {
       if (kind == 'request') 'ok': false,
       'error': <String, Object?>{'code': code, 'message': message},
     });
+  }
+}
+
+final class _ConfigurationStream {
+  _ConfigurationStream(this.owner);
+
+  final _ConfigurationDispatcher owner;
+  bool terminalSent = false;
+}
+
+final class _ConfigurationDispatcher {
+  _ConfigurationDispatcher(this.dispatcher);
+
+  final AdeleBackendDispatcher dispatcher;
+  int handlers = 0;
+  int streams = 0;
+  Completer<void>? _retirement;
+  bool _force = false;
+  bool _closeStarted = false;
+  bool _closeSettled = false;
+  Object? _closeError;
+  StackTrace? _closeStack;
+
+  Future<void> retire({bool force = false}) {
+    _retirement ??= Completer<void>();
+    _force = _force || force;
+    settle();
+    return _retirement!.future;
+  }
+
+  void settle() {
+    final retirement = _retirement;
+    if (retirement == null || retirement.isCompleted) return;
+    final drained = handlers == 0 && (_force || streams == 0);
+    if (!_closeStarted && (_force || drained)) {
+      _closeStarted = true;
+      Future<void>.sync(dispatcher.close).then(
+        (_) {
+          _closeSettled = true;
+          settle();
+        },
+        onError: (Object error, StackTrace stack) {
+          _closeSettled = true;
+          _closeError = error;
+          _closeStack = stack;
+          settle();
+        },
+      );
+    }
+    if (_closeSettled && drained) {
+      if (_closeError case final error?) {
+        retirement.completeError(error, _closeStack);
+      } else {
+        retirement.complete();
+      }
+    }
   }
 }
 

@@ -52,9 +52,13 @@ idle resources synchronously when that exact registration retires. It returns an
 idempotent detach callback and rejects an already-stale binding; replacement
 registrations do not notify or revive it. This is a retirement signal, not endpoint
 health monitoring or a substitute for per-operation `endpointAs<T>()` validation.
-Grouped retirement attempts every registration in reverse order despite observer
-errors, then reports the first error with its original stack. A repeated close
-does not invoke those observers again or touch replacement registrations.
+Grouped retirement synchronously fences the complete set before invoking any
+retirement observer, then notifies in reverse registration order despite observer
+errors and reports the first error with its original stack. A repeated close does
+not invoke those observers again or touch replacement registrations. Groups remove
+retired registrations from their cleanup inventory (`length` counts retained live
+members), while exact historical ownership still distinguishes stale from foreign
+bindings without retaining an append-only registration list.
 See the [registry source](lib/src/capability_registry.dart) and
 [tests](test/capability_registry_test.dart) for exact failure distinctions.
 
@@ -65,6 +69,14 @@ runtime uses these primitives for explicit advertised
 Association metadata and generation ownership stay outside `ProviderDescriptor`
 and this registry. Environment-eligible selection is a separate host constraint;
 ordinary `resolve` ordering, availability, and context-free behavior are unchanged.
+
+`CapabilityRegistration.binding` captures that registration directly without a new
+semantic-ID resolution. `CapabilityRegistry.validateRegistration` dry-runs the
+same endpoint, contract, and collision checks as `register`, including registrations
+whose endpoints are currently unavailable. Its optional `replacing` bindings exempt
+only exact current occurrences, never foreign or stale same-ID registrations.
+Preflight neither reserves IDs nor publishes or retires anything; registration
+must still succeed after the owning lifecycle retires the expected old occurrences.
 
 Rank/ID ordering is the current deterministic default, not the final preference
 model or a provider declaration of global primacy. Default selection remains

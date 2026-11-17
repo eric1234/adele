@@ -217,6 +217,7 @@ final class PluginExtensionActivation {
   final PluginBackendConnection connection;
   final List<RemoteExtensionContext> _contexts = [];
   final List<ExtensionRegistration> _registrations = [];
+  Future<void>? _registrationRetirement;
   Future<void>? _retiring;
 
   /// Looks up the exact registration, never an extension ID or wrapper identity.
@@ -260,6 +261,7 @@ final class PluginExtensionActivation {
         activation._registrations.add(registration);
       }
     } on Object {
+      activation._fenceAdmission();
       try {
         beforeRollback?.call();
       } finally {
@@ -277,18 +279,44 @@ final class PluginExtensionActivation {
     return activation;
   }
 
-  Future<void> retire() => _retiring ??= _retire();
+  void _fenceAdmission() {
+    for (final context in _contexts) {
+      context._retired = true;
+    }
+  }
 
-  Future<void> _retire() {
-    final cleanup = [for (final context in _contexts) context._retire()];
-    // Start every close synchronously, so no binding survives an await here.
-    return Future.wait<void>([
-      ...cleanup,
-      for (final registration in _registrations.reversed) registration.close(),
-    ]);
+  /// Fence admission and bindings without running adapter or invocation cleanup.
+  /// A composite owner can then retire providers before any adapter reenters.
+  void _fenceRegistrations() {
+    if (_registrationRetirement != null) return;
+    final completion = Completer<void>();
+    _registrationRetirement = completion.future;
+    _fenceAdmission();
+    completion.complete(
+      Future.wait<void>([
+        for (final registration in _registrations.reversed)
+          registration.close(),
+      ]).then<void>((_) {}),
+    );
+  }
+
+  Future<void> retire() {
+    final retiring = _retiring;
+    if (retiring != null) return retiring;
+    final completion = Completer<void>();
+    _retiring = completion.future;
+    _fenceRegistrations();
+    completion.complete(
+      Future.wait<void>([
+        _registrationRetirement!,
+        for (final context in _contexts) Future<void>.sync(context._retire),
+      ]).then<void>((_) {}),
+    );
+    return completion.future;
   }
 
   Future<void> close() async {
+    _fenceAdmission();
     connection.revokeInfrastructureContext();
     try {
       await retire();
@@ -333,6 +361,36 @@ final class PluginBackendActivation {
     validate();
     return _capabilities.retireProvider(binding);
   }
+
+  /// Adopts an association-closed subset of the original ready occurrences.
+  PluginCapabilityGroup adoptAdvertisedCapabilityGroup({
+    required List<AdeleCapabilityExposure> expected,
+  }) {
+    validate();
+    return _capabilities.adoptAdvertisedCapabilityGroup(expected: expected);
+  }
+
+  Future<PluginCapabilityGroup> publishCapabilityGroup({
+    required List<AdeleCapabilityExposure> exposures,
+  }) {
+    validate();
+    return _capabilities.publishCapabilityGroup(exposures: exposures);
+  }
+
+  Future<PluginCapabilityGroup> replaceCapabilityGroup({
+    required PluginCapabilityGroup expected,
+    required List<AdeleCapabilityExposure> exposures,
+  }) {
+    validate();
+    return _capabilities.replaceCapabilityGroup(
+      expected: expected,
+      exposures: exposures,
+    );
+  }
+
+  /// Idempotent for this exact retired group, including after generation cleanup.
+  Future<void> retireCapabilityGroup(PluginCapabilityGroup expected) =>
+      _capabilities.retireCapabilityGroup(expected);
 
   ProviderBinding? associationFor(ProviderBinding binding) {
     validate();
@@ -389,7 +447,10 @@ final class PluginBackendActivation {
         connection: connection,
         registry: extensions,
         adapters: adapters,
-        beforeRollback: connection.revokeInfrastructureContext,
+        beforeRollback: () {
+          acquired!.fenceAdmission();
+          connection.revokeInfrastructureContext();
+        },
       );
       if (connection.isClosed) {
         throw const PluginConnectionClosed(
@@ -402,6 +463,8 @@ final class PluginBackendActivation {
         acquiredExtensions,
       );
     } on Object {
+      acquired?.fenceAdmission();
+      acquiredExtensions?._fenceAdmission();
       connection.revokeInfrastructureContext();
       try {
         await Future.wait<void>([
@@ -421,28 +484,39 @@ final class PluginBackendActivation {
   }
 
   Future<void> retire() {
+    final retiring = _retiring;
+    if (retiring != null) return retiring;
+    final completion = Completer<void>();
+    _retiring = completion.future;
+    _retired = true;
+    // Stop both executable admission domains before any observer can reenter.
+    // Registrations are removed separately below; admission fencing is not close.
+    _capabilities.fenceAdmission();
+    _extensions._fenceAdmission();
     connection.revokeInfrastructureContext();
+    _extensions._fenceRegistrations();
+    final capabilityRetirement = _capabilities.retire();
     Object? observerError;
     StackTrace? observerStack;
-    if (!_retired) {
-      _retired = true;
-      final observers = _retirementObservers.toList();
-      _retirementObservers.clear();
-      for (final observer in observers) {
-        try {
-          observer();
-        } on Object catch (error, stack) {
-          observerError ??= error;
-          observerStack ??= stack;
-        }
+    final observers = _retirementObservers.toList();
+    _retirementObservers.clear();
+    for (final observer in observers) {
+      try {
+        observer();
+      } on Object catch (error, stack) {
+        observerError ??= error;
+        observerStack ??= stack;
       }
     }
-    return _retiring ??= Future.wait<void>([
-      _extensions.retire(),
-      _capabilities.retire(),
-      if (observerError != null)
-        Future<void>.error(observerError, observerStack),
-    ]);
+    completion.complete(
+      Future.wait<void>([
+        _extensions.retire(),
+        capabilityRetirement,
+        if (observerError != null)
+          Future<void>.error(observerError, observerStack),
+      ]).then<void>((_) {}),
+    );
+    return completion.future;
   }
 
   Future<void> close() async {
