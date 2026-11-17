@@ -845,6 +845,51 @@ connection, generation infrastructure grant, and sibling registrations. Associat
 selections become stale if either side retires; this API never looks up replacement
 providers by ID.
 
+### Capability Groups
+
+`PluginBackendActivation` delegates group lifecycle through its one existing
+`PluginCapabilityActivation`, not a second registration owner. Dynamic members are
+visible through `ownsProvider`, association selection, and Environment declaration
+checks just like ready registrations. The host API is:
+
+- `adoptAdvertisedCapabilityGroup(expected: ...)` captures an association-closed
+  subset of the original ready registration occurrences, preserving all existing
+  bindings. Full exposure metadata must match, including routes, rank, associations,
+  and Environment declarations; foreign, stale, duplicate, and already-adopted
+  occurrences are rejected. Matching IDs from later publications cannot be adopted.
+- `publishCapabilityGroup(exposures: ...)` publishes a new self-contained group.
+- `replaceCapabilityGroup(expected: ..., exposures: ...)` validates the complete
+  replacement before retiring a healthy old group, then returns a **new** group
+  incarnation. Collision preflight includes unavailable registered providers and
+  exempts only the exact old occurrences.
+- `retireCapabilityGroup(group)` retires only that incarnation. Repeated or delayed
+  old retirement cannot affect a replacement with the same semantic IDs.
+
+`PluginCapabilityGroup` has private owner/member identity and exposes `isRetired`.
+Individual `retireProvider` remains exact and leaves siblings callable, but makes
+its containing group stale for replacement; group retirement can still finish its
+remaining members. Group operations do not revoke generation infrastructure,
+extensions, independent groups, or the backend connection.
+
+Asynchronous group mutations serialize per activation. Generation retirement is
+not queued: it immediately fences admission and every acquired registration, then
+joins cleanup and pending mutations. Registration acquisition joins generation
+cleanup before yielding; commits and asynchronous continuations recheck liveness.
+All members are fenced before retirement observers run, so reentrant observers
+cannot invoke an unretired sibling or redirect delayed cleanup to new occurrences.
+Failures after old retirement roll back only newly acquired registrations and never
+revive old bindings. This is coherent rollback, not invisible registry transactions.
+
+The activation retains only live cleanup/declaration inventories and one termination
+listener, not one listener or historical inventory per replacement. The direct
+native `register` path intentionally retains lazy exposure iteration and partial
+registration rollback; dynamic group publication adds eager preflight using the
+same exposure and association validators. These APIs add no permission system,
+configured-provider policy, or route-dispatcher cleanup. The application owns any
+public mediation, and backend-local routes settle their admitted work separately.
+
+### Extension Registrations
+
 `extensionExposures` follows the same path using public `AdeleExtensionExposure`;
 omission means zero extensions. `PluginExtensionActivation.registerAdvertised`
 selects a host `RemoteExtensionAdapter` by extension-point ID and registers its

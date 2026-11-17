@@ -59,6 +59,99 @@ void main() {
     adapters: RemoteExtensionAdapterRegistry([_Adapter()]),
   );
 
+  test(
+    'composite groups preserve exact backend ownership, declarations and siblings',
+    () async {
+      final connection = await connect({
+        'capabilityExposures': [_capabilityExposure],
+        'extensionExposures': [_exposure('sibling', 'default')],
+      });
+      final activation = await activate(connection);
+      final extension = extensions.discover(_point).single;
+      final original = capabilities.resolve(_capability);
+      final initial = activation.adoptAdvertisedCapabilityGroup(
+        expected: connection.capabilityExposures,
+      );
+      expect(
+        capabilities.resolve(_capability).isSameRegistration(original),
+        isTrue,
+      );
+      final changed = AdeleCapabilityExposure.fromReady({
+        'capabilityExposures': [
+          {
+            ..._capabilityExposure,
+            'configurationContext': 'fresh',
+            'environmentBound': true,
+            'environmentHostServices': ['read', 'bufferedProcess'],
+          },
+        ],
+      });
+      final input = changed.toList();
+      final replacing = activation.replaceCapabilityGroup(
+        expected: initial,
+        exposures: input,
+      );
+      input.clear();
+      final replacement = await replacing;
+      final fresh = capabilities.resolve(_capability);
+      expect(initial.isRetired, isTrue);
+      expect(replacement.isRetired, isFalse);
+      expect(fresh.isSameRegistration(original), isFalse);
+      expect(activation.ownsProvider(fresh), isTrue);
+      expect(activation.isEnvironmentBound(fresh), isTrue);
+      for (final service in AdeleEnvironmentHostService.values) {
+        expect(activation.allowsEnvironmentHostService(fresh, service), isTrue);
+      }
+      expect(extension.validate, returnsNormally);
+      expect(connection.validateInfrastructureContext, returnsNormally);
+
+      final peerConnection = await connect({}, pluginId: 'dev.adele.test.peer');
+      final peer = await activate(peerConnection);
+      final peerGroup = await peer.publishCapabilityGroup(
+        exposures: AdeleCapabilityExposure.fromReady({
+          'capabilityExposures': [
+            {
+              ..._capabilityExposure,
+              'providerId': 'dev.adele.test.peer-provider',
+            },
+          ],
+        }),
+      );
+      expect(
+        () => peer.retireCapabilityGroup(replacement),
+        throwsA(isA<InvalidProviderRegistration>()),
+      );
+      expect(
+        () => activation.replaceCapabilityGroup(
+          expected: peerGroup,
+          exposures: changed,
+        ),
+        throwsA(isA<InvalidProviderRegistration>()),
+      );
+      await activation.retireCapabilityGroup(initial);
+      expect(activation.ownsProvider(fresh), isTrue);
+      Future<void>? reentrant;
+      activation.onRetire(() {
+        reentrant = activation.retire();
+        expect(activation.retire(), same(reentrant));
+        expect(replacement.isRetired, isTrue);
+        expect(() => fresh.requestChannel, throwsA(isA<ProviderUnavailable>()));
+        expect(
+          () => activation.publishCapabilityGroup(exposures: changed),
+          throwsA(isA<PluginConnectionClosed>()),
+        );
+      });
+      final retiring = activation.retire();
+      expect(retiring, same(reentrant));
+      await retiring;
+      await activation.retireCapabilityGroup(replacement);
+      expect(peerGroup.isRetired, isFalse);
+      expect(peer.ownsProvider(capabilities.resolve(_capability)), isTrue);
+      await activation.close();
+      await peer.close();
+    },
+  );
+
   test('omitted advertisements activate no extensions', () async {
     final connection = await connect({});
     final activation = await activate(connection);
@@ -928,6 +1021,158 @@ void main() {
   );
 
   test(
+    'composite observers cannot dispatch through either retained admission domain',
+    () async {
+      final connection = await connect({
+        'capabilityExposures': [
+          _capabilityExposure,
+          {..._capabilityExposure, 'providerId': 'dev.adele.test.independent'},
+        ],
+        'extensionExposures': [
+          _exposure('first', 'one'),
+          _exposure('second', 'two'),
+        ],
+      });
+      final activation = await activate(connection);
+      final bindings = extensions.discover(_point);
+      final contributions = bindings.map((binding) => binding.value).toList();
+      final group = activation.adoptAdvertisedCapabilityGroup(
+        expected: [connection.capabilityExposures.first],
+      );
+      final grouped = capabilities.resolve(
+        _capability,
+        providerId: ProviderId(_capabilityExposure['providerId']! as String),
+      );
+      final provider = capabilities.resolve(
+        _capability,
+        providerId: ProviderId('dev.adele.test.independent'),
+      );
+      Future<Object?>? permitted;
+      grouped.onRetire(() {
+        expect(bindings.first.validate, returnsNormally);
+        expect(contributions.first.context.validate, returnsNormally);
+        expect(() => provider.requestChannel, returnsNormally);
+        permitted = contributions.first.call();
+      });
+      await activation.retireCapabilityGroup(group);
+      await permitted;
+      expect(await connection.request('echoRequestCount', {}), 1);
+
+      final attempts = <Future<void>>[];
+      final events = <String>[];
+      final cleanup = Completer<void>();
+      addTearDown(() {
+        if (!cleanup.isCompleted) cleanup.complete();
+      });
+      final reentrant = <Future<void>>[];
+      var providerRetired = false;
+      void expectProviderAdmissionFenced() {
+        attempts.add(
+          expectLater(
+            Future<Object?>.sync(
+              () => provider.requestChannel.request('echo', {}),
+            ),
+            throwsA(isA<ProviderEndpointUnavailable>()),
+          ),
+        );
+        // Admission stops before provider registration removal and notifications.
+        expect(providerRetired, isFalse);
+        expect(
+          () => provider.requestChannel,
+          throwsA(isA<ProviderEndpointUnavailable>()),
+        );
+        for (final contribution in contributions) {
+          expect(
+            contribution.context.validate,
+            throwsA(isA<StaleExtensionBinding>()),
+          );
+        }
+        reentrant.add(activation.retire());
+      }
+
+      connection.onInfrastructureRevoked(() {
+        events.add('infrastructure');
+        expectProviderAdmissionFenced();
+      });
+      for (var index = 0; index < bindings.length; index++) {
+        bindings[index].onRetire(() {
+          events.add('extension-$index');
+          expectProviderAdmissionFenced();
+        });
+      }
+      void expectExtensionsStale() {
+        expect(extensions.discover(_point), isEmpty);
+        for (var index = 0; index < bindings.length; index++) {
+          expect(
+            bindings[index].validate,
+            throwsA(isA<StaleExtensionBinding>()),
+          );
+          expect(
+            contributions[index].context.validate,
+            throwsA(isA<StaleExtensionBinding>()),
+          );
+          expect(
+            () => contributions[index].context.channel,
+            throwsA(isA<StaleExtensionBinding>()),
+          );
+        }
+      }
+
+      provider.onRetire(() {
+        providerRetired = true;
+        events.add('provider');
+        expectExtensionsStale();
+        for (final contribution in contributions) {
+          attempts.add(
+            expectLater(
+              contribution.call(),
+              throwsA(isA<StaleExtensionBinding>()),
+            ),
+          );
+        }
+        reentrant.add(activation.retire());
+      });
+      activation.onRetire(() {
+        events.add('generation');
+        expectExtensionsStale();
+        reentrant.add(activation.retire());
+      });
+      for (var index = 0; index < contributions.length; index++) {
+        contributions[index].context.onRetire(() {
+          events.add('cleanup-$index');
+          expectExtensionsStale();
+          expect(
+            () => provider.requestChannel,
+            throwsA(isA<ProviderUnavailable>()),
+          );
+          reentrant.add(activation.retire());
+          return cleanup.future;
+        });
+      }
+      final retiring = activation.retire();
+      expect(events, [
+        'infrastructure',
+        'extension-1',
+        'extension-0',
+        'provider',
+        'generation',
+        'cleanup-0',
+        'cleanup-1',
+      ]);
+      for (final pending in reentrant) {
+        expect(pending, same(retiring));
+      }
+      await Future.wait(attempts);
+      expect(await connection.request('echoRequestCount', {}), 1);
+      expect(connection.isClosed, isFalse);
+      expect(cleanup.isCompleted, isFalse);
+      cleanup.complete();
+      await retiring;
+      await activation.close();
+    },
+  );
+
+  test(
     'unknown adapters and invalid point metadata roll back capabilities and extensions',
     () async {
       for (final invalid in [
@@ -985,6 +1230,17 @@ void main() {
         var observed = false;
         late ProviderBinding provider;
         late ExtensionBinding<_Contribution> extension;
+        late RemoteExtensionContext retainedContext;
+        connection.onInfrastructureRevoked(() {
+          expect(
+            () => provider.requestChannel,
+            throwsA(isA<ProviderEndpointUnavailable>()),
+          );
+          expect(
+            retainedContext.validate,
+            throwsA(isA<StaleExtensionBinding>()),
+          );
+        });
         await PluginBackendActivation.registerAdvertised(
           connection: connection,
           capabilities: capabilities,
@@ -998,6 +1254,7 @@ void main() {
                   extension = extensions.discover(_point).single;
                   Error.throwWithStackTrace(primary, primaryStack);
                 }
+                retainedContext = context;
                 provider = capabilities.resolve(_capability);
                 provider.onRetire(() {
                   observed = true;
@@ -2412,6 +2669,7 @@ void main() {
   var streamOpens = 0;
   var streamCredits = 0;
   var streamCancels = 0;
+  var echoRequests = 0;
   void reverse(Map<String, dynamic> message) {
     final id = nextHostRequest++;
     pending[id] = message;
@@ -2448,7 +2706,10 @@ void main() {
             send({'kind': 'pluginStopped', ...route});
           }
         case 'request':
-          if (message['method'] == 'streamStats') {
+          if (message['method'] == 'echo') echoRequests++;
+          if (message['method'] == 'echoRequestCount') {
+            send({'kind': 'response', ...route, 'ok': true, 'payload': echoRequests});
+          } else if (message['method'] == 'streamStats') {
             send({'kind': 'response', ...route, 'ok': true, 'payload': {'opens': streamOpens, 'credits': streamCredits, 'cancels': streamCancels}});
           } else if (message['method'] == 'reverse') {
             reverse(message);

@@ -186,6 +186,29 @@ owns lower-level exact-binding and handle lifetime cases using a scripted transp
 peer with real connections and advertised activations. These are validation
 owners, not claims of passing results; use the [focused checks](../docs/development/testing.md#focused-backend-capability-checks).
 
+### Backend Capability publication
+
+[`BackendCapabilityPublicationHost`](lib/core/backend_capability_publication_host.dart)
+binds one actual connection to its successful composite activation. Bootstrap adds
+the reserved infrastructure service independently of consumption, configuration,
+and credential declarations, then attaches it only after ready registration succeeds.
+The service continues existing advertisement authority; it never accepts a plugin
+or generation selector. It serializes bounded requests and retains only live exact
+group handles. The activation, not this table, owns initial and dynamic registrations
+and their generation cleanup. Reserved-service collisions fail rather than overwrite
+caller-provided services.
+
+The [host tests](test/core/backend_capability_publication_host_test.dart) own request
+bounds, exact attachment, foreign/stale handles, safe failure adaptation, and pending
+shutdown. The [independent AOT proof](test/core/backend_capability_publication_integration_test.dart)
+uses normal bootstrap, public inference/catalog contracts, and an unchanged peer
+consumer to exercise same-generation add/replace/retire with held requests/streams
+and unchanged sibling/Command bindings. The app imports no concrete provider plugin
+and performs no OpenAI refresh. Public usage belongs to
+[backend support](../packages/plugin_backend_support/README.md#capability-publication);
+ownership and replacement guarantees belong to the
+[canonical lifecycle](../docs/architecture/contracts-and-capabilities.md#dynamic-capability-publication).
+
 ### Prepared frontend activation
 
 Window-owned [`ApplicationFrontendBootstrap`](lib/frontend/application_frontend_bootstrap.dart)

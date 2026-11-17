@@ -1090,6 +1090,23 @@ claimed for other platforms. The existing desktop target discovers the app cases
 
 ### Focused backend Capability checks
 
+For dynamic publication, also select `adele_capabilities`, `adele_contract`, and
+`plugin_backend_host` maintained targets. Registry/runtime tests own exact group
+adoption, preflight, association closure, rollback and retirement observers; contract
+tests own immutable routes and admitted stream/control cleanup. The public publisher
+suite owns strict bounded requests, fixed failures, and explicit cleanup retries.
+From `app/`, add:
+
+```sh
+flutter test --no-pub --concurrency 1 test/core/backend_capability_publication_host_test.dart test/core/backend_capability_publication_integration_test.dart test/session_execution_test.dart
+```
+
+The publication integration independently compiles provider, peer consumer and shared
+host AOT artifacts, then uses normal bootstrap for add/replace/retire, exact catalog
+associations, held old unary/stream work, and unchanged sibling/Command registrations.
+It performs no external provider or credential I/O. These files participate in the
+existing desktop test discovery and shards.
+
 These commands identify validation owners, not passing outcomes. After bootstrap
 and current generation, run affected public API, catalog/runtime, generation, and
 dependency-boundary targets from the repository root:
