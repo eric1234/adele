@@ -255,6 +255,9 @@ Future<List<String>> _prepareDesktopPlugins({
   final File agentsMd = File.fromUri(
     installations.uri.resolve('agents-md/backend.aot'),
   );
+  final File conservativeToolPolicy = File.fromUri(
+    installations.uri.resolve('conservative-tool-policy/backend.aot'),
+  );
   final File searchTools = File.fromUri(
     installations.uri.resolve('search-tools/backend.aot'),
   );
@@ -300,6 +303,12 @@ Future<List<String>> _prepareDesktopPlugins({
               'plugins/agents_md/packages/backend/bin/agents_md_backend.dart',
           artifact: agentsMd,
           stage: 'agents-md-compilation',
+        ),
+        (
+          entrypoint:
+              'plugins/conservative_tool_policy/packages/backend/bin/conservative_tool_policy_backend.dart',
+          artifact: conservativeToolPolicy,
+          stage: 'conservative-tool-policy-compilation',
         ),
         (
           entrypoint:
@@ -414,6 +423,11 @@ Future<List<String>> _prepareDesktopPlugins({
       backend: agentsMd,
       id: 'dev.adele.plugin.agents-md',
       displayName: 'AGENTS.md',
+    ),
+    (
+      backend: conservativeToolPolicy,
+      id: 'dev.adele.plugin.conservative-tool-policy',
+      displayName: 'Conservative Tool Policy',
     ),
     (
       backend: searchTools,

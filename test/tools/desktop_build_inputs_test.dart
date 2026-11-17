@@ -15,6 +15,8 @@ const _backends = {
   'openai':
       'plugins/openai/packages/backend/bin/openai_model_provider_backend.dart',
   'agents-md': 'plugins/agents_md/packages/backend/bin/agents_md_backend.dart',
+  'conservative-tool-policy':
+      'plugins/conservative_tool_policy/packages/backend/bin/conservative_tool_policy_backend.dart',
   'search-tools':
       'plugins/search_tools/packages/backend/bin/search_tools_backend.dart',
   'filesystem-tools':
@@ -271,7 +273,28 @@ part 'public.g.dart';
         ),
         inputs,
       );
-      expect(inputs, hasLength(_backends.length + _frontends.length));
+      expect(
+        inputs.keys,
+        unorderedEquals([
+          for (final name in _backends.keys) '$name-compilation',
+          for (final name in _frontends.keys) '$name-frontend-compilation',
+        ]),
+      );
+      final conservative = inputs['conservative-tool-policy-compilation']!;
+      expect(
+        conservative,
+        containsAll([
+          for (final path in [
+            'plugins/conservative_tool_policy/packages/backend/pubspec.yaml',
+            'plugins/conservative_tool_policy/packages/backend/bin/conservative_tool_policy_backend.dart',
+            'plugins/conservative_tool_policy/packages/backend/lib/conservative_tool_policy_backend.dart',
+            'packages/orchestration/lib/remote_tool_authorization.dart',
+            'packages/orchestration/lib/remote_tool_authorization.g.dart',
+          ])
+            File(path).absolute.path,
+        ]),
+      );
+      expect(conservative.any((file) => file.contains('/app/')), isFalse);
       for (final entry in inputs.entries) {
         if (entry.key.contains('-frontend-')) {
           expect(
@@ -284,6 +307,16 @@ part 'public.g.dart';
           expect(
             entry.value.any(
               (file) => file.contains('/openai/packages/backend/'),
+            ),
+            isFalse,
+            reason: entry.key,
+          );
+        }
+        if (entry.key != 'conservative-tool-policy-compilation') {
+          expect(
+            entry.value.any(
+              (file) =>
+                  file.contains('/conservative_tool_policy/packages/backend/'),
             ),
             isFalse,
             reason: entry.key,

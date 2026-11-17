@@ -1990,9 +1990,14 @@ lifetimes belong to [authorization composition](../docs/architecture/execution-m
 [`RemoteToolAuthorizationPolicyAdapter`](lib/core/remote_tool_authorization_host.dart)
 adapts ordinary AOT advertisements through `createRemoteExtensionAdapters()` using
 the public [authorization transport](../packages/orchestration/README.md#tool-authorization).
-It owns no composition policy or Environment authority. Policy configuration and
-stock-policy migration remain deferred; no production authorization backend is
-installed by normal startup.
+It owns no composition policy or Environment authority. Normal stock preparation
+includes the optional backend-only
+[Conservative policy](../plugins/conservative_tool_policy/README.md), activated by
+the same generic bootstrap with no application-specific wiring. Its contribution
+and the explicit legacy participant coexist; omitting it leaves legacy behavior
+intact, while its evaluation failures are not swallowed. The stock implementation
+is not yet the sole production policy. The S4 cutover and policy configuration
+remain deferred.
 
 The unchanged legacy `ApprovalGatedToolPolicy` allows a single certain source-read or read-only
 resource-inspection effect, asks for a single certain source-mutation effect or
