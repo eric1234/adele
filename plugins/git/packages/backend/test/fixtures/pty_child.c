@@ -29,6 +29,15 @@ ssize_t __wrap_read(int fd, void *bytes, size_t length) {
 
 ssize_t __wrap_write(int fd, const void *bytes, size_t length) {
   static unsigned calls;
+  // Deliver the real close signal after one byte of the first output frame.
+  // The reader cannot mistake that prefix for a complete frame.
+  static int interrupted;
+  if (!interrupted && fd == STDOUT_FILENO && length &&
+      *(const char *)bytes == 'O' && getenv("PTY_TEST_INTERRUPT_OUTPUT")) {
+    ssize_t n = __real_write(fd, bytes, 1);
+    if (n == 1) { interrupted = 1; raise(SIGTERM); }
+    return n;
+  }
   if (fd == STDOUT_FILENO || isatty(fd)) {
     if (++calls % 5 == 0) { errno = EINTR; return -1; }
     size_t limit = length > 128 ? 97 : 3;

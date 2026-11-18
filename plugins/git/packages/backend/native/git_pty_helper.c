@@ -30,6 +30,10 @@
 #define TRANSPORT_FAILED 125
 #define CLEANUP_FAILED 126
 static volatile sig_atomic_t stopping;
+// Suffix of the one admitted protocol frame interrupted by a close signal.
+static unsigned char close_tail[5 + LIMIT];
+static size_t close_tail_size;
+static int cleanup_finished;
 
 static void stop(int signal_number) { (void)signal_number; stopping = 1; }
 
@@ -51,7 +55,15 @@ static void encode(unsigned char *p, uint32_t n) {
 // Neither an unresponsive terminal nor an unread pipe can hold cleanup forever.
 static int write_all(int fd, const unsigned char *p, size_t n) {
   int64_t deadline = now_ms() + 5000;
-  while (n && !stopping) {
+  while (n) {
+    if (stopping && !cleanup_finished) {
+      // Reap first, without waiting for writable stdout. Finish this exact
+      // frame before the exit frame so the decoder stays on a frame boundary.
+      if (n > sizeof(close_tail) - close_tail_size) { errno = EOVERFLOW; return -1; }
+      memcpy(close_tail + close_tail_size, p, n);
+      close_tail_size += n;
+      return 0;
+    }
     ssize_t written = write(fd, p, n);
     if (written > 0) { p += written; n -= (size_t)written; continue; }
     if (written < 0 && errno != EAGAIN && errno != EINTR) return -1;
@@ -60,10 +72,11 @@ static int write_all(int fd, const unsigned char *p, size_t n) {
     if (fds[1].revents & (POLLHUP | POLLERR)) return -1;
     if (now_ms() >= deadline) { errno = ETIMEDOUT; return -1; }
   }
-  return n ? -1 : 0;
+  return 0;
 }
 
 static int frame(char type, const unsigned char *bytes, uint32_t n) {
+  if (stopping && !cleanup_finished) return 0; // No new frames during close.
   unsigned char header[5] = {(unsigned char)type, 0, 0, 0, 0};
   encode(header + 1, n);
   return write_all(STDOUT_FILENO, header, 5) ||
@@ -330,14 +343,14 @@ int main(int argc, char **argv) {
   }
   if (failed && !stopping) failure("PTY transport");
   int result = cleanup(child, master, foreground);
-  // A close signal still permits a final exit frame, but never delays cleanup.
-  stopping = 0;
+  cleanup_finished = 1;
+  if (close_tail_size && write_all(STDOUT_FILENO, close_tail, close_tail_size)) failed = 1;
   if (result < 0) {
     errno = ETIMEDOUT;
     failure("PTY cleanup did not complete");
     return CLEANUP_FAILED;
   }
   encode(number, (uint32_t)result);
-  if (!failed) (void)frame('X', number, 4);
+  if (!failed) failed = frame('X', number, 4) != 0;
   return failed ? TRANSPORT_FAILED : 0;
 }

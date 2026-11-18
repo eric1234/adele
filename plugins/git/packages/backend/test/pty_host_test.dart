@@ -111,6 +111,7 @@ void main() {
     String? executable,
     List<String> arguments = const [],
     String? helperPath,
+    bool interruptOutput = false,
   }) async =>
       (await backend.request('open', {
             'executable': executable ?? child.path,
@@ -120,6 +121,7 @@ void main() {
               'PATH': '/usr/bin:/bin',
               'TERM': 'xterm-256color',
               'PS1': 'PTY-PROMPT> ',
+              if (interruptOutput) 'PTY_TEST_INTERRUPT_OUTPUT': '1',
             },
             'helper': ?helperPath,
           }))!
@@ -321,6 +323,23 @@ void main() {
         () async =>
             await Directory('/proc/$hostPid/fd').list().length <= descriptors,
       );
+    },
+  );
+
+  test(
+    'close signal during a frame preserves output and reaped exit',
+    () async {
+      final pid = await open(
+        helperPath: faultHelper.path,
+        interruptOutput: true,
+        executable: '/bin/sh',
+        arguments: ['-c', 'printf marker; exec /bin/sleep 60'],
+      );
+      expect(await _readUntil(backend, 'marker'), 'marker');
+      expect(await backend.request('exit', {}), 143);
+      expect(await backend.request('read', {}), isNull);
+      await backend.request('close', {});
+      expect(await Directory('/proc/$pid').exists(), isFalse);
     },
   );
 
