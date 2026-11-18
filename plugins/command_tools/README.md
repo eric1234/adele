@@ -5,7 +5,7 @@ Command Tools is an independently installed stock plugin that contributes
 `search_command_output` (`dev.adele.plugin.command-tools.search-command-output`).
 Run Command runs either one foreground executable directly with verbatim arguments
 or a verbatim script through the selected Environment's shell. Both forms use the
-same tool identity, capture path, and conservative process authorization. It never
+same tool identity, capture path, and process-effect description. It never
 detects shell syntax in direct arguments or implicitly converts them into a script.
 The root `command_tools_plugin` package owns the semantics;
 `packages/backend` (`command_tools_backend`) reuses them through public generated
@@ -301,9 +301,10 @@ process/filesystem/mutation facet, including after the originating command has
 settled or its Environment provider has retired.
 
 The effect is a certain `resourceInspection` of the selected retained command
-output, not `sourceRead` or process execution. The normal host policy permits that
-single read-only effect without command-execution approval; it still gates
-processes/mutations and denies uncertain or mixed inspection effects.
+output, not `sourceRead` or process execution. The stock
+[Conservative policy](../conservative_tool_policy/README.md#decisions) returns Allow
+for that single read-only effect. Command Tools describes the effect; it does not
+decide whether approval is required.
 
 The model schema is an object with only these fields and
 `additionalProperties: false`:

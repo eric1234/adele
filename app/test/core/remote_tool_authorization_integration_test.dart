@@ -7,7 +7,6 @@ import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_contract/adele_contract.dart';
-import 'package:adele_desktop/core/approval_gated_tool_policy.dart';
 import 'package:adele_desktop/core/remote_inference_context_host.dart';
 import 'package:adele_desktop/core/tool_authorization_policy_composer.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
@@ -173,22 +172,21 @@ void main() {
     return (resolution as ResolvedToolProposal).invocation;
   }
 
-  Future<ToolPolicyGateResult> evaluate(
-    ToolInvocation invocation, {
-    bool legacy = true,
-  }) => const ToolPolicyGate()
-      .evaluate(
-        invocation: invocation,
-        policy: ToolAuthorizationPolicyComposer(
-          extensions: extensions,
-          lifecycle: topology.lifecycle,
-          session: session,
-          runId: runId,
-          legacyPolicy: legacy ? const ApprovalGatedToolPolicy() : null,
-        ),
-        interruptionId: RunInterruptionId('approval-${invocation.id.value}'),
-      )
-      .timeout(_bound);
+  Future<ToolPolicyGateResult> evaluate(ToolInvocation invocation) =>
+      const ToolPolicyGate()
+          .evaluate(
+            invocation: invocation,
+            policy: ToolAuthorizationPolicyComposer(
+              extensions: extensions,
+              lifecycle: topology.lifecycle,
+              session: session,
+              runId: runId,
+            ),
+            interruptionId: RunInterruptionId(
+              'approval-${invocation.id.value}',
+            ),
+          )
+          .timeout(_bound);
 
   for (final decision in ToolAuthorizationDecision.values) {
     test(
@@ -270,10 +268,7 @@ void main() {
       final invocation = await resolve();
       expect(invocation.proposal.arguments['path'], '  source.dart  ');
       expect(invocation.canonicalArguments, _arguments);
-      expect(
-        await evaluate(invocation, legacy: false),
-        isA<ToolExecutionAllowed>(),
-      );
+      expect(await evaluate(invocation), isA<ToolExecutionAllowed>());
       final snapshot = await _snapshot(probe.connection);
       expect(snapshot, {
         'requests': [_request('allow', invocation, tool.effects)],
@@ -425,20 +420,17 @@ void main() {
     });
   }
 
-  for (final legacy in [ToolPolicyDecision.ask, ToolPolicyDecision.deny]) {
-    test('remote Allow cannot override legacy ${legacy.name}', () async {
+  for (final restriction in [
+    ToolAuthorizationDecision.ask,
+    ToolAuthorizationDecision.deny,
+  ]) {
+    test('remote Allow cannot override a local ${restriction.name}', () async {
       final probe = await start(exposures: [_exposure('allow')]);
-      tool.effects = EffectDescription(
-        effects: legacy == ToolPolicyDecision.ask
-            ? [ToolEffect.sourceMutation]
-            : [ToolEffect.sourceRead, ToolEffect.sourceMutation],
-        targets: const [],
-        summary: 'Legacy restricted operation.',
-      );
+      local('restriction', (_) => restriction);
       final invocation = await resolve();
       expect(
         await evaluate(invocation),
-        legacy == ToolPolicyDecision.ask
+        restriction == ToolAuthorizationDecision.ask
             ? isA<ToolApprovalRequired>()
             : isA<ToolExecutionDenied>(),
       );

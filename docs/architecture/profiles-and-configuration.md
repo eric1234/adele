@@ -477,10 +477,20 @@ Sharing those inputs does not give the systems one composition algorithm:
 | Workbench state | Independent live state plus remembered defaults. |
 | Product/runtime state | Domain semantics, not configuration inheritance. |
 
-A more-specific Project or resource layer must not automatically weaken security
-because it has higher ordinary-setting precedence. Exact security-policy
-composition remains deferred; neither activation nor provider availability grants
-invocation authority.
+An ordinary global boolean can control whether a declared tool policy is
+expected. The host resolves the condition from the exact installation's startup
+settings; the backend receives the same value before advertising its policies.
+Saving an edit in Global Settings takes effect after restart, not for an active
+Run or for later Runs in the same process. The stock
+[Conservative policy](../../plugins/conservative_tool_policy/README.md#global-setting)
+is enabled by default. Disabling it does not deactivate its plugin or disable
+other policies. The setting changes participation; it does not contribute an Allow
+decision or grant tool authority. See [authorization composition](execution-model.md#authorization-composition).
+
+Project- and Agent-specific policy applicability and hierarchical security
+configuration remain deferred. A more-specific layer must not automatically
+weaken security through ordinary-setting precedence; neither activation nor
+provider availability grants invocation authority.
 
 ## Plugin activation
 
@@ -1156,7 +1166,7 @@ or production workbench-state persistence.
 - Setting migration APIs, richer value types, and specific non-default merge
   semantics.
 - Exact narrower subject scopes and their override semantics.
-- Security/policy/approval composition.
+- Hierarchical security/policy configuration beyond global startup participation.
 - Account-management and general public/plugin credential-storage APIs; additional
   native credential platforms require separate implementation and validation.
 - Live plugin reconfiguration and automated restart mechanisms.

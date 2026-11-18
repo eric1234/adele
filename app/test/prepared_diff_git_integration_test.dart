@@ -1470,7 +1470,16 @@ void main() {
         );
         await fixture.write('a modified.txt', 'Waiting review target\n');
       });
-      fixture.executionFixture.requiresApproval = true;
+      final approval = fixture.extensions.register(
+        point: toolAuthorizationPolicies,
+        id: ExtensionId('test.review.ask-for-probe'),
+        value: ToolAuthorizationPolicyContribution(
+          evaluate: (request) => request.toolId == ReviewExecutionFixture.toolId
+              ? ToolAuthorizationDecision.ask
+              : ToolAuthorizationDecision.abstain,
+        ),
+      );
+      addTearDown(approval.close);
       final gitBefore = (await tester.runAsync(fixture.snapshotState))!;
       await mount(
         tester,
@@ -1506,7 +1515,7 @@ void main() {
         fixture.lifecycle.hasSessionExecution(fixture.additionalSession),
         isTrue,
       );
-      final approval = controller.pendingApproval;
+      final pendingApproval = controller.pendingApproval;
       retainedSubmit();
       await tester.pump();
       expect(
@@ -1515,7 +1524,7 @@ void main() {
       );
       expect(fixture.commentRows(), comments);
       expect(fixture.feedbackRows(), isEmpty);
-      expect(controller.pendingApproval, same(approval));
+      expect(controller.pendingApproval, same(pendingApproval));
       expect(fixture.executionFixture.requests, hasLength(1));
       expect(fixture.executionFixture.executedSessions, isEmpty);
       final chat = (await tester.runAsync(
@@ -5303,6 +5312,9 @@ final class _Fixture {
       additional,
       feedback: feedback,
     );
+    // The gated storage fixture hosts Chat separately. No installations are
+    // expected from the Session controller's own application bootstrap.
+    if (feedback) await fixture.runtime!.plugins.start(installationRoot: '');
     await fixture._restoreProject();
     return fixture;
   }

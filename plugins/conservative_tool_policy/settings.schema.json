@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "definitions": [
+    {
+      "id": "dev.adele.plugin.conservative-tool-policy.enabled",
+      "type": "boolean",
+      "default": true,
+      "label": "Enable Conservative Tool Authorization",
+      "category": "Agents",
+      "section": "Tool Authorization",
+      "description": "Disabling this policy removes its approval requirements and denial decisions. If no other policies participate, tool operations may execute without approval. Restart required."
+    }
+  ]
+}

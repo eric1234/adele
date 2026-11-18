@@ -7,7 +7,6 @@ import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_contract/adele_contract.dart';
-import 'package:adele_desktop/core/approval_gated_tool_policy.dart';
 import 'package:adele_desktop/core/model_provider_host.dart';
 import 'package:adele_desktop/core/model_tool_host.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
@@ -28,6 +27,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
+import '../support/fixed_tool_policy.dart';
 import '../support/git_worktree_fixture.dart';
 
 const _searchId = 'dev.adele.plugin.search-tools';
@@ -289,7 +289,7 @@ void main() {
       });
       final denied = await const ToolPolicyGate().evaluate(
         invocation: invocation,
-        policy: const _DecisionPolicy(ToolPolicyDecision.deny),
+        policy: const FixedToolPolicy(ToolPolicyDecision.deny),
         interruptionId: RunInterruptionId('denied'),
       );
       expect(denied, isA<ToolExecutionDenied>());
@@ -297,7 +297,7 @@ void main() {
       final pending =
           await const ToolPolicyGate().evaluate(
                 invocation: invocation,
-                policy: const ApprovalGatedToolPolicy(),
+                policy: const FixedToolPolicy(ToolPolicyDecision.ask),
                 interruptionId: RunInterruptionId('command-approval'),
               )
               as ToolApprovalRequired;
@@ -384,7 +384,7 @@ void main() {
       final denied =
           await const ToolPolicyGate().evaluate(
                 invocation: invocation,
-                policy: const _DecisionPolicy(ToolPolicyDecision.deny),
+                policy: const FixedToolPolicy(ToolPolicyDecision.deny),
                 interruptionId: RunInterruptionId('shell-denied'),
               )
               as ToolExecutionDenied;
@@ -393,7 +393,7 @@ void main() {
       final pending =
           await const ToolPolicyGate().evaluate(
                 invocation: invocation,
-                policy: const ApprovalGatedToolPolicy(),
+                policy: const FixedToolPolicy(ToolPolicyDecision.ask),
                 interruptionId: RunInterruptionId('shell-approval'),
               )
               as ToolApprovalRequired;
@@ -1175,7 +1175,7 @@ void main() {
     );
   }
 
-  test('real Filesystem AOT composes four policy-compatible routes, preserves '
+  test('real Filesystem AOT describes four routes, preserves '
       'conditional mutations, and retires independently of Search', () async {
     final authority = _FilesystemAuthority();
     final activation = await start(filesystemArtifact, _filesystemId);
@@ -1228,18 +1228,12 @@ void main() {
         effects.targets.single.uri.toString(),
         'adele-environment:/filesystem-environment/${invocation.canonicalArguments['relativePath']}',
       );
-      expect(
-        const ApprovalGatedToolPolicy().evaluate(
-          ToolPolicyInput(
-            invocation: invocation,
-            effects: effects,
-            context: execution,
-          ),
-        ),
+      expect(effects.effects, {
         alias == 'read_file'
-            ? ToolPolicyDecision.allow
-            : ToolPolicyDecision.ask,
-      );
+            ? ToolEffect.sourceRead
+            : ToolEffect.sourceMutation,
+      });
+      expect(effects.uncertainty, EffectUncertainty.none);
       return (await collectToolExecution(
         invocation.tool.executable.execute(invocation.arguments, execution),
       )).outcome;
@@ -1332,7 +1326,7 @@ void main() {
   });
 
   test('real Search readiness advertises and composes without file access; '
-      'generated canonicalization and effects feed host policy', () async {
+      'describes canonical arguments without reading source', () async {
     expect((await compose()).tools, isEmpty);
     final activation = await start(searchArtifact, _searchId);
     expect(activation.connection.pluginId, _searchId);
@@ -1391,16 +1385,6 @@ void main() {
       effects.summary,
       'Search the authorized Environment scope "src/nested".',
     );
-    expect(
-      const ApprovalGatedToolPolicy().evaluate(
-        ToolPolicyInput(
-          invocation: invocation,
-          effects: effects,
-          context: invocation.context,
-        ),
-      ),
-      ToolPolicyDecision.allow,
-    );
     final root = await _resolve(tools, context.sessionId, {
       'pattern': ' spaced ',
     });
@@ -1408,7 +1392,7 @@ void main() {
     expect(
       files.calls,
       isEmpty,
-      reason: 'Validation and policy do not read source.',
+      reason: 'Validation and description do not read source.',
     );
     expect(context.requested, [AuthorizedEnvironmentFileReadFacet]);
   });
@@ -2005,7 +1989,7 @@ _captureDiagnosticOutput(
   )..start();
   final pending = await const ToolPolicyGate().evaluate(
     invocation: invocation,
-    policy: const ApprovalGatedToolPolicy(),
+    policy: const FixedToolPolicy(ToolPolicyDecision.ask),
     interruptionId: RunInterruptionId('capture-output-approval'),
   );
   expect(pending, isA<ToolApprovalRequired>());
@@ -2105,7 +2089,7 @@ Future<({ToolInvocation invocation, ToolOutcome outcome})> _searchCommandOutput(
   final invocation = (resolved as ResolvedToolProposal).invocation;
   final allowed = await const ToolPolicyGate().evaluate(
     invocation: invocation,
-    policy: const ApprovalGatedToolPolicy(),
+    policy: const FixedToolPolicy(ToolPolicyDecision.allow),
     interruptionId: RunInterruptionId('output-search-${invocation.id.value}'),
   );
   expect(allowed, isA<ToolExecutionAllowed>());
@@ -2355,13 +2339,6 @@ Future<void> _expectProcessesGone(List<int> pids) async {
     }
     await Future<void>.delayed(const Duration(milliseconds: 10));
   }
-}
-
-final class _DecisionPolicy implements ToolPolicy {
-  const _DecisionPolicy(this.decision);
-  final ToolPolicyDecision decision;
-  @override
-  ToolPolicyDecision evaluate(ToolPolicyInput input) => decision;
 }
 
 final class _ObservedProcess

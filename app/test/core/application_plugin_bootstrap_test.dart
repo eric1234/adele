@@ -28,6 +28,7 @@ void main() {
     const ownerId = 'dev.adele.test.policy-owner';
     const independentId = 'dev.adele.test.independent';
     const policyId = 'dev.adele.test.authorization';
+    const settingId = '$ownerId.enabled';
     const declarations = {
       'authorizationPolicies': [
         {'extensionId': policyId},
@@ -63,7 +64,12 @@ void main() {
       ).writeAsString(_exactHostScript);
       capabilities = CapabilityRegistry();
       extensions = ExtensionRegistry();
-      bootstrap = ApplicationPluginBootstrap(capabilities, extensions);
+      bootstrap = ApplicationPluginBootstrap(
+        capabilities,
+        extensions,
+        loadSettings: (catalog) async =>
+            PreparedSettingsSnapshot.resolve(catalog),
+      );
       addTearDown(bootstrap.close);
       installedIds = [];
     });
@@ -90,6 +96,34 @@ void main() {
         }),
       );
       installedIds.add(id);
+    }
+
+    Future<void> installConditional({bool artifactExists = true}) async {
+      await install(
+        ownerId,
+        artifactExists: artifactExists,
+        declarations: {
+          'settingsSchema': 'settings.schema.json',
+          'authorizationPolicies': [
+            {'extensionId': policyId, 'enabledSettingId': settingId},
+          ],
+        },
+      );
+      await File('${root.path}/$ownerId/settings.schema.json').writeAsString(
+        jsonEncode({
+          'schemaVersion': 1,
+          'definitions': [
+            {
+              'id': settingId,
+              'type': 'boolean',
+              'default': true,
+              'label': 'Participate',
+              'category': 'Tests',
+              'section': 'Policies',
+            },
+          ],
+        }),
+      );
     }
 
     Future<void> start({
@@ -301,17 +335,22 @@ void main() {
       });
     }
 
-    for (final kind in ['unconfigured', 'omitted', 'empty']) {
+    test('an unstarted host is not a resolved empty catalog', () {
+      expect(
+        () => bootstrap.captureExpectedToolAuthorizationPolicies([]),
+        throwsStateError,
+      );
+    });
+
+    for (final kind in ['omitted', 'empty']) {
       test('$kind expectations return a no-op validator', () async {
-        if (kind != 'unconfigured') {
-          await install(
-            independentId,
-            declarations: {
-              if (kind == 'empty') 'authorizationPolicies': <Object?>[],
-            },
-          );
-          await start();
-        }
+        await install(
+          independentId,
+          declarations: {
+            if (kind == 'empty') 'authorizationPolicies': <Object?>[],
+          },
+        );
+        await start();
         final registration = extensions.register(
           point: toolAuthorizationPolicies,
           id: ExtensionId(policyId),
@@ -333,6 +372,122 @@ void main() {
         await bootstrap.close();
         expect(validateEmpty, returnsNormally);
         expect(validateNative, returnsNormally);
+      });
+    }
+
+    for (final mode in ['invalid override', 'unreadable', 'invalid schema']) {
+      test(
+        '$mode fails authorization with an installation diagnostic',
+        () async {
+          await installConditional();
+          await install(independentId);
+          if (mode == 'invalid schema') {
+            await File(
+              '${root.path}/$ownerId/settings.schema.json',
+            ).writeAsString('{');
+          }
+          bootstrap.configureSettingsLoader((catalog) async {
+            if (mode == 'unreadable') throw const FileSystemException();
+            return PreparedSettingsSnapshot.resolve(
+              catalog,
+              globalOverrides: {SettingId(settingId): 'false'},
+            );
+          });
+          await start();
+          expect(
+            bootstrap.catalog!.installations
+                .singleWhere((i) => i.metadata.id.value == ownerId)
+                .authorizationPolicies,
+            [ExtensionId(policyId)],
+          );
+          expect(
+            bootstrap.backends
+                .singleWhere(
+                  (b) => b.installation.metadata.id.value == independentId,
+                )
+                .state,
+            InstalledBackendState.active,
+          );
+          expect(
+            () => bootstrap.captureExpectedToolAuthorizationPolicies([]),
+            throwsA(
+              isA<StateError>().having(
+                (e) => e.message,
+                'owner',
+                contains(ownerId),
+              ),
+            ),
+          );
+        },
+      );
+    }
+
+    for (final mode in [
+      'ready',
+      'failed backend',
+      'missing artifact',
+      'disagreement',
+      'failed host',
+    ]) {
+      test('disabled policy is not required: $mode', () async {
+        await installConditional(artifactExists: mode != 'missing artifact');
+        final entered = Completer<void>();
+        final release = Completer<void>();
+        bootstrap.configureSettingsLoader((catalog) async {
+          entered.complete();
+          await release.future;
+          return PreparedSettingsSnapshot.resolve(
+            catalog,
+            globalOverrides: {SettingId(settingId): false},
+          );
+        });
+        final starting = start(
+          failHost: mode == 'failed host',
+          advertisements: {
+            if (mode == 'failed backend') ownerId: {'startupFailure': true},
+            if (mode == 'disagreement') ownerId: advertisement,
+          },
+        );
+        await entered.future;
+        try {
+          expect(
+            () => bootstrap.expectedToolAuthorizationPolicies,
+            throwsStateError,
+          );
+          expect(
+            () => bootstrap.captureExpectedToolAuthorizationPolicies([]),
+            throwsStateError,
+          );
+        } finally {
+          release.complete();
+        }
+        if (mode == 'failed host') {
+          await expectLater(starting, throwsA(isA<ProcessException>()));
+        } else {
+          await starting;
+        }
+        expect(bootstrap.catalog!.installations.single.authorizationPolicies, [
+          ExtensionId(policyId),
+        ]);
+        expect(bootstrap.expectedToolAuthorizationPolicies, isEmpty);
+        if (mode == 'disagreement') {
+          expect(bootstrap.backends.single.state, InstalledBackendState.failed);
+          expect(
+            bootstrap.backends.single.failure.toString(),
+            contains('advertised disabled'),
+          );
+        }
+        if (mode == 'ready') {
+          expect(
+            await bootstrap.backends.single.connection!.request('settings', {}),
+            {settingId: false},
+          );
+        }
+        expect(extensions.discover(toolAuthorizationPolicies), isEmpty);
+        expect(
+          bootstrap.captureExpectedToolAuthorizationPolicies([]),
+          returnsNormally,
+        );
       });
     }
 

@@ -83,8 +83,8 @@ invocation. It may contain multiple model/tool turns and interruptions.
 
 A model invocation produces output, potentially including tool proposals. A
 proposal is not tool execution or authorization: the host resolves and validates
-it against captured tools and applies policy and any required approval before
-execution. Provider-neutral mechanics keep invocation, proposal, execution,
+it against captured tools, composes policy contributions, and obtains any required
+approval before execution. Provider-neutral mechanics keep invocation, proposal, execution,
 outcome, and observation distinct from a provider's protocol details.
 
 Strategy plugins own their Session semantics, input projection, and sequencing.
@@ -95,7 +95,7 @@ or concrete provider/tool behavior. Plugins do not import the kernel.
 See [agent execution semantics](execution-model.md) for the detailed
 model, [orchestration](../../packages/orchestration/README.md) for the public
 boundary, and [application execution](../../app/README.md#normal-chat-interaction)
-for current Run composition and approval policy.
+for current Run composition and approval handling.
 
 ## Presentation and UI
 
@@ -135,7 +135,7 @@ All Main Content panes, including stock Chat, come from ordinary contribution
 registrations. The host composes ordered groups without an injected strategy
 renderer or reserved slot; zero panes are a valid empty workspace. Pane-scoped
 execution/backend services are explicit validated grants, not a special UI role.
-Core retains controllers, policy, and approvals, while plugins choose UI placement,
+Core retains controllers, policy composition, and approvals, while plugins choose UI placement,
 including where to build common native execution controls.
 
 Session presentation is optional and does not own Session identity or strategy

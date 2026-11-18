@@ -773,6 +773,8 @@ void main() {
         }
         String? runId;
         if (checkpoint == 'scheduled') {
+          // The fixture hosts the gated backends outside runtime.plugins.
+          await fixture.runtime.plugins.start(installationRoot: '');
           final model = ReviewExecutionFixture()..register(fixture.runtime);
           final controller = SessionExecutionController(
             runtime: fixture.runtime,

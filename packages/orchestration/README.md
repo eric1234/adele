@@ -60,11 +60,10 @@ transport DTOs, or permission/classifier taxonomy in this contract.
 The app-private `ToolAuthorizationPolicyComposer` adapts contributions to internal
 `ToolPolicy`; aggregation and binding lifetimes are defined in
 [authorization composition](../../docs/architecture/execution-model.md#authorization-composition).
-The normal Session path explicitly combines registry contributions with the
-temporary legacy `ApprovalGatedToolPolicy`. The optional stock Conservative
-backend declares expected participation; an unavailable declared policy is an
-evaluation failure. Validating declared participation does not select an
-unrestricted mode or implement policy configuration.
+Registered contributions supply all policy opinions on the normal Session path.
+An expected but unavailable evaluator is an error, not an empty contribution set.
+Installation declarations and startup settings are host inputs, not fields on the
+public request or controls a strategy can use to select an evaluator.
 
 `remote_tool_authorization.dart` is the separate generated transport library.
 `RemoteToolAuthorizationRequest.fromLocal` / `toLocal` preserve all seven public
