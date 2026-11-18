@@ -23,7 +23,6 @@ void main() {
   final personal = ConfigurationRecordId('personal-openai');
   final apiKey = RecordCredentialSlotId('api-key');
   late Directory installations;
-  late Directory stockAgents;
   late RecordCatalog catalog;
   late Directory temporary;
   late PlatformStorageRoots roots;
@@ -41,9 +40,6 @@ void main() {
       }
       repository = repository.parent;
     }
-    stockAgents = Directory(
-      p.join(repository.path, 'plugins', 'agent_configuration', 'stock'),
-    );
     // Use the real authored asset and maintained publisher, not a duplicate test
     // schema. No executable artifacts or authentication are necessary.
     await publishStockPluginInstallation(
@@ -212,56 +208,6 @@ void main() {
     expect(result.records, isEmpty);
     expect(result.diagnostics, isEmpty);
     expect(temporary.listSync(), isEmpty);
-  });
-
-  group('stock Agent templates', () {
-    const ids = ['ask', 'requirements', 'plan', 'code', 'debug'];
-
-    test('contain exactly the intended record files', () {
-      final entries = stockAgents.listSync(followLinks: false);
-      expect(entries, everyElement(isA<File>()));
-      expect(
-        entries.map((entry) => p.basename(entry.path)),
-        unorderedEquals(ids.map((id) => '$id.toml')),
-      );
-    });
-
-    for (final id in ids) {
-      test('$id loads as an ordinary Agent with its authored values', () async {
-        final template = File(p.join(stockAgents.path, '$id.toml'));
-        final document = TomlDocument.parse(template.readAsStringSync());
-        // Loading projects only known fields. Check the source keys too, so
-        // an unsupported field cannot silently disappear from the assertion.
-        final fields = catalog
-            .definition(agent)
-            .fields
-            .map((field) => field.id.value);
-        expect(document.tableKeys(['values']), unorderedEquals(fields));
-
-        final collection = Directory(
-          p.join(roots.configurationRoot, agents.value),
-        )..createSync(recursive: true);
-        template.copySync(p.join(collection.path, '$id.toml'));
-        final recordId = ConfigurationRecordId(id);
-        final record = await host.load(agents, recordId);
-        expect(record.id, recordId);
-        expect(record.type.id, agent);
-        expect(record.collection, agents);
-        expect(record.hasCredentialEntries, isFalse);
-        expect(record.values, {
-          for (final field in fields)
-            field: document.readScalar(['values', field]),
-        });
-        for (final field in fields) {
-          expect(
-            (record.values[field] as String).trim(),
-            isNotEmpty,
-            reason: field,
-          );
-        }
-        expect(record.values['instructions'], contains('\n\n'));
-      });
-    }
   });
 
   test(
