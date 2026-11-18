@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "recordTypes": [
+    {
+      "id": "dev.adele.plugin.agent-configuration.agent",
+      "collection": "agents",
+      "collectionLabel": "Agents",
+      "label": "Agent",
+      "description": "A named Agent definition, independent of selection or execution.",
+      "displayField": "name",
+      "fields": [
+        {
+          "id": "name",
+          "label": "Name",
+          "type": "string",
+          "required": true
+        },
+        {
+          "id": "description",
+          "label": "Description",
+          "type": "string",
+          "required": false
+        },
+        {
+          "id": "when-to-use",
+          "label": "When to Use",
+          "type": "string",
+          "required": false
+        },
+        {
+          "id": "instructions",
+          "label": "Instructions",
+          "type": "string",
+          "required": true
+        }
+      ]
+    }
+  ]
+}

@@ -9,6 +9,9 @@ import 'package:adele_settings/adele_settings.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:plugin_runtime/plugin_runtime.dart';
+
+import '../../tools/backend_artifacts.dart';
 
 final _collection = RecordCollectionId('jobs');
 final _job = RecordTypeId('dev.example.records.job');
@@ -56,6 +59,7 @@ void main() {
   Future<void> mount(
     WidgetTester tester, {
     List<String> recordIssues = const [],
+    GlobalSettingsService? settingsService,
   }) async {
     await tester.binding.setSurfaceSize(const Size(1000, 1100));
     addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -67,7 +71,7 @@ void main() {
               onPressed: () => showDialog<void>(
                 context: context,
                 builder: (_) => GlobalSettingsDialog(
-                  service: () async => service,
+                  service: () async => settingsService ?? service,
                   recordDeclarationIssues: () => recordIssues,
                 ),
               ),
@@ -126,6 +130,120 @@ void main() {
     await _tap(tester, _key('record-save-jobs-$id'));
     await _loaded(tester);
   }
+
+  testWidgets(
+    'published Agents collection uses ordinary Global Settings controls for CRUD',
+    (tester) => tester.runAsync(() async {
+      const pluginId = 'dev.adele.plugin.agent-configuration';
+      final agents = RecordCollectionId('agents');
+      final type = RecordTypeId('$pluginId.agent');
+      await publishStockPluginInstallation(
+        repositoryRoot: Directory.current.parent,
+        installationDirectory: Directory(
+          '${temporary.path}/installed/agent-configuration',
+        ),
+        pluginId: pluginId,
+        displayName: 'Agent Configuration',
+      );
+      final prepared = await PreparedPluginCatalog.discover(
+        '${temporary.path}/installed',
+      );
+      expect(prepared.issues, isEmpty);
+      expect(prepared.installations.single.backendArtifactUri, isNull);
+      expect(prepared.installations.single.frontend, isNull);
+      final settings = GlobalSettingsService(
+        catalog: prepared.settings,
+        records: prepared.records,
+        roots: roots,
+      );
+      addTearDown(settings.close);
+      expect(settings.records.collectionLabel(agents), 'Agents');
+      expect(settings.records.definition(type).credentialSlots, isEmpty);
+      final recordFile = File(
+        '${roots.configurationRoot}/agents/reviewer.toml',
+      );
+      Future<void> loaded() =>
+          _until(tester, () => _enabled(tester, _key('records-reload-agents')));
+
+      await mount(tester, settingsService: settings);
+      await _section(tester, 'Agents');
+      await loaded();
+      expect(
+        find.text('No readable records in this collection.'),
+        findsOneWidget,
+      );
+      expect(Directory(roots.configurationRoot).existsSync(), isFalse);
+      await _tap(tester, _key('records-add-agents'));
+      await _enter(tester, _key('record-id-agents'), 'reviewer');
+      expect(find.text('Agent'), findsOneWidget);
+      expect(_enabled(tester, _key('record-create-agents')), isFalse);
+      const values = {
+        'name': 'Reviewer',
+        'description': 'Reviews changes.',
+        'when-to-use': 'Before merging.',
+        'instructions': '# Review\n\nReport **risks** and missing tests.',
+      };
+      for (final field in settings.records.definition(type).fields) {
+        final presence = _key('record-presence-agents-${field.id}');
+        final input = _key('record-input-agents-${field.id}');
+        expect(tester.widget<CheckboxListTile>(presence).value, isFalse);
+        expect(
+          tester.widget<TextField>(input).decoration!.labelText,
+          field.label,
+        );
+        await _tap(tester, presence);
+        await _enter(tester, input, values[field.id.value]!);
+      }
+      await _tap(tester, _key('record-create-agents'));
+      await loaded();
+      expect(recordFile.existsSync(), isTrue);
+      expect(recordFile.readAsStringSync(), contains('recordType = "$type"'));
+      expect(find.text('Reviewer'), findsOneWidget);
+      await _tap(tester, find.text('Reviewer'));
+      await tester.pumpAndSettle();
+      expect(find.text('Collection: agents'), findsOneWidget);
+      expect(find.text('Record ID: reviewer'), findsOneWidget);
+      expect(find.text('Record type: $type'), findsOneWidget);
+      for (final field in settings.records.definition(type).fields) {
+        expect(
+          find.text('${field.label}: ${values[field.id.value]}'),
+          findsOneWidget,
+        );
+      }
+      expect(find.text('Credentials'), findsNothing);
+
+      await _tap(tester, _key('record-edit-agents-reviewer'));
+      await _enter(
+        tester,
+        _key('record-input-agents-reviewer-name'),
+        'Renamed Reviewer',
+      );
+      await _tap(tester, _key('record-save-agents-reviewer'));
+      await loaded();
+      await _tap(tester, _key('records-reload-agents'));
+      await loaded();
+      expect(find.text('Renamed Reviewer'), findsOneWidget);
+      expect(recordFile.existsSync(), isTrue);
+      expect(recordFile.parent.listSync().map((entry) => entry.path), [
+        recordFile.path,
+      ]);
+      await _tap(tester, _key('record-delete-agents-reviewer'));
+      expect(find.byType(AlertDialog), findsOneWidget);
+      await _tap(tester, _key('record-delete-confirm-agents-reviewer'));
+      await loaded();
+      await _tap(tester, _key('records-reload-agents'));
+      await loaded();
+      expect(_key('record-agents-reviewer'), findsNothing);
+      expect(recordFile.existsSync(), isFalse);
+      expect(
+        find.text('No readable records in this collection.'),
+        findsOneWidget,
+      );
+      expect(File(settings.filePath).existsSync(), isFalse);
+      await unmount(tester);
+    }),
+    skip: !Platform.isLinux,
+  );
 
   testWidgets(
     'existing scalar edits validate presence and preserve immutable identity and unknown data',

@@ -20,7 +20,9 @@ observations do not renew credential authority; neither operation applies provid
 changes. OpenAI still materializes independently addressable API-key providers from
 its startup records, with lazy startup-scope credential retrieval on each invocation.
 Advertisement is not proof of successful authentication. Session provider/model
-selection, record-based OAuth, Profiles, and Agent configuration remain unimplemented.
+selection, record-based OAuth, and Profiles remain unimplemented. The metadata-only
+[Agent Configuration plugin](../../plugins/agent_configuration/README.md) declares
+ordinary global Agent records; Agent selection and execution remain unimplemented.
 
 This document defines how Profiles, activation, ordinary configuration, configured
 providers, credentials, workbench state, and execution-time configuration relate

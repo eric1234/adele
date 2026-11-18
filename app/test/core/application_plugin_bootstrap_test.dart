@@ -20,7 +20,52 @@ import 'package:adele_settings/adele_settings.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
+import '../../../tools/backend_artifacts.dart';
+
 void main() {
+  test(
+    'stock Agent declarations start no backend host or record consumer',
+    () async {
+      final directory = await Directory.systemTemp.createTemp(
+        'agent-metadata-',
+      );
+      addTearDown(() => directory.delete(recursive: true));
+      await publishStockPluginInstallation(
+        repositoryRoot: Directory.current.parent,
+        installationDirectory: Directory(
+          '${directory.path}/agent-configuration',
+        ),
+        pluginId: 'dev.adele.plugin.agent-configuration',
+        displayName: 'Agent Configuration',
+      );
+      final bootstrap = ApplicationPluginBootstrap(
+        CapabilityRegistry(),
+        ExtensionRegistry(),
+        loadSettings: (_) async =>
+            throw StateError('Unexpected startup settings read'),
+        loadRecords: (_, _) async =>
+            throw StateError('Unexpected startup record read'),
+      );
+      addTearDown(bootstrap.close);
+      await bootstrap.start(
+        installationRoot: directory.path,
+        dartaotruntimeExecutable: '${directory.path}/no-runtime',
+        hostArtifactPath: '${directory.path}/no-host.aot',
+        startupArguments: {},
+      );
+      expect(bootstrap.state, ApplicationPluginState.ready);
+      expect(bootstrap.failure, isNull);
+      expect(bootstrap.backends, isEmpty);
+      final catalog = bootstrap.catalog!;
+      expect(catalog.issues, isEmpty);
+      final installation = catalog.installations.single;
+      expect(installation.backendArtifactUri, isNull);
+      expect(installation.frontend, isNull);
+      expect(bootstrap.backendForInstallation(installation), isNull);
+      expect(catalog.records.collections.single.value, 'agents');
+    },
+  );
+
   for (final mode in ['valid', 'invalid', 'load-failure', 'closing']) {
     test('backend settings are exact-owner startup values: $mode', () async {
       final directory = await Directory.systemTemp.createTemp(
