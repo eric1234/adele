@@ -30,12 +30,8 @@ const _stockSchemaSources = {
   },
 };
 
-const _stockMetadataOnlyInstallations = {
-  'dev.adele.plugin.agent-configuration': (
-    directory: 'agent-configuration',
-    displayName: 'Agent Configuration',
-  ),
-};
+const _stockMetadataOnlyInstallations =
+    <String, ({String directory, String displayName})>{};
 
 const _stockAuthorizationPolicies = {
   'dev.adele.plugin.conservative-tool-policy': [
@@ -48,6 +44,9 @@ const _stockAuthorizationPolicies = {
 
 const _stockBackendConsumedRecordTypes = {
   'dev.adele.openai': ['dev.adele.openai.api-key'],
+  'dev.adele.plugin.agent-configuration': [
+    'dev.adele.plugin.agent-configuration.agent',
+  ],
 };
 
 const _stockBackendConsumedCredentialSlots = {
@@ -277,6 +276,9 @@ Future<List<String>> _prepareDesktopPlugins({
   final File agentsMd = File.fromUri(
     installations.uri.resolve('agents-md/backend.aot'),
   );
+  final File agentConfiguration = File.fromUri(
+    installations.uri.resolve('agent-configuration/backend.aot'),
+  );
   final File conservativeToolPolicy = File.fromUri(
     installations.uri.resolve('conservative-tool-policy/backend.aot'),
   );
@@ -325,6 +327,12 @@ Future<List<String>> _prepareDesktopPlugins({
               'plugins/agents_md/packages/backend/bin/agents_md_backend.dart',
           artifact: agentsMd,
           stage: 'agents-md-compilation',
+        ),
+        (
+          entrypoint:
+              'plugins/agent_configuration/packages/backend/bin/agent_configuration_backend.dart',
+          artifact: agentConfiguration,
+          stage: 'agent-configuration-compilation',
         ),
         (
           entrypoint:
@@ -447,6 +455,11 @@ Future<List<String>> _prepareDesktopPlugins({
       backend: agentsMd,
       id: 'dev.adele.plugin.agents-md',
       displayName: 'AGENTS.md',
+    ),
+    (
+      backend: agentConfiguration,
+      id: 'dev.adele.plugin.agent-configuration',
+      displayName: 'Agent Configuration',
     ),
     (
       backend: conservativeToolPolicy,

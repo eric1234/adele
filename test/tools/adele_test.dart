@@ -1545,6 +1545,14 @@ exit "$CLIPPY_EXIT"
         ),
         (name: 'agents_md_backend', path: 'plugins/agents_md/packages/backend'),
         (
+          name: 'agent_configuration_contract',
+          path: 'plugins/agent_configuration/packages/contract',
+        ),
+        (
+          name: 'agent_configuration_backend',
+          path: 'plugins/agent_configuration/packages/backend',
+        ),
+        (
           name: 'conservative_tool_policy_backend',
           path: 'plugins/conservative_tool_policy/packages/backend',
         ),
@@ -2635,6 +2643,8 @@ exit "$CLIPPY_EXIT"
         'command_tools_frontend|flutter|plugins/command_tools/packages/frontend|test',
         'agents_md_plugin|dart|plugins/agents_md|test',
         'agents_md_backend|dart|plugins/agents_md/packages/backend|test',
+        'agent_configuration_contract|dart|plugins/agent_configuration/packages/contract|test',
+        'agent_configuration_backend|dart|plugins/agent_configuration/packages/backend|test',
         'conservative_tool_policy_backend|dart|plugins/conservative_tool_policy/packages/backend|test',
         'chat_strategy_contract|dart|plugins/chat_strategy/packages/contract|test',
         'chat_strategy_backend|dart|plugins/chat_strategy/packages/backend|test',

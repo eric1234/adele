@@ -43,6 +43,8 @@ const String _openaiEntrypoint =
     'plugins/openai/packages/backend/bin/openai_model_provider_backend.dart';
 const String _agentsMdEntrypoint =
     'plugins/agents_md/packages/backend/bin/agents_md_backend.dart';
+const String _agentConfigurationEntrypoint =
+    'plugins/agent_configuration/packages/backend/bin/agent_configuration_backend.dart';
 const String _conservativeToolPolicyEntrypoint =
     'plugins/conservative_tool_policy/packages/backend/bin/conservative_tool_policy_backend.dart';
 const String _searchToolsEntrypoint =
@@ -64,6 +66,7 @@ const _backendEntrypoints = [
   _gitEntrypoint,
   _openaiEntrypoint,
   _agentsMdEntrypoint,
+  _agentConfigurationEntrypoint,
   _conservativeToolPolicyEntrypoint,
   _searchToolsEntrypoint,
   _filesystemToolsEntrypoint,
@@ -94,6 +97,7 @@ const _backendStages = {
   'git-compilation': _gitEntrypoint,
   'openai-compilation': _openaiEntrypoint,
   'agents-md-compilation': _agentsMdEntrypoint,
+  'agent-configuration-compilation': _agentConfigurationEntrypoint,
   'conservative-tool-policy-compilation': _conservativeToolPolicyEntrypoint,
   'search-tools-compilation': _searchToolsEntrypoint,
   'filesystem-tools-compilation': _filesystemToolsEntrypoint,
@@ -1118,6 +1122,7 @@ Future<void> main() async {
     'shared input edit-restore',
     'shared input removal',
     'agent schema edit',
+    'agent backend edit',
   ]) {
     test(
       'final discovery $mutation rejects warm preparation without publication',
@@ -1163,6 +1168,8 @@ TZ=UTC touch -m -t 200001010000 '${override.parent.path}'
           'shared input removal' => "rm '${root.path}/$_sharedSource'",
           'agent schema edit' =>
             "printf '\\n' >> '${root.path}/plugins/agent_configuration/records.schema.json'",
+          'agent backend edit' =>
+            "printf '\\n' >> '${root.path}/$_agentConfigurationEntrypoint'",
           _ => "printf '// changed header\\n' >> '${root.path}/$_nativeHeader'",
         };
         _script(hook, 'set -e\n$mutationScript');
@@ -1186,6 +1193,7 @@ TZ=UTC touch -m -t 200001010000 '${override.parent.path}'
             'generated output edit' ||
             'native header edit' ||
             'agent schema edit' ||
+            'agent backend edit' ||
             'shared input edit-restore' =>
               'Build inputs changed during desktop preparation',
             _ =>
@@ -1386,6 +1394,8 @@ TZ=UTC touch -m -t 200001010000 '${override.parent.path}'
           'adele_tools',
           'adele_plugin_backend_support',
           'agents_md_backend',
+          'agent_configuration_contract',
+          'agent_configuration_backend',
           'conservative_tool_policy_backend',
           'search_tools_backend',
           'filesystem_tools_backend',
@@ -1971,7 +1981,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
     },
   );
 
-  test('stock Agents are discoverable without executable components', () async {
+  test('schema-only Agent fixture needs no executable components', () async {
     final installations = Directory('${root.path}/published');
     final directory = Directory.fromUri(
       installations.uri.resolve('agent-configuration/'),
@@ -2062,6 +2072,44 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
       false,
       true,
     ]);
+    expect(commands.existsSync(), isFalse);
+  });
+
+  test('missing Agent backend leaves its record schema discoverable', () async {
+    final installations = Directory('${root.path}/published');
+    final directory = Directory.fromUri(
+      installations.uri.resolve('agent-configuration/'),
+    );
+    await publishStockPluginInstallation(
+      repositoryRoot: root,
+      installationDirectory: directory,
+      pluginId: 'dev.adele.plugin.agent-configuration',
+      displayName: 'Agent Configuration',
+      backend: true,
+    );
+    final artifact = File.fromUri(directory.uri.resolve('backend.aot'));
+    await artifact.writeAsString('Discovery must not execute this file.');
+    final available = await PreparedPluginCatalog.discover(installations.path);
+    expect(available.issues, isEmpty);
+    final backend = available.installations.single;
+    expect(backend.backendArtifactUri, artifact.uri);
+    expect(backend.backendConsumedRecordTypesToJson(), [
+      'dev.adele.plugin.agent-configuration.agent',
+    ]);
+    expect(backend.backendConsumedCredentialSlots, isEmpty);
+    expect(backend.backendConsumedCapabilities, isEmpty);
+    expect(backend.frontend, isNull);
+
+    await artifact.delete();
+    final catalog = await PreparedPluginCatalog.discover(installations.path);
+    final installation = catalog.installations.single;
+    expect(catalog.issues.single.component, PreparedPluginComponent.backend);
+    expect(installation.backendArtifactUri, isNull);
+    expect(installation.backendConsumedRecordTypes, isEmpty);
+    expect(
+      catalog.records.definitions.single.id.value,
+      'dev.adele.plugin.agent-configuration.agent',
+    );
     expect(commands.existsSync(), isFalse);
   });
 
@@ -2390,30 +2438,10 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           if (cold) ..._toolCompilationEvents,
           'generate|aot|--incremental',
           if (cold) ...[
-            'compile|$_hostEntrypoint',
-            'compiled|$_hostEntrypoint',
-            'compile|$_gitEntrypoint',
-            'compiled|$_gitEntrypoint',
-            'compile|$_openaiEntrypoint',
-            'compiled|$_openaiEntrypoint',
-            'compile|$_agentsMdEntrypoint',
-            'compiled|$_agentsMdEntrypoint',
-            'compile|$_conservativeToolPolicyEntrypoint',
-            'compiled|$_conservativeToolPolicyEntrypoint',
-            'compile|$_searchToolsEntrypoint',
-            'compiled|$_searchToolsEntrypoint',
-            'compile|$_filesystemToolsEntrypoint',
-            'compiled|$_filesystemToolsEntrypoint',
-            'compile|$_commandToolsEntrypoint',
-            'compiled|$_commandToolsEntrypoint',
-            'compile|$_chatEntrypoint',
-            'compiled|$_chatEntrypoint',
-            'compile|$_localDirectoryProjectEntrypoint',
-            'compiled|$_localDirectoryProjectEntrypoint',
-            'compile|$_sessionEvaluatorEntrypoint',
-            'compiled|$_sessionEvaluatorEntrypoint',
-            'compile|$_diffViewerEntrypoint',
-            'compiled|$_diffViewerEntrypoint',
+            for (final entrypoint in _backendEntrypoints) ...[
+              'compile|$entrypoint',
+              'compiled|$entrypoint',
+            ],
             'compile|git-pty-helper',
             'compile|$_frontendHarness',
             'compiled|$_frontendHarness',
@@ -2585,7 +2613,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
             directory: 'agent-configuration',
             id: 'dev.adele.plugin.agent-configuration',
             name: 'Agent Configuration',
-            backend: false,
+            backend: true,
           ),
           (
             directory: 'git',
@@ -2718,6 +2746,10 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
                   'artifact': 'backend.aot',
                   if (plugin.directory == 'openai')
                     'consumesRecordTypes': ['dev.adele.openai.api-key'],
+                  if (plugin.directory == 'agent-configuration')
+                    'consumesRecordTypes': [
+                      'dev.adele.plugin.agent-configuration.agent',
+                    ],
                   if (plugin.directory == 'openai')
                     'consumesCredentialSlots': [
                       {
@@ -2773,7 +2805,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           catalog.installations.where(
             (installation) => installation.backendArtifactUri != null,
           ),
-          hasLength(11),
+          hasLength(12),
         );
         expect(
           catalog.installations.where(
@@ -2826,13 +2858,6 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           ),
           [recordsInstallation],
         );
-        expect(
-          catalog.installations.where(
-            (installation) =>
-                installation.backendConsumedRecordTypes.isNotEmpty,
-          ),
-          [recordsInstallation],
-        );
         final recordsSchema = recordsInstallation.recordsSchema!;
         expect(
           recordsSchema.artifactUri,
@@ -2847,11 +2872,27 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
               installation.metadata.id.value ==
               'dev.adele.plugin.agent-configuration',
         );
-        expect(agents.backendArtifactUri, isNull);
+        expect(
+          agents.backendArtifactUri,
+          installations.uri.resolve('agent-configuration/backend.aot'),
+        );
+        expect(
+          File.fromUri(agents.backendArtifactUri!).readAsStringSync(),
+          'snapshot $_agentConfigurationEntrypoint\n',
+        );
         expect(agents.frontend, isNull);
         expect(agents.settingsSchema, isNull);
         expect(agents.backendConsumedCapabilities, isEmpty);
-        expect(agents.backendConsumedRecordTypes, isEmpty);
+        expect(agents.backendConsumedRecordTypesToJson(), [
+          'dev.adele.plugin.agent-configuration.agent',
+        ]);
+        expect(
+          catalog.installations.where(
+            (installation) =>
+                installation.backendConsumedRecordTypes.isNotEmpty,
+          ),
+          unorderedEquals([agents, recordsInstallation]),
+        );
         expect(agents.backendConsumedCredentialSlots, isEmpty);
         expect(
           agents.recordsSchema!.artifactUri,
@@ -3330,7 +3371,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           catalog.installations.where(
             (installation) => installation.backendArtifactUri != null,
           ),
-          hasLength(missing == PreparedPluginComponent.backend ? 10 : 11),
+          hasLength(missing == PreparedPluginComponent.backend ? 11 : 12),
         );
         expect(
           catalog.installations.where(
@@ -3644,30 +3685,10 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
               'inspect-sdk',
               ..._toolCompilationEvents,
               'generate|aot|--incremental',
-              'compile|$_hostEntrypoint',
-              'compiled|$_hostEntrypoint',
-              'compile|$_gitEntrypoint',
-              'compiled|$_gitEntrypoint',
-              'compile|$_openaiEntrypoint',
-              'compiled|$_openaiEntrypoint',
-              'compile|$_agentsMdEntrypoint',
-              'compiled|$_agentsMdEntrypoint',
-              'compile|$_conservativeToolPolicyEntrypoint',
-              'compiled|$_conservativeToolPolicyEntrypoint',
-              'compile|$_searchToolsEntrypoint',
-              'compiled|$_searchToolsEntrypoint',
-              'compile|$_filesystemToolsEntrypoint',
-              'compiled|$_filesystemToolsEntrypoint',
-              'compile|$_commandToolsEntrypoint',
-              'compiled|$_commandToolsEntrypoint',
-              'compile|$_chatEntrypoint',
-              'compiled|$_chatEntrypoint',
-              'compile|$_localDirectoryProjectEntrypoint',
-              'compiled|$_localDirectoryProjectEntrypoint',
-              'compile|$_sessionEvaluatorEntrypoint',
-              'compiled|$_sessionEvaluatorEntrypoint',
-              'compile|$_diffViewerEntrypoint',
-              'compiled|$_diffViewerEntrypoint',
+              for (final entrypoint in _backendEntrypoints) ...[
+                'compile|$entrypoint',
+                'compiled|$entrypoint',
+              ],
               'compile|git-pty-helper',
               for (final frontend in _frontendCompilations.entries.take(
                 _frontendCompilations.keys.toList().indexOf(kind) + 1,
@@ -3707,6 +3728,10 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
 
   for (final mutation in [
     (path: _gitEntrypoint, expected: [_gitEntrypoint]),
+    (
+      path: _agentConfigurationEntrypoint,
+      expected: [_agentConfigurationEntrypoint],
+    ),
     (
       path: _conservativeToolPolicyEntrypoint,
       expected: [_conservativeToolPolicyEntrypoint],
@@ -4172,7 +4197,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
       final receipts = files.where(
         (file) => file.uri.pathSegments.last == 'receipt.json',
       );
-      expect(receipts, hasLength(27));
+      expect(receipts, hasLength(28));
       for (final receipt in receipts) {
         final decoded =
             jsonDecode(receipt.readAsStringSync()) as Map<String, dynamic>;

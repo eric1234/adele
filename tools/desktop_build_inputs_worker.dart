@@ -45,6 +45,8 @@ const _backends = <String, String>{
       'plugins/openai/packages/backend/bin/openai_model_provider_backend.dart',
   'agents-md-compilation':
       'plugins/agents_md/packages/backend/bin/agents_md_backend.dart',
+  'agent-configuration-compilation':
+      'plugins/agent_configuration/packages/backend/bin/agent_configuration_backend.dart',
   'conservative-tool-policy-compilation':
       'plugins/conservative_tool_policy/packages/backend/bin/conservative_tool_policy_backend.dart',
   'search-tools-compilation':

@@ -568,12 +568,13 @@ void main() {
   });
 
   test(
-    'stock Agent declarations start no backend host or record consumer',
+    'a declaration-only installation starts no backend host or record consumer',
     () async {
       final directory = await Directory.systemTemp.createTemp(
-        'agent-metadata-',
+        'declaration-only-',
       );
       addTearDown(() => directory.delete(recursive: true));
+      // Publish just the authored schema, independently of stock composition.
       await publishStockPluginInstallation(
         repositoryRoot: Directory.current.parent,
         installationDirectory: Directory(
