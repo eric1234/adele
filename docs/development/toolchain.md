@@ -488,7 +488,9 @@ and build-side descriptor metadata in
 Prepared installations share one immutable, content-identified snapshot root; the
 host snapshot is beside it. Unchanged inputs reuse that root and the deployment
 paths rather than allocating a fresh `build-*` directory for every invocation.
-Backend-only, frontend-only, and combined installations use the same catalog.
+Backend-only, frontend-only, combined, and declared metadata-only installations
+use the same catalog. Metadata-only stock entries supply an explicit installation
+directory and do not compile placeholder components.
 Ordinary Linux `run` and `build` commands also prepare the trusted development-only
 Session Evaluator as `session-evaluator/backend.aot` and
 `session-evaluator/frontend.evc`, with semantic identity
@@ -584,7 +586,8 @@ descriptors together. No deployment define is added.
 `adele_plugin.installation.json` beside each installation's independently optional
 `backend.aot` and `frontend.evc`. The same stock publication helper copies
 Chat's and Source Editor's authoritative `settings.schema.json` files and OpenAI's
-authoritative `records.schema.json` byte-for-byte, referencing them through the
+and [Agent Configuration's](../../plugins/agent_configuration/README.md)
+authoritative `records.schema.json` files byte-for-byte, referencing them through the
 independent installation-level `settingsSchema` and `recordsSchema` fields. Schema
 metadata is available without backend/frontend activation or authentication; the
 OpenAI record declares an API-key credential slot, not secret values, and does not

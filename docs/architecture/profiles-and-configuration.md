@@ -22,8 +22,10 @@ and supports explicit targeted refresh within one backend generation, composing 
 captures with dynamic publication and route retirement. Untouched startup routes keep
 lazy startup-scope credential reads. Advertisement is not proof of successful
 authentication. Automatic Settings propagation and refresh-outcome UI remain I-4c3
-work; Session provider/model selection, record-based OAuth, Profiles, and Agent
-configuration remain unimplemented.
+work; Session provider/model selection, record-based OAuth, and Profiles remain
+unimplemented. The metadata-only
+[Agent Configuration plugin](../../plugins/agent_configuration/README.md) declares
+ordinary global Agent records; Agent selection and execution remain unimplemented.
 
 This document defines how Profiles, activation, ordinary configuration, configured
 providers, credentials, workbench state, and execution-time configuration relate
