@@ -14,6 +14,7 @@ import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:adele_model_tool/adele_model_tool.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_orchestration/remote_orchestration.dart';
+import 'package:adele_orchestration/remote_tool_authorization.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:adele_settings/adele_settings.dart';
@@ -23,6 +24,394 @@ import 'package:plugin_runtime/plugin_runtime.dart';
 import '../../../tools/backend_artifacts.dart';
 
 void main() {
+  group('expected tool authorization policies', () {
+    const ownerId = 'dev.adele.test.policy-owner';
+    const independentId = 'dev.adele.test.independent';
+    const policyId = 'dev.adele.test.authorization';
+    const declarations = {
+      'authorizationPolicies': [
+        {'extensionId': policyId},
+      ],
+    };
+    final advertisement = <String, Object?>{
+      'extensionExposures': [
+        {
+          'extensionPointId': toolAuthorizationPolicies.value,
+          'extensionId': policyId,
+          'serviceId': remoteToolAuthorizationPolicyServiceId,
+          'configurationContext': 'policy-configuration',
+          'metadata': {'routeId': 'policy-route'},
+        },
+      ],
+    };
+    late Directory directory;
+    late Directory root;
+    late File script;
+    late CapabilityRegistry capabilities;
+    late ExtensionRegistry extensions;
+    late ApplicationPluginBootstrap bootstrap;
+    late List<String> installedIds;
+
+    setUp(() async {
+      directory = await Directory.systemTemp.createTemp(
+        'adele-expected-authorization-',
+      );
+      addTearDown(() => directory.delete(recursive: true));
+      root = await Directory('${directory.path}/installations').create();
+      script = await File(
+        '${directory.path}/host.dart',
+      ).writeAsString(_exactHostScript);
+      capabilities = CapabilityRegistry();
+      extensions = ExtensionRegistry();
+      bootstrap = ApplicationPluginBootstrap(capabilities, extensions);
+      addTearDown(bootstrap.close);
+      installedIds = [];
+    });
+
+    Future<void> install(
+      String id, {
+      Map<String, Object?> declarations = const {},
+      bool artifactExists = true,
+    }) async {
+      final installed = await Directory('${root.path}/$id').create();
+      if (artifactExists) {
+        await File('${installed.path}/backend.aot').writeAsString('fixture');
+      }
+      await File(
+        '${installed.path}/adele_plugin.installation.json',
+      ).writeAsString(
+        jsonEncode({
+          'manifestVersion': 1,
+          'metadata': {'id': id, 'version': '1', 'displayName': id},
+          ...declarations,
+          'components': {
+            'backend': {'artifact': 'backend.aot'},
+          },
+        }),
+      );
+      installedIds.add(id);
+    }
+
+    Future<void> start({
+      Map<String, Map<String, Object?>> advertisements = const {},
+      bool failHost = false,
+    }) => bootstrap.start(
+      installationRoot: root.path,
+      dartaotruntimeExecutable: failHost
+          ? '${directory.path}/missing-runtime'
+          : '${Platform.environment['FLUTTER_ROOT']}/bin/cache/dart-sdk/bin/${Platform.isWindows ? 'dart.exe' : 'dart'}',
+      hostArtifactPath: script.path,
+      startupArguments: {
+        for (final id in installedIds)
+          id: [jsonEncode(advertisements[id] ?? const <String, Object?>{})],
+      },
+    );
+
+    for (final failure in ['shared host', 'backend startup']) {
+      test('are captured immutably before $failure failure', () async {
+        await install(ownerId, declarations: declarations);
+        await install(independentId);
+        Map<PreparedPluginInstallation, List<ExtensionId>>? beforeFailure;
+        final subscription = bootstrap.changes.listen((state) {
+          if (state == ApplicationPluginState.starting &&
+              bootstrap.catalog != null &&
+              bootstrap.failure == null &&
+              bootstrap.backends.every(
+                (backend) => backend.connection == null,
+              )) {
+            beforeFailure ??= bootstrap.expectedToolAuthorizationPolicies;
+          }
+        });
+        addTearDown(subscription.cancel);
+        if (failure == 'shared host') {
+          await expectLater(
+            start(failHost: true),
+            throwsA(isA<ProcessException>()),
+          );
+          expect(bootstrap.state, ApplicationPluginState.failed);
+        } else {
+          await start(
+            advertisements: {
+              ownerId: {'startupFailure': true},
+            },
+          );
+          expect(bootstrap.state, ApplicationPluginState.ready);
+          final independent = bootstrap.backends.singleWhere(
+            (backend) =>
+                backend.installation.metadata.id.value == independentId,
+          );
+          expect(independent.state, InstalledBackendState.active);
+          expect(
+            await independent.connection!.request('settings', {}),
+            isEmpty,
+          );
+        }
+        final installation = bootstrap.catalog!.installations.singleWhere(
+          (installation) => installation.metadata.id.value == ownerId,
+        );
+        final expected = bootstrap.expectedToolAuthorizationPolicies;
+        expect(beforeFailure, same(expected));
+        expect(expected, {
+          installation: [ExtensionId(policyId)],
+        });
+        expect(() => expected.clear(), throwsUnsupportedError);
+        expect(() => expected[installation]!.clear(), throwsUnsupportedError);
+        expect(
+          bootstrap.backends
+              .singleWhere(
+                (backend) => identical(backend.installation, installation),
+              )
+              .state,
+          InstalledBackendState.failed,
+        );
+        expect(extensions.discover(toolAuthorizationPolicies), isEmpty);
+        expect(
+          () => bootstrap.captureExpectedToolAuthorizationPolicies([]),
+          throwsStateError,
+        );
+      });
+    }
+
+    test(
+      'capture retains the exact installation and backend generation',
+      () async {
+        await install(ownerId, declarations: declarations);
+        await start(advertisements: {ownerId: advertisement});
+        final installation = bootstrap.catalog!.installations.single;
+        final backend = bootstrap.backendForInstallation(installation)!;
+        final bindings = extensions.discover(toolAuthorizationPolicies);
+        final origin = backend.extensionOrigin(bindings.single)!;
+        expect(origin.connection, same(backend.connection));
+        expect(origin.exposure.configurationContext, 'policy-configuration');
+        expect(
+          backend.extensionOrigin(
+            extensions.discover(toolAuthorizationPolicies).single,
+          ),
+          same(origin),
+        );
+        final copy = PreparedPluginInstallation(
+          metadata: installation.metadata,
+          installationDirectory: installation.installationDirectory,
+          backendArtifactUri: installation.backendArtifactUri,
+          authorizationPolicies: installation.authorizationPolicies,
+        );
+        expect(bootstrap.backendForInstallation(copy), isNull);
+        expect(bootstrap.expectedToolAuthorizationPolicies[copy], isNull);
+        expect(
+          () => bootstrap.captureExpectedToolAuthorizationPolicies([]),
+          throwsStateError,
+          reason:
+              'Only bindings captured by this request may satisfy expectations.',
+        );
+        final captured = [...bindings];
+        final validate = bootstrap.captureExpectedToolAuthorizationPolicies(
+          captured,
+        );
+        captured.clear();
+        expect(validate, returnsNormally);
+
+        final retired = Completer<void>();
+        backend.onRetire(retired.complete);
+        await backend.connection!.close();
+        await retired.future;
+        expect(validate, throwsStateError);
+        final replacement = await bootstrap.host!.startPlugin(
+          pluginId: ownerId,
+          artifactUri: installation.backendArtifactUri!,
+          arguments: [jsonEncode(advertisement)],
+        );
+        final activation = await PluginBackendActivation.registerAdvertised(
+          connection: replacement,
+          capabilities: capabilities,
+          extensions: extensions,
+          adapters: createRemoteExtensionAdapters(),
+        );
+        addTearDown(activation.close);
+        final replacementBinding = extensions
+            .discover(toolAuthorizationPolicies)
+            .single;
+        expect(replacementBinding.id, bindings.single.id);
+        expect(
+          activation.extensionOrigin(replacementBinding)!.connection,
+          same(replacement),
+        );
+        expect(validate, throwsStateError);
+        expect(
+          () => bootstrap.captureExpectedToolAuthorizationPolicies([
+            replacementBinding,
+          ]),
+          throwsStateError,
+        );
+      },
+    );
+
+    for (final source in ['missing', 'foreign backend', 'native']) {
+      test('$source advertisement cannot satisfy the expected owner', () async {
+        await install(ownerId, declarations: declarations);
+        await install(independentId);
+        await start(
+          advertisements: {
+            if (source == 'foreign backend') independentId: advertisement,
+          },
+        );
+        if (source == 'native') {
+          final registration = extensions.register(
+            point: toolAuthorizationPolicies,
+            id: ExtensionId(policyId),
+            value: ToolAuthorizationPolicyContribution(
+              evaluate: (_) => ToolAuthorizationDecision.allow,
+            ),
+          );
+          addTearDown(registration.close);
+        }
+        final owner = bootstrap.backends.singleWhere(
+          (backend) => backend.installation.metadata.id.value == ownerId,
+        );
+        final independent = bootstrap.backends.singleWhere(
+          (backend) => backend.installation.metadata.id.value == independentId,
+        );
+        expect(owner.state, InstalledBackendState.active);
+        expect(independent.state, InstalledBackendState.active);
+        final bindings = extensions.discover(toolAuthorizationPolicies);
+        if (source == 'missing') {
+          expect(bindings, isEmpty);
+        } else {
+          expect(bindings.single.id, ExtensionId(policyId));
+          expect(owner.extensionOrigin(bindings.single), isNull);
+          if (source == 'foreign backend') {
+            expect(
+              independent.extensionOrigin(bindings.single)!.connection,
+              same(independent.connection),
+            );
+          }
+        }
+        expect(
+          () => bootstrap.captureExpectedToolAuthorizationPolicies(bindings),
+          throwsA(
+            isA<StateError>().having(
+              (error) => error.message,
+              'message',
+              contains(
+                source == 'missing' ? 'missing' : 'another installation',
+              ),
+            ),
+          ),
+        );
+        expect(await independent.connection!.request('settings', {}), isEmpty);
+      });
+    }
+
+    for (final kind in ['unconfigured', 'omitted', 'empty']) {
+      test('$kind expectations return a no-op validator', () async {
+        if (kind != 'unconfigured') {
+          await install(
+            independentId,
+            declarations: {
+              if (kind == 'empty') 'authorizationPolicies': <Object?>[],
+            },
+          );
+          await start();
+        }
+        final registration = extensions.register(
+          point: toolAuthorizationPolicies,
+          id: ExtensionId(policyId),
+          value: ToolAuthorizationPolicyContribution(
+            evaluate: (_) => ToolAuthorizationDecision.allow,
+          ),
+        );
+        addTearDown(registration.close);
+        expect(bootstrap.expectedToolAuthorizationPolicies, isEmpty);
+        final validateEmpty = bootstrap
+            .captureExpectedToolAuthorizationPolicies([]);
+        final validateNative = bootstrap
+            .captureExpectedToolAuthorizationPolicies(
+              extensions.discover(toolAuthorizationPolicies),
+            );
+        expect(validateEmpty, returnsNormally);
+        expect(validateNative, returnsNormally);
+        await registration.close();
+        await bootstrap.close();
+        expect(validateEmpty, returnsNormally);
+        expect(validateNative, returnsNormally);
+      });
+    }
+
+    for (final malformed in ['null', 'invalid ID']) {
+      test(
+        '$malformed declaration fails capture without disabling independent backend',
+        () async {
+          await install(
+            ownerId,
+            declarations: {
+              'authorizationPolicies': malformed == 'null'
+                  ? null
+                  : [
+                      {'extensionId': 'not a valid extension ID'},
+                    ],
+            },
+          );
+          await install(independentId);
+          await start();
+          expect(bootstrap.state, ApplicationPluginState.ready);
+          expect(
+            bootstrap.catalog!.issues.any(
+              (issue) => issue.isAuthorizationPolicyIssue,
+            ),
+            isTrue,
+          );
+          expect(extensions.discover(toolAuthorizationPolicies), isEmpty);
+          expect(
+            () => bootstrap.captureExpectedToolAuthorizationPolicies([]),
+            throwsStateError,
+          );
+          final independent = bootstrap.backends.singleWhere(
+            (backend) =>
+                backend.installation.metadata.id.value == independentId,
+          );
+          expect(independent.state, InstalledBackendState.active);
+          expect(
+            await independent.connection!.request('settings', {}),
+            isEmpty,
+          );
+        },
+      );
+    }
+
+    test(
+      'missing artifact retains expectations instead of becoming an empty allowance',
+      () async {
+        await install(
+          ownerId,
+          declarations: declarations,
+          artifactExists: false,
+        );
+        await install(independentId);
+        await start();
+        final installation = bootstrap.catalog!.installations.singleWhere(
+          (installation) => installation.metadata.id.value == ownerId,
+        );
+        expect(installation.backendArtifactUri, isNull);
+        expect(bootstrap.backendForInstallation(installation), isNull);
+        expect(bootstrap.expectedToolAuthorizationPolicies, {
+          installation: [ExtensionId(policyId)],
+        });
+        expect(
+          () => bootstrap.captureExpectedToolAuthorizationPolicies([]),
+          throwsStateError,
+        );
+        expect(
+          bootstrap.backends.single.installation.metadata.id.value,
+          independentId,
+        );
+        expect(bootstrap.backends.single.state, InstalledBackendState.active);
+        expect(
+          await bootstrap.backends.single.connection!.request('settings', {}),
+          isEmpty,
+        );
+      },
+    );
+  });
+
   test(
     'stock Agent declarations start no backend host or record consumer',
     () async {
@@ -62,6 +451,7 @@ void main() {
       expect(installation.backendArtifactUri, isNull);
       expect(installation.frontend, isNull);
       expect(bootstrap.backendForInstallation(installation), isNull);
+      expect(bootstrap.expectedToolAuthorizationPolicies, isEmpty);
       expect(catalog.records.collections.single.value, 'agents');
     },
   );
@@ -866,7 +1256,12 @@ void main() {
       switch (message['kind']) {
         case 'startPlugin':
           settings[message['pluginId'] as String] = message['settings'];
-          send({'kind': 'pluginReady', ...route, ...jsonDecode(message['arguments'][0]) as Map<String, dynamic>});
+          final readiness = jsonDecode(message['arguments'][0]) as Map<String, dynamic>;
+          if (readiness['startupFailure'] == true) {
+            send({'kind': 'pluginFailed', ...route, 'error': {'code': 'fixture_startup_failed', 'message': 'Fixture startup failed'}});
+          } else {
+            send({'kind': 'pluginReady', ...route, ...readiness});
+          }
         case 'stopPlugin':
           send({'kind': 'pluginStopped', ...route});
         case 'request':

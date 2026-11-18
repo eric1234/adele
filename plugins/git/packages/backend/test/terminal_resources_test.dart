@@ -1302,11 +1302,18 @@ read -r stop
           expect(events.errors, isEmpty);
           await live.closeTerminal(environmentId, handle);
           await events.done;
-          expect(
-            events.events.last.completed!.termination,
-            EnvironmentTerminalTermination.closed,
-          );
           expect(events.errors, isEmpty);
+          expect(
+            events.events.last.kind,
+            EnvironmentTerminalEventKind.completed,
+          );
+          final completion = events.events
+              .map((e) => e.completed)
+              .nonNulls
+              .single;
+          expect(completion.termination, EnvironmentTerminalTermination.closed);
+          expect(completion.exitCode, isNull);
+          expect(await Directory('/proc/$shellPid').exists(), isFalse);
         },
       );
     },

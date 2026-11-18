@@ -73,7 +73,10 @@ final class InstalledBackendActivation {
 
   RemoteExtensionContext? strategyOrigin(
     ExtensionBinding<OrchestrationStrategyContribution> binding,
-  ) {
+  ) => extensionOrigin(binding);
+
+  /// Resolves ownership of an exact registration, not a matching Extension ID.
+  RemoteExtensionContext? extensionOrigin(ExtensionBinding<Object> binding) {
     validate();
     return _activation!.extensionOrigin(binding);
   }
@@ -212,6 +215,8 @@ final class ApplicationPluginBootstrap {
   final List<InstalledBackendActivation> _backends = [];
   final Map<PluginBackendConnection, Future<void>> _retiring = {};
   PreparedPluginCatalog? _catalog;
+  Map<PreparedPluginInstallation, List<ExtensionId>>
+  _expectedToolAuthorizationPolicies = const {};
   PluginBackendHost? _host;
   ApplicationPluginState _state = ApplicationPluginState.unconfigured;
   Object? _failure;
@@ -296,6 +301,70 @@ final class ApplicationPluginBootstrap {
   PluginBackendHost? get host => _host;
   List<InstalledBackendActivation> get backends => List.unmodifiable(_backends);
   Stream<ApplicationPluginState> get changes => _changes.stream;
+
+  /// Immutable startup/global participation, independent of live registrations.
+  /// Contextual enablement must resolve against the canonical execution context
+  /// before narrowing this snapshot; it is not implemented by startup discovery.
+  Map<PreparedPluginInstallation, List<ExtensionId>>
+  get expectedToolAuthorizationPolicies => _expectedToolAuthorizationPolicies;
+
+  /// Checks this request's registrations and retains their exact backend origins.
+  /// The returned check never rediscovers or substitutes a replacement generation.
+  void Function() captureExpectedToolAuthorizationPolicies(
+    List<ExtensionBinding<ToolAuthorizationPolicyContribution>> bindings,
+  ) {
+    final catalog = _catalog;
+    if (catalog == null && _state != ApplicationPluginState.unconfigured) {
+      throw StateError(
+        'Expected tool authorization participation is unavailable.',
+      );
+    }
+    for (final issue in catalog?.issues ?? <PreparedPluginCatalogIssue>[]) {
+      if (issue.isAuthorizationPolicyIssue) {
+        throw StateError(
+          'Invalid prepared tool authorization participation: ${issue.message}',
+        );
+      }
+    }
+    final captured = <(InstalledBackendActivation, RemoteExtensionContext)>[];
+    for (final entry in _expectedToolAuthorizationPolicies.entries) {
+      final installation = entry.key;
+      final backend = backendForInstallation(installation);
+      if (backend == null) {
+        final attempts = _backends.where(
+          (attempt) => identical(attempt.installation, installation),
+        );
+        final state = attempts.isEmpty
+            ? 'no valid backend'
+            : attempts.single.state.name;
+        throw StateError(
+          'Expected tool authorization backend ${installation.metadata.id} '
+          'is unavailable ($state).',
+        );
+      }
+      for (final id in entry.value) {
+        final matches = bindings.where((binding) => binding.id == id);
+        if (matches.isEmpty) {
+          throw StateError(
+            'Expected tool authorization policy $id is missing.',
+          );
+        }
+        final origin = backend.extensionOrigin(matches.single);
+        if (origin == null) {
+          throw StateError(
+            'Expected tool authorization policy $id belongs to another installation.',
+          );
+        }
+        captured.add((backend, origin));
+      }
+    }
+    return () {
+      for (final (backend, origin) in captured) {
+        backend.validate();
+        origin.validate();
+      }
+    };
+  }
 
   /// Only this catalog snapshot's exact installation can acquire its backend.
   InstalledBackendActivation? backendForInstallation(
@@ -437,6 +506,11 @@ final class ApplicationPluginBootstrap {
     try {
       final PreparedPluginCatalog catalog = _catalog =
           await PreparedPluginCatalog.discover(root);
+      _expectedToolAuthorizationPolicies = Map.unmodifiable({
+        for (final installation in catalog.installations)
+          if (installation.authorizationPolicies.isNotEmpty)
+            installation: installation.authorizationPolicies,
+      });
       // Publish the shared snapshot before backend work. Presentation activation
       // must not wait for host startup or depend on backend readiness.
       _notify();

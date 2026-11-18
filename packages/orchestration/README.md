@@ -61,8 +61,10 @@ The app-private `ToolAuthorizationPolicyComposer` adapts contributions to intern
 `ToolPolicy`; aggregation and binding lifetimes are defined in
 [authorization composition](../../docs/architecture/execution-model.md#authorization-composition).
 The normal Session path explicitly combines registry contributions with the
-temporary legacy `ApprovalGatedToolPolicy`. There is no production policy plugin
-or policy configuration.
+temporary legacy `ApprovalGatedToolPolicy`. The optional stock Conservative
+backend declares expected participation; an unavailable declared policy is an
+evaluation failure. Validating declared participation does not select an
+unrestricted mode or implement policy configuration.
 
 `remote_tool_authorization.dart` is the separate generated transport library.
 `RemoteToolAuthorizationRequest.fromLocal` / `toLocal` preserve all seven public

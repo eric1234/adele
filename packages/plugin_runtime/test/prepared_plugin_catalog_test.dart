@@ -158,6 +158,11 @@ void main() {
         );
         expect(installation.backendConsumedCapabilities, isEmpty);
         expect(installation.backendConsumedRecordTypes, isEmpty);
+        expect(installation.authorizationPolicies, isEmpty);
+        expect(
+          () => installation.authorizationPolicies.clear(),
+          throwsUnsupportedError,
+        );
         expect(
           () => installation.backendConsumedCapabilities.clear(),
           throwsUnsupportedError,
@@ -180,6 +185,7 @@ void main() {
 
   PreparedPluginInstallation backendConsumer({
     Iterable<CapabilityKey> capabilities = const [],
+    Iterable<ExtensionId> authorizationPolicies = const [],
     bool backend = true,
   }) => PreparedPluginInstallation(
     metadata: PluginMetadata(
@@ -190,7 +196,419 @@ void main() {
     installationDirectory: root,
     backendArtifactUri: backend ? root.uri.resolve('backend.aot') : null,
     backendConsumedCapabilities: capabilities,
+    authorizationPolicies: authorizationPolicies,
   );
+
+  const authorizationPolicy = {'extensionId': 'org.other.safety-policy'};
+  final policyId = ExtensionId(authorizationPolicy['extensionId']!);
+
+  for (final declarations in <List<Object?>?>[
+    null,
+    [],
+    [authorizationPolicy],
+  ]) {
+    test(
+      'authorization policies default or parse ${jsonEncode(declarations)}',
+      () async {
+        await install('policy', {
+          ..._manifest(),
+          'authorizationPolicies': ?declarations,
+        });
+        final catalog = await PreparedPluginCatalog.discover(root.path);
+        expect(catalog.issues, isEmpty);
+        final installation = catalog.installations.single;
+        expect(
+          installation.authorizationPolicies,
+          declarations?.isNotEmpty == true ? [policyId] : isEmpty,
+        );
+        expect(
+          () => installation.authorizationPolicies.add(policyId),
+          throwsUnsupportedError,
+        );
+      },
+    );
+  }
+
+  test(
+    'authorization policies constructor snapshots immutable IDs in order',
+    () {
+      final ids = [policyId, ExtensionId('org.example.another-policy')];
+      final installation = backendConsumer(authorizationPolicies: ids);
+      expect(installation.authorizationPolicies, ids);
+      ids.clear();
+      expect(installation.authorizationPolicies, [
+        policyId,
+        ExtensionId('org.example.another-policy'),
+      ]);
+      expect(
+        () => installation.authorizationPolicies.clear(),
+        throwsUnsupportedError,
+      );
+      expect(
+        () => installation.authorizationPolicies[0] =
+            installation.authorizationPolicies[1],
+        throwsUnsupportedError,
+      );
+    },
+  );
+
+  for (final frontend in [false, true]) {
+    test(
+      'empty authorization policies need no backend, frontend=$frontend',
+      () async {
+        await install('empty', {
+          ..._manifest(components: {if (frontend) 'frontend': _frontend()}),
+          'authorizationPolicies': <Object?>[],
+        });
+        final catalog = await PreparedPluginCatalog.discover(root.path);
+        expect(catalog.issues, isEmpty);
+        expect(catalog.installations.single.authorizationPolicies, isEmpty);
+        expect(catalog.installations.single.backendArtifactUri, isNull);
+      },
+    );
+  }
+
+  test(
+    'authorization policies constructor rejects duplicates and no backend',
+    () {
+      expect(
+        () => backendConsumer(
+          authorizationPolicies: [policyId, ExtensionId(policyId.value)],
+        ),
+        throwsFormatException,
+      );
+      expect(
+        () =>
+            backendConsumer(authorizationPolicies: [policyId], backend: false),
+        throwsFormatException,
+      );
+      for (final backend in [false, true]) {
+        expect(
+          backendConsumer(backend: backend).authorizationPolicies,
+          isEmpty,
+        );
+        expect(
+          backendConsumer(
+            backend: backend,
+            authorizationPolicies: [],
+          ).authorizationPolicies,
+          isEmpty,
+        );
+      }
+      expect(
+        PreparedPluginCatalogIssue(
+          installationDirectory: root,
+          message: 'Unrelated issue',
+        ).isAuthorizationPolicyIssue,
+        isFalse,
+      );
+    },
+  );
+
+  final invalidAuthorizationPolicies = <String, Object?>{
+    for (final value in <Object?>[null, false, '', 1, {}])
+      'non-array ${jsonEncode(value)}': value,
+    for (final value in <Object?>[
+      null,
+      false,
+      policyId.value,
+      1,
+      [],
+      {},
+      for (final id in <Object?>[
+        null,
+        1,
+        false,
+        [],
+        {},
+        '',
+        '  ',
+        'policy',
+        'Org.example.policy',
+        'org.example.policy ',
+        'org.example..policy',
+        'org.example.policy_name',
+        'org.example.polic\u00e9',
+      ])
+        {'extensionId': id},
+      for (final field in [
+        'unknown',
+        'routeId',
+        'configuration',
+        'configurationContextId',
+        'authority',
+        'serviceId',
+        'pluginId',
+        'permissions',
+      ])
+        {...authorizationPolicy, field: 'org.example.value'},
+    ])
+      'invalid entry ${jsonEncode(value)}': [authorizationPolicy, value],
+    'duplicate IDs': [
+      authorizationPolicy,
+      {...authorizationPolicy},
+    ],
+  };
+  for (final entry in invalidAuthorizationPolicies.entries) {
+    test(
+      'authorization policies reject ${entry.key} without losing siblings',
+      () async {
+        await install('invalid', {
+          ..._manifest(
+            components: {
+              'backend': {'artifact': 'backend.aot'},
+              'frontend': _frontend(),
+            },
+          ),
+          'authorizationPolicies': entry.value,
+        });
+        await install('sibling', {
+          ..._manifest(id: 'org.example.sibling'),
+          'authorizationPolicies': [authorizationPolicy],
+        });
+        final catalog = await PreparedPluginCatalog.discover(root.path);
+        expect(catalog.installations, hasLength(2));
+        final invalid = catalog.installations.first;
+        expect(invalid.authorizationPolicies, isEmpty);
+        expect(invalid.backendArtifactUri, isNotNull);
+        expect(invalid.frontend, isNotNull);
+        final sibling = catalog.installations.last;
+        expect(sibling.authorizationPolicies, [policyId]);
+        expect(sibling.backendArtifactUri, isNotNull);
+        final issue = catalog.issues.single;
+        expect(issue.pluginId, invalid.metadata.id);
+        expect(issue.isAuthorizationPolicyIssue, isTrue);
+        expect(issue.component, isNull);
+        expect(issue.message, contains('authorizationPolicies'));
+        expect(issue.isSettingsSchemaIssue, isFalse);
+        expect(issue.isRecordsSchemaIssue, isFalse);
+      },
+    );
+  }
+
+  for (final entry in <String, Map<String, Object?>>{
+    'absent backend': {},
+    'null backend': {'backend': null},
+    'missing artifact': {
+      'backend': {'artifact': 'missing.aot'},
+    },
+    'invalid artifact': {
+      'backend': {'artifact': '../outside.aot'},
+    },
+    'invalid backend': {
+      'backend': {'artifact': 'backend.aot', 'unknown': true},
+    },
+    'invalid consumption': {
+      'backend': {'artifact': 'backend.aot', 'consumesCapabilities': null},
+    },
+  }.entries) {
+    test(
+      'authorization policies retain expectations with ${entry.key}',
+      () async {
+        await install('policy', {
+          ..._manifest(components: {...entry.value, 'frontend': _frontend()}),
+          'authorizationPolicies': [
+            authorizationPolicy,
+            {'extensionId': 'org.example.another-policy'},
+          ],
+        });
+        await install('sibling', _manifest(id: 'org.example.sibling'));
+        final catalog = await PreparedPluginCatalog.discover(root.path);
+        expect(catalog.installations, hasLength(2));
+        final installation = catalog.installations.first;
+        expect(installation.authorizationPolicies, [
+          policyId,
+          ExtensionId('org.example.another-policy'),
+        ]);
+        expect(installation.backendArtifactUri, isNull);
+        expect(installation.frontend, isNotNull);
+        expect(
+          () => installation.authorizationPolicies.clear(),
+          throwsUnsupportedError,
+        );
+        final issue = catalog.issues.single;
+        expect(issue.pluginId, installation.metadata.id);
+        expect(issue.isAuthorizationPolicyIssue, isTrue);
+        expect(
+          issue.component,
+          entry.value.isEmpty ? isNull : PreparedPluginComponent.backend,
+        );
+        if (entry.value.isEmpty) {
+          expect(
+            issue.message,
+            'authorizationPolicies requires a backend component.',
+          );
+        }
+        final sibling = catalog.installations.last;
+        expect(sibling.authorizationPolicies, isEmpty);
+        expect(sibling.backendArtifactUri, isNotNull);
+      },
+    );
+  }
+
+  test(
+    'authorization policies persist without startup or ready advertisements',
+    () async {
+      final directory = await install('policy', {
+        ..._manifest(),
+        'authorizationPolicies': [authorizationPolicy],
+      });
+      // The fixture artifact is deliberately not executable. Discovery only reads
+      // declarations; no backend can start or advertise these registrations here.
+      final catalog = await PreparedPluginCatalog.discover(root.path);
+      expect(catalog.issues, isEmpty);
+      final installation = catalog.installations.single;
+      expect(installation.authorizationPolicies, [policyId]);
+      await File.fromUri(directory.uri.resolve('backend.aot')).delete();
+      final unavailable = await PreparedPluginCatalog.discover(root.path);
+      expect(unavailable.installations.single.authorizationPolicies, [
+        policyId,
+      ]);
+      expect(unavailable.issues.single.isAuthorizationPolicyIssue, isTrue);
+      await File.fromUri(
+        directory.uri.resolve('adele_plugin.installation.json'),
+      ).writeAsString(jsonEncode(_manifest()));
+      expect(installation.authorizationPolicies, [policyId]);
+      expect(unavailable.installations.single.authorizationPolicies, [
+        policyId,
+      ]);
+      final withoutDeclaration = await PreparedPluginCatalog.discover(
+        root.path,
+      );
+      expect(
+        withoutDeclaration.installations.single.authorizationPolicies,
+        isEmpty,
+      );
+      expect(
+        withoutDeclaration.issues.single.isAuthorizationPolicyIssue,
+        isFalse,
+      );
+    },
+  );
+
+  test(
+    'invalid frontend preserves authorization policies and healthy backend',
+    () async {
+      await install('policy', {
+        ..._manifest(
+          components: {
+            'backend': {'artifact': 'backend.aot'},
+            'frontend': {..._frontend(), 'unknown': true},
+          },
+        ),
+        'authorizationPolicies': [authorizationPolicy],
+      });
+      final catalog = await PreparedPluginCatalog.discover(root.path);
+      expect(catalog.installations.single.authorizationPolicies, [policyId]);
+      expect(catalog.installations.single.backendArtifactUri, isNotNull);
+      expect(catalog.installations.single.frontend, isNull);
+      expect(catalog.issues.single.component, PreparedPluginComponent.frontend);
+      expect(catalog.issues.single.isAuthorizationPolicyIssue, isFalse);
+    },
+  );
+
+  for (final entry in <String, Map<String, Object?>>{
+    'version': {..._manifest(), 'manifestVersion': 2},
+    'envelope': {..._manifest(), 'unknown': true},
+    'missing metadata': {..._manifest()}..remove('metadata'),
+    'invalid metadata': {
+      ..._manifest(),
+      'metadata': {'id': 'org.example.plugin'},
+    },
+    'invalid identity': _manifest(id: 'invalid'),
+    'components': {..._manifest(), 'components': null},
+    'unknown component': _manifest(components: {'unknown': true}),
+  }.entries) {
+    for (final declaration in <Object?>[
+      [authorizationPolicy],
+      null,
+      <Object?>[],
+    ]) {
+      test(
+        'excluded ${entry.key} classifies policy issue for ${jsonEncode(declaration)}',
+        () async {
+          await install('invalid', {
+            ...entry.value,
+            'authorizationPolicies': declaration,
+          });
+          await install('sibling', _manifest(id: 'org.example.sibling'));
+          final catalog = await PreparedPluginCatalog.discover(root.path);
+          expect(
+            catalog.installations.single.metadata.id,
+            PluginId('org.example.sibling'),
+          );
+          expect(catalog.installations.single.backendArtifactUri, isNotNull);
+          expect(
+            catalog.issues.single.isAuthorizationPolicyIssue,
+            declaration is! List<Object?> || declaration.isNotEmpty,
+          );
+          expect(catalog.issues.single.component, isNull);
+        },
+      );
+    }
+  }
+
+  for (final policyFirst in [false, true]) {
+    for (final invalidEnvelope in [null, 'policy', 'peer']) {
+      test(
+        'duplicate PluginId preserves policy issue, first=$policyFirst invalid=$invalidEnvelope',
+        () async {
+          final policy = await install(policyFirst ? 'a' : 'z', {
+            ..._manifest(),
+            'authorizationPolicies': [authorizationPolicy],
+            if (invalidEnvelope == 'policy') 'unknown': true,
+          });
+          await install(policyFirst ? 'z' : 'a', {
+            ..._manifest(),
+            if (invalidEnvelope == 'peer') 'unknown': true,
+          });
+          await install('sibling', _manifest(id: 'org.example.sibling'));
+          final catalog = await PreparedPluginCatalog.discover(root.path);
+          expect(
+            catalog.installations.single.metadata.id,
+            PluginId('org.example.sibling'),
+          );
+          final conflicts = catalog.issues.where(
+            (issue) => issue.message.contains('Duplicate PluginId'),
+          );
+          expect(conflicts, hasLength(2));
+          final policyIssue = conflicts.singleWhere(
+            (issue) => issue.isAuthorizationPolicyIssue,
+          );
+          expect(policyIssue.installationDirectory.uri, policy.uri);
+          expect(policyIssue.pluginId, PluginId('org.example.plugin'));
+          expect(policyIssue.component, isNull);
+        },
+      );
+    }
+  }
+
+  test('excluded explicit empty policies do not become expectations', () async {
+    await install('valid', {
+      ..._manifest(),
+      'authorizationPolicies': <Object?>[],
+    });
+    await install('invalid', {
+      ..._manifest(),
+      'authorizationPolicies': <Object?>[],
+      'unknown': true,
+    });
+    await install('sibling', {
+      ..._manifest(id: 'org.example.sibling'),
+      'authorizationPolicies': [authorizationPolicy],
+    });
+    final catalog = await PreparedPluginCatalog.discover(root.path);
+    expect(
+      catalog.installations.single.metadata.id,
+      PluginId('org.example.sibling'),
+    );
+    expect(catalog.installations.single.authorizationPolicies, [policyId]);
+    expect(catalog.issues, hasLength(3));
+    expect(
+      catalog.issues.map((issue) => issue.isAuthorizationPolicyIssue),
+      everyElement(isFalse),
+    );
+  });
 
   test('backend consumption snapshots and serializes distinct keys', () async {
     final keys = [

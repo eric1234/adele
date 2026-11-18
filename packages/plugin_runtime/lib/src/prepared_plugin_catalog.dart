@@ -12,6 +12,32 @@ import 'package:adele_settings/adele_settings.dart';
 /// One prepared installation, without activation, configured values, or source data.
 final class PreparedPluginInstallation {
   PreparedPluginInstallation({
+    required PluginMetadata metadata,
+    required Directory installationDirectory,
+    required Uri? backendArtifactUri,
+    Iterable<CapabilityKey> backendConsumedCapabilities = const [],
+    Iterable<RecordTypeId> backendConsumedRecordTypes = const [],
+    Iterable<PreparedBackendCredentialSlots> backendConsumedCredentialSlots =
+        const [],
+    Iterable<ExtensionId> authorizationPolicies = const [],
+    PreparedFrontendComponent? frontend,
+    PreparedSettingsSchema? settingsSchema,
+    PreparedRecordsSchema? recordsSchema,
+  }) : this._(
+         metadata: metadata,
+         installationDirectory: installationDirectory,
+         backendArtifactUri: backendArtifactUri,
+         backendConsumedCapabilities: backendConsumedCapabilities,
+         backendConsumedRecordTypes: backendConsumedRecordTypes,
+         backendConsumedCredentialSlots: backendConsumedCredentialSlots,
+         authorizationPolicies: authorizationPolicies,
+         frontend: frontend,
+         settingsSchema: settingsSchema,
+         recordsSchema: recordsSchema,
+       );
+
+  // Discovery retains unavailable expectations alongside explicit catalog issues.
+  PreparedPluginInstallation._({
     required this.metadata,
     required this.installationDirectory,
     required this.backendArtifactUri,
@@ -19,10 +45,13 @@ final class PreparedPluginInstallation {
     Iterable<RecordTypeId> backendConsumedRecordTypes = const [],
     Iterable<PreparedBackendCredentialSlots> backendConsumedCredentialSlots =
         const [],
+    Iterable<ExtensionId> authorizationPolicies = const [],
+    bool allowUnavailableAuthorizationPolicies = false,
     this.frontend,
     this.settingsSchema,
     this.recordsSchema,
-  }) : backendConsumedCapabilities = _backendConsumedCapabilityKeys(
+  }) : authorizationPolicies = _authorizationPolicyIds(authorizationPolicies),
+       backendConsumedCapabilities = _backendConsumedCapabilityKeys(
          backendConsumedCapabilities,
        ),
        backendConsumedRecordTypes = _backendConsumedRecordTypeIds(
@@ -35,6 +64,13 @@ final class PreparedPluginInstallation {
            maxBackendConsumedCredentialSlotTypes + 1,
          ),
        ) {
+    if (!allowUnavailableAuthorizationPolicies &&
+        backendArtifactUri == null &&
+        this.authorizationPolicies.isNotEmpty) {
+      throw const FormatException(
+        'authorizationPolicies requires a backend component.',
+      );
+    }
     _validateBackendCredentialSlots(
       this.backendConsumedCredentialSlots,
       owner: metadata.id,
@@ -80,6 +116,11 @@ final class PreparedPluginInstallation {
   final PluginMetadata metadata;
   final Directory installationDirectory;
   final Uri? backendArtifactUri;
+
+  /// Expected backend policy registrations, not ready advertisements or grants.
+  /// Discovery retains these IDs even when the backend is absent or rejected;
+  /// callers must also check [PreparedPluginCatalog.issues] for policy failures.
+  final List<ExtensionId> authorizationPolicies;
 
   /// Backend-only consumption declarations, not provider advertisements,
   /// activation dependencies, or authority grants.
@@ -804,7 +845,7 @@ final class PreparedModelNativeActivityPresentation
 
 enum PreparedPluginComponent { backend, frontend }
 
-/// An excluded installation, component, or schema. Healthy siblings remain usable.
+/// An installation, component, or declaration failure. Healthy siblings remain usable.
 final class PreparedPluginCatalogIssue {
   const PreparedPluginCatalogIssue({
     required this.installationDirectory,
@@ -813,6 +854,7 @@ final class PreparedPluginCatalogIssue {
     this.component,
     this.isSettingsSchemaIssue = false,
     this.isRecordsSchemaIssue = false,
+    this.isAuthorizationPolicyIssue = false,
   });
 
   final Directory installationDirectory;
@@ -829,6 +871,10 @@ final class PreparedPluginCatalogIssue {
   /// True only when an installation's whole records schema was rejected.
   /// Settings and healthy executable components remain discoverable.
   final bool isRecordsSchemaIssue;
+
+  /// A policy declaration is malformed, its backend is unavailable, or its
+  /// installation was excluded. Consumers must not treat this as zero policies.
+  final bool isAuthorizationPolicyIssue;
 
   @override
   String toString() => '${installationDirectory.path}: $message';
@@ -867,6 +913,7 @@ final class PreparedPluginCatalog {
     final installations = <PreparedPluginInstallation>[];
     final issues = <PreparedPluginCatalogIssue>[];
     final identities = <PluginId, List<Directory>>{};
+    final authorizationPolicyDirectories = <String>{};
     final root = Directory(rootPath).absolute;
     List<FileSystemEntity> children = [];
     if (rootPath.isNotEmpty) {
@@ -902,6 +949,15 @@ final class PreparedPluginCatalog {
         final Object? decoded = jsonDecode(
           await File.fromUri(manifestUri).readAsString(),
         );
+        // Preserve fail-closed evidence even if identity/envelope validation or
+        // duplicate exclusion prevents this installation from being retained.
+        if (decoded is Map<String, Object?> &&
+            decoded.containsKey('authorizationPolicies')) {
+          final declarations = decoded['authorizationPolicies'];
+          if (declarations is! List<Object?> || declarations.isNotEmpty) {
+            authorizationPolicyDirectories.add(directory.path);
+          }
+        }
         // Reserve a readable, valid identity before validating the rest, so a
         // malformed duplicate cannot let another installation win by ordering.
         if (decoded case {'metadata': {'id': final String value}}) {
@@ -914,6 +970,7 @@ final class PreparedPluginCatalog {
           'components',
           'settingsSchema',
           'recordsSchema',
+          'authorizationPolicies',
         });
         if (document['manifestVersion'] is! int ||
             document['manifestVersion'] != 1) {
@@ -949,6 +1006,49 @@ final class PreparedPluginCatalog {
         PreparedFrontendComponent? frontend;
         PreparedSettingsSchema? settingsSchema;
         PreparedRecordsSchema? recordsSchema;
+        List<ExtensionId> authorizationPolicies = const [];
+        if (document.containsKey('authorizationPolicies')) {
+          try {
+            final declarations = document['authorizationPolicies'];
+            if (declarations is! List<Object?>) {
+              throw const FormatException(
+                'authorizationPolicies must be an array.',
+              );
+            }
+            final ids = <ExtensionId>[];
+            for (var index = 0; index < declarations.length; index++) {
+              final label = 'authorizationPolicies[$index]';
+              final declaration = _object(declarations[index], label, {
+                'extensionId',
+              });
+              try {
+                ids.add(
+                  ExtensionId(
+                    _text(declaration['extensionId'], '$label.extensionId'),
+                  ),
+                );
+              } on FormatException catch (error) {
+                throw FormatException('$label.extensionId: ${error.message}');
+              }
+            }
+            authorizationPolicies = _authorizationPolicyIds(ids);
+            if (authorizationPolicies.isNotEmpty &&
+                !components.containsKey('backend')) {
+              throw const FormatException(
+                'authorizationPolicies requires a backend component.',
+              );
+            }
+          } on FormatException catch (error) {
+            issues.add(
+              PreparedPluginCatalogIssue(
+                installationDirectory: directory,
+                pluginId: id,
+                isAuthorizationPolicyIssue: true,
+                message: error.message,
+              ),
+            );
+          }
+        }
         if (document.containsKey('settingsSchema')) {
           try {
             settingsSchema = await _settingsSchema(
@@ -1077,6 +1177,9 @@ final class PreparedPluginCatalog {
                 installationDirectory: directory,
                 pluginId: id,
                 component: component,
+                isAuthorizationPolicyIssue:
+                    component == PreparedPluginComponent.backend &&
+                    authorizationPolicies.isNotEmpty,
                 message: error.message,
               ),
             );
@@ -1086,19 +1189,24 @@ final class PreparedPluginCatalog {
                 installationDirectory: directory,
                 pluginId: id,
                 component: component,
+                isAuthorizationPolicyIssue:
+                    component == PreparedPluginComponent.backend &&
+                    authorizationPolicies.isNotEmpty,
                 message: 'Unable to read ${component.name} component: $error',
               ),
             );
           }
         }
         installations.add(
-          PreparedPluginInstallation(
+          PreparedPluginInstallation._(
             metadata: pluginMetadata,
             installationDirectory: directory,
             backendArtifactUri: backendArtifactUri,
             backendConsumedCapabilities: backendConsumedCapabilities,
             backendConsumedRecordTypes: backendConsumedRecordTypes,
             backendConsumedCredentialSlots: backendConsumedCredentialSlots,
+            authorizationPolicies: authorizationPolicies,
+            allowUnavailableAuthorizationPolicies: true,
             frontend: frontend,
             settingsSchema: settingsSchema,
             recordsSchema: recordsSchema,
@@ -1109,6 +1217,9 @@ final class PreparedPluginCatalog {
           PreparedPluginCatalogIssue(
             installationDirectory: directory,
             pluginId: id,
+            isAuthorizationPolicyIssue: authorizationPolicyDirectories.contains(
+              directory.path,
+            ),
             message: error.message,
           ),
         );
@@ -1117,6 +1228,9 @@ final class PreparedPluginCatalog {
           PreparedPluginCatalogIssue(
             installationDirectory: directory,
             pluginId: id,
+            isAuthorizationPolicyIssue: authorizationPolicyDirectories.contains(
+              directory.path,
+            ),
             message: 'Unable to read installation: $error',
           ),
         );
@@ -1130,6 +1244,9 @@ final class PreparedPluginCatalog {
           PreparedPluginCatalogIssue(
             installationDirectory: directory,
             pluginId: entry.key,
+            isAuthorizationPolicyIssue: authorizationPolicyDirectories.contains(
+              directory.path,
+            ),
             message:
                 'Duplicate PluginId ${entry.key}: '
                 '${entry.value.map((item) => item.path).join(', ')}. '
@@ -1143,6 +1260,16 @@ final class PreparedPluginCatalog {
       issues: issues,
     );
   }
+}
+
+List<ExtensionId> _authorizationPolicyIds(Iterable<ExtensionId> ids) {
+  final result = List<ExtensionId>.unmodifiable(ids);
+  if (result.toSet().length != result.length) {
+    throw const FormatException(
+      'authorizationPolicies must not contain duplicate extensionId values.',
+    );
+  }
+  return result;
 }
 
 Future<PreparedSettingsSchema> _settingsSchema(

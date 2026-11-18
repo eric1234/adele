@@ -443,6 +443,7 @@ final class SessionExecutionController extends ChangeNotifier {
           toolCatalog: tools,
           policy: ToolAuthorizationPolicyComposer(
             extensions: _runtime.extensions,
+            plugins: _runtime.plugins,
             lifecycle: _runtime.lifecycle,
             session: session,
             runId: runId,

@@ -111,6 +111,8 @@ backend capability/extension exposure list. Hosting metadata belongs here;
 user configuration values and live advertisements belong at their own boundaries
 below. Optional data-only setting and named-record declarations describe
 installation availability, not persisted configuration values.
+The narrow authorization expectation below declares intended policy participation,
+not an executable extension or a general inventory of backend exposures.
 
 ## Prepared installation snapshot
 
@@ -168,6 +170,34 @@ healthy sibling. Installation-level identity or envelope invalidity can instead
 make the installation unusable. Component-local activation failure likewise need
 not retire a healthy sibling; this is not a promise to isolate shared-host failure.
 An operation requiring both components still needs its exact live counterparts.
+
+### Expected authorization participation
+
+An installation may declare a default-empty `authorizationPolicies` array of
+objects containing only an `extensionId`. This deliberately narrow pre-activation
+declaration identifies tool authorization contributions expected from that exact
+prepared installation. It distinguishes selected participation from live
+availability: a policy that failed to start must not look like deliberate
+unrestricted execution. Public Extension ID validation and duplicate rejection
+apply, and nonempty expectations require a backend-capable installation.
+
+Discovery retains expected identities even when the backend artifact is invalid
+or unavailable. Malformed declarations, unavailable backend components, and
+excluded installations with authorization declarations leave explicit
+authorization-specific catalog diagnostics; they are not silently treated as an
+empty expectation set. Independent non-policy installations retain their existing
+component isolation. The [runtime catalog](../../packages/plugin_runtime/README.md#prepared-catalog)
+owns the exact schema and diagnostics.
+
+Expectations contain no service/route, configuration-context handle, Capability
+selection, executable object, or host authority. They neither start a backend nor
+register a policy. Successful ready advertisements and exact registration ownership
+remain separately required. They do not predeclare unrelated extension points.
+The application validates applicable expectations at the
+[authorization boundary](execution-model.md#authorization-composition), using the
+current startup/global participation model. Actual enable/disable controls,
+contextual configuration, and legacy-policy removal remain deferred to S4b and
+subsequent configuration work, not inferred from this installation metadata.
 
 ### Prepared backend consumption declarations
 
@@ -338,6 +368,7 @@ Backend exposures cross a later boundary than installed metadata:
 | Boundary | Information established |
 | --- | --- |
 | Prepared backend component | An artifact is available for a backend activation attempt, with any declared Capability, owned record-type, or separate exact credential-slot consumption requests. |
+| Installation authorization expectation | An exact installation is expected to contribute a named authorization policy when applicable, independently of activation success. No executable registration or route is established. |
 | Backend ready handshake | This live backend generation advertises its current public capability/extension contributions, possibly none. |
 | Host activation | Validated/adapted contributions enter the existing registries with exact-generation lifetime. |
 

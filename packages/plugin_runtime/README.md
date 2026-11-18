@@ -131,6 +131,42 @@ The separate sealed `PreparedFrontendExtension` includes
 Its optional `frontend.extensions` list defaults to empty and can coexist with the
 required, possibly empty `presentations` list. Manifest version remains 1.
 
+### Authorization Policy Expectations
+
+The optional installation-level `authorizationPolicies` array declares expected
+backend policy registrations independently of startup and ready advertisements:
+
+```json
+{
+  "authorizationPolicies": [
+    {"extensionId": "org.example.policy.authorization"}
+  ]
+}
+```
+
+Omission or `[]` means no expectations. Each entry accepts exactly `extensionId`,
+using the public `ExtensionId` grammar; no route, configuration, authority, or
+unknown fields are accepted. Duplicate IDs within one installation reject the
+whole declaration. `PreparedPluginInstallation.authorizationPolicies` is an
+immutable `List<ExtensionId>` in authored order, not live registrations or grants.
+IDs do not establish ownership through namespace prefixes; exact registration
+ownership and readiness remain the host's responsibility.
+
+Nonempty expectations require a backend component. The public installation
+constructor checks duplicates and rejects nonempty expectations with a null
+`backendArtifactUri`. Discovery uses a private construction path to retain parsed
+IDs even when the backend is absent, malformed, or its artifact is unavailable.
+`PreparedPluginCatalogIssue.isAuthorizationPolicyIssue` (false by default) flags
+those failures and malformed declarations, while healthy components and independent
+installations remain discoverable. Malformed arrays contribute no partial IDs.
+Consumers must check these issues as well as retained IDs: an invalid envelope or
+duplicate PluginId excludes the installation but still records a policy issue when
+the decoded manifest contains nonempty or malformed `authorizationPolicies`.
+An explicit `[]` does not turn an unrelated exclusion into a policy failure.
+Exclusion of an expectation must not be
+interpreted as an intentionally empty policy set. Discovery neither starts policy
+code nor obtains its routes, configuration contexts, or execution authority.
+
 ### Settings Schemas
 
 An optional top-level `settingsSchema: "settings.schema.json"` references a UTF-8
