@@ -4197,7 +4197,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
       final receipts = files.where(
         (file) => file.uri.pathSegments.last == 'receipt.json',
       );
-      expect(receipts, hasLength(27));
+      expect(receipts, hasLength(28));
       for (final receipt in receipts) {
         final decoded =
             jsonDecode(receipt.readAsStringSync()) as Map<String, dynamic>;
