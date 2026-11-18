@@ -86,6 +86,7 @@ const _agentsMdPluginId = 'dev.adele.plugin.agents-md';
 const _searchPluginId = 'dev.adele.plugin.search-tools';
 const _filesystemPluginId = 'dev.adele.plugin.filesystem-tools';
 const _commandPluginId = 'dev.adele.plugin.command-tools';
+const _policyPluginId = 'dev.adele.plugin.conservative-tool-policy';
 const _openAiPluginId = 'dev.adele.openai';
 const _chatPluginId = 'dev.adele.plugin.chat-strategy';
 const _localDirectoryProjectPluginId =
@@ -4914,18 +4915,18 @@ printf '%s\n' 'S2B_SHELL_DONE'
         final runtime = fixture.runtime;
         final catalog = runtime.plugins.catalog!;
         expect(catalog.issues, isEmpty);
-        expect(catalog.installations, hasLength(10));
+        expect(catalog.installations, hasLength(11));
         expect(
           catalog.installations.where(
             (entry) => entry.backendArtifactUri != null,
           ),
-          hasLength(8),
+          hasLength(9),
         );
         expect(
           catalog.installations.where((entry) => entry.frontend != null),
           hasLength(7),
         );
-        expect(runtime.plugins.backends, hasLength(8));
+        expect(runtime.plugins.backends, hasLength(9));
         for (final backend in runtime.plugins.backends) {
           expect(
             backend.state,
@@ -7275,14 +7276,14 @@ printf '%s\n' 'S2B_SHELL_DONE'
           await fixture.launch(tester, prepared, root: root);
           final runtime = fixture.runtime;
           final catalog = runtime.plugins.catalog!;
-          expect(catalog.installations, hasLength(10));
+          expect(catalog.installations, hasLength(11));
           expect(catalog.issues, hasLength(corruption == 'missing' ? 1 : 0));
           expect(runtime.plugins.state, ApplicationPluginState.ready);
           expect(runtime.plugins.failure, isNull);
           final healthy = runtime.plugins.backends.where(
             (entry) => entry.installation.metadata.id.value != _chatPluginId,
           );
-          expect(healthy, hasLength(7));
+          expect(healthy, hasLength(8));
           for (final backend in healthy) {
             expect(
               backend.state,
@@ -7635,7 +7636,7 @@ printf '%s\n' 'S2B_SHELL_DONE'
           },
         );
         expect(runtime.plugins.state, ApplicationPluginState.ready);
-        expect(runtime.plugins.backends, hasLength(8));
+        expect(runtime.plugins.backends, hasLength(9));
         for (final backend in runtime.plugins.backends) {
           expect(
             backend.state,
@@ -8113,6 +8114,8 @@ final class _PreparedProduct {
           'plugins/filesystem_tools/packages/backend/bin/filesystem_tools_backend.dart',
       _commandPluginId:
           'plugins/command_tools/packages/backend/bin/command_tools_backend.dart',
+      _policyPluginId:
+          'plugins/conservative_tool_policy/packages/backend/bin/conservative_tool_policy_backend.dart',
       _openAiPluginId:
           'plugins/openai/packages/backend/bin/openai_model_provider_backend.dart',
       _chatPluginId:
@@ -8126,6 +8129,16 @@ final class _PreparedProduct {
       _sourceEditorPluginId,
     ]) {
       final installed = await Directory('${root.path}/$id').create();
+      if (id == _policyPluginId) {
+        await publishStockPluginInstallation(
+          repositoryRoot: repository,
+          installationDirectory: installed,
+          pluginId: id,
+          displayName: 'Conservative Tool Policy',
+          backend: true,
+        );
+        continue;
+      }
       if (id == _sourceEditorPluginId || id == _openAiPluginId) continue;
       await File(
         '${installed.path}/adele_plugin.installation.json',

@@ -5,6 +5,7 @@ import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_core_extensions/commands.dart';
 import 'package:adele_model_tool/adele_model_tool.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
+import 'package:adele_settings/adele_settings.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:test/test.dart';
 
@@ -159,6 +160,7 @@ void main() {
         expect(installation.backendConsumedCapabilities, isEmpty);
         expect(installation.backendConsumedRecordTypes, isEmpty);
         expect(installation.authorizationPolicies, isEmpty);
+        expect(installation.authorizationPolicyEnabledSettings, isEmpty);
         expect(
           () => installation.authorizationPolicies.clear(),
           throwsUnsupportedError,
@@ -201,6 +203,193 @@ void main() {
 
   const authorizationPolicy = {'extensionId': 'org.other.safety-policy'};
   final policyId = ExtensionId(authorizationPolicy['extensionId']!);
+  const enabledId = 'org.example.plugin.safety.enabled';
+  const toggle = {
+    'id': enabledId,
+    'type': 'boolean',
+    'default': false,
+    'label': 'Enable checks',
+    'category': 'Tests',
+    'section': 'Policies',
+  };
+  const conditional = {...authorizationPolicy, 'enabledSettingId': enabledId};
+  const unconditional = {'extensionId': 'org.example.always'};
+
+  Future<void> writeSettings(Directory directory, List<Object?> definitions) =>
+      File.fromUri(directory.uri.resolve('settings.json')).writeAsString(
+        jsonEncode({'schemaVersion': 1, 'definitions': definitions}),
+      );
+
+  test(
+    'conditional policy metadata is an immutable declaration, not a resolved expectation',
+    () async {
+      final directory = await install('policy', {
+        ..._manifest(),
+        'settingsSchema': 'settings.json',
+        'authorizationPolicies': [conditional, unconditional],
+      });
+      await writeSettings(directory, [toggle]);
+      final catalog = await PreparedPluginCatalog.discover(root.path);
+      expect(catalog.issues, isEmpty);
+      final policy = catalog.installations.single;
+      final settingId = SettingId(enabledId);
+      expect(policy.authorizationPolicies, [
+        policyId,
+        ExtensionId(unconditional['extensionId']!),
+      ]);
+      expect(policy.authorizationPolicyEnabledSettings, {policyId: settingId});
+      expect(
+        () => policy.authorizationPolicyEnabledSettings.clear(),
+        throwsUnsupportedError,
+      );
+
+      PreparedPluginInstallation copy(Map<ExtensionId, SettingId> conditions) =>
+          PreparedPluginInstallation(
+            metadata: policy.metadata,
+            installationDirectory: directory,
+            backendArtifactUri: policy.backendArtifactUri,
+            settingsSchema: policy.settingsSchema,
+            authorizationPolicies: policy.authorizationPolicies,
+            authorizationPolicyEnabledSettings: conditions,
+          );
+      final input = {policyId: settingId};
+      final copied = copy(input);
+      input.clear();
+      expect(copied.authorizationPolicyEnabledSettings, {policyId: settingId});
+      expect(
+        () => copy({ExtensionId('org.example.undeclared'): settingId}),
+        throwsFormatException,
+      );
+      expect(
+        () => copy({policyId: SettingId('org.example.plugin.undeclared')}),
+        throwsFormatException,
+      );
+    },
+  );
+
+  for (final (reason, reference, definitions)
+      in <(String, Object?, List<Object?>?)>[
+        for (final reference in <Object?>[
+          null,
+          1,
+          true,
+          [],
+          {},
+          '',
+          'not a setting id',
+        ])
+          ('malformed reference ${jsonEncode(reference)}', reference, [toggle]),
+        ('undeclared setting', 'org.example.plugin.missing', [toggle]),
+        ('foreign owner', 'org.example.plugin.nested.enabled', [toggle]),
+        (
+          'non-boolean setting',
+          enabledId,
+          [
+            {...toggle, 'type': 'integer', 'default': 1},
+          ],
+        ),
+        ('no settings schema', enabledId, null),
+        (
+          'rejected settings schema',
+          enabledId,
+          [
+            {...toggle, 'default': 0},
+          ],
+        ),
+      ]) {
+    test(
+      '$reason leaves installed policy IDs, healthy components and a policy issue',
+      () async {
+        final directory = await install('policy', {
+          ..._manifest(
+            components: {
+              'backend': {'artifact': 'backend.aot'},
+              'frontend': _frontend(),
+            },
+          ),
+          if (definitions != null) 'settingsSchema': 'settings.json',
+          'authorizationPolicies': [
+            {...authorizationPolicy, 'enabledSettingId': reference},
+            unconditional,
+          ],
+        });
+        if (definitions != null) await writeSettings(directory, definitions);
+        // Belongs to a different installation despite the shared ID prefix.
+        final sibling = await install('sibling', {
+          ..._manifest(id: 'org.example.plugin.nested'),
+          'settingsSchema': 'settings.json',
+          'authorizationPolicies': [authorizationPolicy],
+        });
+        await writeSettings(sibling, [
+          {...toggle, 'id': 'org.example.plugin.nested.enabled'},
+        ]);
+
+        final catalog = await PreparedPluginCatalog.discover(root.path);
+        expect(catalog.installations, hasLength(2));
+        final policy = catalog.installations.first;
+        expect(policy.authorizationPolicies, [
+          policyId,
+          ExtensionId(unconditional['extensionId']!),
+        ]);
+        expect(policy.authorizationPolicyEnabledSettings, isEmpty);
+        expect(policy.backendArtifactUri, isNotNull);
+        expect(policy.frontend, isNotNull);
+        expect(catalog.installations.last.authorizationPolicies, [policyId]);
+        final issue = catalog.issues.singleWhere(
+          (issue) => issue.isAuthorizationPolicyIssue,
+        );
+        expect(
+          issue.message,
+          contains('authorizationPolicies[0].enabledSettingId'),
+        );
+        expect(issue.pluginId, policy.metadata.id);
+        expect(issue.component, isNull);
+        expect(issue.isSettingsSchemaIssue, isFalse);
+        expect(
+          catalog.issues.where((issue) => issue.isSettingsSchemaIssue),
+          hasLength(reason == 'rejected settings schema' ? 1 : 0),
+        );
+      },
+    );
+  }
+
+  for (final alwaysRequired in [true, false]) {
+    test(
+      'backend failure retains conditions and installed identities (unconditional=$alwaysRequired)',
+      () async {
+        final directory = await install('policy', {
+          ..._manifest(
+            components: {
+              'backend': {'artifact': 'missing.aot'},
+            },
+          ),
+          'settingsSchema': 'settings.json',
+          'authorizationPolicies': [
+            conditional,
+            if (alwaysRequired) unconditional,
+          ],
+        });
+        await writeSettings(directory, [toggle]);
+        final catalog = await PreparedPluginCatalog.discover(root.path);
+        final policy = catalog.installations.single;
+        expect(policy.authorizationPolicies, [
+          policyId,
+          if (alwaysRequired) ExtensionId(unconditional['extensionId']!),
+        ]);
+        expect(policy.authorizationPolicyEnabledSettings, {
+          policyId: SettingId(enabledId),
+        });
+        expect(
+          catalog.issues.single.component,
+          PreparedPluginComponent.backend,
+        );
+        expect(
+          catalog.issues.single.isAuthorizationPolicyIssue,
+          alwaysRequired,
+        );
+      },
+    );
+  }
 
   for (final declarations in <List<Object?>?>[
     null,

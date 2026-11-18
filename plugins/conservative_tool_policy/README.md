@@ -20,25 +20,36 @@ contract. It does not import the application, kernel, internal host, or Flutter.
 is the ordinary shared-host AOT entrypoint. Normal preparation publishes
 `installations/conservative-tool-policy/backend.aot` in the prepared snapshot as a
 backend-only installation.
-[`publishStockPluginInstallation`](../../tools/backend_artifacts.dart) also
-publishes installation-level `authorizationPolicies` with exactly
-`[{"extensionId":"dev.adele.plugin.conservative-tool-policy.authorization"}]`.
-This expectation is independent of backend availability: discovery retains it
-when the backend component is absent or rejected, with component diagnostics for
-missing artifacts or invalid backend metadata. Omitting the optional installation
-contributes no expectation; other stock plugins do not declare this policy.
-The declaration is neither a live registration nor execution authority.
+[`publishStockPluginInstallation`](../../tools/backend_artifacts.dart) publishes
+the boolean setting schema and an installation-level `authorizationPolicies`
+declaration binding this Extension ID to its `enabledSettingId`. Discovery reads
+the declaration independently of backend availability. It is neither a live
+registration nor execution authority.
 
-Readiness advertises exactly one `AdeleExtensionExposure`, bound to the supplied
-default configuration context, with only `{'routeId': 'conservative'}` metadata.
+When enabled, readiness advertises exactly one `AdeleExtensionExposure`, bound to
+the supplied default configuration context, with only `{'routeId': 'conservative'}` metadata.
 Plugin identity belongs to the installation and connection, not the exposure.
 Generic activation and the remote policy adapter register and retire its exact
 generation; there is no special activation table or fallback implementation.
 
-There is no frontend, capability advertisement, startup argument, setting,
-configuration record, or requested host service. See
-[plugin layout](../../docs/architecture/plugin-layout.md) for the preparation and
-activation boundary.
+There is no frontend, capability advertisement, startup argument, configuration
+record, or requested host service. See [plugin layout](../../docs/architecture/plugin-layout.md#expected-authorization-participation)
+for the installation boundary.
+
+## Global setting
+
+In **Global Settings / Agents / Tool Authorization**, **Enable Conservative Tool
+Authorization** (`dev.adele.plugin.conservative-tool-policy.enabled`) defaults to
+`true`. Save the change and restart ADELE to apply it. The running backend and
+host use the same captured value for the lifetime of that startup.
+
+With `false` the backend starts normally but does not advertise this evaluator or
+serve its route. Its Ask and Deny decisions no longer apply. Other active policies
+still participate. **If no policies remain, tool operations may execute without
+approval.** This does not grant filesystem or process access, repair a stale
+tool binding, or waive a tool's preconditions. Disabling the setting is distinct
+from a failed backend: if the policy is enabled and unavailable, new requests
+fail without executing. A missing or invalid startup value is not `false`.
 
 ## Decisions
 
@@ -61,7 +72,7 @@ malformed requests and evaluator errors remain failures, not authorization
 decisions. Shared generated dispatch rejects malformed payloads without inventing
 defaults or coercing effect values.
 
-## Authority and transition
+## Authority
 
 The backend receives immutable request data, not executable tools, approval
 tokens, host invocation contexts, or Environment filesystem/process/shell access.
@@ -70,14 +81,8 @@ target URIs are data, not access grants. An Allow opinion is not execution
 authority: the host still owns composition, approvals, binding validation, and
 execution. This is an ADELE-mediated authority boundary, not an OS sandbox.
 
-Normal execution still includes the temporary legacy `ApprovalGatedToolPolicy`
-alongside this optional stock contribution. Installing it does not yet make it
-the sole production policy. Omitting the installation leaves the explicit legacy
-participant intact; failure or retirement of a declared policy is not equivalent
-to optional absence and is not silently replaced by legacy behavior. The full
-authorization cutover is deferred; this plugin adds no enable/disable control,
-policy configuration, or YOLO mode.
-The canonical composition and lifetime rules belong to
+Omitting this optional installation contributes neither a policy nor an expectation;
+the app does not recreate Conservative behavior. See the host's rules for
 [authorization composition](../../docs/architecture/execution-model.md#authorization-composition).
 
 ## Validation
@@ -89,8 +94,8 @@ Package tests cover all 16 effect subsets with both uncertainty values, generate
 dispatch and canonical conversion, malformed requests, route failures, and real
 entrypoint readiness/routing without host-service authority. The application-owned
 [`conservative_tool_policy_integration_test.dart`](../../app/test/core/conservative_tool_policy_integration_test.dart)
-proves prepared AOT installation, generic activation, unmasked legacy parity,
-normal Chat authorization/approval continuation, retirement, and optional absence.
+covers prepared AOT installation and generic activation, including stock approval,
+the disabled setting on restart, optional absence, and unavailable expected policy.
 Package tests alone do not establish those integration boundaries.
 The stock publication and catalog-discovery checks in
 [`backend_artifacts_test.dart`](../../test/tools/backend_artifacts_test.dart)

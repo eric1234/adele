@@ -1059,6 +1059,45 @@ void main() {
   );
 
   testWidgets(
+    'published Conservative policy can be disabled through its Boolean setting',
+    (tester) => tester.runAsync(() async {
+      const owner = 'dev.adele.plugin.conservative-tool-policy';
+      const id = '$owner.enabled';
+      final installation = await Directory(
+        '${temporary.path}/installed/policy',
+      ).create(recursive: true);
+      await File('${installation.path}/backend.aot').create();
+      await publishStockPluginInstallation(
+        repositoryRoot: Directory.current.parent,
+        installationDirectory: installation,
+        pluginId: owner,
+        displayName: 'Conservative',
+        backend: true,
+      );
+      final prepared = await PreparedPluginCatalog.discover(
+        installation.parent.path,
+      );
+      expect(prepared.issues, isEmpty);
+      catalog = prepared.settings;
+      await mount(tester);
+      await loaded(tester);
+      expect(
+        find.text('Enable Conservative Tool Authorization'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('Agents'), findsWidgets);
+      expect(find.textContaining('Tool Authorization'), findsWidgets);
+      expect(tester.widget<Switch>(_input(id)).value, isTrue);
+      await tap(tester, _input(id));
+      await tap(tester, _save(id));
+      await expectPersisted(id, false, SettingValueSource.global);
+      expect(find.text(_restart), findsOneWidget);
+      await unmount(tester);
+    }),
+    skip: !Platform.isLinux,
+  );
+
+  testWidgets(
     'published Chat budget validates, saves, reopens and resets without activation',
     (tester) => tester.runAsync(() async {
       final installations = Directory('${temporary.path}/installed');

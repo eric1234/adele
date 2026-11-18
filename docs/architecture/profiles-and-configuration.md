@@ -23,9 +23,10 @@ captures with dynamic publication and route retirement. Untouched startup routes
 lazy startup-scope credential reads. Advertisement is not proof of successful
 authentication. [Record apply](#applying-confirmed-record-changes) connects confirmed
 Global Settings mutations to an opted-in backend. Session provider/model selection,
-record-based OAuth, and Profiles remain unimplemented. The metadata-only
-[Agent Configuration plugin](../../plugins/agent_configuration/README.md) declares
-ordinary global Agent records; Agent selection and execution remain unimplemented.
+record-based OAuth, and Profiles remain unimplemented.
+The [Agent Configuration plugin](../../plugins/agent_configuration/README.md)
+projects its ordinary global Agent records through a read-only catalog using fresh
+nonsecret observations. Agent selection and execution are separate from that service.
 
 This document defines how Profiles, activation, ordinary configuration, configured
 providers, credentials, workbench state, and execution-time configuration relate
@@ -507,10 +508,20 @@ Sharing those inputs does not give the systems one composition algorithm:
 | Workbench state | Independent live state plus remembered defaults. |
 | Product/runtime state | Domain semantics, not configuration inheritance. |
 
-A more-specific Project or resource layer must not automatically weaken security
-because it has higher ordinary-setting precedence. Exact security-policy
-composition remains deferred; neither activation nor provider availability grants
-invocation authority.
+An ordinary global boolean can control whether a declared tool policy is
+expected. The host resolves the condition from the exact installation's startup
+settings; the backend receives the same value before advertising its policies.
+Saving an edit in Global Settings takes effect after restart, not for an active
+Run or for later Runs in the same process. The stock
+[Conservative policy](../../plugins/conservative_tool_policy/README.md#global-setting)
+is enabled by default. Disabling it does not deactivate its plugin or disable
+other policies. The setting changes participation; it does not contribute an Allow
+decision or grant tool authority. See [authorization composition](execution-model.md#authorization-composition).
+
+Project- and Agent-specific policy applicability and hierarchical security
+configuration remain deferred. A more-specific layer must not automatically
+weaken security through ordinary-setting precedence; neither activation nor
+provider availability grants invocation authority.
 
 ## Plugin activation
 
@@ -1182,7 +1193,7 @@ or production workbench-state persistence.
 - Setting migration APIs, richer value types, and specific non-default merge
   semantics.
 - Exact narrower subject scopes and their override semantics.
-- Security/policy/approval composition.
+- Hierarchical security/policy configuration beyond global startup participation.
 - Account-management and general public/plugin credential-storage APIs; additional
   native credential platforms require separate implementation and validation.
 - General live plugin reconfiguration and automated restart mechanisms.

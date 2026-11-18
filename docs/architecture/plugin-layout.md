@@ -173,20 +173,18 @@ An operation requiring both components still needs its exact live counterparts.
 
 ### Expected authorization participation
 
-An installation may declare a default-empty `authorizationPolicies` array of
-objects containing only an `extensionId`. This deliberately narrow pre-activation
-declaration identifies tool authorization contributions expected from that exact
-prepared installation. It distinguishes selected participation from live
-availability: a policy that failed to start must not look like deliberate
-unrestricted execution. Public Extension ID validation and duplicate rejection
-apply, and nonempty expectations require a backend-capable installation.
+An installation may declare an `authorizationPolicies` array (default empty).
+Each `extensionId` identifies a contribution expected from that exact backend.
+Without a condition it is always expected. An optional `enabledSettingId` names
+a boolean declared by the same installation: startup `true` means expected,
+`false` means not expected. The declaration carries a reference, not the value.
+Nonempty declarations require a backend component; duplicate IDs are invalid.
 
-Discovery retains expected identities even when the backend artifact is invalid
-or unavailable. Malformed declarations, unavailable backend components, and
-excluded installations with authorization declarations leave explicit
-authorization-specific catalog diagnostics; they are not silently treated as an
-empty expectation set. Independent non-policy installations retain their existing
-component isolation. The [runtime catalog](../../packages/plugin_runtime/README.md#prepared-catalog)
+Discovery retains valid declarations even when the backend artifact is invalid
+or unavailable. A component failure cannot erase an applicable expectation, nor
+does a backend need to be ready to establish that its condition is false.
+Malformed declarations or invalid setting references cannot establish deliberate
+absence. The [runtime catalog](../../packages/plugin_runtime/README.md#authorization-policy-expectations)
 owns the exact schema and diagnostics.
 
 Expectations contain no service/route, configuration-context handle, Capability
@@ -194,10 +192,9 @@ selection, executable object, or host authority. They neither start a backend no
 register a policy. Successful ready advertisements and exact registration ownership
 remain separately required. They do not predeclare unrelated extension points.
 The application validates applicable expectations at the
-[authorization boundary](execution-model.md#authorization-composition), using the
-current startup/global participation model. Actual enable/disable controls,
-contextual configuration, and legacy-policy removal remain deferred to S4b and
-subsequent configuration work, not inferred from this installation metadata.
+[authorization boundary](execution-model.md#authorization-composition), using
+[global startup settings](profiles-and-configuration.md#shared-context-distinct-composition).
+This is policy participation, not Profile-aware activation or Project/Agent policy selection.
 
 ### Prepared backend consumption declarations
 

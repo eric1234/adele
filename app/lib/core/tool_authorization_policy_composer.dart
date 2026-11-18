@@ -13,7 +13,6 @@ final class ToolAuthorizationPolicyComposer implements ToolPolicy {
     required this.session,
     required this.runId,
     this.plugins,
-    this.legacyPolicy,
   });
 
   final ExtensionRegistry extensions;
@@ -24,10 +23,6 @@ final class ToolAuthorizationPolicyComposer implements ToolPolicy {
   /// Authoritative prepared participation and exact backend registration owners.
   /// Omitted only by standalone composition without prepared installations.
   final ApplicationPluginBootstrap? plugins;
-
-  /// Explicit transitional participant, not a discovery/failure fallback.
-  /// Normal Session execution supplies ApprovalGatedToolPolicy until migration.
-  final ToolPolicy? legacyPolicy;
 
   @override
   Future<ToolPolicyDecision> evaluate(ToolPolicyInput input) async {
@@ -51,9 +46,7 @@ final class ToolAuthorizationPolicyComposer implements ToolPolicy {
     final validateExpected = plugins?.captureExpectedToolAuthorizationPolicies(
       bindings,
     );
-    var effective = legacyPolicy == null
-        ? ToolPolicyDecision.allow
-        : await legacyPolicy!.evaluate(input);
+    var effective = ToolPolicyDecision.allow;
     for (final binding in bindings) {
       binding.validate();
       final decision = await binding.value.evaluate(request);

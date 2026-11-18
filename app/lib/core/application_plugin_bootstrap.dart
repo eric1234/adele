@@ -215,8 +215,9 @@ final class ApplicationPluginBootstrap {
   final List<InstalledBackendActivation> _backends = [];
   final Map<PluginBackendConnection, Future<void>> _retiring = {};
   PreparedPluginCatalog? _catalog;
-  Map<PreparedPluginInstallation, List<ExtensionId>>
-  _expectedToolAuthorizationPolicies = const {};
+  Map<PreparedPluginInstallation, List<ExtensionId>>?
+  _expectedToolAuthorizationPolicies;
+  StateError? _authorizationSettingsFailure;
   PluginBackendHost? _host;
   ApplicationPluginState _state = ApplicationPluginState.unconfigured;
   Object? _failure;
@@ -306,7 +307,44 @@ final class ApplicationPluginBootstrap {
   /// Contextual enablement must resolve against the canonical execution context
   /// before narrowing this snapshot; it is not implemented by startup discovery.
   Map<PreparedPluginInstallation, List<ExtensionId>>
-  get expectedToolAuthorizationPolicies => _expectedToolAuthorizationPolicies;
+  get expectedToolAuthorizationPolicies {
+    if (_authorizationSettingsFailure case final failure?) throw failure;
+    return _expectedToolAuthorizationPolicies ??
+        (throw StateError('Tool authorization participation is unresolved.'));
+  }
+
+  void _resolveToolAuthorizationPolicies(
+    PreparedPluginCatalog catalog,
+    PreparedSettingsSnapshot? settings,
+  ) {
+    final expected = <PreparedPluginInstallation, List<ExtensionId>>{};
+    for (final installation in catalog.installations) {
+      final applicable = <ExtensionId>[];
+      for (final id in installation.authorizationPolicies) {
+        final key = installation.authorizationPolicyEnabledSettings[id];
+        if (key != null) {
+          try {
+            final enabled =
+                settings!.read(installation, key.value).value as bool;
+            if (!enabled) continue;
+          } on Object {
+            // Keep starting independent installations. Never publish a partial
+            // expectation set as a successful authorization resolution.
+            _authorizationSettingsFailure = StateError(
+              'Cannot resolve tool authorization setting $key for '
+              '${installation.metadata.id} (policy $id).',
+            );
+            return;
+          }
+        }
+        applicable.add(id);
+      }
+      if (applicable.isNotEmpty) {
+        expected[installation] = List.unmodifiable(applicable);
+      }
+    }
+    _expectedToolAuthorizationPolicies = Map.unmodifiable(expected);
+  }
 
   /// Checks this request's registrations and retains their exact backend origins.
   /// The returned check never rediscovers or substitutes a replacement generation.
@@ -314,20 +352,24 @@ final class ApplicationPluginBootstrap {
     List<ExtensionBinding<ToolAuthorizationPolicyContribution>> bindings,
   ) {
     final catalog = _catalog;
-    if (catalog == null && _state != ApplicationPluginState.unconfigured) {
+    if (catalog == null ||
+        (_state != ApplicationPluginState.ready &&
+            _state != ApplicationPluginState.failed)) {
       throw StateError(
         'Expected tool authorization participation is unavailable.',
       );
     }
-    for (final issue in catalog?.issues ?? <PreparedPluginCatalogIssue>[]) {
+    for (final issue in catalog.issues) {
       if (issue.isAuthorizationPolicyIssue) {
         throw StateError(
-          'Invalid prepared tool authorization participation: ${issue.message}',
+          'Invalid tool authorization participation for '
+          '${issue.pluginId ?? issue.installationDirectory.path}: '
+          '${issue.message}',
         );
       }
     }
     final captured = <(InstalledBackendActivation, RemoteExtensionContext)>[];
-    for (final entry in _expectedToolAuthorizationPolicies.entries) {
+    for (final entry in expectedToolAuthorizationPolicies.entries) {
       final installation = entry.key;
       final backend = backendForInstallation(installation);
       if (backend == null) {
@@ -506,11 +548,6 @@ final class ApplicationPluginBootstrap {
     try {
       final PreparedPluginCatalog catalog = _catalog =
           await PreparedPluginCatalog.discover(root);
-      _expectedToolAuthorizationPolicies = Map.unmodifiable({
-        for (final installation in catalog.installations)
-          if (installation.authorizationPolicies.isNotEmpty)
-            installation: installation.authorizationPolicies,
-      });
       // Publish the shared snapshot before backend work. Presentation activation
       // must not wait for host startup or depend on backend readiness.
       _notify();
@@ -519,6 +556,17 @@ final class ApplicationPluginBootstrap {
           if (installation.backendArtifactUri != null)
             InstalledBackendActivation._(installation, _validateReady),
       ]);
+      if (_cannotStart) return;
+      // Resolve even for installations without a usable artifact. Backend
+      // readiness is not evidence for whether a declared policy is applicable.
+      final conditional = catalog.installations.any(
+        (installation) =>
+            installation.authorizationPolicyEnabledSettings.isNotEmpty,
+      );
+      _resolveToolAuthorizationPolicies(
+        catalog,
+        conditional ? await settingsForCatalog(catalog) : null,
+      );
       if (_cannotStart) return;
       if (_backends.isEmpty) {
         _setState(ApplicationPluginState.ready);
@@ -648,6 +696,23 @@ final class ApplicationPluginBootstrap {
               return services;
             },
           );
+          for (final exposure in connection.extensionExposures) {
+            if (exposure.extensionPointId != toolAuthorizationPolicies.value) {
+              continue;
+            }
+            final key =
+                backend
+                    .installation
+                    .authorizationPolicyEnabledSettings[ExtensionId(
+                  exposure.extensionId,
+                )];
+            if (key != null && settings[key.value] == false) {
+              throw StateError(
+                '${backend.installation.metadata.id} advertised disabled '
+                'tool authorization policy ${exposure.extensionId}.',
+              );
+            }
+          }
           final PluginBackendActivation activation = backend._activation =
               await PluginBackendActivation.registerAdvertised(
                 connection: connection,

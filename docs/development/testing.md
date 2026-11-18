@@ -417,8 +417,8 @@ Backend record opt-in uses the same maintained runtime target: discovery tests
 cover owned/multiple types, nested namespaces, same-collection foreign types,
 invalid requests and independently missing/malformed schemas without activating
 metadata-only or frontend-only installations. Stock publication assertions in
-`test/tools/backend_artifacts_test.dart` check OpenAI's maintained backend opt-in
-without modifying its record declaration.
+`test/tools/backend_artifacts_test.dart` check the maintained OpenAI and Agent
+Configuration backend opt-ins against their authored record declarations.
 
 `app/test/core/startup_record_projection_test.dart` exercises real native TOML
 through the retained Settings worker: declared scalar presence, deterministic
@@ -571,15 +571,20 @@ Keyboard traversal excludes filtered editors while retaining their drafts. A
 test-only service subclass injects a lost acknowledgement after actual native
 publication to verify conservative error reporting and mandatory Reload.
 
-`app/test/core/application_plugin_bootstrap_test.dart` verifies the published
-metadata-only Agent installation needs no executable host or record consumer.
+The `agent_configuration_contract` and `agent_configuration_backend` targets cover
+the generated catalog and its record projection. From `app/`, run
+`flutter test --no-pub test/core/agent_catalog_integration_test.dart` for real
+shared-host AOT startup and live Settings CRUD on one backend generation.
+`test/core/durable_chat_session_integration_test.dart` covers Chat and Project
+reopen when Agent activation fails. Declaration-only installations still need no
+executable host, as tested by `test/core/application_plugin_bootstrap_test.dart`.
 
 `app/test/record_settings_dialog_test.dart` covers generic collection navigation,
 details, display-title fallback, shared create/edit multi-type forms, explicit field
 presence, all scalar types, validation, retained drafts/focus (including collapsed
 editors), narrow layout, reentrant admission, exact-record delete confirmation,
 conflict/uncertain-outcome recovery, and confirmed persistence without a plugin
-executable, including the actual published Agent schema through ordinary controls.
+executable, including the actual published Agent schema with a missing backend artifact.
 `app/test/application_test.dart` publishes the actual OpenAI and Source
 schemas through maintained tooling and manages two records before any Project:
 create, display-name edit with stable filename, optional endpoint insertion/removal,
@@ -829,8 +834,8 @@ relative to `app/`; this is a testing map, not an application architecture map.
 | Session Evaluator retained evidence and ordinary prepared handoff | [`test/core/session_evaluator_integration_test.dart`](../../app/test/core/session_evaluator_integration_test.dart) (prepared Chat/Command Tools/evaluator AOT and production evaluator EVC, generated services, normal application/Task Browser/palette composition, evaluator absence, automatic copy and selectable copy-failure feedback, plugin-owned three-file publication, captured Session across navigation, cancellation, duplicate admission, partial coverage, safe failures, shutdown, retirement/replacement, read-only SQL snapshots and nonprimary Git provenance; temporary host path lookup and backend-side write gates, no paid provider); [`test/core/command_output_capture_integration_test.dart`](../../app/test/core/command_output_capture_integration_test.dart) (real Git/Command Tools/evaluator AOT, full decoded command export beyond the model-result bound, unsealed prefix, evaluator-only reopen, and whole-export limit failure). Plugin-local summary, source/README, writer and operation lifecycle suites live under [`session_evaluator/packages/backend/test`](../../plugins/session_evaluator/packages/backend/test/); compiled completion/copy tests belong to its frontend package. See [focused checks](#focused-session-evaluator-checks); normal catalog/compiler-input/launcher selection belongs to tooling tests. |
 | Prepared Chat applicability/composer/history | [`chat_strategy_frontend/test/chat_frontend_eval_test.dart`](../../plugins/chat_strategy/packages/frontend/test/chat_frontend_eval_test.dart) (initializer strategy match without service acquisition, local service failure, plugin-owned layout, draft saves/submission/retry, latest-save deactivation settlement, recoverable failure/pending-Send refusal, stale snapshot protection, historical activity placement, and preserving live handles during refresh) |
 | Contributed-pane services and departure settlement | [`test/session_presentation_lifecycle_bridge_test.dart`](../../app/test/session_presentation_lifecycle_bridge_test.dart), [`test/prepared_session_services_test.dart`](../../app/test/prepared_session_services_test.dart), [`test/prepared_main_content_host_test.dart`](../../app/test/prepared_main_content_host_test.dart) (exact service/affinity capture, per-pane hooks, async acceptance/failure/retry, no-hook behavior, retirement during settlement, and action revocation on unbind/reopen without closing execution) |
-| Session execution/approval | [`test/session_execution_test.dart`](../../app/test/session_execution_test.dart), [`test/session_execution_bridge_test.dart`](../../app/test/session_execution_bridge_test.dart), [`test/core/approval_gated_tool_policy_test.dart`](../../app/test/core/approval_gated_tool_policy_test.dart) (passive retained-owner lookup, independent Session advancement, shared IDs, exact approval isolation, semantic readiness, and all-owner shutdown) |
-| Tool authorization contributions | [`test/core/tool_authorization_policy_composer_test.dart`](../../app/test/core/tool_authorization_policy_composer_test.dart) and the public authorization group in `test/session_execution_test.dart` retain host composition and normal execution coverage. [`test/core/remote_tool_authorization_integration_test.dart`](../../app/test/core/remote_tool_authorization_integration_test.dart) compiles the shared host and test-only policy backend for ordinary advertisement/adapter registration, exact routes, restrictive composition, approval and failed/stale evaluation fencing. Generated transport tests belong to the maintained `adele_orchestration` target; effect projection tests belong to `adele_model_tool`. No paid model or production policy plugin is needed. |
+| Session execution/approval | [`test/session_execution_test.dart`](../../app/test/session_execution_test.dart), [`test/session_execution_bridge_test.dart`](../../app/test/session_execution_bridge_test.dart) (passive retained-owner lookup, independent Session advancement, shared IDs, exact approval isolation, semantic readiness, and all-owner shutdown) |
+| Tool authorization contributions | [`tool_authorization_policy_composer_test.dart`](../../app/test/core/tool_authorization_policy_composer_test.dart) and `test/session_execution_test.dart` cover host composition and normal execution. [`remote_tool_authorization_integration_test.dart`](../../app/test/core/remote_tool_authorization_integration_test.dart) exercises the generated transport and exact registrations with a test AOT backend. [`conservative_tool_policy_integration_test.dart`](../../app/test/core/conservative_tool_policy_integration_test.dart) exercises the prepared stock backend and restart-bound participation. Generated transport tests belong to `adele_orchestration`; effect projection tests belong to `adele_model_tool`. No paid model is needed. |
 | Orchestration/authority adapters | [`test/core/orchestration_host_test.dart`](../../app/test/core/orchestration_host_test.dart), [`test/core/orchestration_authority_test.dart`](../../app/test/core/orchestration_authority_test.dart), [`test/core/model_tool_host_test.dart`](../../app/test/core/model_tool_host_test.dart), [`test/core/remote_inference_context_integration_test.dart`](../../app/test/core/remote_inference_context_integration_test.dart) |
 | Activity/Inspection | [`test/core/run_activity_projection_test.dart`](../../app/test/core/run_activity_projection_test.dart), [`test/inspection_host_test.dart`](../../app/test/inspection_host_test.dart), [`test/inspection_stack_test.dart`](../../app/test/inspection_stack_test.dart), [`openai_frontend/test/openai_activity_frontend_eval_test.dart`](../../plugins/openai/packages/frontend/test/openai_activity_frontend_eval_test.dart) |
 | Scoped activity reacquisition | [`test/session_execution_activity_test.dart`](../../app/test/session_execution_activity_test.dart), [`test/session_execution_bridge_test.dart`](../../app/test/session_execution_bridge_test.dart) (live/waiting/preparing and historical Session validation, fresh read-only opaque handles, permanent old-view revocation, unchanged activity/Inspection paths, and no execution authority) |

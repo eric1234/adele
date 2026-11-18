@@ -353,7 +353,7 @@ void main() {
   );
 
   testWidgets(
-    'published Agents collection uses ordinary Global Settings controls for CRUD',
+    'Global Settings manages published Agents even if the backend artifact is missing',
     (tester) => tester.runAsync(() async {
       const pluginId = 'dev.adele.plugin.agent-configuration';
       final agents = RecordCollectionId('agents');
@@ -365,11 +365,12 @@ void main() {
         ),
         pluginId: pluginId,
         displayName: 'Agent Configuration',
+        backend: true, // Declare the component, but leave its artifact missing.
       );
       final prepared = await PreparedPluginCatalog.discover(
         '${temporary.path}/installed',
       );
-      expect(prepared.issues, isEmpty);
+      expect(prepared.issues.single.component?.name, 'backend');
       expect(prepared.installations.single.backendArtifactUri, isNull);
       expect(prepared.installations.single.frontend, isNull);
       final settings = GlobalSettingsService(

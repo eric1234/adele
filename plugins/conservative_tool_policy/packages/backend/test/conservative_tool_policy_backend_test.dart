@@ -260,55 +260,111 @@ void main() {
     },
   );
 
-  test('entrypoint is ready with one extension and no host services', () async {
-    final running = await _RunningBackend.start();
-    addTearDown(running.close);
-    expect(running.ready, {
-      'kind': 'ready',
-      'commandPort': isA<SendPort>(),
-      'pluginBackendProtocolVersion': adelePluginBackendProtocolVersion,
-      'extensionExposures': [
-        {
-          'extensionPointId': toolAuthorizationPolicies.value,
-          'extensionId':
-              'dev.adele.plugin.conservative-tool-policy.authorization',
-          'serviceId': remoteToolAuthorizationPolicyServiceId,
-          'configurationContext': 'configured-default',
-          'metadata': {'routeId': 'conservative'},
-        },
-      ],
-    });
-    expect(AdeleCapabilityExposure.fromReady(running.ready), isEmpty);
-    expect(AdeleExtensionExposure.fromReady(running.ready), hasLength(1));
+  test(
+    'enabled entrypoint is ready with one extension and no host services',
+    () async {
+      final running = await _RunningBackend.start();
+      addTearDown(running.close);
+      expect(running.ready, {
+        'kind': 'ready',
+        'commandPort': isA<SendPort>(),
+        'pluginBackendProtocolVersion': adelePluginBackendProtocolVersion,
+        'extensionExposures': [
+          {
+            'extensionPointId': toolAuthorizationPolicies.value,
+            'extensionId':
+                'dev.adele.plugin.conservative-tool-policy.authorization',
+            'serviceId': remoteToolAuthorizationPolicyServiceId,
+            'configurationContext': 'configured-default',
+            'metadata': {'routeId': 'conservative'},
+          },
+        ],
+      });
+      expect(AdeleCapabilityExposure.fromReady(running.ready), isEmpty);
+      expect(AdeleExtensionExposure.fromReady(running.ready), hasLength(1));
 
-    for (final (effect, uncertainty, decision) in [
-      ('sourceRead', 'none', 'allow'),
-      ('processExecution', 'uncertain', 'ask'),
-      ('sourceMutation', 'uncertain', 'deny'),
-    ]) {
-      final response = await running.request({
-        'payload': {
-          'routeId': 'conservative',
-          'request': {
-            ..._wireRequest,
-            'effects': {
-              ..._effects,
-              'effects': [effect],
-              'uncertainty': uncertainty,
+      for (final (effect, uncertainty, decision) in [
+        ('sourceRead', 'none', 'allow'),
+        ('processExecution', 'uncertain', 'ask'),
+        ('sourceMutation', 'uncertain', 'deny'),
+      ]) {
+        final response = await running.request({
+          'payload': {
+            'routeId': 'conservative',
+            'request': {
+              ..._wireRequest,
+              'effects': {
+                ..._effects,
+                'effects': [effect],
+                'uncertainty': uncertainty,
+              },
             },
           },
+        });
+        // The first event must be the result, never a reverse host request.
+        expect(response, {
+          'kind': 'response',
+          'requestId': 1,
+          'ok': true,
+          'payload': decision,
+        });
+      }
+      await running.shutdown();
+    },
+  );
+
+  test(
+    'disabled entrypoint is ready without an exposure or callable policy',
+    () async {
+      final running = await _RunningBackend.start(enabled: false);
+      addTearDown(running.close);
+      expect(running.ready, {
+        'kind': 'ready',
+        'commandPort': isA<SendPort>(),
+        'pluginBackendProtocolVersion': adelePluginBackendProtocolVersion,
+        'extensionExposures': <Object?>[],
+      });
+      expect(AdeleExtensionExposure.fromReady(running.ready), isEmpty);
+      expect(AdeleCapabilityExposure.fromReady(running.ready), isEmpty);
+      final response = await running.request();
+      expect(response['ok'], isFalse);
+      expect(
+        (response['error']! as Map)['code'],
+        'configuration_context_unavailable',
+      );
+      await running.shutdown();
+    },
+  );
+
+  for (final (label, bootstrap, failure) in [
+    ('missing settings map', <String, Object?>{}, throwsFormatException),
+    ('non-map settings', {'settings': <Object?>[]}, throwsFormatException),
+    ('missing setting', {'settings': <String, Object?>{}}, throwsStateError),
+    for (final value in [1, 'true', 'false', null])
+      (
+        'non-boolean $value',
+        {
+          'settings': {conservativeToolPolicyEnabledSettingId: value},
         },
-      });
-      // The first event must be the result, never a reverse host request.
-      expect(response, {
-        'kind': 'response',
-        'requestId': 1,
-        'ok': true,
-        'payload': decision,
-      });
-    }
-    await running.shutdown();
-  });
+        value == null ? throwsFormatException : throwsStateError,
+      ),
+  ]) {
+    test('entrypoint fails startup with $label', () async {
+      final port = ReceivePort();
+      addTearDown(port.close);
+      await expectLater(
+        entrypoint
+            .main([], {
+              'bootstrapPort': port.sendPort,
+              'responsePort': port.sendPort,
+              'defaultConfigurationContext': 'configured-default',
+              ...bootstrap,
+            })
+            .timeout(const Duration(seconds: 5)),
+        failure,
+      );
+    });
+  }
 
   test(
     'entrypoint rejects wrong routing and malformed calls explicitly',
@@ -472,14 +528,16 @@ final class _RunningBackend {
   final Map<String, Object?> ready;
   final SendPort commands;
 
-  static Future<_RunningBackend> start() async {
+  static Future<_RunningBackend> start({bool enabled = true}) async {
     final bootstrap = ReceivePort();
     final responses = ReceivePort();
     final messages = StreamIterator<Object?>(responses);
-    final isolate = await Isolate.spawn(_runBackend, [
-      bootstrap.sendPort,
-      responses.sendPort,
-    ]);
+    final isolate = await Isolate.spawn(_runBackend, <String, Object?>{
+      'bootstrapPort': bootstrap.sendPort,
+      'responsePort': responses.sendPort,
+      'defaultConfigurationContext': 'configured-default',
+      'settings': {conservativeToolPolicyEnabledSettingId: enabled},
+    });
     try {
       final ready = await bootstrap.first.timeout(const Duration(seconds: 5));
       return _RunningBackend(
@@ -540,8 +598,5 @@ final class _RunningBackend {
   }
 }
 
-Future<void> _runBackend(List<SendPort> ports) => entrypoint.main([], {
-  'bootstrapPort': ports[0],
-  'responsePort': ports[1],
-  'defaultConfigurationContext': 'configured-default',
-});
+Future<void> _runBackend(Map<String, Object?> bootstrap) =>
+    entrypoint.main([], bootstrap);

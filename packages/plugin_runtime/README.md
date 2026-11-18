@@ -139,33 +139,35 @@ backend policy registrations independently of startup and ready advertisements:
 ```json
 {
   "authorizationPolicies": [
-    {"extensionId": "org.example.policy.authorization"}
+    {"extensionId": "org.example.policy.authorization",
+     "enabledSettingId": "org.example.policy.enabled"}
   ]
 }
 ```
 
-Omission or `[]` means no expectations. Each entry accepts exactly `extensionId`,
-using the public `ExtensionId` grammar; no route, configuration, authority, or
-unknown fields are accepted. Duplicate IDs within one installation reject the
-whole declaration. `PreparedPluginInstallation.authorizationPolicies` is an
-immutable `List<ExtensionId>` in authored order, not live registrations or grants.
-IDs do not establish ownership through namespace prefixes; exact registration
-ownership and readiness remain the host's responsibility.
+Omission or `[]` declares no expectations. Each entry requires `extensionId`
+(public `ExtensionId` grammar). The only optional field is `enabledSettingId`:
+without it the expectation is unconditional. With it, the referenced setting must
+be a boolean declared in **this installation's** validated settings schema. A
+matching namespace prefix or a definition in another schema is insufficient.
+The catalog validates the reference but neither reads the user's value nor
+decides whether the policy is enabled.
 
-Nonempty expectations require a backend component. The public installation
-constructor checks duplicates and rejects nonempty expectations with a null
-`backendArtifactUri`. Discovery uses a private construction path to retain parsed
-IDs even when the backend is absent, malformed, or its artifact is unavailable.
-`PreparedPluginCatalogIssue.isAuthorizationPolicyIssue` (false by default) flags
-those failures and malformed declarations, while healthy components and independent
-installations remain discoverable. Malformed arrays contribute no partial IDs.
-Consumers must check these issues as well as retained IDs: an invalid envelope or
-duplicate PluginId excludes the installation but still records a policy issue when
-the decoded manifest contains nonempty or malformed `authorizationPolicies`.
-An explicit `[]` does not turn an unrelated exclusion into a policy failure.
-Exclusion of an expectation must not be
-interpreted as an intentionally empty policy set. Discovery neither starts policy
-code nor obtains its routes, configuration contexts, or execution authority.
+`PreparedPluginInstallation.authorizationPolicies` retains the declared Extension
+IDs in authored order. `authorizationPolicyEnabledSettings` maps conditional IDs
+to their setting IDs. These immutable declarations are not routes or executable
+registrations. The host resolves conditions from startup settings and checks exact
+ownership and readiness at the [authorization boundary](../../docs/architecture/execution-model.md#authorization-composition).
+
+Nonempty declarations require a backend component. Duplicate extension IDs,
+malformed entries, unknown fields, invalid setting references, and excluded
+installations with nonempty or malformed declarations surface as authorization
+catalog issues (`PreparedPluginCatalogIssue.isAuthorizationPolicyIssue`). They
+cannot be treated as a deliberately empty set. An explicit `[]` does not turn an
+unrelated catalog issue into an authorization failure. A declared backend with a
+rejected or missing artifact retains a component diagnostic and its parsed
+declarations: an unconditional or enabled policy still cannot be satisfied,
+while a validly disabled one need not be live.
 
 ### Settings Schemas
 

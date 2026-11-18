@@ -2,7 +2,6 @@ import 'dart:async';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_desktop/core/adele_runtime.dart';
-import 'package:adele_desktop/core/approval_gated_tool_policy.dart';
 import 'package:adele_desktop/core/model_provider_host.dart';
 import 'package:adele_desktop/core/model_tool_host.dart';
 import 'package:adele_desktop/core/orchestration_host.dart';
@@ -447,8 +446,6 @@ final class SessionExecutionController extends ChangeNotifier {
             lifecycle: _runtime.lifecycle,
             session: session,
             runId: runId,
-            // Temporary legacy participant; never a failed-discovery fallback.
-            legacyPolicy: const ApprovalGatedToolPolicy(),
           ),
           applicationExitFence: _applicationExitFence,
         );

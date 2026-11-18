@@ -3,7 +3,7 @@
 Public, Flutter-free model-tool contribution and execution contracts. The package
 owns tool definitions, materialized registrations, canonical arguments, effect
 descriptions, outcomes and their generated remote transport. Concrete tool behavior
-belongs to plugins; execution admission, policy, approvals and live authority belong
+belongs to plugins; execution admission, policy composition, approvals and live authority belong
 to the host. See the [execution model](../../docs/architecture/execution-model.md)
 and [dependency rules](../../docs/architecture/dependency-rules.md).
 

@@ -23,6 +23,7 @@ final class PreparedPluginInstallation {
     Iterable<PreparedBackendCredentialSlots> backendConsumedCredentialSlots =
         const [],
     Iterable<ExtensionId> authorizationPolicies = const [],
+    Map<ExtensionId, SettingId> authorizationPolicyEnabledSettings = const {},
     PreparedFrontendComponent? frontend,
     PreparedSettingsSchema? settingsSchema,
     PreparedRecordsSchema? recordsSchema,
@@ -35,6 +36,7 @@ final class PreparedPluginInstallation {
          backendRecordApplyHandlers: backendRecordApplyHandlers,
          backendConsumedCredentialSlots: backendConsumedCredentialSlots,
          authorizationPolicies: authorizationPolicies,
+         authorizationPolicyEnabledSettings: authorizationPolicyEnabledSettings,
          frontend: frontend,
          settingsSchema: settingsSchema,
          recordsSchema: recordsSchema,
@@ -51,11 +53,15 @@ final class PreparedPluginInstallation {
     Iterable<PreparedBackendCredentialSlots> backendConsumedCredentialSlots =
         const [],
     Iterable<ExtensionId> authorizationPolicies = const [],
+    Map<ExtensionId, SettingId> authorizationPolicyEnabledSettings = const {},
     bool allowUnavailableAuthorizationPolicies = false,
     this.frontend,
     this.settingsSchema,
     this.recordsSchema,
   }) : authorizationPolicies = _authorizationPolicyIds(authorizationPolicies),
+       authorizationPolicyEnabledSettings = Map.unmodifiable(
+         authorizationPolicyEnabledSettings,
+       ),
        backendConsumedCapabilities = _backendConsumedCapabilityKeys(
          backendConsumedCapabilities,
        ),
@@ -78,6 +84,22 @@ final class PreparedPluginInstallation {
       throw const FormatException(
         'authorizationPolicies requires a backend component.',
       );
+    }
+    if (this.authorizationPolicyEnabledSettings.isNotEmpty) {
+      if (!this.authorizationPolicies.toSet().containsAll(
+        this.authorizationPolicyEnabledSettings.keys,
+      )) {
+        throw const FormatException(
+          'An enabledSettingId requires a declared authorization policy.',
+        );
+      }
+      final booleanSettings = _ownedBooleanSettingIds(
+        metadata.id,
+        settingsSchema,
+      );
+      for (final setting in this.authorizationPolicyEnabledSettings.values) {
+        _validatePolicySetting(setting, booleanSettings);
+      }
     }
     _validateBackendCredentialSlots(
       this.backendConsumedCredentialSlots,
@@ -133,6 +155,10 @@ final class PreparedPluginInstallation {
   /// Discovery retains these IDs even when the backend is absent or rejected;
   /// callers must also check [PreparedPluginCatalog.issues] for policy failures.
   final List<ExtensionId> authorizationPolicies;
+
+  /// Valid optional conditions on those installed identities, not effective values.
+  /// Invalid references leave policy-specific catalog issues, never opt-outs.
+  final Map<ExtensionId, SettingId> authorizationPolicyEnabledSettings;
 
   /// Backend-only consumption declarations, not provider advertisements,
   /// activation dependencies, or authority grants.
@@ -1080,6 +1106,7 @@ final class PreparedPluginCatalog {
         PreparedSettingsSchema? settingsSchema;
         PreparedRecordsSchema? recordsSchema;
         List<ExtensionId> authorizationPolicies = const [];
+        Map<int, Object?> policySettingReferences = const {};
         if (document.containsKey('authorizationPolicies')) {
           try {
             final declarations = document['authorizationPolicies'];
@@ -1089,10 +1116,12 @@ final class PreparedPluginCatalog {
               );
             }
             final ids = <ExtensionId>[];
+            final references = <int, Object?>{};
             for (var index = 0; index < declarations.length; index++) {
               final label = 'authorizationPolicies[$index]';
               final declaration = _object(declarations[index], label, {
                 'extensionId',
+                'enabledSettingId',
               });
               try {
                 ids.add(
@@ -1103,8 +1132,13 @@ final class PreparedPluginCatalog {
               } on FormatException catch (error) {
                 throw FormatException('$label.extensionId: ${error.message}');
               }
+              if (declaration.containsKey('enabledSettingId')) {
+                references[index] = declaration['enabledSettingId'];
+              }
             }
+            // Reserve installed identities before resolving setting references.
             authorizationPolicies = _authorizationPolicyIds(ids);
+            policySettingReferences = references;
             if (authorizationPolicies.isNotEmpty &&
                 !components.containsKey('backend')) {
               throw const FormatException(
@@ -1149,6 +1183,42 @@ final class PreparedPluginCatalog {
             );
           }
         }
+        final policyEnabledSettings = <ExtensionId, SettingId>{};
+        if (policySettingReferences.isNotEmpty) {
+          final booleanSettings = _ownedBooleanSettingIds(
+            pluginMetadata.id,
+            settingsSchema,
+          );
+          for (final reference in policySettingReferences.entries) {
+            final label =
+                'authorizationPolicies[${reference.key}].enabledSettingId';
+            try {
+              final setting = SettingId(
+                _schemaText(
+                  reference.value,
+                  label,
+                  PreparedSettingsSchema.maxIdLength,
+                ),
+              );
+              _validatePolicySetting(setting, booleanSettings);
+              policyEnabledSettings[authorizationPolicies[reference.key]] =
+                  setting;
+            } on FormatException catch (error) {
+              issues.add(
+                PreparedPluginCatalogIssue(
+                  installationDirectory: directory,
+                  pluginId: id,
+                  isAuthorizationPolicyIssue: true,
+                  message: '$label: ${error.message}',
+                ),
+              );
+            }
+          }
+        }
+        // Unconditional expectations always need a backend. Conditional ones
+        // may legitimately be disabled; only the startup snapshot decides that.
+        final requiresPolicyBackend =
+            authorizationPolicies.length != policyEnabledSettings.length;
         if (document.containsKey('recordsSchema')) {
           try {
             recordsSchema = await _recordsSchema(
@@ -1258,7 +1328,7 @@ final class PreparedPluginCatalog {
                 component: component,
                 isAuthorizationPolicyIssue:
                     component == PreparedPluginComponent.backend &&
-                    authorizationPolicies.isNotEmpty,
+                    requiresPolicyBackend,
                 message: error.message,
               ),
             );
@@ -1270,7 +1340,7 @@ final class PreparedPluginCatalog {
                 component: component,
                 isAuthorizationPolicyIssue:
                     component == PreparedPluginComponent.backend &&
-                    authorizationPolicies.isNotEmpty,
+                    requiresPolicyBackend,
                 message: 'Unable to read ${component.name} component: $error',
               ),
             );
@@ -1286,6 +1356,7 @@ final class PreparedPluginCatalog {
             backendRecordApplyHandlers: backendRecordApplyHandlers,
             backendConsumedCredentialSlots: backendConsumedCredentialSlots,
             authorizationPolicies: authorizationPolicies,
+            authorizationPolicyEnabledSettings: policyEnabledSettings,
             allowUnavailableAuthorizationPolicies: true,
             frontend: frontend,
             settingsSchema: settingsSchema,
@@ -1350,6 +1421,25 @@ List<ExtensionId> _authorizationPolicyIds(Iterable<ExtensionId> ids) {
     );
   }
   return result;
+}
+
+Set<SettingId> _ownedBooleanSettingIds(
+  PluginId owner,
+  PreparedSettingsSchema? schema,
+) => {
+  for (final definition
+      in schema?.definitions ?? const <SettingDefinition<Object>>[])
+    if (definition.owner.value == owner.value &&
+        definition.type is BooleanSettingType)
+      definition.id,
+};
+
+void _validatePolicySetting(SettingId id, Set<SettingId> booleanSettings) {
+  if (!booleanSettings.contains(id)) {
+    throw FormatException(
+      'enabledSettingId "$id" must name a boolean setting declared by this installation.',
+    );
+  }
 }
 
 Future<PreparedSettingsSchema> _settingsSchema(

@@ -2,7 +2,6 @@ import 'dart:async';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
-import 'package:adele_desktop/core/approval_gated_tool_policy.dart';
 import 'package:adele_desktop/core/tool_authorization_policy_composer.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
@@ -90,7 +89,7 @@ void main() {
     );
   });
 
-  test('zero contributions allow without a legacy participant', () async {
+  test('zero standalone contributions allow', () async {
     expect(await composer.evaluate(input), ToolPolicyDecision.allow);
   });
 
@@ -102,7 +101,6 @@ void main() {
         extensions,
       );
       addTearDown(plugins.close);
-      await plugins.start(installationRoot: '');
       composer = ToolAuthorizationPolicyComposer(
         extensions: extensions,
         plugins: plugins,
@@ -110,6 +108,8 @@ void main() {
         session: session,
         runId: runId,
       );
+      await expectLater(composer.evaluate(input), throwsStateError);
+      await plugins.start(installationRoot: '');
       expect(plugins.expectedToolAuthorizationPolicies, isEmpty);
       expect(await composer.evaluate(input), ToolPolicyDecision.allow);
       register('independent', (_) => ToolAuthorizationDecision.ask);
@@ -319,48 +319,25 @@ void main() {
   );
 
   test(
-    'explicit legacy participant preserves every effect/uncertainty decision',
+    'effects and uncertainty alone cannot restrict an empty composition',
     () async {
-      composer = ToolAuthorizationPolicyComposer(
-        extensions: extensions,
-        lifecycle: topology.lifecycle,
-        session: session,
-        runId: runId,
-        legacyPolicy: const ApprovalGatedToolPolicy(),
-      );
-      for (final contributed in [null, ...ToolAuthorizationDecision.values]) {
-        final registration = contributed == null
-            ? null
-            : register('opinion', (_) => contributed);
-        for (var mask = 0; mask < (1 << ToolEffect.values.length); mask++) {
-          for (final uncertainty in EffectUncertainty.values) {
-            final candidate = ToolPolicyInput(
-              invocation: invocation,
-              context: invocation.context,
-              effects: EffectDescription(
-                effects: [
-                  for (final effect in ToolEffect.values)
-                    if (mask & (1 << effect.index) != 0) effect,
-                ],
-                targets: const [],
-                summary: 'Not an authorization signal.',
-                uncertainty: uncertainty,
-              ),
-            );
-            final legacy = const ApprovalGatedToolPolicy().evaluate(candidate);
-            expect(
-              await composer.evaluate(candidate),
-              legacy == ToolPolicyDecision.deny ||
-                      contributed == ToolAuthorizationDecision.deny
-                  ? ToolPolicyDecision.deny
-                  : legacy == ToolPolicyDecision.ask ||
-                        contributed == ToolAuthorizationDecision.ask
-                  ? ToolPolicyDecision.ask
-                  : ToolPolicyDecision.allow,
-            );
-          }
+      for (var mask = 0; mask < (1 << ToolEffect.values.length); mask++) {
+        for (final uncertainty in EffectUncertainty.values) {
+          final candidate = ToolPolicyInput(
+            invocation: invocation,
+            context: invocation.context,
+            effects: EffectDescription(
+              effects: [
+                for (final effect in ToolEffect.values)
+                  if (mask & (1 << effect.index) != 0) effect,
+              ],
+              targets: const [],
+              summary: 'Not an authorization signal.',
+              uncertainty: uncertainty,
+            ),
+          );
+          expect(await composer.evaluate(candidate), ToolPolicyDecision.allow);
         }
-        await registration?.close();
       }
     },
   );

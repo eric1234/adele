@@ -15,6 +15,8 @@ const _backends = {
   'openai':
       'plugins/openai/packages/backend/bin/openai_model_provider_backend.dart',
   'agents-md': 'plugins/agents_md/packages/backend/bin/agents_md_backend.dart',
+  'agent-configuration':
+      'plugins/agent_configuration/packages/backend/bin/agent_configuration_backend.dart',
   'conservative-tool-policy':
       'plugins/conservative_tool_policy/packages/backend/bin/conservative_tool_policy_backend.dart',
   'search-tools':
@@ -295,6 +297,23 @@ part 'public.g.dart';
         ]),
       );
       expect(conservative.any((file) => file.contains('/app/')), isFalse);
+      final agent = inputs['agent-configuration-compilation']!;
+      const agentPackages = 'plugins/agent_configuration/packages';
+      expect(
+        agent,
+        containsAll([
+          for (final path in [
+            '$agentPackages/backend/pubspec.yaml',
+            '$agentPackages/backend/bin/agent_configuration_backend.dart',
+            '$agentPackages/backend/lib/agent_configuration_backend.dart',
+            '$agentPackages/contract/pubspec.yaml',
+            '$agentPackages/contract/lib/agent_configuration_contract.dart',
+            '$agentPackages/contract/lib/agent_configuration_contract.g.dart',
+          ])
+            File(path).absolute.path,
+        ]),
+      );
+      expect(agent.any((file) => file.contains('/app/')), isFalse);
       for (final entry in inputs.entries) {
         if (entry.key.contains('-frontend-')) {
           expect(
@@ -317,6 +336,15 @@ part 'public.g.dart';
             entry.value.any(
               (file) =>
                   file.contains('/conservative_tool_policy/packages/backend/'),
+            ),
+            isFalse,
+            reason: entry.key,
+          );
+        }
+        if (entry.key != 'agent-configuration-compilation') {
+          expect(
+            entry.value.any(
+              (file) => file.contains('/$agentPackages/backend/'),
             ),
             isFalse,
             reason: entry.key,
