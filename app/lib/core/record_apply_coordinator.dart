@@ -42,6 +42,9 @@ final class RecordApplyOutcome {
       'code': final String code,
       'cleanupPending': final bool cleanup,
     } when value.length == 3 && code.length <= 64 && _code.hasMatch(code)) {
+      if (code == _publicationUnknown.code && status != 'unavailable') {
+        return _acknowledgementUnknown;
+      }
       final decoded = switch (status) {
         'applied' => RecordApplyStatus.applied,
         'noChange' => RecordApplyStatus.noChange,
@@ -55,7 +58,7 @@ final class RecordApplyOutcome {
         return RecordApplyOutcome(decoded, code, cleanupPending: cleanup);
       }
     }
-    return const RecordApplyOutcome(RecordApplyStatus.failed, 'invalid_result');
+    return _acknowledgementUnknown;
   }
 }
 
@@ -63,7 +66,7 @@ final class RecordApplyOutcome {
 /// channel, editable baseline, secret, or caller-selected service/method.
 abstract interface class RecordApplication implements Listenable {
   bool supports(RecordApplyKey key);
-  RecordApplyOutcome? outcome(RecordApplyKey key);
+  RecordApplyOutcome? outcome(RecordApplyKey key, {bool? deleted});
   RecordApplyKey? recentDeletion(RecordCollectionId collection);
   void saved(RecordApplyKey key, {bool deleted = false});
   void unconfirmed(RecordApplyKey key);
@@ -79,6 +82,7 @@ typedef _Handler = ({
 final class _ApplyEntry {
   int sequence = 0;
   bool running = false;
+  bool deletion = false;
   InstalledBackendActivation? owner;
   RecordApplyOutcome? outcome;
 }
@@ -92,9 +96,13 @@ const _unavailable = RecordApplyOutcome(
   RecordApplyStatus.unavailable,
   'backend_unavailable',
 );
-const _restart = RecordApplyOutcome(
+const _publicationUnknown = RecordApplyOutcome(
   RecordApplyStatus.restartRequired,
   'publication_outcome_unknown',
+);
+const _acknowledgementUnknown = RecordApplyOutcome(
+  RecordApplyStatus.restartRequired,
+  'apply_acknowledgement_unknown',
 );
 
 /// One in-memory owner per application/catalog. Acknowledgements enqueue at
@@ -102,7 +110,11 @@ const _restart = RecordApplyOutcome(
 /// not the historical bytes from a particular edit. No storage work is retried.
 final class RecordApplyCoordinator extends ChangeNotifier
     implements RecordApplication {
-  RecordApplyCoordinator(this._bootstrap, this._catalog) {
+  RecordApplyCoordinator(
+    this._bootstrap,
+    this._catalog, {
+    Duration acknowledgementTimeout = const Duration(minutes: 1),
+  }) : _acknowledgementTimeout = acknowledgementTimeout {
     if (!identical(_bootstrap.catalog, _catalog)) {
       throw ArgumentError('Record application requires the startup catalog.');
     }
@@ -122,11 +134,12 @@ final class RecordApplyCoordinator extends ChangeNotifier
 
   final ApplicationPluginBootstrap _bootstrap;
   final PreparedPluginCatalog _catalog;
+  final Duration _acknowledgementTimeout;
   final _handlers = <(RecordCollectionId, RecordTypeId), _Handler>{};
   final _entries = <RecordApplyKey, _ApplyEntry>{};
   final _deletions = <RecordCollectionId, RecordApplyKey>{};
   final _retirement = <InstalledBackendActivation, VoidCallback>{};
-  final _uncertain = <InstalledBackendActivation>{};
+  final _uncertain = <InstalledBackendActivation, RecordApplyOutcome>{};
   static const _maxActive = 16;
   static const _maxEntries = 128;
   int _active = 0;
@@ -137,25 +150,24 @@ final class RecordApplyCoordinator extends ChangeNotifier
       _handlers.containsKey((key.collection, key.type));
 
   @override
-  RecordApplyOutcome? outcome(RecordApplyKey key) => _entries[key]?.outcome;
+  RecordApplyOutcome? outcome(RecordApplyKey key, {bool? deleted}) {
+    final entry = _entries[key];
+    return deleted == null || entry?.deletion == deleted
+        ? entry?.outcome
+        : null;
+  }
 
   @override
   RecordApplyKey? recentDeletion(RecordCollectionId collection) =>
       _deletions[collection];
 
   @override
-  void saved(RecordApplyKey key, {bool deleted = false}) {
-    if (_closed || !supports(key)) return;
-    if (deleted) {
-      _deletions[key.collection] = key;
-    } else if (_deletions[key.collection] == key) {
-      _deletions.remove(key.collection);
-    }
-    _request(key, apply: true);
-  }
+  void saved(RecordApplyKey key, {bool deleted = false}) =>
+      _request(key, apply: true, deleted: deleted);
 
   @override
-  void reconciled(RecordApplyKey key) => _request(key, apply: false);
+  void reconciled(RecordApplyKey key) =>
+      _request(key, apply: false, deleted: false);
 
   /// An ambiguous write is not an apply request. Don't attribute a previous
   /// outcome (even one still in flight) to the unconfirmed persisted state.
@@ -181,10 +193,18 @@ final class RecordApplyCoordinator extends ChangeNotifier
     }
   }
 
-  void _request(RecordApplyKey key, {required bool apply}) {
+  void _request(RecordApplyKey key, {required bool apply, bool? deleted}) {
     final handler = _handlers[(key.collection, key.type)];
     if (_closed || handler == null) return;
     final entry = _entries.remove(key) ?? _ApplyEntry();
+    if (deleted != null) {
+      entry.deletion = deleted;
+      if (deleted) {
+        _deletions[key.collection] = key;
+      } else if (_deletions[key.collection] == key) {
+        _deletions.remove(key.collection);
+      }
+    }
     if (_entries.length == _maxEntries) {
       final oldest = _entries.entries
           .firstWhere((item) => !item.value.running)
@@ -199,8 +219,8 @@ final class RecordApplyCoordinator extends ChangeNotifier
     final owner = entry.owner = _owner(handler);
     if (owner == null) {
       entry.outcome = _unavailable;
-    } else if (_uncertain.contains(owner)) {
-      entry.outcome = _restart;
+    } else if (_uncertain[owner] case final fence?) {
+      entry.outcome = fence;
     } else if (!apply) {
       entry.outcome = _notApplied;
     } else if (!entry.running && _active >= _maxActive) {
@@ -261,38 +281,36 @@ final class RecordApplyCoordinator extends ChangeNotifier
         RecordApplyOutcome result;
         if (owner == null || !identical(_owner(handler), owner)) {
           result = _unavailable;
-        } else if (_uncertain.contains(owner)) {
-          result = _restart;
+        } else if (_uncertain[owner] case final fence?) {
+          result = fence;
         } else {
           try {
-            final response = await owner.connection!.requestRecordApply(
-              handler.declaration,
-              key.id,
-            );
+            final response = await owner.connection!
+                .requestRecordApply(handler.declaration, key.id)
+                .timeout(_acknowledgementTimeout);
             result = RecordApplyOutcome._decode(response);
           } on Object {
-            result = const RecordApplyOutcome(
-              RecordApplyStatus.failed,
-              'apply_failed',
-            );
+            // The host can lose or replace a reply *after* publication. A
+            // deadline ends our wait; it neither cancels nor retries the call.
+            result = _acknowledgementUnknown;
           }
           if (_closed || !identical(_owner(handler), owner)) {
             result = _unavailable;
           } else if (result.status == RecordApplyStatus.restartRequired) {
             // A lost publication acknowledgement fences this generation, even
             // if the triggering request has already been superseded.
-            _uncertain.add(owner);
+            result = _uncertain[owner] ??= result;
             for (final affected in _entries.values) {
               final status = affected.outcome?.status;
               if (identical(affected.owner, owner) &&
                   status != null &&
                   status != RecordApplyStatus.applied &&
                   status != RecordApplyStatus.noChange) {
-                affected.outcome = _restart;
+                affected.outcome = result;
               }
             }
-          } else if (_uncertain.contains(owner)) {
-            result = _restart;
+          } else if (_uncertain[owner] case final fence?) {
+            result = fence;
           }
         }
         if (!_closed && entry.sequence == sequence) entry.outcome = result;

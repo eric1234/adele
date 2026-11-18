@@ -202,13 +202,26 @@ void main() {
         findsOneWidget,
       );
       expect(find.text('Retry application'), findsNothing);
-      application.report(
-        key,
-        const RecordApplyOutcome(RecordApplyStatus.restartRequired, 'unknown'),
-      );
-      await tester.pump();
-      expect(find.textContaining('Restart required'), findsOneWidget);
-      expect(find.text('Retry application'), findsNothing);
+      for (final code in [
+        'publication_outcome_unknown',
+        'apply_acknowledgement_unknown',
+      ]) {
+        application.report(
+          key,
+          RecordApplyOutcome(RecordApplyStatus.restartRequired, code),
+        );
+        await tester.pump();
+        expect(
+          find.text('Runtime application: Restart required'),
+          findsOneWidget,
+        );
+        expect(
+          find.textContaining('Restart ADELE before trying again'),
+          findsOneWidget,
+        );
+        expect(find.textContaining(code), findsNothing);
+        expect(find.text('Retry application'), findsNothing);
+      }
       expect(service.updates, 2);
       await unmount(tester);
     }),
@@ -269,6 +282,71 @@ void main() {
       await tester.pump();
       expect(find.text('Runtime application: No change'), findsOneWidget);
       expect(find.text('Retry application'), findsNothing);
+      await unmount(tester);
+    }),
+    skip: !Platform.isLinux,
+  );
+
+  testWidgets(
+    'Reload does not attribute deletion outcomes or Retry to restored records',
+    (tester) => tester.runAsync(() async {
+      final application = RecordApplicationProbe(_job);
+      final originals = <String, List<int>>{};
+      for (final id in ['first', 'second']) {
+        await seed(id);
+        originals[id] = file(id).readAsBytesSync();
+      }
+      await mount(tester, application: application);
+      await openRecords(tester);
+      for (final id in originals.keys) {
+        await _expand(tester, id);
+        await _tap(tester, _key('record-delete-jobs-$id'));
+        await _tap(tester, _key('record-delete-confirm-jobs-$id'));
+        await _loaded(tester);
+        application.report(
+          _jobKey(id),
+          id == 'first'
+              ? const RecordApplyOutcome(RecordApplyStatus.applied, 'removed')
+              : const RecordApplyOutcome(
+                  RecordApplyStatus.unavailable,
+                  'backend_unavailable',
+                ),
+        );
+        await tester.pump();
+      }
+      final oldDeletionRetry = tester
+          .widget<TextButton>(
+            find.widgetWithText(TextButton, 'Retry application'),
+          )
+          .onPressed!;
+      for (final original in originals.entries) {
+        file(original.key).writeAsBytesSync(original.value);
+      }
+      await _tap(tester, _key('records-reload-jobs'));
+      await _loaded(tester);
+      for (final id in originals.keys) {
+        expect(
+          find.descendant(
+            of: _key('record-jobs-$id'),
+            matching: find.text('Runtime application: No confirmed result'),
+          ),
+          findsOneWidget,
+        );
+      }
+      expect(find.textContaining('Deleted record:'), findsNothing);
+      expect(find.text('Saved configuration'), findsNothing);
+      expect(find.text('Retry application'), findsNothing);
+      oldDeletionRetry();
+      expect(application.retries, isEmpty);
+      expect(application.saves, [
+        (_jobKey('first'), true),
+        (_jobKey('second'), true),
+      ]);
+
+      await _edit(tester, 'first');
+      await save(tester, 'first');
+      expect(application.saves.last, (_jobKey('first'), false));
+      expect(find.text('Runtime application: Applying...'), findsOneWidget);
       await unmount(tester);
     }),
     skip: !Platform.isLinux,
@@ -1936,12 +2014,16 @@ final class RecordApplicationProbe extends ChangeNotifier
   final saves = <(RecordApplyKey, bool)>[];
   final retries = <RecordApplyKey>[];
   final reconciliations = <RecordApplyKey>[];
-  final _outcomes = <RecordApplyKey, RecordApplyOutcome>{};
+  final _outcomes =
+      <RecordApplyKey, ({RecordApplyOutcome outcome, bool deleted})>{};
   RecordApplyKey? _deletion;
   bool get observed => hasListeners;
 
-  void report(RecordApplyKey key, RecordApplyOutcome outcome) {
-    _outcomes[key] = outcome;
+  void report(RecordApplyKey key, RecordApplyOutcome outcome, {bool? deleted}) {
+    _outcomes[key] = (
+      outcome: outcome,
+      deleted: deleted ?? _outcomes[key]?.deleted ?? false,
+    );
     notifyListeners();
   }
 
@@ -1950,11 +2032,16 @@ final class RecordApplicationProbe extends ChangeNotifier
   @override
   void unconfirmed(RecordApplyKey key) {
     _outcomes.remove(key);
+    if (_deletion == key) _deletion = null;
     notifyListeners();
   }
 
   @override
-  RecordApplyOutcome? outcome(RecordApplyKey key) => _outcomes[key];
+  RecordApplyOutcome? outcome(RecordApplyKey key, {bool? deleted}) {
+    final entry = _outcomes[key];
+    return deleted == null || deleted == entry?.deleted ? entry?.outcome : null;
+  }
+
   @override
   RecordApplyKey? recentDeletion(RecordCollectionId collection) =>
       _deletion?.collection == collection ? _deletion : null;
@@ -1962,10 +2049,15 @@ final class RecordApplicationProbe extends ChangeNotifier
   @override
   void saved(RecordApplyKey key, {bool deleted = false}) {
     saves.add((key, deleted));
-    if (deleted) _deletion = key;
+    if (deleted) {
+      _deletion = key;
+    } else if (_deletion == key) {
+      _deletion = null;
+    }
     report(
       key,
       const RecordApplyOutcome(RecordApplyStatus.applying, 'pending'),
+      deleted: deleted,
     );
   }
 
@@ -1981,9 +2073,11 @@ final class RecordApplicationProbe extends ChangeNotifier
   @override
   void reconciled(RecordApplyKey key) {
     reconciliations.add(key);
+    if (_deletion == key) _deletion = null;
     report(
       key,
       const RecordApplyOutcome(RecordApplyStatus.notApplied, 'reconciled'),
+      deleted: false,
     );
   }
 }

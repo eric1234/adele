@@ -37,9 +37,16 @@ final class RecordCredentialResult {
 
 /// Fixed diagnostics without a native cause or secret-bearing payload.
 final class RecordCredentialFailure implements Exception {
-  const RecordCredentialFailure(this.kind, {this.record});
+  const RecordCredentialFailure(
+    this.kind, {
+    this.record,
+    this.preservesApplyState = false,
+  });
 
   final RecordCredentialFailureKind kind;
+
+  /// This attempt was rejected before either mutation or epoch invalidation.
+  final bool preservesApplyState;
 
   /// Latest acknowledged handle, including a reference saved before OS failure.
   /// Null after a configuration failure: explicitly Reload before proceeding.
@@ -341,7 +348,7 @@ final class RecordCredentialService implements StartupCredentialReader {
       workflow.record,
       RecordCredentialStatus.stored,
     );
-  }, mutating: true);
+  });
 
   Future<RecordCredentialResult> replace(
     RecordView record,
@@ -369,7 +376,7 @@ final class RecordCredentialService implements StartupCredentialReader {
       workflow.record,
       RecordCredentialStatus.stored,
     );
-  }, mutating: true);
+  });
 
   /// Establishes a transferred/partially attached reference only after confirmed
   /// local absence. Reuses that reference and never overwrites an existing value.
@@ -397,7 +404,7 @@ final class RecordCredentialService implements StartupCredentialReader {
       workflow.record,
       RecordCredentialStatus.stored,
     );
-  }, mutating: true);
+  });
 
   Future<RecordCredentialResult> forget(
     RecordView record,
@@ -421,7 +428,7 @@ final class RecordCredentialService implements StartupCredentialReader {
       workflow.record,
       RecordCredentialStatus.noReference,
     );
-  }, mutating: true);
+  });
 
   Future<RecordCredentialResult> _inspect(
     _RecordCredentialWorkflow workflow, {
@@ -487,12 +494,14 @@ final class RecordCredentialService implements StartupCredentialReader {
     RecordView record,
     RecordCredentialSlotId slot,
     Future<RecordCredentialResult> Function(_RecordCredentialWorkflow)
-    operation, {
-    bool mutating = false,
-  }) {
+    operation,
+  ) {
     if (_closing != null || _settings._closing != null) {
       return Future.error(
-        const RecordCredentialFailure(RecordCredentialFailureKind.closed),
+        const RecordCredentialFailure(
+          RecordCredentialFailureKind.closed,
+          preservesApplyState: true,
+        ),
       );
     }
     if (!identical(record._owner, _settings._identity)) {
@@ -503,7 +512,10 @@ final class RecordCredentialService implements StartupCredentialReader {
     final key = (record.collection, record.id);
     if (!_active.add(key)) {
       return Future.error(
-        const RecordCredentialFailure(RecordCredentialFailureKind.busy),
+        const RecordCredentialFailure(
+          RecordCredentialFailureKind.busy,
+          preservesApplyState: true,
+        ),
       );
     }
     final result = _settings._pending
@@ -511,12 +523,16 @@ final class RecordCredentialService implements StartupCredentialReader {
           (_) => _settings._worker.exclusive(() async {
             final workflow = _RecordCredentialWorkflow(_settings, record, slot);
             try {
-              await workflow.validate(mutating: mutating);
+              await workflow.validate();
               return await operation(workflow);
             } on RecordCredentialFailure catch (error) {
               throw RecordCredentialFailure(
                 error.kind,
                 record: workflow.record,
+                preservesApplyState:
+                    !workflow.mutationStarted &&
+                    error.kind !=
+                        RecordCredentialFailureKind.reconciliationRequired,
               );
             } on CredentialFailure catch (error) {
               if (workflow.validationFailure case final failure?) {
@@ -525,6 +541,10 @@ final class RecordCredentialService implements StartupCredentialReader {
               throw RecordCredentialFailure(
                 _failureKind(error),
                 record: workflow.record,
+                preservesApplyState:
+                    !workflow.mutationStarted &&
+                    !error.outcomeUncertain &&
+                    error.kind != CredentialFailureKind.verificationRequired,
               );
             } on ConfigurationConflictException {
               throw const RecordCredentialFailure(
@@ -593,10 +613,14 @@ final class _RecordCredentialWorkflow {
   late String owner;
   CredentialReference? reference;
   RecordCredentialFailureKind? validationFailure;
+  bool mutationStarted = false;
 
   Future<void> beforeMutation() async {
     try {
-      await validate();
+      // Fence captures before OS mutation, but not for input/preflight failures
+      // that have not touched either store. The Settings gate is still held.
+      mutationStarted = true;
+      await validate(mutating: true);
     } on Object catch (error) {
       // P1 sanitizes callback failures. Retain only the safe classification so
       // the association result still requests Reload, not keyring reconciliation.
@@ -639,6 +663,7 @@ final class _RecordCredentialWorkflow {
   }
 
   Future<void> setReference(CredentialReference? value) async {
+    mutationStarted = true;
     final saved =
         await _request(_Operation.setCredentialReference, reference: value)
             as _RecordValues;

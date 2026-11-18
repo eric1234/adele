@@ -30,6 +30,7 @@ final _transferred = CredentialReference.parse(
 
 void main() {
   late Directory installations;
+  late PreparedPluginCatalog prepared;
   late RecordCatalog catalog;
   late Directory temporary;
   late PlatformStorageRoots roots;
@@ -54,8 +55,12 @@ void main() {
       installationDirectory: Directory('${installations.path}/openai'),
       pluginId: 'dev.adele.openai',
       displayName: 'OpenAI',
+      backend: true,
     );
-    final prepared = await PreparedPluginCatalog.discover(installations.path);
+    File(
+      '${installations.path}/openai/backend.aot',
+    ).writeAsStringSync('not executed');
+    prepared = await PreparedPluginCatalog.discover(installations.path);
     expect(prepared.issues, isEmpty);
     final openai = prepared.records.definition(_openai);
     expect(openai.owner, PluginId('dev.adele.openai'));
@@ -383,6 +388,29 @@ void main() {
         expect(file(updated).existsSync(), isFalse);
       },
     );
+
+    test('refused deletion preserves a live credential capture', () async {
+      final record = await attach(await create('work'));
+      final capture = await service.captureCurrentConfiguration(
+        prepared,
+        prepared.installations.single,
+      );
+      addTearDown(() => service.releaseStartupRecords(capture));
+
+      await expectLater(
+        settings.deleteRecord(record),
+        throwsA(isA<ConfigurationRecordCredentialsPresent>()),
+      );
+      final secret = await service.readStartupCredential(
+        capture,
+        collection: record.collection.value,
+        recordType: record.type.value,
+        recordId: record.id.value,
+        slot: _apiKey.value,
+        validateGeneration: () {},
+      );
+      expect(secret == _firstSecret, isTrue);
+    });
 
     for (final unknown in [
       'future-slot = "opaque-future-value"\n',

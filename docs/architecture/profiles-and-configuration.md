@@ -278,7 +278,12 @@ deletion. A runtime failure never rolls back a confirmed write. Retry repeats
 only the runtime request for that record, never the file or credential mutation.
 Reconcile can recover usable local credential state; it does not confirm a runtime
 apply. Applying that recovered state requires a separate runtime request.
-An unknown publication outcome requires restart, not Retry. Pending cleanup is
+An acknowledged preflight failure is retryable. If the backend reports unknown
+publication, or its apply acknowledgement is lost, malformed, or replaced by a
+transport error, the app cannot establish that publication did not happen. It
+fences further applies to that exact live generation and shows restart instead
+of Retry. The one-minute acknowledgement deadline ends the wait, not backend
+execution; a late success cannot clear the fence. Pending cleanup is
 reported separately: an applied change is not undone while old work drains, and
 successful publication does not imply authentication or a change of Session model.
 

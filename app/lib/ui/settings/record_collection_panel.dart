@@ -457,7 +457,8 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
         RecordCredentialAction.forget => service.forget(record, slot.id),
       };
     } on RecordCredentialFailure catch (failure) {
-      if (action != RecordCredentialAction.check &&
+      if (!failure.preservesApplyState &&
+          action != RecordCredentialAction.check &&
           action != RecordCredentialAction.reconcile) {
         application?.unconfirmed(_applyKey(record));
       }
@@ -730,15 +731,17 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
   Widget? _applyFeedback(RecordApplyKey key, {RecordView? record}) {
     final application = widget.recordApplication;
     if (application == null || !application.supports(key)) return null;
-    final outcome = application.outcome(key);
+    final deleted = record == null;
+    final outcome = application.outcome(key, deleted: deleted);
     bool canRetry() =>
         _enabled &&
         widget.active &&
         identical(widget.recordApplication, application) &&
         (record == null
-            ? application.recentDeletion(key.collection) == key
+            ? application.recentDeletion(key.collection) == key &&
+                  !_records.any((current) => _applyKey(current) == key)
             : _current(record) && !_fencedRecords.contains(record.id)) &&
-        switch (application.outcome(key)?.status) {
+        switch (application.outcome(key, deleted: deleted)?.status) {
           RecordApplyStatus.failed ||
           RecordApplyStatus.unavailable ||
           RecordApplyStatus.notApplied => true,

@@ -14,7 +14,9 @@ import 'package:plugin_runtime/plugin_runtime.dart';
 
 const _owner = 'test.records';
 const _peer = '$_owner.child';
-const _unknown = 'publication_outcome_unknown';
+const _publicationUnknown = 'publication_outcome_unknown';
+const _ackUnknown = 'apply_acknowledgement_unknown';
+const _testDeadline = Duration(minutes: 3);
 const _private = '/private/example/account-token';
 
 RecordApplyKey _key({String owner = _owner, String id = 'work'}) => (
@@ -82,54 +84,61 @@ void main() {
       final f = await _Fixture.start(failOwner: true);
       expect(f.apply.supports(key), isTrue);
       f.apply.saved(key);
-      await f.status(key, RecordApplyStatus.unavailable);
+      final unavailable = await f.status(key, RecordApplyStatus.unavailable);
+      expect(unavailable.code, 'backend_unavailable');
       f.apply.retry(key);
       await f.status(key, RecordApplyStatus.unavailable);
       expect(await f.count(), 0);
     },
   );
 
-  test(
-    'malformed results and remote exceptions expose no backend diagnostic',
-    () async {
-      final f = await _Fixture.start();
-      final good = _result('applied', 'added');
-      final malformed = <Object?>[
-        _private,
-        {...good, 'status': _private},
-        {...good, 'code': _private},
-        {...good, 'code': 'a' * 65},
-        {...good, 'cleanupPending': 'true'},
-        {...good, 'detail': _private},
-        {'status': 'applied', 'code': 'added'},
-      ];
-      for (final (i, response) in malformed.indexed) {
-        f.apply.saved(key);
-        await f.call(i);
-        await f.reply(i, response);
-        final result = await f.status(key, RecordApplyStatus.failed);
-        expect(result.code, 'invalid_result');
-        expect(result.cleanupPending, isFalse);
-      }
-
-      f.apply.retry(key);
-      final i = malformed.length;
-      await f.call(i);
-      await f.reply(
-        i,
-        null,
-        error: {
-          'code': 'private_account_token',
+  final good = _result('applied', 'added', pending: true);
+  final malformed = <String, Object?>{
+    'non-object result': _private,
+    'unknown status': {...good, 'status': _private},
+    'invalid code': {...good, 'code': _private},
+    'oversized code': {...good, 'code': 'a' * 65},
+    'non-boolean cleanupPending': {...good, 'cleanupPending': 'true'},
+    'unexpected field': {...good, 'detail': _private},
+    'missing cleanupPending': {'status': 'applied', 'code': 'added'},
+    'publication unknown marked applied': {
+      ...good,
+      'code': _publicationUnknown,
+    },
+  };
+  for (final problem in <String, Map<String, Object?>>{
+    for (final entry in malformed.entries)
+      entry.key: {'ok': true, 'payload': entry.value},
+    'wrong pluginId': {'ok': true, 'pluginId': _peer, 'payload': good},
+    'wrong kind': {'ok': true, 'kind': 'pluginReady', 'payload': good},
+    for (final code in ['private_account_token', 'response_encoding_failed'])
+      'transport error $code': {
+        'ok': false,
+        'error': {
+          'code': code,
           'message': _private,
           'details': {'stack': _private},
         },
+      },
+  }.entries) {
+    test('${problem.key} is not an apply acknowledgement', () async {
+      final f = await _Fixture.start();
+      f.apply.saved(key);
+      await f.call(0);
+      await f.respond(0, problem.value);
+      final result = await f.status(key, RecordApplyStatus.restartRequired);
+      expect(result.code, _ackUnknown);
+      expect(result.cleanupPending, isFalse);
+      f.apply.retry(key);
+      final other = _key(id: 'other');
+      f.apply.saved(other);
+      expect(
+        (await f.status(other, RecordApplyStatus.restartRequired)).code,
+        _ackUnknown,
       );
-      final rejected = await f.status(key, RecordApplyStatus.failed);
-      expect(rejected.code, 'apply_failed');
-      expect(rejected.cleanupPending, isFalse);
-      expect(await f.count(), i + 1);
-    },
-  );
+      expect(await f.count(), 1);
+    });
+  }
 
   test(
     'new saves coalesce behind the held attempt without publishing stale results',
@@ -154,6 +163,8 @@ void main() {
       expect(result.cleanupPending, isFalse);
       expect(f.apply.recentDeletion(key.collection), key);
       expect(observed, isNot(contains(RecordApplyStatus.failed)));
+      expect(f.apply.outcome(key, deleted: true), same(result));
+      expect(f.apply.outcome(key, deleted: false), isNull);
       expect(await f.count(), 2);
     },
   );
@@ -169,17 +180,21 @@ void main() {
       await f.reply(0, _result('applied', 'added'));
       expect(await f.count(), 1);
       expect(f.apply.outcome(key)!.status, RecordApplyStatus.notApplied);
+      for (final (i, status, code) in [
+        (1, RecordApplyStatus.failed, 'invalid_configuration'),
+        (2, RecordApplyStatus.unavailable, 'refresh_capacity'),
+      ]) {
+        f.apply.retry(key);
+        await f.call(i);
+        await f.reply(i, _result(status.name, code));
+        expect((await f.status(key, status)).code, code);
+        expect(await f.count(), i + 1);
+      }
       f.apply.retry(key);
-      await f.call(1);
-      await f.reply(1, _result('unavailable', 'refresh_capacity'));
-      final retryable = await f.status(key, RecordApplyStatus.unavailable);
-      expect(retryable.code, 'refresh_capacity');
-      expect(await f.count(), 2);
-      f.apply.retry(key);
-      await f.call(2);
-      await f.reply(2, _result('applied', 'replaced'));
+      await f.call(3);
+      await f.reply(3, _result('applied', 'replaced'));
       await f.status(key, RecordApplyStatus.applied);
-      expect(await f.count(), 3);
+      expect(await f.count(), 4);
     },
   );
 
@@ -207,7 +222,8 @@ void main() {
       await f.call(15);
       final oldest = _key(id: 'overflow-0');
       f.apply.saved(oldest, deleted: true);
-      expect(f.apply.outcome(oldest)!.code, 'apply_capacity');
+      final full = await f.status(oldest, RecordApplyStatus.unavailable);
+      expect(full.code, 'apply_capacity');
       for (var i = 1; i <= 128; i++) {
         f.apply.saved(_key(id: 'overflow-$i'));
       }
@@ -224,32 +240,47 @@ void main() {
     },
   );
 
-  test(
-    'unknown publication fences even a dirty key and other keys of that generation',
-    () async {
+  for (final cause in [_ackUnknown, _publicationUnknown]) {
+    test('$cause on a superseded apply fences its live generation', () async {
       final f = await _Fixture.start();
-      f.apply.saved(key);
+      final expire = f.saveWithControlledDeadline(key);
       await f.call(0);
+      // The child publishes the record without replying to the original request.
+      expect(await f.commit(0), [key.id.value]);
       final held = _key(id: 'held');
       f.apply.saved(held);
       await f.call(1);
       final recovered = _key(id: 'recovered');
       f.apply.reconciled(recovered);
       f.apply.saved(key);
-      await f.reply(0, _result('unavailable', _unknown));
+      expect(await f.count(), 2);
+      expect(f.apply.outcome(key)!.status, RecordApplyStatus.applying);
+      if (cause == _ackUnknown) {
+        expire();
+      } else {
+        await f.reply(0, _result('unavailable', _publicationUnknown));
+      }
       final unknown = await f.status(key, RecordApplyStatus.restartRequired);
-      expect(unknown.code, _unknown);
-      expect(
-        f.apply.outcome(recovered)!.status,
-        RecordApplyStatus.restartRequired,
-      );
-      await f.reply(1, _result('applied', 'added'));
-      await f.status(held, RecordApplyStatus.restartRequired);
+      expect(unknown.code, cause);
+      expect(f.backend(_owner).state, InstalledBackendState.active);
+      if (cause == _ackUnknown) await f.reply(0, good); // Late success.
+      await f.reply(1, good);
+      for (final affected in [key, held, recovered]) {
+        final result = await f.status(
+          affected,
+          RecordApplyStatus.restartRequired,
+        );
+        expect(result.code, cause);
+        expect(result.cleanupPending, isFalse);
+      }
       f.apply.retry(key);
       f.apply.saved(key);
       final other = _key(id: 'other');
       f.apply.saved(other);
-      await f.status(other, RecordApplyStatus.restartRequired);
+      expect(
+        (await f.status(other, RecordApplyStatus.restartRequired)).code,
+        cause,
+      );
       f.apply.retry(other);
       expect(await f.count(), 2);
       expect(f.apply.outcome(key)!.status, RecordApplyStatus.restartRequired);
@@ -259,8 +290,8 @@ void main() {
       await f.reply(2, _result('applied', 'added'));
       await f.status(peerKey, RecordApplyStatus.applied);
       expect(await f.count(), 3);
-    },
-  );
+    });
+  }
 
   for (final retire in [true, false]) {
     test(
@@ -282,6 +313,7 @@ void main() {
         expect(await f.count(), 1);
         final outcome = f.apply.outcome(key)!;
         expect(outcome.status, RecordApplyStatus.unavailable);
+        expect(outcome.code, 'backend_unavailable');
         expect(outcome.cleanupPending, isFalse);
       },
     );
@@ -292,7 +324,11 @@ String _method(String owner) => owner == _owner ? 'refresh' : 'applyChange';
 
 final class _Fixture {
   _Fixture(this.bootstrap)
-    : apply = RecordApplyCoordinator(bootstrap, bootstrap.catalog!);
+    : apply = RecordApplyCoordinator(
+        bootstrap,
+        bootstrap.catalog!,
+        acknowledgementTimeout: _testDeadline,
+      );
 
   final ApplicationPluginBootstrap bootstrap;
   final RecordApplyCoordinator apply;
@@ -381,6 +417,30 @@ final class _Fixture {
       .singleWhere((b) => b.installation.metadata.id.value == id);
 
   PluginBackendConnection get _control => backend(_peer).connection!;
+
+  // Advance only this apply's acknowledgement timer. Child I/O, microtasks,
+  // and the fixture's own watchdogs still run normally.
+  void Function() saveWithControlledDeadline(RecordApplyKey key) {
+    late void Function() expire;
+    runZoned(
+      () => apply.saved(key),
+      zoneSpecification: ZoneSpecification(
+        createTimer: (_, parent, zone, duration, callback) {
+          final timer = parent.createTimer(zone, duration, callback);
+          if (duration == _testDeadline) {
+            expire = () {
+              expect(timer.isActive, isTrue);
+              timer.cancel();
+              zone.run(callback);
+            };
+          }
+          return timer;
+        },
+      ),
+    );
+    return () => expire();
+  }
+
   Future<int> count() async {
     // Let any queued coordinator dispatch reach the transport before this barrier.
     await Future<void>.value();
@@ -392,15 +452,16 @@ final class _Fixture {
               .request('fixture.call', {'index': index})
               .timeout(const Duration(seconds: 5)))!
           as Map<String, Object?>;
-  Future<void> reply(
-    int index,
-    Object? payload, {
-    Map<String, Object?>? error,
-  }) async {
+  Future<Object?> commit(int index) =>
+      _control.request('fixture.commit', {'index': index});
+
+  Future<void> reply(int index, Object? payload) =>
+      respond(index, {'ok': true, 'payload': payload});
+
+  Future<void> respond(int index, Map<String, Object?> envelope) async {
     await _control.request('fixture.reply', {
       'index': index,
-      'payload': payload,
-      'error': ?error,
+      'envelope': envelope,
     });
   }
 
@@ -443,6 +504,7 @@ import 'dart:typed_data';
 
 void main() {
   final calls = <Map<String, dynamic>>[];
+  final published = <String>{};
   final waiters = <int, Map<String, dynamic>>{};
   var buffer = <int>[];
   void send(Map<String, dynamic> message) {
@@ -450,10 +512,9 @@ void main() {
     final header = ByteData(4)..setUint32(0, body.length);
     stdout.add([...header.buffer.asUint8List(), ...body]);
   }
-  void reply(Map request, Object? payload, {Object? error}) => send({
+  void reply(Map request, Object? payload) => send({
     'kind': 'response', 'requestId': request['requestId'],
-    'pluginId': request['pluginId'], 'ok': error == null,
-    if (error == null) 'payload': payload else 'error': error,
+    'pluginId': request['pluginId'], 'ok': true, 'payload': payload,
   });
   send({'kind': 'hostHello'});
   stdin.listen((bytes) {
@@ -480,8 +541,14 @@ void main() {
             case 'fixture.call':
               final i = p['index'] as int;
               if (i < calls.length) { reply(m, calls[i]); } else { waiters[i] = m; }
+            case 'fixture.commit':
+              final call = calls[p['index'] as int];
+              published.add(call['payload']['recordId'] as String);
+              reply(m, published.toList());
             case 'fixture.reply':
-              reply(calls[p['index'] as int], p['payload'], error: p['error']);
+              final call = calls[p['index'] as int];
+              send({'kind': 'response', 'pluginId': call['pluginId'],
+                ...p['envelope'] as Map<String, dynamic>, 'requestId': call['requestId']});
               reply(m, null);
             default:
               final waiter = waiters.remove(calls.length);

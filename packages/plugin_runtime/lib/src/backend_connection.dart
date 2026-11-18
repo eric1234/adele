@@ -382,6 +382,7 @@ final class PluginBackendHost {
     Map<String, Object?> payload, {
     String? hostInvocationContext,
     void Function()? onContextualResponse,
+    bool requireApplyAcknowledgement = false,
   }) async {
     final String pluginId = owner.pluginId;
     if (owner.isClosed || _plugins[pluginId] != owner) {
@@ -401,6 +402,19 @@ final class PluginBackendHost {
         'hostInvocationContext': ?hostInvocationContext,
       },
     );
+    // A matching request ID alone doesn't attest that this is the owning
+    // backend's control reply. Never mistake a transport error for its result.
+    if (requireApplyAcknowledgement &&
+        (response.length != 6 ||
+            response['protocolVersion'] != backendHostProtocolVersion ||
+            response['kind'] != 'response' ||
+            response['pluginId'] != pluginId ||
+            response['ok'] != true ||
+            !response.containsKey('payload'))) {
+      throw const BackendHostProtocolException(
+        'Unconfirmed record application.',
+      );
+    }
     if (response['ok'] == true) return response['payload'];
     throw _remoteFailure(response);
   }
@@ -1546,6 +1560,7 @@ final class PluginBackendConnection implements AdeleStreamChannel {
       handler.serviceId,
       handler.method,
       {'recordId': recordId.value},
+      requireApplyAcknowledgement: true,
     );
     validateInfrastructureContext();
     return result;

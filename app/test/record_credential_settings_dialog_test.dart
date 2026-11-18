@@ -8,6 +8,7 @@ import 'package:adele_desktop/core/credential_service.dart';
 import 'package:adele_desktop/core/global_settings_service.dart';
 import 'package:adele_desktop/core/record_apply_coordinator.dart';
 import 'package:adele_desktop/ui/settings/global_settings_dialog.dart';
+import 'package:adele_desktop/ui/settings/record_credential_controls.dart';
 import 'package:adele_platform_storage/adele_platform_storage.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_settings/adele_settings.dart';
@@ -770,6 +771,43 @@ void main() {
   }
 
   scenario(
+    'busy credential preflight preserves a pending runtime application',
+    (tester) async {
+      await seed('busy', secret: _firstSecret);
+      final application = RecordApplicationProbe(_single);
+      await mount(tester, application: application);
+      await _expand(tester, 'busy');
+      await _tap(tester, _key('record-edit-jobs-busy'));
+      await _tap(tester, _key('record-save-jobs-busy'));
+      await _loaded(tester);
+      await check(tester, 'busy');
+
+      final record = tester
+          .widget<RecordCredentialControls>(_slot('busy'))
+          .record;
+      final gate = _Gate();
+      storage.calls.clear();
+      storage.actions('read').add(_Action(gate: gate));
+      final inspection = coordinator.inspect(record, _token);
+      try {
+        await gate.entered.future;
+        await submit(tester, 'busy', 'replace', secret: _replacement);
+        expect(
+          find.textContaining('Another credential operation is pending'),
+          findsOneWidget,
+        );
+        expect(find.text('Runtime application: Applying...'), findsOneWidget);
+        expect(application.saves, [(key('busy'), false)]);
+        expect(application.retries, isEmpty);
+        expect(storage.calls, [('read', reference('busy')!)]);
+      } finally {
+        gate.release();
+        await inspection;
+      }
+    },
+  );
+
+  scenario(
     'replacement accepts the exact full-envelope limit but rejects one extra byte',
     (tester) async {
       await seed('limit', secret: _firstSecret);
@@ -779,7 +817,12 @@ void main() {
       final overhead = utf8.encode(jsonEncode(envelope)).length;
       final secret = 'x' * (CredentialSecret.maximumBytes - overhead);
       final before = file('limit').readAsBytesSync();
-      await mount(tester);
+      final application = RecordApplicationProbe(_single);
+      application.report(
+        key('limit'),
+        const RecordApplyOutcome(RecordApplyStatus.failed, 'capture_failed'),
+      );
+      await mount(tester, application: application);
       await _expand(tester, 'limit');
       await check(tester, 'limit');
       storage.calls.clear();
@@ -790,6 +833,12 @@ void main() {
       );
       expect(storage.calls, isEmpty);
       _expectSecret(storage, ref, _firstSecret);
+      expect(application.saves, isEmpty);
+      expect(application.retries, isEmpty);
+      expect(find.text('Runtime application: Not applied'), findsOneWidget);
+      await _tap(tester, find.text('Retry application'));
+      expect(application.retries, [key('limit')]);
+      expect(storage.calls, isEmpty);
       await check(tester, 'limit');
       await submit(tester, 'limit', 'replace', secret: secret);
       _expectStatus('limit', _stored);
@@ -809,6 +858,11 @@ void main() {
       (tester) async {
         await seed('partial', type: _multiple);
         final application = RecordApplicationProbe(_multiple);
+        application.report((
+          collection: _collection,
+          type: _multiple,
+          id: ConfigurationRecordId('partial'),
+        ), const RecordApplyOutcome(RecordApplyStatus.applied, 'added'));
         await seed('independent');
         await mount(tester, application: application);
         await _expand(tester, 'partial');
@@ -829,6 +883,10 @@ void main() {
         await submit(tester, 'partial', 'set');
         expect(application.saves, isEmpty);
         expect(application.reconciliations, isEmpty);
+        expect(
+          find.text('Runtime application: No confirmed result'),
+          findsOneWidget,
+        );
         _expectStatus('partial', unavailable ? _unavailable : _failed);
         _expectStatus('partial', _unchecked, 'backup');
         final ref = reference('partial')!;
@@ -1001,11 +1059,19 @@ void main() {
     (tester) async {
       await seed('reconcile');
       final application = RecordApplicationProbe(_single);
+      application.report(
+        key('reconcile'),
+        const RecordApplyOutcome(RecordApplyStatus.applied, 'added'),
+      );
       await mount(tester, application: application);
       await _expand(tester, 'reconcile');
       await check(tester, 'reconcile');
       storage.actions('write').add(_Action(errorAfter: _storageError(false)));
       await submit(tester, 'reconcile', 'set');
+      expect(
+        find.text('Runtime application: No confirmed result'),
+        findsOneWidget,
+      );
       final ref = reference('reconcile')!;
       final protected = storage.values[ref]!;
       for (final corrupt in [false, true]) {
