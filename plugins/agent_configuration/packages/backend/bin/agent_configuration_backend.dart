@@ -3,6 +3,7 @@ import 'dart:isolate';
 
 import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_plugin_backend_support/adele_plugin_backend_support.dart';
+import 'package:adele_project_storage/adele_project_storage.dart';
 import 'package:agent_configuration_backend/agent_configuration_backend.dart';
 import 'package:agent_configuration_contract/agent_configuration_contract.dart';
 
@@ -26,12 +27,23 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
     hostRequests: hostRequests,
     hostInfrastructureContext: infrastructureContext,
   );
-  final router = AdeleConfigurationContextRouter.single(
-    configurationContext: defaultContext,
-    serviceId: agentCatalogServiceId,
-    dispatcher: AgentCatalogServiceDispatcher(
-      AgentCatalogBackend(configuration),
+  final catalog = AgentCatalogBackend(configuration);
+  final selection = AgentSelectionBackend(
+    ProjectStorageServiceClient(
+      hostRequests.bindInfrastructure(
+        hostInfrastructureContext: infrastructureContext,
+        serviceId: projectStorageServiceId,
+      ),
     ),
+    catalog,
+  );
+  final router = AdeleConfigurationContextRouter(
+    contexts: {
+      defaultContext: {
+        agentCatalogServiceId: AgentCatalogServiceDispatcher(catalog),
+        agentSelectionServiceId: AgentSelectionServiceDispatcher(selection),
+      },
+    },
   );
   final requests = ReceivePort();
   try {

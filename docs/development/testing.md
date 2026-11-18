@@ -572,9 +572,14 @@ test-only service subclass injects a lost acknowledgement after actual native
 publication to verify conservative error reporting and mandatory Reload.
 
 The `agent_configuration_contract` and `agent_configuration_backend` targets cover
-the generated catalog and its record projection. From `app/`, run
+the generated catalog, record projection, and bounded Session-selection contract
+and failure semantics. From `app/`, run
 `flutter test --no-pub test/core/agent_catalog_integration_test.dart` for real
 shared-host AOT startup and live Settings CRUD on one backend generation.
+`test/core/agent_selection_integration_test.dart` adds ordinary compiled Agent
+selection over real host-mediated Project transactions, durable reopen and
+temporary backing, revision conflicts, corruption, and lost-acknowledgement
+reconciliation. These tests use isolated Settings roots and no Chat Run.
 `test/core/durable_chat_session_integration_test.dart` covers Chat and Project
 reopen when Agent activation fails. Declaration-only installations still need no
 executable host, as tested by `test/core/application_plugin_bootstrap_test.dart`.

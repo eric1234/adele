@@ -1,5 +1,5 @@
 name: agent_configuration_contract
-description: Read-only service contract for current Agent definitions.
+description: Service contracts for global Agent definitions and Session selections.
 publish_to: none
 version: 0.1.0
 
@@ -10,6 +10,7 @@ resolution: workspace
 
 dependencies:
   adele_contract: ^0.1.0
+  adele_settings: ^0.1.0
 
 dev_dependencies:
   test: ^1.26.3
