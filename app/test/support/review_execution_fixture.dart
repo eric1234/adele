@@ -24,13 +24,13 @@ List<String> reviewModelMessages(Map<String, Object?> request) => [
 final class ReviewExecutionFixture
     implements AdeleStreamChannel, ModelToolContribution, ToolExecutable {
   static final providerId = ProviderId('test.review.model');
+  static final toolId = ToolId('test.review.probe');
   static const model = 'review-deterministic';
   static const answer = 'Reviewed the complete immutable batch.';
   final requests = <Map<String, Object?>>[];
   final executedSessions = <String>[];
   final entered = Completer<void>();
   Completer<void>? modelGate;
-  bool requiresApproval = false;
   late final CapabilityRegistration _provider;
   late final ExtensionRegistration _tools;
 
@@ -114,7 +114,7 @@ final class ReviewExecutionFixture
   ) async => [
     ToolRegistration(
       definition: ToolDefinition(
-        id: ToolId('test.review.probe'),
+        id: toolId,
         description: 'Observe the deterministic review fixture.',
       ),
       modelDefinition: ModelToolDefinition(
@@ -143,9 +143,7 @@ final class ReviewExecutionFixture
     CanonicalToolArguments arguments,
     ToolExecutionContext context,
   ) async => EffectDescription(
-    effects: [
-      requiresApproval ? ToolEffect.sourceMutation : ToolEffect.sourceRead,
-    ],
+    effects: const [ToolEffect.sourceRead],
     targets: const [],
     summary: 'Observe the deterministic review fixture without changing files.',
   );

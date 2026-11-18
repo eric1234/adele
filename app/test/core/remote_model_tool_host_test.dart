@@ -7,7 +7,6 @@ import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_contract/adele_contract.dart';
-import 'package:adele_desktop/core/approval_gated_tool_policy.dart';
 import 'package:adele_desktop/core/project_storage_host.dart';
 import 'package:adele_desktop/core/remote_inference_context_host.dart';
 import 'package:adele_environment/adele_environment.dart';
@@ -30,8 +29,6 @@ import 'package:agent_kernel/agent_kernel.dart'
         ToolInvocationResolver,
         ToolMaterializationException,
         ToolPolicyGate,
-        ToolPolicy,
-        ToolPolicyInput,
         ToolPolicyDecision,
         ToolExecutionDenied,
         ToolProposalFailureKind,
@@ -41,6 +38,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
+import '../support/fixed_tool_policy.dart';
 import '../support/orchestration_test_lifecycle.dart';
 
 const _probeId = 'dev.adele.test.remote-model-tool';
@@ -700,7 +698,7 @@ void main() {
     final required =
         await const ToolPolicyGate().evaluate(
               invocation: resolved.invocation,
-              policy: const ApprovalGatedToolPolicy(),
+              policy: const FixedToolPolicy(ToolPolicyDecision.ask),
               interruptionId: RunInterruptionId('mutation-approval'),
             )
             as ToolApprovalRequired;
@@ -1337,7 +1335,7 @@ void main() {
       final required =
           await const ToolPolicyGate().evaluate(
                 invocation: resolved.invocation,
-                policy: const ApprovalGatedToolPolicy(),
+                policy: const FixedToolPolicy(ToolPolicyDecision.ask),
                 interruptionId: RunInterruptionId('process-approval'),
               )
               as ToolApprovalRequired;
@@ -1656,7 +1654,7 @@ void main() {
       final denied =
           await const ToolPolicyGate().evaluate(
                 invocation: resolved.invocation,
-                policy: _DenyPolicy(),
+                policy: const FixedToolPolicy(ToolPolicyDecision.deny),
                 interruptionId: RunInterruptionId('denied'),
               )
               as ToolExecutionDenied;
@@ -1665,7 +1663,7 @@ void main() {
       final required =
           await const ToolPolicyGate().evaluate(
                 invocation: resolved.invocation,
-                policy: const ApprovalGatedToolPolicy(),
+                policy: const FixedToolPolicy(ToolPolicyDecision.ask),
                 interruptionId: RunInterruptionId('shell-approval'),
               )
               as ToolApprovalRequired;
@@ -2128,11 +2126,6 @@ final class _Context implements ModelToolHostContext {
     }
     throw StateError('No authority granted for $T.');
   }
-}
-
-final class _DenyPolicy implements ToolPolicy {
-  @override
-  ToolPolicyDecision evaluate(ToolPolicyInput input) => ToolPolicyDecision.deny;
 }
 
 final class _Shell

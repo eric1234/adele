@@ -163,6 +163,7 @@ void main() {
       'plugins/openai/records.schema.json',
       'plugins/agent_configuration/records.schema.json',
       'plugins/chat_strategy/settings.schema.json',
+      'plugins/conservative_tool_policy/settings.schema.json',
       'plugins/source_editor/settings.schema.json',
     ]) {
       final File destination = File('${root.path}/$path');
@@ -2231,10 +2232,13 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
             'version': '0.1.0',
             'displayName': 'Conservative Tool Policy',
           },
+          'settingsSchema': 'settings.schema.json',
           'authorizationPolicies': [
             {
               'extensionId':
                   'dev.adele.plugin.conservative-tool-policy.authorization',
+              'enabledSettingId':
+                  'dev.adele.plugin.conservative-tool-policy.enabled',
             },
           ],
           'components': {
@@ -2265,6 +2269,32 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         expect(installation.authorizationPolicies.map((id) => id.value), [
           'dev.adele.plugin.conservative-tool-policy.authorization',
         ]);
+        final schema = installation.settingsSchema!;
+        expect(
+          schema.artifactUri,
+          directory.uri.resolve('settings.schema.json'),
+        );
+        expect(
+          await File.fromUri(schema.artifactUri).readAsBytes(),
+          await File(
+            'plugins/conservative_tool_policy/settings.schema.json',
+          ).readAsBytes(),
+        );
+        final setting = schema.definitions.single;
+        expect(installation.authorizationPolicyEnabledSettings, {
+          installation.authorizationPolicies.single: setting.id,
+        });
+        expect(
+          setting.id.value,
+          'dev.adele.plugin.conservative-tool-policy.enabled',
+        );
+        expect(setting.owner.value, installation.metadata.id.value);
+        expect(setting.label, 'Enable Conservative Tool Authorization');
+        expect(setting.category, 'Agents');
+        expect(setting.section, 'Tool Authorization');
+        expect(catalog.settings.resolve<bool>(setting.id).value, isTrue);
+        expect(setting.validate(false), isFalse);
+        expect(() => setting.validate('false'), throwsException);
         expect(
           installation.backendArtifactUri,
           backend == 'available' ? artifact.uri : isNull,
@@ -2274,7 +2304,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           final issue = catalog.issues.single;
           expect(issue.pluginId, installation.metadata.id);
           expect(issue.installationDirectory.uri, directory.uri);
-          expect(issue.isAuthorizationPolicyIssue, isTrue);
+          expect(issue.isAuthorizationPolicyIssue, backend == 'absent');
           expect(
             issue.component,
             backend == 'absent' ? isNull : PreparedPluginComponent.backend,
@@ -2667,7 +2697,8 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
               'displayName': plugin.name,
             },
             if (plugin.directory == 'source-editor' ||
-                plugin.directory == 'chat-strategy')
+                plugin.directory == 'chat-strategy' ||
+                plugin.directory == 'conservative-tool-policy')
               'settingsSchema': 'settings.schema.json',
             if (plugin.directory == 'openai' ||
                 plugin.directory == 'agent-configuration')
@@ -2677,6 +2708,8 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
                 {
                   'extensionId':
                       'dev.adele.plugin.conservative-tool-policy.authorization',
+                  'enabledSettingId':
+                      'dev.adele.plugin.conservative-tool-policy.enabled',
                 },
               ],
             'components': {
@@ -2709,6 +2742,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
                   (hasFrontend ? 1 : 0) +
                   (plugin.directory == 'source-editor' ? 1 : 0) +
                   (plugin.directory == 'chat-strategy' ? 1 : 0) +
+                  (plugin.directory == 'conservative-tool-policy' ? 1 : 0) +
                   (plugin.directory == 'openai' ? 1 : 0) +
                   (plugin.directory == 'agent-configuration' ? 1 : 0) +
                   (plugin.directory == 'git' ? 1 : 0),
@@ -2754,7 +2788,10 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         );
         expect(conservative.backendArtifactUri, conservativeToolPolicy.uri);
         expect(conservative.frontend, isNull);
-        expect(conservative.settingsSchema, isNull);
+        final policySetting = conservative.settingsSchema!.definitions.single;
+        expect(conservative.authorizationPolicyEnabledSettings, {
+          conservative.authorizationPolicies.single: policySetting.id,
+        });
         expect(conservative.recordsSchema, isNull);
         expect(conservative.backendConsumedCapabilities, isEmpty);
         expect(conservative.backendConsumedRecordTypes, isEmpty);
@@ -3001,7 +3038,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         expect(budget.validate(80), 80);
         expect(budget.validate(9223372036854775807), 9223372036854775807);
         expect(() => budget.validate(0), throwsException);
-        expect(catalog.settings.definitions, [budget, setting]);
+        expect(catalog.settings.definitions, [budget, policySetting, setting]);
         expect(catalog.settings.resolve(setting.id).value, isFalse);
         final sourceCommand =
             source.frontend!.extensions.single
@@ -3492,6 +3529,11 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
 
   for (final declaration in [
     (kind: 'settings', source: 'chat_strategy', installation: 'chat-strategy'),
+    (
+      kind: 'settings',
+      source: 'conservative_tool_policy',
+      installation: 'conservative-tool-policy',
+    ),
     (kind: 'settings', source: 'source_editor', installation: 'source-editor'),
     (kind: 'records', source: 'openai', installation: 'openai'),
     (
@@ -3902,6 +3944,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
 
   for (final metadata in [
     'settings',
+    'policy-settings',
     'records',
     'agent-records',
     'descriptors',
@@ -3914,6 +3957,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         final file = File(
           '${root.path}/${switch (metadata) {
             'settings' => 'plugins/source_editor/settings.schema.json',
+            'policy-settings' => 'plugins/conservative_tool_policy/settings.schema.json',
             'records' => 'plugins/openai/records.schema.json',
             'agent-records' => 'plugins/agent_configuration/records.schema.json',
             _ => 'tools/stock_frontend_descriptors.dart',
@@ -3922,6 +3966,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         file.writeAsStringSync(
           file.readAsStringSync().replaceFirst(switch (metadata) {
             'settings' => 'Enable Code Folding',
+            'policy-settings' => 'Enable Conservative Tool Authorization',
             'records' => 'OpenAI API',
             'agent-records' => 'When to Use',
             _ => 'Open Source...',

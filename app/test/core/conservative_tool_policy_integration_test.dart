@@ -8,7 +8,7 @@ import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_desktop/core/adele_runtime.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
-import 'package:adele_desktop/core/approval_gated_tool_policy.dart';
+import 'package:adele_desktop/core/global_settings_service.dart';
 import 'package:adele_desktop/core/prepared_settings.dart';
 import 'package:adele_desktop/core/tool_authorization_policy_composer.dart';
 import 'package:adele_desktop/ui/execution/session_execution_controller.dart';
@@ -16,7 +16,9 @@ import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_orchestration/remote_tool_authorization.dart';
+import 'package:adele_platform_storage/adele_platform_storage.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
+import 'package:adele_settings/adele_settings.dart';
 import 'package:agent_kernel/agent_kernel.dart';
 import 'package:chat_strategy_backend/chat_strategy_backend.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -27,9 +29,12 @@ import '../../../tools/backend_artifacts.dart';
 
 const _pluginId = 'dev.adele.plugin.conservative-tool-policy';
 const _extensionId = '$_pluginId.authorization';
+final _enabled = SettingId('$_pluginId.enabled');
 const _bound = Duration(seconds: 10);
 final _runId = RunId('policy-parity');
 final _modelId = ProviderId('dev.adele.test.policy-model');
+
+enum _Stock { absent, enabled, disabled }
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -90,7 +95,7 @@ void main() {
   late _Tool tool;
   late _Channels channels;
 
-  setUp(() async {
+  Future<void> createRuntime() async {
     runtime = AdeleRuntime();
     addTearDown(runtime.close);
     chat = ChatStrategyPlugin(maxModelInvocations: 2);
@@ -146,15 +151,24 @@ void main() {
       taskId: task.task.id,
       strategyId: chatStrategyId,
     );
-  });
+  }
+
+  setUp(createRuntime);
 
   Future<ApplicationPluginBootstrap> start({
-    bool installed = true,
+    _Stock stock = _Stock.enabled,
     ApplicationPluginBootstrap? bootstrap,
+    Future<PreparedSettingsSnapshot> Function(PreparedPluginCatalog)?
+    loadSettings,
   }) async {
+    final installed = stock != _Stock.absent;
     final plugins = bootstrap ?? runtime.plugins;
     plugins.configureSettingsLoader(
-      (catalog) async => PreparedSettingsSnapshot.resolve(catalog),
+      loadSettings ??
+          (catalog) async => PreparedSettingsSnapshot.resolve(
+            catalog,
+            globalOverrides: {if (stock == _Stock.disabled) _enabled: false},
+          ),
     );
     await plugins.start(
       installationRoot: (installed ? installations : emptyInstallations).path,
@@ -176,8 +190,12 @@ void main() {
       expect(backend.installation.authorizationPolicies, [
         ExtensionId(_extensionId),
       ]);
+      expect(backend.installation.authorizationPolicyEnabledSettings, {
+        ExtensionId(_extensionId): _enabled,
+      });
       expect(plugins.expectedToolAuthorizationPolicies, {
-        backend.installation: [ExtensionId(_extensionId)],
+        if (stock == _Stock.enabled)
+          backend.installation: [ExtensionId(_extensionId)],
       });
       expect(backend.installation.frontend, isNull);
       expect(
@@ -186,19 +204,20 @@ void main() {
       );
       expect(backend.connection!.capabilityExposures, isEmpty);
       expect(backend.connection!.extensionExposures.map((e) => e.toMap()), [
-        {
-          'extensionPointId': toolAuthorizationPolicies.value,
-          'extensionId': _extensionId,
-          'serviceId': remoteToolAuthorizationPolicyServiceId,
-          'configurationContext': 'default',
-          'metadata': {'routeId': 'conservative'},
-        },
+        if (stock == _Stock.enabled)
+          {
+            'extensionPointId': toolAuthorizationPolicies.value,
+            'extensionId': _extensionId,
+            'serviceId': remoteToolAuthorizationPolicyServiceId,
+            'configurationContext': 'default',
+            'metadata': {'routeId': 'conservative'},
+          },
       ]);
       expect(
         runtime.extensions
             .discover(toolAuthorizationPolicies)
             .where((binding) => binding.id.value == _extensionId),
-        hasLength(1),
+        hasLength(stock == _Stock.enabled ? 1 : 0),
       );
     } else {
       expect(plugins.host, isNull);
@@ -230,7 +249,6 @@ void main() {
   }
 
   ToolAuthorizationPolicyComposer composer({
-    bool legacy = true,
     ApplicationPluginBootstrap? plugins,
   }) => ToolAuthorizationPolicyComposer(
     extensions: runtime.extensions,
@@ -238,8 +256,70 @@ void main() {
     lifecycle: runtime.lifecycle,
     session: session,
     runId: _runId,
-    legacyPolicy: legacy ? const ApprovalGatedToolPolicy() : null,
   );
+
+  Future<(SessionExecutionController, RunId)> runChat() async {
+    chat.sessions.obtain(session.id).appendUserMessage('Exercise the tool.');
+    final controller = SessionExecutionController(
+      runtime: runtime,
+      session: session,
+      providerId: _modelId,
+      model: 'fixture-model',
+    );
+    addTearDown(controller.close);
+    final runId = await controller.startRun();
+    await controller.activeRunFuture;
+    return (controller, runId);
+  }
+
+  Future<void> expectChatDecision(
+    EffectDescription effects,
+    ToolPolicyDecision expected, {
+    bool retireWhileWaiting = false,
+  }) async {
+    tool.effects = effects;
+    final (controller, runId) = await runChat();
+    if (expected == ToolPolicyDecision.ask) {
+      expect(controller.stateForRun(runId), RunState.waiting);
+      expect(tool.executions, 0);
+      final approval = controller.pendingApproval!;
+      // A completed decision retains its invocation through stock retirement.
+      if (retireWhileWaiting) {
+        await runtime.plugins.close();
+        expect(runtime.extensions.discover(toolAuthorizationPolicies), isEmpty);
+      }
+      expect(controller.resolveApproval(approval, approved: true), isTrue);
+      await controller.activeRunFuture;
+    }
+    expect(controller.failure, isNull);
+    expect(controller.stateForRun(runId), RunState.completed);
+    expect(controller.pendingApproval, isNull);
+    final invocation = controller.activityForRun(runId)!.tools.single;
+    expect(invocation.canonicalArguments, {'command': 'echo harmless'});
+    expect(invocation.effects!.effects, effects.effects);
+    expect(invocation.effects!.uncertainty, effects.uncertainty);
+    final approvals = invocation.changes.where(
+      (change) => change.kind == ToolActivityKind.approvalRequested,
+    );
+    expect(
+      approvals,
+      expected == ToolPolicyDecision.ask ? hasLength(1) : isEmpty,
+    );
+    expect(tool.executions, expected == ToolPolicyDecision.deny ? 0 : 1);
+    expect(channels.modelRequests, hasLength(2));
+    final input = channels.modelRequests.last['input']! as List<Object?>;
+    final outcome =
+        input.cast<Map<String, Object?>>().singleWhere(
+              (item) => item['kind'] == 'toolOutcome',
+            )['toolOutcome']
+            as Map<String, Object?>;
+    expect(
+      outcome['status'],
+      expected == ToolPolicyDecision.deny ? 'rejected' : 'success',
+    );
+    expect(channels.environmentRequests, 1);
+    await controller.close();
+  }
 
   for (final failure in ['startup', 'termination']) {
     test(
@@ -286,18 +366,7 @@ void main() {
               .close,
         );
         tool.effects = _effects([ToolEffect.sourceMutation]);
-        chat.sessions
-            .obtain(session.id)
-            .appendUserMessage('Exercise the tool.');
-        final controller = SessionExecutionController(
-          runtime: runtime,
-          session: session,
-          providerId: _modelId,
-          model: 'fixture-model',
-        );
-        addTearDown(controller.close);
-        final runId = await controller.startRun();
-        await controller.activeRunFuture;
+        final (controller, runId) = await runChat();
         final outcome = controller.activityForRun(runId)!.tools.single.outcome!;
         expect(outcome.disposition, ToolOutcomeDisposition.failure);
         expect(outcome.failureKind, ToolFailureKind.infrastructure);
@@ -343,7 +412,7 @@ void main() {
   );
 
   test(
-    'prepared AOT policy independently matches all 32 legacy decisions',
+    'prepared AOT policy decides all 32 effect and uncertainty combinations',
     () async {
       await start();
       final binding = runtime.extensions
@@ -364,7 +433,16 @@ void main() {
             effects: effects,
             context: invocation.context,
           );
-          final expected = const ApprovalGatedToolPolicy().evaluate(input);
+          final expected = switch (effects.effects.toList()) {
+            [ToolEffect.sourceRead || ToolEffect.resourceInspection]
+                when uncertainty == EffectUncertainty.none =>
+              ToolPolicyDecision.allow,
+            [ToolEffect.sourceMutation]
+                when uncertainty == EffectUncertainty.none =>
+              ToolPolicyDecision.ask,
+            [ToolEffect.processExecution] => ToolPolicyDecision.ask,
+            _ => ToolPolicyDecision.deny,
+          };
           // Compare the actual remote opinion, not a restrictive composed result
           // that could hide a too-permissive stock implementation (or Abstain).
           final actual = await binding.value.evaluate(
@@ -383,7 +461,6 @@ void main() {
             expected.name,
             reason: 'mask=$mask ${uncertainty.name}',
           );
-          expect(await composer(legacy: false).evaluate(input), expected);
           expect(await composer().evaluate(input), expected);
           totals.update(actual.name, (n) => n + 1, ifAbsent: () => 1);
         }
@@ -395,71 +472,130 @@ void main() {
     },
   );
 
-  for (final installed in [true, false]) {
-    for (final effects in [
-      _effects([ToolEffect.sourceRead]),
-      _effects([ToolEffect.sourceMutation]),
+  final mutation = _effects([ToolEffect.sourceMutation]);
+  final mixed = _effects([ToolEffect.sourceRead, ToolEffect.sourceMutation]);
+  for (final (effects, expected) in [
+    (_effects([ToolEffect.sourceRead]), ToolPolicyDecision.allow),
+    (mutation, ToolPolicyDecision.ask),
+    (
       _effects([ToolEffect.processExecution], EffectUncertainty.uncertain),
-      _effects([ToolEffect.sourceRead, ToolEffect.sourceMutation]),
-    ]) {
-      test('normal Chat authorization/continuation for ${effects.effects} '
-          '(stock installed=$installed)', () async {
-        await start(installed: installed);
-        tool.effects = effects;
-        final invocation = await resolve();
-        final expected = const ApprovalGatedToolPolicy().evaluate(
-          ToolPolicyInput(
-            invocation: invocation,
-            effects: effects,
-            context: invocation.context,
-          ),
-        );
-        chat.sessions
-            .obtain(session.id)
-            .appendUserMessage('Exercise the tool.');
-        final controller = SessionExecutionController(
-          runtime: runtime,
-          session: session,
-          providerId: _modelId,
-          model: 'fixture-model',
-        );
-        addTearDown(controller.close);
-        final runId = await controller.startRun();
-        await controller.activeRunFuture;
-        if (expected == ToolPolicyDecision.ask) {
-          expect(controller.stateForRun(runId), RunState.waiting);
-          expect(tool.executions, 0);
-          final approval = controller.pendingApproval!;
-          // A completed decision retains its invocation through stock retirement.
-          if (installed) {
-            await runtime.plugins.close();
-            expect(
-              runtime.extensions.discover(toolAuthorizationPolicies),
-              isEmpty,
-            );
-          }
-          expect(controller.resolveApproval(approval, approved: true), isTrue);
-          await controller.activeRunFuture;
-        }
-        expect(controller.failure, isNull);
-        expect(controller.stateForRun(runId), RunState.completed);
-        expect(controller.pendingApproval, isNull);
-        expect(tool.executions, expected == ToolPolicyDecision.deny ? 0 : 1);
-        expect(channels.modelRequests, hasLength(2));
-        final input = channels.modelRequests.last['input']! as List<Object?>;
-        final outcome =
-            input.cast<Map<String, Object?>>().singleWhere(
-                  (item) => item['kind'] == 'toolOutcome',
-                )['toolOutcome']
-                as Map<String, Object?>;
-        expect(
-          outcome['status'],
-          expected == ToolPolicyDecision.deny ? 'rejected' : 'success',
-        );
-        expect(channels.environmentRequests, 1);
+      ToolPolicyDecision.ask,
+    ),
+    (mixed, ToolPolicyDecision.deny),
+  ]) {
+    test(
+      'default stock: normal Chat ${expected.name} for ${effects.effects}',
+      () async {
+        await start();
+        await expectChatDecision(effects, expected, retireWhileWaiting: true);
+      },
+    );
+  }
+
+  for (final stock in [_Stock.absent, _Stock.disabled]) {
+    for (final effects in [mutation, mixed]) {
+      test('stock ${stock.name}: normal Chat executes ${effects.effects} '
+          'without an approval interruption', () async {
+        await start(stock: stock);
+        expect(runtime.extensions.discover(toolAuthorizationPolicies), isEmpty);
+        await expectChatDecision(effects, ToolPolicyDecision.allow);
       });
     }
   }
+
+  for (final (opinion, expected) in [
+    (ToolAuthorizationDecision.ask, ToolPolicyDecision.ask),
+    (ToolAuthorizationDecision.deny, ToolPolicyDecision.deny),
+  ]) {
+    test(
+      'disabled stock does not bypass an independent ${opinion.name}',
+      () async {
+        await start(stock: _Stock.disabled);
+        var calls = 0;
+        addTearDown(
+          runtime.extensions
+              .register(
+                point: toolAuthorizationPolicies,
+                id: ExtensionId('dev.adele.test.independent-policy'),
+                value: ToolAuthorizationPolicyContribution(
+                  evaluate: (request) {
+                    calls++;
+                    expect(request.effects.effects, mixed.effects);
+                    expect(request.sessionId, session.id);
+                    return opinion;
+                  },
+                ),
+              )
+              .close,
+        );
+        await expectChatDecision(mixed, expected);
+        expect(calls, 1);
+      },
+    );
+  }
+
+  test(
+    'Global Settings edits only change stock participation on restart',
+    () async {
+      final directory = await Directory.systemTemp.createTemp(
+        'stock-settings-',
+      );
+      addTearDown(() => directory.delete(recursive: true));
+      final roots = PlatformStorageRoots(
+        operatingSystem: Platform.operatingSystem,
+        configurationRoot: '${directory.path}/config',
+        localStateRoot: '${directory.path}/state',
+        localDataRoot: '${directory.path}/data',
+        cacheRoot: '${directory.path}/cache',
+      );
+      late GlobalSettingsService settings;
+      late GlobalSettingsView view;
+      Future<PreparedSettingsSnapshot> load(
+        PreparedPluginCatalog catalog,
+      ) async {
+        settings = GlobalSettingsService(
+          catalog: catalog.settings,
+          roots: roots,
+        );
+        addTearDown(settings.close);
+        view = await settings.load();
+        return PreparedSettingsSnapshot.fromResolution(
+          catalog,
+          view.catalog,
+          values: view.values,
+          failures: view.failures,
+        );
+      }
+
+      Future<void> restart(_Stock expected) async {
+        await runtime.close();
+        await settings.close();
+        await createRuntime();
+        await start(stock: expected, loadSettings: load);
+      }
+
+      await start(loadSettings: load);
+      expect(view.values[_enabled]!.source, SettingValueSource.defaultValue);
+      view = await settings.save(view, _enabled, false);
+      expect(view.values[_enabled]!.value, false);
+      // The running generation was enabled, including for this *new* Run.
+      await expectChatDecision(mutation, ToolPolicyDecision.ask);
+
+      await restart(_Stock.disabled);
+      expect(view.values[_enabled]!.source, SettingValueSource.global);
+      expect(view.values[_enabled]!.value, false);
+      view = await settings.reset(view, _enabled);
+      expect(view.values[_enabled]!.value, true);
+      // Reset restores the default on disk, not the running AOT registration.
+      await expectChatDecision(mutation, ToolPolicyDecision.allow);
+
+      await restart(_Stock.enabled);
+      expect(view.values[_enabled]!.source, SettingValueSource.defaultValue);
+      await expectChatDecision(mutation, ToolPolicyDecision.ask);
+    },
+    skip:
+        !Platform.isLinux, // The configuration store supports writes on Linux.
+  );
 
   test(
     'stock retirement invalidates unresolved composition without retargeting',
@@ -483,7 +619,7 @@ void main() {
         ),
       );
       addTearDown(later.close);
-      // A legacy and stock Deny must not hide infrastructure failure.
+      // The stock Deny must not hide an infrastructure failure.
       tool.effects = _effects(ToolEffect.values);
       final invocation = await resolve();
       Future<ToolPolicyGateResult> evaluate({

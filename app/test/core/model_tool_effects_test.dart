@@ -1,4 +1,3 @@
-import 'package:adele_desktop/core/approval_gated_tool_policy.dart';
 import 'package:adele_desktop/core/model_tool_host.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
@@ -10,6 +9,7 @@ import 'package:filesystem_tools_plugin/filesystem_tools_plugin.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:search_tools_plugin/search_tools_plugin.dart';
 
+import '../support/fixed_tool_policy.dart';
 import '../support/orchestration_test_lifecycle.dart';
 
 const Map<String, Map<String, Object?>> _stockArguments = {
@@ -73,7 +73,7 @@ void main() {
     'delete_file': ToolEffect.sourceMutation,
     'run_command': ToolEffect.processExecution,
   }.entries) {
-    test('evaluates stock ${entry.key} described effects', () async {
+    test('gate retains stock ${entry.key} described effects', () async {
       final ToolInvocation invocation = await _resolve(
         catalog.materialize(),
         context,
@@ -82,7 +82,7 @@ void main() {
       );
       final ToolPolicyGateResult result = await const ToolPolicyGate().evaluate(
         invocation: invocation,
-        policy: const ApprovalGatedToolPolicy(),
+        policy: const FixedToolPolicy(ToolPolicyDecision.ask),
         interruptionId: RunInterruptionId('approval-${entry.key}'),
       );
 
@@ -98,21 +98,16 @@ void main() {
         result.effects.targets.single.uri.pathSegments,
         contains('environment-${session.id.value}'),
       );
-      if (entry.value == ToolEffect.sourceRead) {
-        expect(result, isA<ToolExecutionAllowed>());
-      } else {
-        expect(result, isA<ToolApprovalRequired>());
-        final ToolApprovalInterruption interruption =
-            (result as ToolApprovalRequired).interruption;
-        expect(interruption.id, RunInterruptionId('approval-${entry.key}'));
-        expect(interruption.invocation, same(invocation));
-        expect(interruption.effects, same(result.effects));
-      }
+      expect(result, isA<ToolApprovalRequired>());
+      final interruption = (result as ToolApprovalRequired).interruption;
+      expect(interruption.id, RunInterruptionId('approval-${entry.key}'));
+      expect(interruption.invocation, same(invocation));
+      expect(interruption.effects, same(result.effects));
     });
   }
 
   test(
-    'retained output inspection is certain and needs no approval or reads',
+    'retained output inspection describes its target without reading output',
     () async {
       catalog.register(
         searchCommandOutputToolRegistration(
@@ -129,95 +124,18 @@ void main() {
           'pattern': 'diagnostic',
         },
       );
-      final result = await const ToolPolicyGate().evaluate(
-        invocation: invocation,
-        policy: const ApprovalGatedToolPolicy(),
-        interruptionId: RunInterruptionId('inspection-policy'),
+      final effects = await invocation.tool.executable.describe(
+        invocation.arguments,
+        invocation.context,
       );
-      expect(result, isA<ToolExecutionAllowed>());
-      expect(result.effects.effects, {ToolEffect.resourceInspection});
-      expect(result.effects.uncertainty, EffectUncertainty.none);
+      expect(effects.effects, {ToolEffect.resourceInspection});
+      expect(effects.uncertainty, EffectUncertainty.none);
+      expect(effects.targets.single.uri.toString(), contains('earlier-run'));
       expect(
-        result.effects.targets.single.uri.toString(),
-        contains('earlier-run'),
-      );
-      expect(
-        result.effects.targets.single.uri.toString(),
+        effects.targets.single.uri.toString(),
         contains('earlier-invocation'),
       );
-      expect(
-        result.effects.targets.single.uri.scheme,
-        isNot('adele-environment'),
-      );
-    },
-  );
-
-  test(
-    'evaluates every effect set and uncertainty without alias authority',
-    () async {
-      final MaterializedTool read = catalog.materialize().byAlias('read_file')!;
-      for (final String alias in <String>[
-        ..._stockArguments.keys,
-        'unfamiliar_alias',
-      ]) {
-        final ToolInvocation invocation = await _resolve(
-          MaterializedToolSet(<MaterializedTool>[
-            MaterializedTool(
-              definition: read.definition,
-              modelDefinition: ModelToolDefinition(
-                alias: alias,
-                description: read.modelDefinition.description,
-                argumentsSchema: read.modelDefinition.argumentsSchema,
-              ),
-              executable: read.executable,
-            ),
-          ]),
-          context,
-          alias,
-          _stockArguments['read_file']!,
-        );
-        // Includes empty/unspecified effects, each other effect, and every mix.
-        for (int mask = 0; mask < (1 << ToolEffect.values.length); mask++) {
-          final List<ToolEffect> effects = <ToolEffect>[
-            for (int index = 0; index < ToolEffect.values.length; index++)
-              if (mask & (1 << index) != 0) ToolEffect.values[index],
-          ];
-          for (final EffectUncertainty uncertainty
-              in EffectUncertainty.values) {
-            final ToolPolicyDecision decision = const ApprovalGatedToolPolicy()
-                .evaluate(
-                  ToolPolicyInput(
-                    invocation: invocation,
-                    context: context,
-                    effects: EffectDescription(
-                      effects: effects,
-                      targets: const <EffectTarget>[],
-                      summary: 'Read only; this text is not policy authority.',
-                      uncertainty: uncertainty,
-                    ),
-                  ),
-                );
-            final bool certainRead =
-                (mask == (1 << ToolEffect.sourceRead.index) ||
-                    mask == (1 << ToolEffect.resourceInspection.index)) &&
-                uncertainty == EffectUncertainty.none;
-            final bool certainMutation =
-                mask == (1 << ToolEffect.sourceMutation.index) &&
-                uncertainty == EffectUncertainty.none;
-            final bool processExecution =
-                mask == (1 << ToolEffect.processExecution.index);
-            expect(
-              decision,
-              certainRead
-                  ? ToolPolicyDecision.allow
-                  : certainMutation || processExecution
-                  ? ToolPolicyDecision.ask
-                  : ToolPolicyDecision.deny,
-              reason: '$alias: $effects, $uncertainty',
-            );
-          }
-        }
-      }
+      expect(effects.targets.single.uri.scheme, isNot('adele-environment'));
     },
   );
 }

@@ -351,23 +351,22 @@ Discovery/evaluation failures and stale registrations propagate through the
 existing policy-failure outcome, with effects known not to have occurred, rather
 than becoming Deny, Abstain, or permission to execute.
 
-The application captures an immutable expected-policy snapshot from the
-authoritative prepared catalog before backend activation. These
-[narrow installation declarations](plugin-layout.md#expected-authorization-participation)
-are independent of live advertisements. For each request, the host validates the
-canonical Run/Session context and requires every applicable expectation to match
-a live registration owned by that exact prepared installation's backend. A matching
+Before backend activation the application resolves the prepared catalog's
+[installation declarations](plugin-layout.md#expected-authorization-participation)
+against the shared global startup settings snapshot. Each backend receives only
+its own installation's resolved values. This determines which policies are
+expected independently of which backends successfully start. For each request,
+the host validates the canonical Run/Session context. Each applicable expectation
+must match a live registration owned by that exact installation's backend. A matching
 Extension ID from another installation, another catalog snapshot, or an in-process
 registration does not satisfy that provenance check. Independently registered
 policies still participate without needing a prepared declaration.
 
-Missing advertisements, startup failures, termination, retirement, and malformed
-expected-participation metadata fail through the existing tool-policy evaluation
-failure path, even if another policy would Deny. They do not produce a policy
-opinion or substitute the legacy participant. Expected participation currently uses
-only the startup/global activation boundary; future contextual enablement must
-resolve applicability from authoritative execution/configuration context, not
-caller-selected IDs. No Project or Agent policy-selection hierarchy is introduced.
+Failure to establish the expected set is not the same as establishing an empty
+set. A malformed declaration, an unresolvable condition, or an expected policy
+unavailable at evaluation causes authorization to fail without execution, even if
+another policy would Deny. A discovered empty installation root is valid; an
+unavailable startup catalog is not evidence of optional absence.
 
 Each captured registration is validated before and after its asynchronous-capable
 evaluation, and the full set is revalidated before composition completes. Retirement
@@ -381,14 +380,10 @@ approval wait: it is not rediscovered, re-evaluated, or revoked by subsequent po
 retirement/replacement. Approval still validates the retained exact executable and
 domain preconditions; a later invocation requires a new authorization request.
 
-Normal `SessionExecutionController` composition explicitly includes the unchanged
-`ApprovalGatedToolPolicy` as a **temporary legacy participant** alongside registry
-contributions. It is not a fallback for missing or failed discovery. Thus no
-contributions preserve current Conservative behavior, contributed Allow cannot
-weaken legacy Ask/Deny, and contributed Ask/Deny can further restrict operations.
-The internal `ToolPolicy` accepts synchronous or asynchronous results;
-`ToolPolicyGate` still owns effect preflight and Allow/Deny/Ask conversion into
-execution eligibility, denial, or the existing approval interruption.
+Normal `SessionExecutionController` composition uses only registry contributions.
+The host supplies neither a policy opinion nor a fallback classifier. The kernel's
+`ToolPolicyGate` still owns effect preflight and converts the composed Allow/Deny/Ask
+decision into execution eligibility, denial, or an exact-invocation approval wait.
 
 Independent AOT backends contribute through the same extension point using ordinary
 `AdeleExtensionExposure` readiness advertisements and the application's generic
@@ -423,21 +418,15 @@ access. No universal deadline, retry, or cancellation mechanism is introduced.
 
 The independently optional stock
 [Conservative policy](../../plugins/conservative_tool_policy/README.md) is an ordinary
-backend-only installation. Normal preparation publishes its AOT artifact and normal
-backend readiness registers its single authorization contribution through the same
-generic adapter. It evaluates only the supplied semantic request and requests no
-Environment or execution host services. Its exact effect/uncertainty decision table
-belongs to the plugin's local documentation.
-
-Normal execution temporarily evaluates both that stock contribution, when installed,
-and the explicit legacy participant. The stock implementation is not yet the sole
-production authorization policy. Omitting the optional installation removes its
-expectation and leaves legacy behavior intact without recreating a plugin or
-selecting a fallback. An installed expected stock policy that fails activation or
-retires instead makes new authorization requests fail readiness; the legacy
-participant cannot hide that failure. Completed approval decisions retain their
-existing lifetime. The S4b legacy-policy cutover and actual enable/disable and
-contextual configuration remain deferred. There is no YOLO mode.
+backend-only installation. It is enabled by default. Disabling it in Global
+Settings takes effect on restart, not on the next proposal or Run in the current
+process. When disabled or not installed it contributes no opinion; other active
+policies still apply. If none participate and none are expected, tool authorization
+is **unrestricted** (YOLO): the gate allows the invocation without asking for approval.
+This is a composition result, not an override of another policy or a bypass of
+proposal validation, exact tool bindings, Environment authority, or domain
+preconditions. Project- or Agent-specific applicability and hierarchical policy
+configuration remain future work.
 
 Denied or rejected work must not acquire execution authority. Remote tool
 materialization, argument validation, and description receive no effectful
@@ -1004,7 +993,7 @@ established by this foundation.
 | Session orchestration host and terminal finalization | [`app/lib/core/orchestration_host.dart`](../../app/lib/core/orchestration_host.dart), `createSessionOrchestrationRun`, `SessionOrchestrationRun` |
 | Inference context capture | [`context.dart`](../../packages/orchestration/lib/src/context.dart), [`inference_context_host.dart`](../../app/lib/core/inference_context_host.dart) |
 | Model provider adaptation | [`model_provider_host.dart`](../../app/lib/core/model_provider_host.dart), `ModelProviderCapabilityAdapter` |
-| Model-tool contracts, hosting, and policy | [`packages/model_tool/`](../../packages/model_tool/), [`model_tool_host.dart`](../../app/lib/core/model_tool_host.dart), [`approval_gated_tool_policy.dart`](../../app/lib/core/approval_gated_tool_policy.dart) |
+| Model-tool contracts, hosting, and policy composition | [`packages/model_tool/`](../../packages/model_tool/), [`model_tool_host.dart`](../../app/lib/core/model_tool_host.dart), [`tool_authorization_policy_composer.dart`](../../app/lib/core/tool_authorization_policy_composer.dart) |
 | Normal Run composition | [`session_execution_controller.dart`](../../app/lib/ui/execution/session_execution_controller.dart) |
 | Public activity projection | [`run_activity_projection.dart`](../../app/lib/core/run_activity_projection.dart), [`activity.dart`](../../packages/orchestration/lib/src/activity.dart) |
 | Terminal activity storage and lookup | [`project_database.dart`](../../app/lib/core/project_database.dart), `loadExecutionHistory`, `insertTerminalRun`; [`product_lifecycle.dart`](../../app/lib/core/product_lifecycle.dart), `runActivity`, `runActivitiesForSession` |

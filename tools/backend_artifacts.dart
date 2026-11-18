@@ -18,6 +18,9 @@ const _stockSchemaSources = {
   'dev.adele.plugin.chat-strategy': {
     'settings': 'plugins/chat_strategy/settings.schema.json',
   },
+  'dev.adele.plugin.conservative-tool-policy': {
+    'settings': 'plugins/conservative_tool_policy/settings.schema.json',
+  },
   'dev.adele.source-editor': {
     'settings': 'plugins/source_editor/settings.schema.json',
   },
@@ -36,7 +39,10 @@ const _stockMetadataOnlyInstallations = {
 
 const _stockAuthorizationPolicies = {
   'dev.adele.plugin.conservative-tool-policy': [
-    {'extensionId': 'dev.adele.plugin.conservative-tool-policy.authorization'},
+    {
+      'extensionId': 'dev.adele.plugin.conservative-tool-policy.authorization',
+      'enabledSettingId': 'dev.adele.plugin.conservative-tool-policy.enabled',
+    },
   ],
 };
 

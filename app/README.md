@@ -25,7 +25,7 @@ and [architecture overview](../docs/architecture/overview.md) for cross-system c
 | Exact-generation mediation of Session- or Environment-addressed relational storage | Public [Project storage contract](../packages/project_storage/lib/adele_project_storage.dart); plugin schema/state semantics: [plugin persistence](../docs/architecture/plugin-system.md#plugin-owned-state-and-persistence). |
 | Declared backend Capability consumption and exact-generation handles | Public [backend consumer API](../packages/plugin_backend_support/README.md#capability-consumption); provider selection: [capabilities](../packages/capabilities/README.md); semantic generated contracts remain plugin-owned. |
 | Session execution hosting and provider/tool/context adaptation | Public [orchestration](../packages/orchestration/README.md), [model-tool](../packages/model_tool/), and [model-provider](../packages/model_provider/) contracts; generic mechanics in [agent kernel](../packages/agent_kernel/README.md). |
-| Host policy, exact-invocation approval, Run activity projection, incremental evidence storage, and read-only recovery | Concrete strategy sequencing, conversation state/history, and grouping: [Chat](../plugins/chat_strategy/README.md). |
+| Tool policy composition, exact-invocation approval, Run activity projection, incremental evidence storage, and read-only recovery | Stock policy decisions: [Conservative](../plugins/conservative_tool_policy/README.md#decisions). Concrete strategy sequencing, conversation state/history, and grouping: [Chat](../plugins/chat_strategy/README.md). |
 | Generic shell, Task Browser/Session/Inspection hosting, grouped Main Content, shared console chrome, and application-local window state | Browser presentation: [Task Browser](../plugins/task_browser/README.md); console content: [Terminal](../plugins/terminal/README.md); tool behavior and bespoke cards: [Filesystem](../plugins/filesystem_tools/README.md), [Command](../plugins/command_tools/README.md), and [Search](../plugins/search_tools/README.md). |
 | Global Command Palette and application-owned Commands | Presentation-independent Command contract, composition, and dispatch admission: [core extensions](../packages/core_extensions/README.md#commands). |
 | Trusted host credential identity and lifecycle | Internal OS storage binding: [credential store](../packages/credential_store/README.md); authorization and configuration separation: [profiles and configuration](../docs/architecture/profiles-and-configuration.md#credentials-and-secrets). |
@@ -2010,35 +2010,28 @@ the [execution model](../docs/architecture/execution-model.md) and [Chat README]
 
 `SessionExecutionController` supplies the app-private
 [`ToolAuthorizationPolicyComposer`](lib/core/tool_authorization_policy_composer.dart)
-to the existing host/kernel policy gate. It discovers public orchestration
-authorization contributions per request and explicitly combines them with
-`ApprovalGatedToolPolicy` as a temporary legacy participant, not a discovery
-fallback. `ApplicationPluginBootstrap.expectedToolAuthorizationPolicies` retains
-an immutable installation-owned snapshot from the prepared catalog before backend
-startup. `captureExpectedToolAuthorizationPolicies` validates readiness and exact
-registration provenance, returning a check of the captured origins for composition
-completion without rediscovery. Malformed expected-participation metadata also
-fails closed through catalog diagnostics. No concrete policy plugin is imported.
-Precedence, failure, and capture lifetimes belong to
+to the existing host/kernel policy gate. It composes only the public orchestration
+contributions registered for that request. `ApplicationPluginBootstrap` derives
+`expectedToolAuthorizationPolicies` from the discovered installations and their
+[startup settings](#prepared-settings), not from successful backend starts.
+`captureExpectedToolAuthorizationPolicies` checks readiness and exact registration
+ownership and retains those origins for revalidation at composition completion.
+An unresolved startup snapshot or an unavailable expected contribution fails
+authorization; neither is a valid empty catalog. Precedence, failure, and capture
+lifetimes belong to
 [authorization composition](../docs/architecture/execution-model.md#authorization-composition).
+
 [`RemoteToolAuthorizationPolicyAdapter`](lib/core/remote_tool_authorization_host.dart)
 adapts ordinary AOT advertisements through `createRemoteExtensionAdapters()` using
 the public [authorization transport](../packages/orchestration/README.md#tool-authorization).
-It owns no composition policy or Environment authority. Normal stock preparation
-includes the optional backend-only
-[Conservative policy](../plugins/conservative_tool_policy/README.md), activated by
-the same generic bootstrap with no application-specific wiring. Its contribution
-and the explicit legacy participant coexist; omitting it leaves legacy behavior
-intact. Its declared participation survives startup failure and retirement, so
-neither can silently fall back to legacy-only execution. The stock implementation
-is not yet the sole production policy. S4b removal of the legacy participant and
-actual policy enable/disable and contextual configuration remain deferred.
+Normal preparation includes the default-enabled [Conservative policy](../plugins/conservative_tool_policy/README.md#global-setting).
+It uses the same bootstrap and adapter as any installed backend; the app has no
+stock policy import, decision table, or fallback. If a backend advertises its own
+explicitly disabled policy, bootstrap rejects that backend's activation before
+registration; the disabled policy does not become an expectation.
 
-The unchanged legacy `ApprovalGatedToolPolicy` allows a single certain source-read or read-only
-resource-inspection effect, asks for a single certain source-mutation effect or
-a single process-execution effect,
-and denies other combinations. Approvals are host-owned exact-invocation
-interruptions. Common host UI offers `Allow once` / `Deny`, rejects stale/duplicate
+An Ask decision creates a host-owned exact-invocation approval interruption.
+Common host UI offers `Allow once` / `Deny`, rejects stale/duplicate
 decisions, and applies display-safety checks without changing executed arguments.
 Approval neither overrides domain preconditions nor supplies an OS sandbox.
 
@@ -2373,7 +2366,7 @@ repository-wide deferred-feature ledger here.
 | Inference-context hosting | [`lib/core/inference_context_host.dart`](lib/core/inference_context_host.dart): `SessionInferenceContextSourceContext` |
 | Remote extension adapters | [`lib/core/remote_command_host.dart`](lib/core/remote_command_host.dart), [`lib/core/remote_inference_context_host.dart`](lib/core/remote_inference_context_host.dart), [`lib/core/remote_model_tool_host.dart`](lib/core/remote_model_tool_host.dart), [`lib/core/remote_orchestration_host.dart`](lib/core/remote_orchestration_host.dart), [`lib/core/remote_tool_authorization_host.dart`](lib/core/remote_tool_authorization_host.dart) |
 | Run activity projection | [`lib/core/run_activity_projection.dart`](lib/core/run_activity_projection.dart): `RunActivityProjection` |
-| Policy/common execution UI | [`lib/core/approval_gated_tool_policy.dart`](lib/core/approval_gated_tool_policy.dart), [`lib/ui/execution/`](lib/ui/execution/) |
+| Policy composition/common execution UI | [`lib/core/tool_authorization_policy_composer.dart`](lib/core/tool_authorization_policy_composer.dart), [`lib/ui/execution/`](lib/ui/execution/) |
 | Project selector/native picker and shell | [`lib/frontend/directory_picker_bridge.dart`](lib/frontend/directory_picker_bridge.dart), [`lib/ui/shell/`](lib/ui/shell/), `AdeleApplication` |
 | Inspection/compact hosts | [`lib/ui/inspection/`](lib/ui/inspection/), [`lib/ui/activity/`](lib/ui/activity/) |
 | Temporary provider/model choice | [`lib/plugins/temporary_chatgpt_selection.dart`](lib/plugins/temporary_chatgpt_selection.dart) |
