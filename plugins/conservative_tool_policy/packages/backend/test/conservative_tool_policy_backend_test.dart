@@ -322,7 +322,7 @@ void main() {
         'kind': 'ready',
         'commandPort': isA<SendPort>(),
         'pluginBackendProtocolVersion': adelePluginBackendProtocolVersion,
-        'extensionExposures': [],
+        'extensionExposures': <Object?>[],
       });
       expect(AdeleExtensionExposure.fromReady(running.ready), isEmpty);
       expect(AdeleCapabilityExposure.fromReady(running.ready), isEmpty);
@@ -338,8 +338,8 @@ void main() {
 
   for (final (label, bootstrap, failure) in [
     ('missing settings map', <String, Object?>{}, throwsFormatException),
-    ('non-map settings', {'settings': []}, throwsFormatException),
-    ('missing setting', {'settings': {}}, throwsStateError),
+    ('non-map settings', {'settings': <Object?>[]}, throwsFormatException),
+    ('missing setting', {'settings': <String, Object?>{}}, throwsStateError),
     for (final value in [1, 'true', 'false', null])
       (
         'non-boolean $value',
