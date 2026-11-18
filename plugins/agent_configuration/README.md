@@ -29,27 +29,11 @@ package, service, or runtime consumer. The existing prepared catalog discovers t
 declaration without executing plugin code.
 
 Defining an Agent does not select one for a Session, start a Run, inject context,
-or change provider requests or tool authorization. Agents have no provider,
-model, reasoning, or `defaultModelPresetId` fields.
-
-## Stock templates
-
-The files in [`stock/`](stock/) are the maintained source for five ordinary
-version-1 records. The filename stem is the record ID, not a reserved name.
-
-| Template | Intended role |
-| --- | --- |
-| [Ask](stock/ask.toml) | Answer questions and explain choices without treating a question as a request for edits. |
-| [Requirements](stock/requirements.toml) | Refine an idea into a request with clear scope and observable acceptance criteria. |
-| [Plan](stock/plan.toml) | Investigate the design, compare approaches, and propose steps for review. |
-| [Code](stock/code.toml) | Implement a scoped change using project conventions and verify the result. |
-| [Debug](stock/debug.toml) | Isolate a defect using evidence and verify a targeted correction when requested. |
-
-These source templates are not installed or automatically provisioned. Discovering
-the schema leaves the user's `agents` collection untouched; it may be empty.
-Any records created from the templates belong to the user and can be edited or
-deleted like any other Agent. Future provisioning must not overwrite user
-modifications or recreate records the user deliberately deleted.
+or change provider requests or tool authorization. Stock default records and their
+one-time provisioning, Model Preset references, Session selection, and context
+injection are deferred. Collections may remain empty; no records are provisioned,
+reserved, or recreated after deletion. Agents currently have no provider, model,
+reasoning, or `defaultModelPresetId` fields.
 
 Focused coverage belongs to the existing `adele_tools` and `adele_settings_host`
 test targets and `app/test/record_settings_dialog_test.dart`; see
