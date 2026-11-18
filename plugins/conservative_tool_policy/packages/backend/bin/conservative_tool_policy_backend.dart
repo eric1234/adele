@@ -5,6 +5,7 @@ import 'dart:isolate';
 import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_orchestration/remote_tool_authorization.dart';
+import 'package:adele_plugin_backend_support/adele_backend_settings.dart';
 import 'package:conservative_tool_policy_backend/conservative_tool_policy_backend.dart';
 
 Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
@@ -23,12 +24,19 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
     throw ArgumentError.value(bootstrapMessage, 'bootstrapMessage');
   }
 
-  final router = AdeleConfigurationContextRouter.single(
-    configurationContext: defaultConfigurationContext,
-    serviceId: remoteToolAuthorizationPolicyServiceId,
-    dispatcher: RemoteToolAuthorizationPolicyServiceDispatcher(
-      const ConservativeToolPolicyBackend(),
-    ),
+  final enabled = AdeleBackendSettings.fromBootstrap(
+    bootstrapMessage,
+  ).read<bool>(conservativeToolPolicyEnabledSettingId);
+  final router = AdeleConfigurationContextRouter(
+    contexts: {
+      if (enabled)
+        defaultConfigurationContext: {
+          remoteToolAuthorizationPolicyServiceId:
+              RemoteToolAuthorizationPolicyServiceDispatcher(
+                const ConservativeToolPolicyBackend(),
+              ),
+        },
+    },
   );
   final requests = ReceivePort();
   try {
@@ -37,14 +45,15 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
       'commandPort': requests.sendPort,
       'pluginBackendProtocolVersion': adelePluginBackendProtocolVersion,
       'extensionExposures': [
-        AdeleExtensionExposure(
-          extensionPointId: toolAuthorizationPolicies.value,
-          extensionId:
-              'dev.adele.plugin.conservative-tool-policy.authorization',
-          serviceId: remoteToolAuthorizationPolicyServiceId,
-          configurationContext: defaultConfigurationContext,
-          metadata: const {'routeId': conservativeToolPolicyRouteId},
-        ).toMap(),
+        if (enabled)
+          AdeleExtensionExposure(
+            extensionPointId: toolAuthorizationPolicies.value,
+            extensionId:
+                'dev.adele.plugin.conservative-tool-policy.authorization',
+            serviceId: remoteToolAuthorizationPolicyServiceId,
+            configurationContext: defaultConfigurationContext,
+            metadata: const {'routeId': conservativeToolPolicyRouteId},
+          ).toMap(),
       ],
     });
     await for (final Object? request in requests) {

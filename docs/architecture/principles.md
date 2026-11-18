@@ -49,8 +49,8 @@ meanings defined in the product model, not plugin-specific synonyms.
     distinct from bounded Run execution.
 13. Environment represents the practical source/filesystem and process context.
     Do not claim stronger isolation than its provider supplies.
-14. Strategy owns sequencing and Session semantics. Host/core owns generic
-    execution mechanics, policy, approval, and final authorization.
+14. Strategy owns sequencing and Session semantics. Plugins supply tool policy
+    opinions; host/core owns their composition, approvals, and execution admission.
 
 ## Presentation
 

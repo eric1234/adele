@@ -5,6 +5,8 @@ import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_orchestration/remote_tool_authorization.dart';
 
 const conservativeToolPolicyRouteId = 'conservative';
+const conservativeToolPolicyEnabledSettingId =
+    'dev.adele.plugin.conservative-tool-policy.enabled';
 
 final class ConservativeToolPolicyBackend
     implements RemoteToolAuthorizationPolicyService {

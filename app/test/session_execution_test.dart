@@ -38,6 +38,7 @@ import 'package:plugin_runtime/plugin_runtime.dart';
 
 final _strategyId = OrchestrationStrategyId('dev.adele.test.execution');
 final _providerId = ProviderId('dev.adele.test.execution-model');
+final _effectToolId = ToolId('dev.adele.test.effect');
 
 Iterable<ExecutionEvent> _events(AgentRun run) =>
     run.journal.records.map((record) => record.event);
@@ -49,6 +50,30 @@ void main() {
     fixture = await _Fixture.create();
     addTearDown(fixture.close);
   });
+
+  ExtensionRegistration registerPolicy(
+    String name,
+    FutureOr<ToolAuthorizationDecision> Function(ToolAuthorizationRequest)
+    evaluate,
+  ) {
+    final registration = fixture.runtime.extensions.register(
+      point: toolAuthorizationPolicies,
+      id: ExtensionId('dev.adele.test.authorization.$name'),
+      value: ToolAuthorizationPolicyContribution(evaluate: evaluate),
+    );
+    addTearDown(registration.close);
+    return registration;
+  }
+
+  Future<void> requireApprovalFor(ToolId toolId) async {
+    await fixture.runtime.plugins.start(installationRoot: '');
+    registerPolicy(
+      'ask-for-tool',
+      (request) => request.toolId == toolId
+          ? ToolAuthorizationDecision.ask
+          : ToolAuthorizationDecision.abstain,
+    );
+  }
 
   SessionFeedbackReceipt receipt({
     String id = 'review',
@@ -62,6 +87,7 @@ void main() {
   test(
     'feedback admission is synchronous and duplicate scheduling maps one Run',
     () async {
+      await requireApprovalFor(_effectToolId);
       fixture.materialization = Completer<void>();
       final controller = fixture.owners().getOrCreate(fixture.session);
       final expected = fixture.runtime.lifecycle.resolveSessionStrategy(
@@ -323,6 +349,7 @@ void main() {
   test(
     'Session routing identity survives Runs while affinity state resets',
     () async {
+      await requireApprovalFor(_effectToolId);
       final owners = fixture.owners();
       final controller = owners.getOrCreate(fixture.session);
       String? routingId;
@@ -400,6 +427,7 @@ void main() {
   testWidgets(
     'public EVC bridge emits exact view-local activity and revokes queued listeners',
     (tester) => tester.runAsync(() async {
+      await requireApprovalFor(_effectToolId);
       const library = 'package:execution_probe/main.dart';
       final compiler = Compiler()
         ..addPlugin(flutterEvalPlugin)
@@ -614,6 +642,7 @@ Widget build(String handle) => buildSessionActivity(handle);
   testWidgets(
     'common approval UI preserves proposal order and single-use decisions',
     (tester) => tester.runAsync(() async {
+      await requireApprovalFor(_effectToolId);
       await tester.binding.setSurfaceSize(const Size(360, 640));
       addTearDown(() => tester.binding.setSurfaceSize(null));
       final controller = fixture.controller();
@@ -717,6 +746,7 @@ Widget build(String handle) => buildSessionActivity(handle);
   testWidgets(
     'progress capture coalesces per frame and a queued capture cannot publish after close',
     (tester) => tester.runAsync(() async {
+      await requireApprovalFor(_effectToolId);
       var notifications = 0;
       var activityNotifications = 0;
       var ownerNotifications = 0;
@@ -796,6 +826,7 @@ Widget build(String handle) => buildSessionActivity(handle);
   );
 
   test('activity retains tool semantics on stable output handles', () async {
+    await requireApprovalFor(_effectToolId);
     final controller = fixture.controller();
     final source = SessionExecutionPresentationSource(
       controller: controller,
@@ -923,6 +954,7 @@ Widget build(String handle) => buildSessionActivity(handle);
     test(
       'unsafe authority $authority cannot be allowed but can be denied',
       () async {
+        await requireApprovalFor(_effectToolId);
         if (authority == 'summary') {
           fixture.tool.summary = 'Apply to file\u202E.dart';
         } else {
@@ -964,6 +996,7 @@ Widget build(String handle) => buildSessionActivity(handle);
   test(
     'approval keeps the exact retired tool and never executes its replacement',
     () async {
+      await requireApprovalFor(_effectToolId);
       final controller = fixture.controller();
       await controller.startRun();
       final starting = controller.activeRunFuture!;
@@ -1531,6 +1564,7 @@ Future<Object?> snapshot() => requestOwningBackend('probe', 'snapshot', <String,
   test(
     'Allow once does not authorize the same arguments in a later model turn',
     () async {
+      await requireApprovalFor(_effectToolId);
       final controller = fixture.controller();
       await controller.startRun();
       final starting = controller.activeRunFuture!;
@@ -1568,19 +1602,7 @@ Future<Object?> snapshot() => requestOwningBackend('probe', 'snapshot', <String,
   );
 
   group('public tool authorization', () {
-    ExtensionRegistration registerPolicy(
-      String name,
-      FutureOr<ToolAuthorizationDecision> Function(ToolAuthorizationRequest)
-      evaluate,
-    ) {
-      final registration = fixture.runtime.extensions.register(
-        point: toolAuthorizationPolicies,
-        id: ExtensionId('dev.adele.test.authorization.$name'),
-        value: ToolAuthorizationPolicyContribution(evaluate: evaluate),
-      );
-      addTearDown(registration.close);
-      return registration;
-    }
+    setUp(() => fixture.runtime.plugins.start(installationRoot: ''));
 
     for (final decision in [
       ToolAuthorizationDecision.allow,
@@ -1588,9 +1610,16 @@ Future<Object?> snapshot() => requestOwningBackend('probe', 'snapshot', <String,
     ]) {
       for (final denied in [false, true]) {
         test(
-          '${decision.name} cannot weaken legacy ${denied ? 'deny' : 'ask'}',
+          '${decision.name} cannot weaken contributed ${denied ? 'deny' : 'ask'}',
           () async {
-            if (denied) fixture.tool.uncertainty = EffectUncertainty.uncertain;
+            registerPolicy('restriction', (request) {
+              if (request.toolId != _effectToolId) {
+                return ToolAuthorizationDecision.abstain;
+              }
+              return denied
+                  ? ToolAuthorizationDecision.deny
+                  : ToolAuthorizationDecision.ask;
+            });
             var evaluations = 0;
             registerPolicy('opinion', (_) {
               evaluations++;
@@ -1600,7 +1629,7 @@ Future<Object?> snapshot() => requestOwningBackend('probe', 'snapshot', <String,
             await controller.startRun();
             var advancing = controller.activeRunFuture!;
             final call = await fixture.model.callAt(0);
-            call.propose('legacy');
+            call.propose('restricted');
             call.settle();
             if (!denied) {
               await advancing;
@@ -2115,6 +2144,7 @@ Future<Object?> snapshot() => requestOwningBackend('probe', 'snapshot', <String,
     test(
       'approval cannot override $failure while a real patch is pending',
       () async {
+        await requireApprovalFor(applyPatchToolId);
         final filesystem = const FilesystemToolsPlugin().activate(
           fixture.runtime.extensions,
         );
@@ -2191,6 +2221,7 @@ Future<Object?> snapshot() => requestOwningBackend('probe', 'snapshot', <String,
   test(
     'safe tool identity permits exact control-bearing patch payload',
     () async {
+      await requireApprovalFor(applyPatchToolId);
       final filesystem = const FilesystemToolsPlugin().activate(
         fixture.runtime.extensions,
       );
@@ -2519,6 +2550,7 @@ Future<Object?> snapshot() => requestOwningBackend('probe', 'snapshot', <String,
   test(
     'close abandons waiting approval without resolution or notifications',
     () async {
+      await requireApprovalFor(_effectToolId);
       var notifications = 0;
       final controller = fixture.controller(onChanged: () => notifications++);
       await controller.startRun();
@@ -2564,6 +2596,7 @@ Future<Object?> snapshot() => requestOwningBackend('probe', 'snapshot', <String,
   test(
     'close drains accepted effects and model settlement without late UI updates',
     () async {
+      await requireApprovalFor(_effectToolId);
       fixture.tool.gate = Completer<void>();
       var notifications = 0;
       final controller = fixture.controller(onChanged: () => notifications++);
@@ -2635,6 +2668,7 @@ Future<Object?> snapshot() => requestOwningBackend('probe', 'snapshot', <String,
   test(
     'close drains an accepted effect only to the next approval, without resolving it',
     () async {
+      await requireApprovalFor(_effectToolId);
       fixture.tool.gate = Completer<void>();
       final controller = fixture.controller();
       await controller.startRun();
@@ -2719,6 +2753,7 @@ Future<Object?> snapshot() => requestOwningBackend('probe', 'snapshot', <String,
   test(
     'application exit deadline fences every retained owner despite hanging provider cancellation',
     () async {
+      await requireApprovalFor(_effectToolId);
       final owners = fixture.owners();
       owners.getOrCreate(fixture.session); // An idle presented Session.
       final waiting = owners.getOrCreate(fixture.anotherSession());
@@ -2881,6 +2916,7 @@ Future<Object?> snapshot() => requestOwningBackend('probe', 'snapshot', <String,
   test(
     'two owners progress independently through preparation, approval and settlement',
     () async {
+      await requireApprovalFor(_effectToolId);
       final owners = fixture.owners();
       final a = fixture.session;
       final b = fixture.anotherSession();
@@ -3062,6 +3098,7 @@ Future<Object?> snapshot() => requestOwningBackend('probe', 'snapshot', <String,
   test(
     'refresh observes provider retirement without replacing a waiting binding',
     () async {
+      await requireApprovalFor(_effectToolId);
       final owners = fixture.owners();
       final a = fixture.session;
       final b = fixture.anotherSession();
@@ -3107,6 +3144,7 @@ Future<Object?> snapshot() => requestOwningBackend('probe', 'snapshot', <String,
   test(
     'close fences all owners before draining and waits for siblings after cleanup failure',
     () async {
+      await requireApprovalFor(_effectToolId);
       final owners = fixture.owners();
       final a = fixture.session;
       final b = fixture.anotherSession();
@@ -3586,7 +3624,6 @@ final class _Tool implements ModelToolContribution, ToolExecutable {
   int executions = 0;
   String summary = 'Mutate fixture source';
   List<EffectTarget> targets = [];
-  EffectUncertainty uncertainty = EffectUncertainty.none;
   Completer<void>? gate;
   final entered = Completer<void>();
   Completer<void>? materializeGate;
@@ -3607,7 +3644,7 @@ final class _Tool implements ModelToolContribution, ToolExecutable {
     return [
       ToolRegistration(
         definition: ToolDefinition(
-          id: ToolId('dev.adele.test.effect'),
+          id: _effectToolId,
           description: 'Test effect',
         ),
         modelDefinition: ModelToolDefinition(
@@ -3633,7 +3670,6 @@ final class _Tool implements ModelToolContribution, ToolExecutable {
     effects: const [ToolEffect.sourceMutation],
     targets: targets,
     summary: summary,
-    uncertainty: uncertainty,
   );
   @override
   Stream<ToolExecutionEvent> execute(
