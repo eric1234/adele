@@ -596,7 +596,7 @@ void main() {
       final exposures = connection.capabilityExposures;
       expect(
         exposures.map((entry) => entry.toMap()),
-        _recordExposures(chatGpt: true),
+        _recordExposures(connection, chatGpt: true),
       );
       expect(fixture.credentials.requests, isEmpty);
       expect(fixture.responses.captured, isEmpty);
@@ -679,9 +679,13 @@ void main() {
           modelProviderServiceId,
           'configuration_context_unavailable',
         ),
-        ('api-key-record:work-openai', 'wrong-service', 'service_unavailable'),
         (
-          'api-key-record:personal-openai',
+          fixture.context('work-openai'),
+          'wrong-service',
+          'service_unavailable',
+        ),
+        (
+          fixture.context('personal-openai'),
           'wrong-service',
           'service_unavailable',
         ),
@@ -869,7 +873,11 @@ void main() {
           modelCatalogServiceId,
           'configuration_context_unavailable',
         ),
-        ('api-key-record:work-openai', 'wrong-service', 'service_unavailable'),
+        (
+          fixture.context('work-openai'),
+          'wrong-service',
+          'service_unavailable',
+        ),
         (
           openAiChatGptConfigurationContext,
           modelCatalogServiceId,
@@ -915,7 +923,7 @@ void main() {
       final work = fixture.catalog('work-openai');
       final personal = fixture.catalog('personal-openai');
       final context = connection.configurationContext(
-        'api-key-record:work-openai',
+        fixture.context('work-openai'),
       );
       final credentials = _CredentialGate();
       fixture.credentials.gates['work-openai'] = credentials;
@@ -985,7 +993,7 @@ void main() {
       expect(fixture.credentials.requests, hasLength(readsBeforeRestart));
       expect(
         fixture.connection.capabilityExposures.map((entry) => entry.toMap()),
-        _recordExposures(workName: 'Renamed Work'),
+        _recordExposures(fixture.connection, workName: 'Renamed Work'),
       );
       expect(
         () => fixture.connection.channelFor(context, modelCatalogServiceId),
@@ -1043,7 +1051,7 @@ void main() {
       final fixture = await configured();
       expect(
         fixture.connection.capabilityExposures.map((entry) => entry.toMap()),
-        _recordExposures(),
+        _recordExposures(fixture.connection),
       );
       expect(fixture.credentials.requests, isEmpty);
 
@@ -1168,7 +1176,7 @@ void main() {
       await retiringSseFirst.future;
       final retiredConnection = fixture.connection;
       final retiredContext = retiredConnection.configurationContext(
-        'api-key-record:work-openai',
+        fixture.context('work-openai'),
       );
       final retiredClient = fixture.client('work-openai');
       final retiredEvents = <ModelProviderEvent>[];
@@ -1261,7 +1269,7 @@ void main() {
       expect(fixture.connection, isNot(same(retiredConnection)));
       expect(
         fixture.connection.capabilityExposures.map((entry) => entry.toMap()),
-        _recordExposures(workName: 'Renamed Work'),
+        _recordExposures(fixture.connection, workName: 'Renamed Work'),
       );
       expect(
         () => fixture.connection.channelFor(
@@ -1300,46 +1308,61 @@ void main() {
   );
 }
 
-List<Map<String, Object?>> _recordExposures({
+List<Map<String, Object?>> _recordExposures(
+  PluginBackendConnection connection, {
   bool chatGpt = false,
   String workName = 'Work OpenAI',
-}) => [
-  if (chatGpt)
-    AdeleCapabilityExposure(
-      providerId: openAiChatGptProviderId,
-      capabilityId: 'dev.adele.model.provider',
-      capabilityMajorVersion: 1,
-      serviceId: 'modelProvider',
-      displayName: 'Experimental ChatGPT',
-      configurationContext: openAiChatGptConfigurationContext,
-    ).toMap(),
-  for (final (id, name) in [
-    ('personal-openai', 'Personal OpenAI'),
-    ('work-openai', workName),
-  ]) ...[
-    AdeleCapabilityExposure(
-      providerId: 'dev.adele.openai.api-key.$id',
-      capabilityId: 'dev.adele.model.provider',
-      capabilityMajorVersion: 1,
-      serviceId: 'modelProvider',
-      displayName: name,
-      configurationContext: 'api-key-record:$id',
-    ).toMap(),
-    AdeleCapabilityExposure(
-      providerId: 'dev.adele.openai.model-catalog.$id',
-      capabilityId: 'dev.adele.model.catalog',
-      capabilityMajorVersion: 1,
-      serviceId: 'modelCatalog',
-      displayName: name,
-      configurationContext: 'api-key-record:$id',
-      association: AdeleProviderAssociation(
+}) {
+  final contexts = <String, String>{};
+  for (final id in ['personal-openai', 'work-openai']) {
+    final pair = connection.capabilityExposures.where(
+      (entry) => entry.providerId.endsWith('.$id'),
+    );
+    expect(pair, hasLength(2));
+    final context = pair.first.configurationContext;
+    expect(context, matches(r'^dynamic:[0-9]+$'));
+    expect(pair.last.configurationContext, context);
+    contexts[id] = context;
+  }
+  expect(contexts.values.toSet(), hasLength(2));
+  return [
+    if (chatGpt)
+      AdeleCapabilityExposure(
+        providerId: openAiChatGptProviderId,
         capabilityId: 'dev.adele.model.provider',
         capabilityMajorVersion: 1,
+        serviceId: 'modelProvider',
+        displayName: 'Experimental ChatGPT',
+        configurationContext: openAiChatGptConfigurationContext,
+      ).toMap(),
+    for (final (id, name) in [
+      ('personal-openai', 'Personal OpenAI'),
+      ('work-openai', workName),
+    ]) ...[
+      AdeleCapabilityExposure(
         providerId: 'dev.adele.openai.api-key.$id',
-      ),
-    ).toMap(),
-  ],
-];
+        capabilityId: 'dev.adele.model.provider',
+        capabilityMajorVersion: 1,
+        serviceId: 'modelProvider',
+        displayName: name,
+        configurationContext: contexts[id]!,
+      ).toMap(),
+      AdeleCapabilityExposure(
+        providerId: 'dev.adele.openai.model-catalog.$id',
+        capabilityId: 'dev.adele.model.catalog',
+        capabilityMajorVersion: 1,
+        serviceId: 'modelCatalog',
+        displayName: name,
+        configurationContext: contexts[id]!,
+        association: AdeleProviderAssociation(
+          capabilityId: 'dev.adele.model.provider',
+          capabilityMajorVersion: 1,
+          providerId: 'dev.adele.openai.api-key.$id',
+        ),
+      ).toMap(),
+    ],
+  ];
+}
 
 ProviderDescriptor _descriptor(ProviderId id) => ProviderDescriptor(
   id: id,
@@ -1604,6 +1627,12 @@ final class _ConfiguredFixture {
 
   ModelProviderServiceClient client(String id) =>
       _client(registry, ProviderId('dev.adele.openai.api-key.$id'));
+
+  String context(String id) => connection.capabilityExposures
+      .singleWhere(
+        (entry) => entry.providerId == 'dev.adele.openai.api-key.$id',
+      )
+      .configurationContext;
 
   ModelCatalogServiceClient catalog(String id) => ModelCatalogServiceClient(
     registry

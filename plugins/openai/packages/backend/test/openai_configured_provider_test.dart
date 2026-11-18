@@ -27,11 +27,6 @@ void main() {
           'dev.adele.openai.model-catalog.work',
           'dev.adele.openai.model-catalog.${'x' * 64}',
         ]);
-        expect(configurations.map((value) => value.configurationContext), [
-          'api-key-record:personal',
-          'api-key-record:work',
-          'api-key-record:${'x' * 64}',
-        ]);
         final renamed = _configurations([
           _record('work', {
             'display-name': 'Renamed',
@@ -41,10 +36,6 @@ void main() {
         expect(renamed.providerId, configurations[1].providerId);
         expect(renamed.catalogProviderId, configurations[1].catalogProviderId);
         expect(renamed.catalogProviderId, isNot(renamed.providerId));
-        expect(
-          renamed.configurationContext,
-          configurations[1].configurationContext,
-        );
         expect(configurations.first.endpoint, isNull);
         expect(() => configurations.clear(), throwsUnsupportedError);
       },
@@ -307,7 +298,7 @@ void main() {
           AdeleCredentialFailureKind.staleConfiguration: (
             ModelProviderFailureKind.unavailable,
             'stale_configuration',
-            'The OpenAI configuration changed; restart the backend before invoking it.',
+            'The OpenAI configuration changed; refresh or restart the backend before invoking it.',
           ),
           AdeleCredentialFailureKind.generationUnavailable: (
             ModelProviderFailureKind.unavailable,
@@ -340,7 +331,56 @@ void main() {
           expect(terminal.requestId, isNull);
         }, createHttpClient: (_) => throw StateError('HTTP must not start'));
       });
+      test('injected reader maps $kind without startup credentials', () async {
+        final provider = OpenAiConfiguredModelProvider(
+          configuration: _configuration(),
+          readCredential: () async => throw AdeleCredentialFailure(kind),
+        );
+        await HttpOverrides.runZoned(() async {
+          final terminal = (await provider.invoke(_request()).single).terminal!;
+          final expected = mappings[kind]!;
+          expect(terminal.settlement, ModelProviderSettlement.failed);
+          expect(terminal.failure!.kind, expected.$1);
+          expect(
+            terminal.failure!.providerCode,
+            'openai_credential_${expected.$2}',
+          );
+          expect(terminal.failure!.providerMessage, expected.$3);
+          expect(terminal.failure!.providerDetails, isEmpty);
+        }, createHttpClient: (_) => throw StateError('HTTP must not start'));
+      });
     }
+
+    test(
+      'unexpected reader failure is fixed without startup fallback',
+      () async {
+        final host = _CredentialHost();
+        addTearDown(host.mux.close);
+        var reads = 0;
+        final provider = OpenAiConfiguredModelProvider(
+          configuration: _configuration(),
+          credentials: host.client,
+          readCredential: () {
+            reads++;
+            throw StateError('sentinel-secret native error');
+          },
+        );
+        await HttpOverrides.runZoned(() async {
+          final result = provider.invoke(_request()).single;
+          await _pump();
+          expect(reads, 1);
+          expect(host.requests, isEmpty);
+          final failure = (await result).terminal!.failure!;
+          expect(failure.kind, ModelProviderFailureKind.unavailable);
+          expect(failure.providerCode, 'openai_credential_access_failed');
+          expect(
+            failure.providerMessage,
+            mappings[AdeleCredentialFailureKind.credentialAccessFailed]!.$3,
+          );
+          expect(failure.providerDetails, isEmpty);
+        }, createHttpClient: (_) => throw StateError('HTTP must not start'));
+      },
+    );
 
     for (final (index, payload) in <Object?>[
       {'secret': 'sentinel-secret', 'raw': 'sentinel-native-error'},
@@ -449,6 +489,94 @@ void main() {
               'openai_credential_not_configured',
             );
             expect(clients, hasLength(2));
+          },
+          createHttpClient: (_) {
+            final client = _HttpClient();
+            clients.add(client);
+            return client;
+          },
+        );
+      },
+    );
+
+    test(
+      'injected capture reads lazily and freshly without startup fallback',
+      () async {
+        final host = _CredentialHost();
+        addTearDown(host.mux.close);
+        final capturing = host.client.captureCurrentConfiguration();
+        final handle = '${'a' * 32}-0000000000000001';
+        host.reply(0, {
+          'capture': handle,
+          'records': [
+            _record('work', {'display-name': 'Work'}),
+          ],
+          'isComplete': true,
+        });
+        final capture = await capturing;
+        final clients = <_HttpClient>[];
+        await HttpOverrides.runZoned(
+          () async {
+            final provider = OpenAiConfiguredModelProvider(
+              configuration: _configuration(),
+              credentials: host.client,
+              readCredential: () => capture.readCredential(
+                collection: 'providers',
+                recordType: openAiApiKeyProviderId,
+                recordId: 'work',
+                slot: 'api-key',
+              ),
+            );
+            final unlistened = provider.invoke(_request());
+            await _pump();
+            expect(host.requests, hasLength(1));
+            expect(clients, isEmpty);
+            for (var index = 0; index < 2; index++) {
+              final result =
+                  (index == 0 ? unlistened : provider.invoke(_request()))
+                      .toList();
+              expect(host.requests, hasLength(index + 2));
+              expect(host.requests.last['method'], 'readCapturedCredential');
+              expect(host.requests.last['payload'], {
+                'capture': handle,
+                'collection': 'providers',
+                'recordType': openAiApiKeyProviderId,
+                'recordId': 'work',
+                'slot': 'api-key',
+              });
+              expect(clients, hasLength(index));
+              host.reply(index + 1, {'secret': 'captured-key-$index'});
+              await _pump();
+              final client = clients[index];
+              expect(
+                client.request.headers.value(HttpHeaders.authorizationHeader),
+                'Bearer captured-key-$index',
+              );
+              client.response.complete();
+              expect(
+                (await result).single.terminal!.settlement,
+                ModelProviderSettlement.completed,
+              );
+              expect(client.closes, 1);
+            }
+            final denied = provider.invoke(_request()).single;
+            host.reply(3, {'failure': 'staleConfiguration'});
+            await _pump();
+            expect(host.requests, hasLength(4));
+            expect(
+              host.requests.skip(1).map((request) => request['method']),
+              everyElement('readCapturedCredential'),
+            );
+            expect(clients, hasLength(2));
+            final failure = (await denied).terminal!.failure!;
+            expect(
+              failure.providerCode,
+              'openai_credential_stale_configuration',
+            );
+            expect(
+              failure.providerMessage,
+              mappings[AdeleCredentialFailureKind.staleConfiguration]!.$3,
+            );
           },
           createHttpClient: (_) {
             final client = _HttpClient();

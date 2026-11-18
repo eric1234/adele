@@ -375,9 +375,9 @@ target exercises actual stock schema publication through the maintained installa
 helper, not just a hand-authored manifest.
 
 `packages/settings_host/test/configuration_records_test.dart` uses the real OpenAI
-record schema published by that helper and discovered through the prepared catalog,
-without backend startup or credentials. It checks two independently named records,
-rename without identity changes, optional absence, sibling byte preservation,
+and Agent record schemas published by that helper and discovered through the
+prepared catalog, without backend startup or credentials. It checks independently
+named records, rename without identity changes, optional absence, sibling byte preservation,
 delete/reconstruction, stale baselines including no-ops, unknown/comment retention,
 malformed-file diagnostics, aliases and symlink rejection. A test-only job type
 exercises Boolean, bounded integer and enum fields without a dummy production
@@ -388,6 +388,10 @@ Credential-reference cases in that host suite use only the pure identity API and
 real TOML, not a keyring: absent/empty tables, known reference edits, unknown nested
 content preservation, malformed entries, shared value/reference conflicts and
 whole-record deletion guards. TOML tests own `ensureTable` and `tableKeys` behavior.
+
+Agent cases additionally check Markdown string round-trips, required presence rather
+than nonblank validation, both optional fields' absence versus empty strings, and
+an empty collection after deleting all records and reconstructing the store.
 
 `app/test/prepared_settings_test.dart` loads the real Source declaration with
 temporary configuration roots and checks native persistence/provenance, explicit
@@ -567,12 +571,16 @@ Keyboard traversal excludes filtered editors while retaining their drafts. A
 test-only service subclass injects a lost acknowledgement after actual native
 publication to verify conservative error reporting and mandatory Reload.
 
+`app/test/core/application_plugin_bootstrap_test.dart` verifies the published
+metadata-only Agent installation needs no executable host or record consumer.
+
 `app/test/record_settings_dialog_test.dart` covers generic collection navigation,
 details, display-title fallback, shared create/edit multi-type forms, explicit field
 presence, all scalar types, validation, retained drafts/focus (including collapsed
 editors), narrow layout, reentrant admission, exact-record delete confirmation,
 conflict/uncertain-outcome recovery, and confirmed persistence without a plugin
-executable. `app/test/application_test.dart` publishes the actual OpenAI and Source
+executable, including the actual published Agent schema through ordinary controls.
+`app/test/application_test.dart` publishes the actual OpenAI and Source
 schemas through maintained tooling and manages two records before any Project:
 create, display-name edit with stable filename, optional endpoint insertion/removal,
 unknown/comment preservation, independent sibling bytes, canceled/confirmed deletion,
@@ -618,6 +626,9 @@ endpoint policy, credential-failure mapping and Responses behavior.
 controlled reverse responses and HTTP objects for identity/endpoint validation,
 safe diagnostics, all credential-failure mappings, fresh per-invocation reads,
 cancellation/pause propagation and temporary-client cleanup.
+`test/openai_configured_refresh_test.dart` owns serialized reconciliation, lazy
+adoption, capture/publication capacity, safe failure outcomes, and release after
+route drain with real public clients and scripted reverse transport.
 `test/openai_record_startup_test.dart` covers startup decoding and advertisements;
 `test/openai_configuration_context_integration_test.dart` compiles the real shared
 host and OpenAI backend and invokes the ordinary generated model-provider service.
@@ -636,8 +647,11 @@ The injected protected-storage adapter is deterministic, not a real keyring. Cas
 check independent Work/Personal keys and endpoints in one generation, no startup or
 uninvoked-sibling reads, payload/model IDs unable to select an account, safe missing,
 invalid, unavailable and reconciliation-required outcomes without fallback, and
-stale-after-edit/Replace/Forget/delete-recreate behavior followed by a fresh
-generation. Pending credential gates check cancellation/retirement before HTTP and
+stale-after-edit/Replace/Forget/delete-recreate behavior followed by either explicit
+refresh or a fresh generation. Live-refresh cases verify add/edit/delete, unchanged
+nonsecret bytes after credential replacement, Forget, partial-observation refusal,
+held HTTP on old routes, exact inference/catalog associations and repeated refresh
+without capture accumulation. Pending credential gates check cancellation/retirement before HTTP and
 continued Settings I/O; they do not establish a bound on OS unlock prompts.
 
 After bootstrap/current generation, use the pinned toolchain:
@@ -656,7 +670,7 @@ generation/registry checks. `app/test/session_execution_test.dart` owns explicit
 selected-provider failure without fallback and retained bindings across retirement;
 the app's temporary selection still explicitly names ChatGPT, regardless of new
 configured providers in the registry. These fixtures add no Session selection UI,
-preference policy, live rotation or external OpenAI validation. Test paths describe
+preference policy, automatic Settings propagation or external OpenAI validation. Test paths describe
 coverage owners, not recorded passing results. Production backend AOT changes also
 require the maintained Linux profile build, not only isolated AOT fixtures.
 

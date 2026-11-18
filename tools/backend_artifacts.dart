@@ -22,6 +22,16 @@ const _stockSchemaSources = {
     'settings': 'plugins/source_editor/settings.schema.json',
   },
   'dev.adele.openai': {'records': 'plugins/openai/records.schema.json'},
+  'dev.adele.plugin.agent-configuration': {
+    'records': 'plugins/agent_configuration/records.schema.json',
+  },
+};
+
+const _stockMetadataOnlyInstallations = {
+  'dev.adele.plugin.agent-configuration': (
+    directory: 'agent-configuration',
+    displayName: 'Agent Configuration',
+  ),
 };
 
 const _stockAuthorizationPolicies = {
@@ -415,6 +425,8 @@ Future<List<String>> _prepareDesktopPlugins({
   final assemblyTimer = Stopwatch()..start();
   // Publish each installation once, only after all components are prepared.
   for (final plugin in <({File? backend, String id, String displayName})>[
+    for (final entry in _stockMetadataOnlyInstallations.entries)
+      (backend: null, id: entry.key, displayName: entry.value.displayName),
     (backend: diffViewer, id: 'dev.adele.diff-viewer', displayName: 'Diff'),
     (backend: null, id: 'dev.adele.source-editor', displayName: 'Source'),
     (backend: null, id: 'dev.adele.plugin.terminal', displayName: 'Terminal'),
@@ -463,7 +475,13 @@ Future<List<String>> _prepareDesktopPlugins({
     ),
   ]) {
     final frontend = frontends[plugin.id];
-    final directory = (plugin.backend ?? frontend!).parent;
+    final directory =
+        (plugin.backend ?? frontend)?.parent ??
+        Directory.fromUri(
+          installations.uri.resolve(
+            '${_stockMetadataOnlyInstallations[plugin.id]!.directory}/',
+          ),
+        );
     await publishStockPluginInstallation(
       repositoryRoot: repositoryRoot,
       installationDirectory: directory,

@@ -382,7 +382,42 @@ void main() {
           expect(harness.clients, isEmpty);
         });
       });
+      test('injected reader maps $kind without startup credentials', () async {
+        final harness = _Harness(
+          withCredentials: false,
+          readCredential: () async => throw AdeleCredentialFailure(kind),
+        );
+        await harness.run(() async {
+          await expectLater(
+            harness.catalog.listModels(),
+            _fails('unavailable'),
+          );
+          expect(harness.host.requests, isEmpty);
+          expect(harness.clients, isEmpty);
+        });
+      });
     }
+
+    test(
+      'unexpected reader failure is opaque without startup fallback',
+      () async {
+        var reads = 0;
+        final harness = _Harness(
+          readCredential: () {
+            reads++;
+            throw StateError(_privateText);
+          },
+        );
+        await harness.run(() async {
+          final result = _dispatch(harness.catalog);
+          await _pump();
+          expect(reads, 1);
+          expect(harness.host.requests, isEmpty);
+          expect(harness.clients, isEmpty);
+          expect(await result, _internalError);
+        });
+      },
+    );
 
     for (final (index, payload) in <Object?>[
       {'secret': ''},
@@ -440,6 +475,83 @@ void main() {
         expect(harness.clients, isEmpty);
       });
     });
+
+    test(
+      'injected capture reads lazily and freshly without startup fallback',
+      () async {
+        late final AdeleCredentialCapture capture;
+        final harness = _Harness(
+          readCredential: () => capture.readCredential(
+            collection: 'providers',
+            recordType: openAiApiKeyProviderId,
+            recordId: 'work',
+            slot: 'api-key',
+          ),
+        );
+        await harness.run(() async {
+          await _pump();
+          expect(harness.host.requests, isEmpty);
+          expect(harness.clients, isEmpty);
+          final capturing = harness.host.client.captureCurrentConfiguration();
+          final handle = '${'b' * 32}-0000000000000001';
+          harness.host.reply(0, {
+            'capture': handle,
+            'records': [
+              {
+                'collection': 'providers',
+                'type': openAiApiKeyProviderId,
+                'id': 'work',
+                'values': {'display-name': 'Configured account'},
+              },
+            ],
+            'isComplete': true,
+          });
+          capture = await capturing;
+          for (var index = 0; index < 2; index++) {
+            final result = harness.catalog.listModels();
+            expect(harness.host.requests, hasLength(index + 2));
+            expect(
+              harness.host.requests.last['method'],
+              'readCapturedCredential',
+            );
+            expect(harness.host.requests.last['payload'], {
+              'capture': handle,
+              'collection': 'providers',
+              'recordType': openAiApiKeyProviderId,
+              'recordId': 'work',
+              'slot': 'api-key',
+            });
+            expect(harness.clients, hasLength(index));
+            harness.host.reply(index + 1, {'secret': 'captured-key-$index'});
+            await _pump();
+            final client = harness.clients[index];
+            expect(
+              client.request.headers.values[HttpHeaders.authorizationHeader],
+              'Bearer captured-key-$index',
+            );
+            client.response.json(_list([_model('captured-model-$index')]));
+            expect(
+              (await result).models.single.modelId,
+              'captured-model-$index',
+            );
+            _expectReleased(client);
+          }
+          final denied = expectLater(
+            harness.catalog.listModels(),
+            _fails('unavailable'),
+          );
+          harness.host.reply(3, {'failure': 'staleConfiguration'});
+          await _pump();
+          expect(harness.host.requests, hasLength(4));
+          expect(
+            harness.host.requests.skip(1).map((request) => request['method']),
+            everyElement('readCapturedCredential'),
+          );
+          expect(harness.clients, hasLength(2));
+          await denied;
+        });
+      },
+    );
 
     test(
       'each call reads fresh credentials and list, with no cached fallback',
@@ -1134,6 +1246,7 @@ final class _Harness {
     String? endpoint,
     String recordId = 'work',
     bool withCredentials = true,
+    Future<String> Function()? readCredential,
     this.createClient,
   }) {
     final configuration = OpenAiApiKeyConfiguration.fromRecords(
@@ -1152,6 +1265,7 @@ final class _Harness {
     catalog = OpenAiConfiguredModelCatalog(
       configuration: configuration,
       credentials: withCredentials ? host.client : null,
+      readCredential: readCredential,
       responseOpenTimeout: const Duration(seconds: 10),
       bodyTimeout: const Duration(seconds: 20),
       cleanupTimeout: const Duration(seconds: 1),

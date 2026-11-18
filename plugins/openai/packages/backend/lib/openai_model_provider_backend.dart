@@ -13,6 +13,7 @@ import 'src/openai_endpoint.dart';
 import 'src/openai_native_presentation.dart';
 
 export 'src/openai_configured_provider.dart';
+export 'src/openai_configured_refresh.dart';
 export 'src/openai_model_catalog.dart';
 
 // Plugin-owned runtime identities, temporarily mirrored by stock app bootstrap.
