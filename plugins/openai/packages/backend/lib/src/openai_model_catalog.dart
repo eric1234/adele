@@ -14,16 +14,19 @@ const int _maximumBodyBytes = 4 * 1024 * 1024;
 
 /// A fresh, finite observation of one configured API-key account, with no cache.
 final class OpenAiConfiguredModelCatalog implements ModelCatalogService {
+  /// An explicit reader stays bound to its owner's scope, with no startup fallback.
   OpenAiConfiguredModelCatalog({
     required this.configuration,
-    required AdeleCredentialClient? credentials,
+    AdeleCredentialClient? credentials,
+    Future<String> Function()? readCredential,
     this.responseOpenTimeout = const Duration(seconds: 30),
     this.bodyTimeout = const Duration(seconds: 30),
     this.cleanupTimeout = const Duration(seconds: 1),
-  }) : _credentials = credentials;
+  }) : _readCredential =
+           readCredential ?? (() => configuration.readCredential(credentials));
 
   final OpenAiApiKeyConfiguration configuration;
-  final AdeleCredentialClient? _credentials;
+  final Future<String> Function() _readCredential;
   final Duration responseOpenTimeout;
   final Duration bodyTimeout;
   final Duration cleanupTimeout;
@@ -77,9 +80,7 @@ final class OpenAiConfiguredModelCatalog implements ModelCatalogService {
     Future<void> start() async {
       final String key;
       try {
-        key = validateOpenAiApiKey(
-          await configuration.readCredential(_credentials),
-        );
+        key = validateOpenAiApiKey(await _readCredential());
         if (key.codeUnits.any((unit) => unit < 0x20 || unit > 0x7e)) {
           throw const FormatException();
         }

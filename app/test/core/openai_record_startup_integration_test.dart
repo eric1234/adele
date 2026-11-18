@@ -6,6 +6,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
+import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/credential_service.dart';
 import 'package:adele_desktop/core/global_settings_service.dart';
@@ -26,6 +27,7 @@ const _recordType = 'dev.adele.openai.api-key';
 const _catalogProviderId = 'dev.adele.openai.model-catalog';
 const _catalogConsumer = 'test.openai.catalog-consumer';
 const _chatGpt = 'dev.adele.openai.chatgpt-experimental';
+const _configurationService = 'dev.adele.openai.configuration';
 
 void main() {
   late Directory artifacts;
@@ -110,9 +112,9 @@ void main() {
             .map((entry) => entry.providerId),
         ['$_recordType.personal-openai', '$_recordType.work-openai'],
       );
+      final contexts = _configuredContexts(connection);
       expect(exposures.map((entry) => entry.configurationContext).toSet(), {
-        'api-key-record:personal-openai',
-        'api-key-record:work-openai',
+        ...contexts.values,
         if (chatGpt) 'chatgpt-experimental',
       });
       expect(fixture.bootstrap.backends, hasLength(1));
@@ -555,7 +557,7 @@ void main() {
 
   for (final mutation in ['replace', 'endpoint', 'forget', 'recreate']) {
     test(
-      '$mutation requires a fresh generation without retargeting old bindings',
+      '$mutation stays stale without explicit refresh until a fresh generation',
       () async {
         final fixture = await prepareProviders();
         await fixture.start();
@@ -645,6 +647,633 @@ void main() {
   }
 
   test(
+    'explicit refresh adds a third record without touching live siblings',
+    () async {
+      final fixture = await prepareProviders(
+        chatGpt: true,
+        consumeCatalog: true,
+      );
+      await fixture.start();
+      final work = fixture.capture('work');
+      final personal = fixture.capture('personal');
+      final chatGpt = fixture.registry.resolve(
+        modelProviderCapability,
+        providerId: ProviderId(_chatGpt),
+      );
+      var third = await fixture.settings.createRecord(
+        RecordTypeId(_recordType),
+        ConfigurationRecordId('third-openai'),
+        {
+          'display-name': 'Third OpenAI',
+          'endpoint': '${fixture.origin}/third/responses',
+        },
+      );
+      third = (await fixture.associations.attach(
+        third,
+        RecordCredentialSlotId('api-key'),
+        CredentialSecret('test-third-key'),
+      )).record;
+      fixture.records['third'] = third;
+      fixture.catalogModels['/third/models'] = ['third-model'];
+      final thirdReference = fixture.storage.values.entries
+          .singleWhere(
+            (entry) =>
+                (jsonDecode(entry.value) as Map)['record'] == 'third-openai',
+          )
+          .key;
+      expect(
+        () => fixture.client('third'),
+        throwsA(isA<ProviderUnavailable>()),
+      );
+      expect(await fixture.catalogCall('discover', _catalogQuery), {
+        'ok': true,
+        'providers': [_catalogProvider('personal'), _catalogProvider('work')],
+      });
+      fixture.storage.calls.clear();
+      fixture.storage.readReferences.clear();
+      expect(
+        await fixture.refresh({'recordId': 'third-openai'}),
+        _refreshResult('applied', 'added', cleanupPending: false),
+      );
+      expect(
+        fixture.registry.providersFor(modelProviderCapability),
+        hasLength(4),
+      );
+      expect(
+        fixture.registry.providersFor(modelCatalogCapability),
+        hasLength(3),
+      );
+      _expectCatalogAssociations(
+        fixture.bootstrap,
+        fixture.registry,
+        ids: ['personal', 'third', 'work'],
+      );
+      expect(await fixture.catalogCall('discover', _catalogQuery), {
+        'ok': true,
+        'providers': [
+          _catalogProvider('personal'),
+          _catalogProvider('third', displayName: 'Third OpenAI'),
+          _catalogProvider('work'),
+        ],
+      });
+      work.expectSame(fixture.capture('work'));
+      personal.expectSame(fixture.capture('personal'));
+      expect(
+        chatGpt.isSameRegistration(
+          fixture.registry.resolve(
+            modelProviderCapability,
+            providerId: ProviderId(_chatGpt),
+          ),
+        ),
+        isTrue,
+      );
+      await fixture.selectCatalog('third');
+      expect(fixture.storage.calls, isEmpty);
+      expect(fixture.requests, isEmpty);
+      _expectCompleted(
+        await fixture.invoke('third').toList(),
+        '/third/responses',
+      );
+      expect(
+        await fixture.listModels('third'),
+        _catalogSnapshot(['third-model']),
+      );
+      expect(fixture.storage.readReferences, [thirdReference, thirdReference]);
+      expect(fixture.requests.map((entry) => entry['authorization']), [
+        'Bearer test-third-key',
+        'Bearer test-third-key',
+      ]);
+    },
+  );
+
+  test('explicit refresh replaces endpoint and display with exact fresh routes '
+      'while Personal and ChatGPT retain their bindings', () async {
+    final fixture = await prepareProviders(chatGpt: true, consumeCatalog: true);
+    await fixture.start();
+    final old = fixture.capture('work');
+    final personal = fixture.capture('personal');
+    final chatGpt = fixture.registry.resolve(
+      modelProviderCapability,
+      providerId: ProviderId(_chatGpt),
+    );
+    final chatGptClient = ModelProviderServiceClient(chatGpt.streamChannel);
+    await fixture.selectCatalog('work', slot: 'old-work');
+    await fixture.selectCatalog('personal');
+    fixture.records['work'] = await fixture.settings
+        .updateRecord(fixture.records['work']!, {
+          ...fixture.records['work']!.values,
+          'display-name': 'Renamed Work',
+          'endpoint': '${fixture.origin}/updated/responses',
+        });
+    fixture.catalogModels['/updated/models'] = ['updated-model'];
+    await fixture.expectFailure('stale_configuration');
+    _expectCatalogFailure(await fixture.listModels('old-work'), 'unavailable');
+    expect(fixture.requests, isEmpty);
+    expect(fixture.storage.calls, isEmpty);
+    expect(old.inference.provider.displayName, 'Work OpenAI');
+    expect(await fixture.refresh(), _refreshResult('applied', 'replaced'));
+    final fresh = fixture.capture('work');
+    old.expectReplacement(fresh);
+    expect(fresh.inference.provider.displayName, 'Renamed Work');
+    expect(fresh.catalog.provider.displayName, 'Renamed Work');
+    await old.expectRetired(fixture);
+    final staleCatalog = await fixture.listModels('old-work');
+    expect(staleCatalog['ok'], isFalse);
+    _expectProviderRedacted(staleCatalog);
+    _expectCatalogAssociations(fixture.bootstrap, fixture.registry);
+    expect(await fixture.catalogCall('discover', _catalogQuery), {
+      'ok': true,
+      'providers': [
+        _catalogProvider('personal'),
+        _catalogProvider('work', displayName: 'Renamed Work'),
+      ],
+    });
+    await fixture.selectCatalog('work');
+    expect(fixture.storage.calls, isEmpty);
+    expect(fixture.requests, isEmpty);
+    _expectCompleted(
+      await fixture.invoke('work').toList(),
+      '/updated/responses',
+    );
+    expect(
+      await fixture.listModels('work'),
+      _catalogSnapshot(['updated-model']),
+    );
+    expect(fixture.requests.map((entry) => entry['path']), [
+      '/updated/responses',
+      '/updated/models',
+    ]);
+    expect(fixture.requests.map((entry) => entry['authorization']).toSet(), {
+      'Bearer test-work-key',
+    });
+    expect(
+      fixture.storage.readReferences,
+      List.filled(2, fixture.reference('work')),
+    );
+    personal.expectSame(fixture.capture('personal'));
+    _expectCompleted(
+      await personal.inferenceClient
+          .invoke(_providerRequest('same-model'))
+          .toList(),
+      '/personal/responses',
+    );
+    expect(
+      await fixture.listModels('personal'),
+      _catalogSnapshot(['personal-model']),
+    );
+    expect(fixture.requests.last['authorization'], 'Bearer test-personal-key');
+    expect(
+      chatGpt.isSameRegistration(
+        fixture.registry.resolve(
+          modelProviderCapability,
+          providerId: ProviderId(_chatGpt),
+        ),
+      ),
+      isTrue,
+    );
+    _expectCompleted(
+      await chatGptClient.invoke(_providerRequest('same-model')).toList(),
+      '/chatgpt/responses',
+    );
+    expect(fixture.requests.last['authorization'], 'Bearer test-chatgpt-token');
+    expect(fixture.requests.last['account'], 'test-chatgpt-account');
+    expect(fixture.storage.readReferences, [
+      fixture.reference('work'),
+      fixture.reference('work'),
+      fixture.reference('personal'),
+      fixture.reference('personal'),
+    ]);
+  });
+
+  test('explicit same-reference Replace refreshes a live credential scope even '
+      'when nonsecret record bytes are unchanged', () async {
+    final fixture = await prepareProviders(consumeCatalog: true);
+    await fixture.start();
+    // First refresh obtains a live scope rather than the startup capture.
+    expect(await fixture.refresh(), _refreshResult('applied', 'replaced'));
+    final old = fixture.capture('work');
+    await fixture.selectCatalog('work', slot: 'old-work');
+    _expectCompleted(await fixture.invoke('work').toList(), '/work/responses');
+    final reference = fixture.reference('work');
+    final bytes = await fixture.recordFile('work').readAsBytes();
+    final values = fixture.records['work']!.values;
+    final protected = fixture.storage.values[reference];
+    fixture.records['work'] = (await fixture.associations.replace(
+      fixture.records['work']!,
+      RecordCredentialSlotId('api-key'),
+      CredentialSecret('test-replacement-key'),
+    )).record;
+    expect(await fixture.recordFile('work').readAsBytes(), bytes);
+    expect(fixture.records['work']!.values, values);
+    expect(fixture.storage.values.keys, contains(reference));
+    expect(fixture.storage.values[reference], isNot(protected));
+    fixture.storage.calls.clear();
+    fixture.storage.readReferences.clear();
+    await fixture.expectFailure('stale_configuration');
+    _expectCatalogFailure(await fixture.listModels('old-work'), 'unavailable');
+    expect(fixture.storage.calls, isEmpty);
+    expect(fixture.requests, hasLength(1));
+    expect(await fixture.refresh(), _refreshResult('applied', 'replaced'));
+    old.expectReplacement(fixture.capture('work'));
+    await old.expectRetired(fixture);
+    expect((await fixture.listModels('old-work'))['ok'], isFalse);
+    _expectCatalogAssociations(fixture.bootstrap, fixture.registry);
+    await fixture.selectCatalog('work');
+    _expectCompleted(await fixture.invoke('work').toList(), '/work/responses');
+    expect(await fixture.listModels('work'), _catalogSnapshot(['work-model']));
+    expect(fixture.storage.readReferences, [reference, reference]);
+    expect(fixture.requests.skip(1).map((entry) => entry['authorization']), [
+      'Bearer test-replacement-key',
+      'Bearer test-replacement-key',
+    ]);
+  });
+
+  test(
+    'explicit Forget refresh keeps a configured route but denies both services '
+    'without vault reads or HTTP',
+    () async {
+      final fixture = await prepareProviders(consumeCatalog: true);
+      await fixture.start();
+      final old = fixture.capture('work');
+      fixture.records['work'] = (await fixture.associations.forget(
+        fixture.records['work']!,
+        RecordCredentialSlotId('api-key'),
+      )).record;
+      fixture.storage.calls.clear();
+      fixture.storage.readReferences.clear();
+      await fixture.expectFailure('stale_configuration');
+      expect(await fixture.refresh(), _refreshResult('applied', 'replaced'));
+      old.expectReplacement(fixture.capture('work'));
+      await old.expectRetired(fixture);
+      _expectCatalogAssociations(fixture.bootstrap, fixture.registry);
+      await fixture.selectCatalog('work');
+      await fixture.expectFailure('not_configured');
+      _expectCatalogFailure(await fixture.listModels('work'), 'unavailable');
+      expect(fixture.storage.calls, isEmpty);
+      expect(fixture.storage.readReferences, isEmpty);
+      expect(fixture.requests, isEmpty);
+      _expectCompleted(
+        await fixture.invoke('personal').toList(),
+        '/personal/responses',
+      );
+      expect(
+        fixture.requests.single['authorization'],
+        'Bearer test-personal-key',
+      );
+    },
+  );
+
+  test('explicit deletion refresh removes discovery without retargeting held '
+      'bindings and repeated absence is a no-op', () async {
+    final fixture = await prepareProviders(consumeCatalog: true);
+    await fixture.start();
+    final old = fixture.capture('work');
+    final personal = fixture.capture('personal');
+    await fixture.selectCatalog('work');
+    fixture.records['work'] = (await fixture.associations.forget(
+      fixture.records['work']!,
+      RecordCredentialSlotId('api-key'),
+    )).record;
+    await fixture.settings.deleteRecord(fixture.records['work']!);
+    fixture.storage.calls.clear();
+    fixture.storage.readReferences.clear();
+    old.expectSame(fixture.capture('work'));
+    expect(await fixture.refresh(), _refreshResult('applied', 'retired'));
+    await old.expectRetired(fixture);
+    expect(() => fixture.client('work'), throwsA(isA<ProviderUnavailable>()));
+    expect((await fixture.listModels('work'))['ok'], isFalse);
+    expect(
+      await fixture.catalogCall('resolve', {
+        ..._catalogQuery,
+        'providerId': '$_catalogProviderId.work-openai',
+      }),
+      {'ok': true, 'provider': null},
+    );
+    expect(await fixture.catalogCall('discover', _catalogQuery), {
+      'ok': true,
+      'providers': [_catalogProvider('personal')],
+    });
+    expect(
+      fixture.registry
+          .providersFor(modelProviderCapability)
+          .map((entry) => entry.id.value),
+      ['$_recordType.personal-openai'],
+    );
+    expect(
+      await fixture.refresh(),
+      _refreshResult('noChange', 'already_absent'),
+    );
+    personal.expectSame(fixture.capture('personal'));
+    _expectCatalogAssociations(
+      fixture.bootstrap,
+      fixture.registry,
+      ids: ['personal'],
+    );
+    expect(fixture.storage.calls, isEmpty);
+    expect(fixture.requests, isEmpty);
+  });
+
+  test(
+    'partial malformed collection cannot be mistaken for target deletion',
+    () async {
+      final fixture = await prepareProviders(consumeCatalog: true);
+      await fixture.start();
+      final old = fixture.capture('work');
+      final personal = fixture.capture('personal');
+      await fixture.selectCatalog('work');
+      final malformed = fixture.recordFile('malformed');
+      await malformed.writeAsString(
+        'invalid = [ # test-work-key ${fixture.origin}',
+      );
+      expect(
+        await fixture.refresh({'recordId': 'missing-openai'}),
+        _refreshResult('failed', 'incomplete_observation'),
+      );
+      old.expectSame(fixture.capture('work'));
+      // Even when the target really disappears, a partial scan is not deletion evidence.
+      fixture.records['work'] = (await fixture.associations.forget(
+        fixture.records['work']!,
+        RecordCredentialSlotId('api-key'),
+      )).record;
+      await fixture.settings.deleteRecord(fixture.records['work']!);
+      fixture.storage.calls.clear();
+      fixture.storage.readReferences.clear();
+      expect(
+        await fixture.refresh(),
+        _refreshResult('failed', 'incomplete_observation'),
+      );
+      old.expectSame(fixture.capture('work'));
+      personal.expectSame(fixture.capture('personal'));
+      _expectCatalogAssociations(fixture.bootstrap, fixture.registry);
+      expect(await fixture.catalogCall('discover', _catalogQuery), {
+        'ok': true,
+        'providers': [_catalogProvider('personal'), _catalogProvider('work')],
+      });
+      await fixture.expectFailure('stale_configuration');
+      _expectCatalogFailure(await fixture.listModels('work'), 'unavailable');
+      expect(fixture.requests, isEmpty);
+      expect(fixture.storage.calls, isEmpty);
+      await malformed.delete();
+      expect(await fixture.refresh(), _refreshResult('applied', 'retired'));
+      await old.expectRetired(fixture);
+    },
+  );
+
+  test(
+    'admitted inference and catalog HTTP finish on old routes across refresh '
+    'while fresh requests use the replacement',
+    () async {
+      final fixture = await prepareProviders(consumeCatalog: true);
+      await fixture.start();
+      // Hold work on a live captured scope, not only the startup authority.
+      expect(await fixture.refresh(), _refreshResult('applied', 'replaced'));
+      final old = fixture.capture('work');
+      await fixture.selectCatalog('work', slot: 'old-work');
+      final inferenceGate = _HttpGate();
+      final catalogGate = _HttpGate();
+      addTearDown(inferenceGate.release);
+      addTearDown(catalogGate.release);
+      fixture.responseGates['/work/responses'] = inferenceGate;
+      fixture.responseGates['/work/models'] = catalogGate;
+      var inferenceSettled = false;
+      var catalogSettled = false;
+      final inference = old.inferenceClient
+          .invoke(_providerRequest('old-model'))
+          .toList()
+          .then((events) {
+            inferenceSettled = true;
+            return events;
+          });
+      await inferenceGate.entered.future;
+      final catalog = fixture.listModels('old-work').then((result) {
+        catalogSettled = true;
+        return result;
+      });
+      await catalogGate.entered.future;
+      expect(fixture.requests.map((entry) => entry['authorization']), [
+        'Bearer test-work-key',
+        'Bearer test-work-key',
+      ]);
+      fixture.records['work'] = (await fixture.associations.replace(
+        fixture.records['work']!,
+        RecordCredentialSlotId('api-key'),
+        CredentialSecret('test-replacement-key'),
+      )).record;
+      fixture.records['work'] = await fixture.settings
+          .updateRecord(fixture.records['work']!, {
+            ...fixture.records['work']!.values,
+            'endpoint': '${fixture.origin}/fresh/responses',
+          });
+      fixture.catalogModels['/fresh/models'] = ['fresh-model'];
+      expect(
+        await fixture.refresh().timeout(const Duration(seconds: 10)),
+        _refreshResult('applied', 'replaced', cleanupPending: true),
+      );
+      old.expectReplacement(fixture.capture('work'));
+      await old.expectRetired(fixture);
+      _expectCatalogAssociations(fixture.bootstrap, fixture.registry);
+      await fixture.selectCatalog('work', slot: 'fresh-work');
+      _expectCompleted(
+        await fixture.invoke('work').toList(),
+        '/fresh/responses',
+      );
+      expect(
+        await fixture.listModels('fresh-work'),
+        _catalogSnapshot(['fresh-model']),
+      );
+      expect(fixture.requests.map((entry) => entry['path']), [
+        '/work/responses',
+        '/work/models',
+        '/fresh/responses',
+        '/fresh/models',
+      ]);
+      expect(fixture.requests.skip(2).map((entry) => entry['authorization']), [
+        'Bearer test-replacement-key',
+        'Bearer test-replacement-key',
+      ]);
+      expect(inferenceSettled, isFalse);
+      expect(catalogSettled, isFalse);
+      inferenceGate.release();
+      catalogGate.release();
+      _expectCompleted(await inference, '/work/responses');
+      expect(await catalog, _catalogSnapshot(['work-model']));
+      expect((await fixture.listModels('old-work'))['ok'], isFalse);
+      expect(fixture.requests, hasLength(4));
+      await old.expectRetired(fixture);
+    },
+  );
+
+  test('more than eight explicit replacements release captures for continued '
+      'inference and catalog success', () async {
+    final fixture = await prepareProviders(chatGpt: true, consumeCatalog: true);
+    await fixture.start();
+    final personal = fixture.capture('personal');
+    final chatGpt = fixture.registry.resolve(
+      modelProviderCapability,
+      providerId: ProviderId(_chatGpt),
+    );
+    var previous = fixture.capture('work');
+    final reference = fixture.reference('work');
+    final bytes = await fixture.recordFile('work').readAsBytes();
+    for (var revision = 0; revision < 12; revision++) {
+      fixture.records['work'] = (await fixture.associations.replace(
+        fixture.records['work']!,
+        RecordCredentialSlotId('api-key'),
+        CredentialSecret('test-rotation-$revision-key'),
+      )).record;
+      expect(await fixture.recordFile('work').readAsBytes(), bytes);
+      fixture.storage.calls.clear();
+      fixture.storage.readReferences.clear();
+      expect(await fixture.refresh(), _refreshResult('applied', 'replaced'));
+      final current = fixture.capture('work');
+      previous.expectReplacement(current);
+      await previous.expectRetired(fixture);
+      personal.expectSame(fixture.capture('personal'));
+      expect(
+        chatGpt.isSameRegistration(
+          fixture.registry.resolve(
+            modelProviderCapability,
+            providerId: ProviderId(_chatGpt),
+          ),
+        ),
+        isTrue,
+      );
+      _expectCatalogAssociations(fixture.bootstrap, fixture.registry);
+      await fixture.selectCatalog('work');
+      _expectCompleted(
+        await fixture.invoke('work').toList(),
+        '/work/responses',
+      );
+      expect(
+        await fixture.listModels('work'),
+        _catalogSnapshot(['work-model']),
+      );
+      expect(fixture.storage.readReferences, [reference, reference]);
+      expect(
+        fixture.requests
+            .skip(revision * 2)
+            .map((entry) => entry['authorization']),
+        [
+          'Bearer test-rotation-$revision-key',
+          'Bearer test-rotation-$revision-key',
+        ],
+      );
+      expect(
+        fixture.registry.providersFor(modelProviderCapability),
+        hasLength(3),
+      );
+      expect(
+        fixture.registry.providersFor(modelCatalogCapability),
+        hasLength(2),
+      );
+      previous = current;
+    }
+    expect(fixture.requests, hasLength(24));
+    _expectCompleted(
+      await fixture.invokeChatGpt().toList(),
+      '/chatgpt/responses',
+    );
+    expect(fixture.requests.last['authorization'], 'Bearer test-chatgpt-token');
+  });
+
+  test('invalid explicit refresh selectors and endpoints fail safely without '
+      'replacing valid registrations', () async {
+    final fixture = await prepareProviders(consumeCatalog: true);
+    await fixture.start();
+    final old = fixture.capture('work');
+    final personal = fixture.capture('personal');
+    for (final payload in <Map<String, Object?>>[
+      {},
+      {
+        'recordId': 'work-openai',
+        'endpoint': '${fixture.origin}/test-work-key',
+      },
+      {'recordId': 'work-openai', 'secret': 'test-work-key'},
+    ]) {
+      expect(
+        await fixture.refresh(payload),
+        _refreshResult('failed', 'invalid_request'),
+      );
+    }
+    for (final id in <Object?>[
+      null,
+      42,
+      '',
+      '../work-openai',
+      ' work-openai ',
+      'bad\nrecord',
+      'a' * 257,
+    ]) {
+      expect(
+        await fixture.refresh({'recordId': id}),
+        _refreshResult('failed', 'invalid_record_id'),
+      );
+    }
+    old.expectSame(fixture.capture('work'));
+    fixture.records['work'] = await fixture.settings.updateRecord(
+      fixture.records['work']!,
+      {
+        ...fixture.records['work']!.values,
+        'display-name': 'Unpublished Work',
+        'endpoint': 'http://public.example.invalid/test-work-key?private=value',
+      },
+    );
+    expect(
+      await fixture.refresh(),
+      _refreshResult('failed', 'invalid_configuration'),
+    );
+    old.expectSame(fixture.capture('work'));
+    personal.expectSame(fixture.capture('personal'));
+    expect(old.inference.provider.displayName, 'Work OpenAI');
+    _expectCatalogAssociations(fixture.bootstrap, fixture.registry);
+    expect(fixture.requests, isEmpty);
+    expect(fixture.storage.calls, isEmpty);
+    await fixture.expectFailure('stale_configuration');
+    expect(fixture.requests, isEmpty);
+    expect(fixture.storage.calls, isEmpty);
+  });
+
+  for (final suffix in ['custom', 'responses?api-version=private']) {
+    test(
+      'explicit refresh to unsupported catalog endpoint $suffix keeps inference usable',
+      () async {
+        final fixture = await prepareProviders(consumeCatalog: true);
+        await fixture.start();
+        final old = fixture.capture('work');
+        fixture.records['work'] = await fixture.settings
+            .updateRecord(fixture.records['work']!, {
+              ...fixture.records['work']!.values,
+              'endpoint': '${fixture.origin}/work/$suffix',
+            });
+        expect(await fixture.refresh(), _refreshResult('applied', 'replaced'));
+        old.expectReplacement(fixture.capture('work'));
+        await old.expectRetired(fixture);
+        _expectCatalogAssociations(fixture.bootstrap, fixture.registry);
+        await fixture.selectCatalog('work');
+        _expectCatalogFailure(
+          await fixture.listModels('work'),
+          'unsupported_discovery',
+        );
+        expect(fixture.requests, isEmpty);
+        expect(fixture.storage.calls, isEmpty);
+        _expectCompleted(
+          await fixture.invoke('work').toList(),
+          '/work/${suffix.split('?').first}',
+        );
+        expect(
+          fixture.requests.single['authorization'],
+          'Bearer test-work-key',
+        );
+        expect(
+          fixture.requests.single['query'],
+          suffix.contains('?') ? 'api-version=private' : '',
+        );
+        expect(fixture.storage.readReferences, [fixture.reference('work')]);
+      },
+    );
+  }
+
+  test(
     'invalid configured endpoint isolates only that record from siblings',
     () async {
       final fixture = await prepareProviders(chatGpt: true);
@@ -676,21 +1305,24 @@ void main() {
     },
   );
 
-  test('new records are invisible to the captured generation', () async {
-    final fixture = await prepareProviders();
-    await fixture.start();
-    await fixture.settings.createRecord(
-      RecordTypeId(_recordType),
-      ConfigurationRecordId('new-openai'),
-      {'display-name': 'New OpenAI'},
-    );
-    expect(() => fixture.client('new'), throwsA(isA<ProviderUnavailable>()));
-    expect(fixture.connection.capabilityExposures, hasLength(4));
-    await fixture.restart();
-    expect(fixture.connection.capabilityExposures, hasLength(6));
-    await fixture.expectFailure('not_configured', id: 'new');
-    expect(fixture.requests, isEmpty);
-  });
+  test(
+    'new records stay invisible without explicit refresh or restart',
+    () async {
+      final fixture = await prepareProviders();
+      await fixture.start();
+      await fixture.settings.createRecord(
+        RecordTypeId(_recordType),
+        ConfigurationRecordId('new-openai'),
+        {'display-name': 'New OpenAI'},
+      );
+      expect(() => fixture.client('new'), throwsA(isA<ProviderUnavailable>()));
+      expect(fixture.connection.capabilityExposures, hasLength(4));
+      await fixture.restart();
+      expect(fixture.connection.capabilityExposures, hasLength(6));
+      await fixture.expectFailure('not_configured', id: 'new');
+      expect(fixture.requests, isEmpty);
+    },
+  );
 
   for (final retire in [false, true]) {
     test('pending OS credential result cannot start HTTP after '
@@ -960,6 +1592,7 @@ void main() {
       );
       expect(startupRecords.records, projected.records);
       final connection = backend.connection!;
+      final contexts = _configuredContexts(connection);
       expect(connection.extensionExposures, isEmpty);
       expect(
         connection.capabilityExposures.map((entry) => entry.toMap()),
@@ -971,7 +1604,7 @@ void main() {
               'capabilityMajorVersion': modelProviderCapability.majorVersion,
               'serviceId': modelProviderServiceId,
               'displayName': id == 'work' ? 'Work Renamed' : 'Personal',
-              'configurationContext': 'api-key-record:$id-openai',
+              'configurationContext': contexts[id],
               'rank': 0,
             },
           for (final id in ['personal', 'work'])
@@ -981,7 +1614,7 @@ void main() {
               'capabilityMajorVersion': modelCatalogCapability.majorVersion,
               'serviceId': modelCatalogServiceId,
               'displayName': id == 'work' ? 'Work Renamed' : 'Personal',
-              'configurationContext': 'api-key-record:$id-openai',
+              'configurationContext': contexts[id],
               'rank': 0,
               'association': {
                 'capabilityId': modelProviderCapability.id.value,
@@ -1239,6 +1872,15 @@ final class _ReadGate {
   }
 }
 
+final class _HttpGate {
+  final entered = Completer<void>();
+  final resumed = Completer<void>();
+
+  void release() {
+    if (!resumed.isCompleted) resumed.complete();
+  }
+}
+
 final class _ProviderFixture {
   _ProviderFixture(this.directory, this.runtime, this.host);
 
@@ -1249,6 +1891,7 @@ final class _ProviderFixture {
   final records = <String, RecordView>{};
   final references = <String, CredentialReference>{};
   final requests = <Map<String, Object?>>[];
+  final responseGates = <String, _HttpGate>{};
   final catalogModels = <String, List<String>>{
     '/work/models': ['work-model'],
     '/personal/models': ['personal-model'],
@@ -1271,9 +1914,10 @@ final class _ProviderFixture {
   ApplicationPluginBootstrap? _bootstrap;
 
   ApplicationPluginBootstrap get bootstrap => _bootstrap!;
-  PluginBackendConnection get connection => bootstrap.backends
-      .singleWhere((entry) => entry.installation.metadata.id.value == _openai)
-      .connection!;
+  InstalledBackendActivation get backend => bootstrap.backends.singleWhere(
+    (entry) => entry.installation.metadata.id.value == _openai,
+  );
+  PluginBackendConnection get connection => backend.connection!;
   PluginBackendConnection get consumer => bootstrap.backends
       .singleWhere(
         (entry) => entry.installation.metadata.id.value == _catalogConsumer,
@@ -1283,6 +1927,9 @@ final class _ProviderFixture {
   String get installationRoot => '${directory.path}/installations';
 
   CredentialReference reference(String id) => references[id]!;
+
+  File recordFile(String id) =>
+      File('${roots.configurationRoot}/providers/$id-openai.toml');
 
   Future<void> prepare(
     Directory repository,
@@ -1308,6 +1955,11 @@ final class _ProviderFixture {
           'body': body,
         });
         final response = request.response;
+        final gate = responseGates.remove(request.uri.path);
+        if (gate != null) {
+          gate.entered.complete();
+          await gate.resumed.future;
+        }
         if (request.method == 'GET') {
           final pending = pendingCatalogSocket;
           if (pending != null) {
@@ -1554,19 +2206,93 @@ final class _ProviderFixture {
         as Map,
   );
 
-  Future<void> selectCatalog(String id) async {
+  Future<void> selectCatalog(String id, {String? slot}) async {
     expect(
       await catalogCall('resolve', {
         ..._catalogQuery,
         'providerId': '$_catalogProviderId.$id-openai',
-        'slot': id,
+        'slot': slot ?? id,
       }),
-      {'ok': true, 'provider': _catalogProvider(id), 'requestOnly': true},
+      {
+        'ok': true,
+        'provider': _catalogProvider(
+          id,
+          displayName: records[id]!.values['display-name']! as String,
+        ),
+        'requestOnly': true,
+      },
     );
   }
 
   Future<Map<String, Object?>> listModels(String id) =>
       catalogCall('listModels', {'slot': id});
+
+  Future<Map<String, Object?>> refresh([
+    Map<String, Object?> payload = const {'recordId': 'work-openai'},
+  ]) async {
+    final owner = backend;
+    final captured = connection;
+    final generation = captured.defaultConfigurationContext;
+    final host = bootstrap.host!;
+    final processId = host.processId;
+    final calls = List<String>.of(storage.calls);
+    final reads = List<CredentialReference>.of(storage.readReferences);
+    final requestCount = requests.length;
+    owner.validate();
+    final result = Map<String, Object?>.from(
+      await captured
+              .channelFor(generation, _configurationService)
+              .request('refreshConfiguredProvider', payload)
+          as Map,
+    );
+    expect(result.keys, unorderedEquals(['status', 'code', 'cleanupPending']));
+    expect(
+      result['status'],
+      isIn(['applied', 'noChange', 'unavailable', 'failed']),
+    );
+    expect(result['code'], matches(RegExp(r'^[a-z]+(?:_[a-z]+)*$')));
+    expect(result['cleanupPending'], isA<bool>());
+    _expectProviderRedacted(result);
+    for (final forbidden in [
+      directory.path,
+      origin,
+      'recordId',
+      'captureHandle',
+    ]) {
+      expect(jsonEncode(result), isNot(contains(forbidden)));
+    }
+    expect(storage.calls, calls, reason: 'Refresh must not access the vault.');
+    expect(storage.readReferences, reads);
+    expect(
+      requests,
+      hasLength(requestCount),
+      reason: 'Refresh must not use HTTP.',
+    );
+    expect(backend, same(owner));
+    expect(connection, same(captured));
+    expect(connection.defaultConfigurationContext, same(generation));
+    expect(bootstrap.host, same(host));
+    expect(host.processId, processId);
+    expect(host.isClosed, isFalse);
+    expect(owner.validate, returnsNormally);
+    expect(connection.validateInfrastructureContext, returnsNormally);
+    expect(
+      captured.capabilityExposures.map((entry) => entry.serviceId),
+      isNot(contains(_configurationService)),
+    );
+    return result;
+  }
+
+  _ConfiguredBinding capture(String id) => _ConfiguredBinding(
+    registry.resolve(
+      modelProviderCapability,
+      providerId: ProviderId('$_recordType.$id-openai'),
+    ),
+    registry.resolve(
+      modelCatalogCapability,
+      providerId: ProviderId('$_catalogProviderId.$id-openai'),
+    ),
+  );
 
   ModelProviderServiceClient client(String id) => ModelProviderServiceClient(
     registry
@@ -1619,6 +2345,9 @@ final class _ProviderFixture {
 
   Future<void> close() async {
     storage.gate?.release();
+    for (final gate in responseGates.values) {
+      gate.release();
+    }
     await _bootstrap?.close();
     for (final coordinator in backendAssociations.reversed) {
       await coordinator.close();
@@ -1643,12 +2372,13 @@ final _catalogQuery = {
   'expectedServiceId': modelCatalogServiceId,
 };
 
-Map<String, Object?> _catalogProvider(String id) => {
+Map<String, Object?> _catalogProvider(String id, {String? displayName}) => {
   'capabilityId': modelCatalogCapability.id.value,
   'majorVersion': modelCatalogCapability.majorVersion,
   'providerId': '$_catalogProviderId.$id-openai',
   'pluginId': _openai,
-  'displayName': id == 'work' ? 'Work OpenAI' : 'Personal OpenAI',
+  'displayName':
+      displayName ?? (id == 'work' ? 'Work OpenAI' : 'Personal OpenAI'),
   'serviceId': modelCatalogServiceId,
 };
 
@@ -1671,9 +2401,10 @@ void _expectCatalogFailure(Map<String, Object?> result, String code) {
 
 void _expectCatalogAssociations(
   ApplicationPluginBootstrap bootstrap,
-  CapabilityRegistry registry,
-) {
-  for (final id in ['personal', 'work']) {
+  CapabilityRegistry registry, {
+  List<String> ids = const ['personal', 'work'],
+}) {
+  for (final id in ids) {
     final catalog = registry.resolve(
       modelCatalogCapability,
       providerId: ProviderId('$_catalogProviderId.$id-openai'),
@@ -1690,6 +2421,86 @@ void _expectCatalogAssociations(
       isTrue,
     );
     expect(owner.associationFor(inference), isNull);
+  }
+}
+
+Map<String, String> _configuredContexts(PluginBackendConnection connection) {
+  final contexts = <String, String>{};
+  for (final id in ['personal', 'work']) {
+    final inference = connection.capabilityExposures.singleWhere(
+      (entry) => entry.providerId == '$_recordType.$id-openai',
+    );
+    final catalog = connection.capabilityExposures.singleWhere(
+      (entry) => entry.providerId == '$_catalogProviderId.$id-openai',
+    );
+    expect(
+      inference.configurationContext,
+      matches(RegExp(r'^dynamic:[0-9]+$')),
+    );
+    expect(catalog.configurationContext, inference.configurationContext);
+    contexts[id] = inference.configurationContext;
+  }
+  expect(contexts.values.toSet(), hasLength(contexts.length));
+  return contexts;
+}
+
+Map<String, Object?> _refreshResult(
+  String status,
+  String code, {
+  bool? cleanupPending,
+}) => {
+  'status': status,
+  'code': code,
+  'cleanupPending': cleanupPending ?? isA<bool>(),
+};
+
+final class _ConfiguredBinding {
+  _ConfiguredBinding(this.inference, this.catalog)
+    : inferenceClient = ModelProviderServiceClient(inference.streamChannel),
+      catalogClient = ModelCatalogServiceClient(catalog.requestChannel);
+
+  final ProviderBinding inference;
+  final ProviderBinding catalog;
+  final ModelProviderServiceClient inferenceClient;
+  final ModelCatalogServiceClient catalogClient;
+
+  void expectSame(_ConfiguredBinding other) {
+    expect(inference.isSameRegistration(other.inference), isTrue);
+    expect(catalog.isSameRegistration(other.catalog), isTrue);
+  }
+
+  void expectReplacement(_ConfiguredBinding other) {
+    expect(inference.provider.id, other.inference.provider.id);
+    expect(catalog.provider.id, other.catalog.provider.id);
+    expect(inference.isSameRegistration(other.inference), isFalse);
+    expect(catalog.isSameRegistration(other.catalog), isFalse);
+  }
+
+  Future<void> expectRetired(_ProviderFixture fixture) async {
+    final calls = List<String>.of(fixture.storage.calls);
+    final requests = fixture.requests.length;
+    for (final binding in [inference, catalog]) {
+      expect(
+        () => binding.requestChannel,
+        throwsA(
+          isA<ProviderUnavailable>().having((e) => e.stale, 'stale', isTrue),
+        ),
+      );
+    }
+    expect(
+      () => fixture.backend.associationFor(catalog),
+      throwsA(isA<ProviderUnavailable>()),
+    );
+    await expectLater(
+      inferenceClient.invoke(_providerRequest('old-route')).toList(),
+      throwsA(isA<AdeleRemoteFailure>()),
+    );
+    await expectLater(
+      catalogClient.listModels(),
+      throwsA(isA<AdeleRemoteFailure>()),
+    );
+    expect(fixture.storage.calls, calls);
+    expect(fixture.requests, hasLength(requests));
   }
 }
 
@@ -1752,6 +2563,8 @@ void _expectProviderRedacted(Object? value) {
     'test-work-key',
     'test-personal-key',
     'test-replacement-key',
+    'test-third-key',
+    'test-rotation-',
     'test-chatgpt-token',
     'test-chatgpt-refresh',
     'cred1_',

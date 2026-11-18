@@ -1,14 +1,13 @@
 import 'dart:async';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
-import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:adele_plugin_backend_support/adele_plugin_backend_support.dart';
 
 import '../openai_model_provider_backend.dart';
 import 'openai_endpoint.dart';
 
-/// Nonsecret configuration captured for one record-backed provider generation.
+/// Nonsecret immutable configuration, separate from any executable route identity.
 final class OpenAiApiKeyConfiguration {
   OpenAiApiKeyConfiguration._({
     required this.recordId,
@@ -17,15 +16,11 @@ final class OpenAiApiKeyConfiguration {
   }) : providerId = ProviderId('$openAiApiKeyProviderId.$recordId'),
        catalogProviderId = ProviderId(
          'dev.adele.openai.model-catalog.$recordId',
-       ),
-       configurationContext = 'api-key-record:$recordId' {
-    adeleValidateConfigurationContext(configurationContext);
-  }
+       );
 
   final String recordId;
   final ProviderId providerId;
   final ProviderId catalogProviderId;
-  final String configurationContext;
   final String displayName;
   final Uri? endpoint;
 
@@ -102,13 +97,16 @@ final class OpenAiApiKeyConfiguration {
 /// Resolves one fresh host-authorized key only when an invocation is listened to.
 /// Each invocation owns its temporary provider and HTTP client, not the host mux.
 final class OpenAiConfiguredModelProvider implements ModelProviderService {
+  /// An explicit reader stays bound to its owner's scope, with no startup fallback.
   OpenAiConfiguredModelProvider({
     required this.configuration,
-    required AdeleCredentialClient? credentials,
-  }) : _credentials = credentials;
+    AdeleCredentialClient? credentials,
+    Future<String> Function()? readCredential,
+  }) : _readCredential =
+           readCredential ?? (() => configuration.readCredential(credentials));
 
   final OpenAiApiKeyConfiguration configuration;
-  final AdeleCredentialClient? _credentials;
+  final Future<String> Function() _readCredential;
 
   @override
   Stream<ModelProviderEvent> invoke(ModelProviderRequest request) {
@@ -158,7 +156,7 @@ final class OpenAiConfiguredModelProvider implements ModelProviderService {
     Future<void> start() async {
       final String key;
       try {
-        key = await configuration.readCredential(_credentials);
+        key = await _readCredential();
       } on AdeleCredentialFailure catch (failure) {
         fail(_credentialFailure(failure.kind));
         return;
@@ -266,7 +264,7 @@ ModelProviderFailure _credentialFailure(AdeleCredentialFailureKind kind) {
     AdeleCredentialFailureKind.staleConfiguration => (
       ModelProviderFailureKind.unavailable,
       'stale_configuration',
-      'The OpenAI configuration changed; restart the backend before invoking it.',
+      'The OpenAI configuration changed; refresh or restart the backend before invoking it.',
     ),
     AdeleCredentialFailureKind.generationUnavailable => (
       ModelProviderFailureKind.unavailable,
