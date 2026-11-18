@@ -104,6 +104,7 @@ void main() {
     PlatformStorageRoots? roots,
     ProductIdSource? ids,
     RunIdSource? runIds,
+    String? expectedFailedBackend,
   }) async {
     final runtime = AdeleRuntime(
       ids: ids ?? MonotonicProductIdSource(seed: 'global-chat-budget'),
@@ -126,9 +127,17 @@ void main() {
     );
     expect(runtime.plugins.state, ApplicationPluginState.ready);
     expect(runtime.plugins.catalog!.issues, isEmpty);
-    expect(runtime.plugins.backends, hasLength(3));
+    expect(
+      runtime.plugins.backends,
+      hasLength(expectedFailedBackend == null ? 3 : 4),
+    );
     for (final backend in runtime.plugins.backends) {
       expect(backend.installation.frontend, isNull);
+      if (backend.installation.metadata.id.value == expectedFailedBackend) {
+        expect(backend.state, InstalledBackendState.failed);
+        expect(backend.connection, isNull);
+        continue;
+      }
       expect(
         backend.state,
         InstalledBackendState.active,
@@ -776,7 +785,7 @@ void main() {
   );
 
   test(
-    'prepared Chat carries failed and completed Run observations across durable reopen',
+    'prepared Chat carries failed and completed Run observations across durable reopen with unavailable Agent configuration',
     () async {
       const instructions =
           'Continue from prior observations, inspecting current files when needed.';
@@ -928,7 +937,20 @@ void main() {
       await second.close();
       await original.close();
 
-      final reopened = await startPrepared();
+      // The original runtime has no Agent installation. On reopen its declared
+      // backend cannot activate: this host deliberately has no record loader.
+      const agentId = 'dev.adele.plugin.agent-configuration';
+      final agents = Directory('${installations.path}/agent-configuration');
+      await publishStockPluginInstallation(
+        repositoryRoot: Directory.current.parent,
+        installationDirectory: agents,
+        pluginId: agentId,
+        displayName: 'Agent Configuration',
+        backend: true,
+      );
+      addTearDown(() => agents.delete(recursive: true));
+      await File('${agents.path}/backend.aot').writeAsString('not started');
+      final reopened = await startPrepared(expectedFailedBackend: agentId);
       await reopened.lifecycle.openProject(
         sourceLocation: source.uri,
         provider: reopened.lifecycle.resolveProjectProvider(_projectProviderId),

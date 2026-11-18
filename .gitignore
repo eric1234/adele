@@ -20,6 +20,7 @@ coverage/
 /packages/plugin_backend_support/lib/backend_local_state.g.dart
 /packages/plugin_backend_support/lib/capability_consumer.g.dart
 /packages/project_storage/lib/adele_project_storage.g.dart
+/plugins/agent_configuration/packages/contract/lib/agent_configuration_contract.g.dart
 /plugins/chat_strategy/packages/contract/lib/chat_strategy_contract.g.dart
 /plugins/command_tools/packages/contract/lib/command_tools_contract.g.dart
 /plugins/diff_viewer/packages/contract/lib/diff_viewer_contract.g.dart

@@ -42,6 +42,7 @@ dependencies:
   xterm2: 5.2.0
 
 dev_dependencies:
+  agent_configuration_contract: ^0.1.0
   chat_strategy_backend: ^0.1.0
   chat_strategy_contract: ^0.1.0
   command_tools_plugin: ^0.1.0

@@ -76,8 +76,8 @@ preparation; generation failure is fatal rather than permission to use old outpu
 
 The launcher inspects its selected Flutter executable and uses that SDK's bundled
 `dart` and sibling `dartaotruntime`, not a potentially unrelated `dart` on PATH.
-It prepares the host and Git, OpenAI, Chat, AGENTS.md, Search, Filesystem Tools,
-Command Tools, Local Directory Project, and Session Evaluator backends.
+It prepares the shared host and the stock backends listed in
+[`tools/backend_artifacts.dart`](../../tools/backend_artifacts.dart).
 Session Evaluator is a trusted development-only combined installation with semantic
 identity `dev.adele.plugin.session-evaluator`; its frontend declares an ordinary
 Session Command with no presentations. It needs no startup arguments or additional
@@ -141,6 +141,10 @@ installations occupy sibling directories:
     |-- agents-md/
     |   |-- adele_plugin.installation.json
     |   `-- backend.aot
+    |-- agent-configuration/
+    |   |-- adele_plugin.installation.json
+    |   |-- backend.aot
+    |   `-- records.schema.json
     |-- search-tools/
     |   |-- adele_plugin.installation.json
     |   `-- backend.aot
