@@ -203,8 +203,8 @@ bounds, exact attachment, foreign/stale handles, safe failure adaptation, and pe
 shutdown. The [independent AOT proof](test/core/backend_capability_publication_integration_test.dart)
 uses normal bootstrap, public inference/catalog contracts, and an unchanged peer
 consumer to exercise same-generation add/replace/retire with held requests/streams
-and unchanged sibling/Command bindings. The app imports no concrete provider plugin
-and performs no OpenAI refresh. Public usage belongs to
+and unchanged sibling/Command bindings. The publication host imports no concrete
+provider plugin and does not initiate refresh. Public usage belongs to
 [backend support](../packages/plugin_backend_support/README.md#capability-publication);
 ownership and replacement guarantees belong to the
 [canonical lifecycle](../docs/architecture/contracts-and-capabilities.md#dynamic-capability-publication).
@@ -475,17 +475,22 @@ without hiding a healthy independent catalog; installation-wide issues appear in
 both. Missing/invalid schemas remain visible, and duplicate declarations or conflicting
 collection labels reject aggregation. Repairing declarations requires restart.
 
-All configuration still uses one global layer. Opted-in backends receive nonsecret
-record definitions at startup; credential references stay in the host. Ordinary
-record CRUD does not access the vault; even explicit credential management does not
-authenticate a provider, change Chat selection, or alter temporary
-environment-variable startup. Restart captures updated records; the OpenAI backend
-then materializes its valid API-key records into independent provider routes without
-reading credentials. Explicit backend credential retrieval is separately scoped
-as described below. Applying OpenAI record/credential changes still requires restart,
-not Settings Reload or a nonsecret observation alone; record-based OAuth, Profiles,
-Agent configuration, narrower scopes, runtime restart commands, and live editor
-reconfiguration remain unimplemented.
+The app's [`RecordApplyCoordinator`](lib/core/record_apply_coordinator.dart) tracks
+runtime apply separately from storage, by collection, type and record ID. It runs
+after the write gate is released and survives dialog dismissal. Overlapping saves
+for one record coalesce; a late reply cannot overwrite the newer result. Settings
+shows the latest result for the record, including the most recent deletion in a
+collection. **Retry application** sends only the record ID to its declared live
+owner; it never repeats Save, Delete or a credential mutation. Restart ADELE if
+publication is unknown. See the [trigger and recovery rules](../docs/architecture/profiles-and-configuration.md#applying-confirmed-record-changes).
+
+All configuration still uses one global layer. OpenAI applies its own API-key
+record changes without a vault read or network request during refresh. Applied
+does not mean authenticated or selected for Chat. If the backend's [eight capture
+slots](../plugins/openai/packages/backend/README.md#explicit-configured-refresh)
+are occupied, retry after old work drains, or restart if all slots are still in
+use. Without a declared control, editing remains persistence only. Scalar changes
+still require restart.
 
 ### Startup records
 
@@ -524,7 +529,7 @@ configuration identities, not credentials or host authorization. These advertise
 do not prove local key availability or successful authentication. The separately
 configured ChatGPT route remains independent, and normal Session execution still
 selects it explicitly. See the [configuration lifecycle](../docs/architecture/profiles-and-configuration.md#configured-openai-providers)
-for restart and no-fallback rules.
+for revision and no-fallback rules.
 
 ### Live record observations
 
@@ -591,8 +596,8 @@ The application drains admitted operations before owner disposal.
 
 The [canonical credential model](../docs/architecture/profiles-and-configuration.md#backend-credential-delivery)
 owns capture, staleness, external-writer limits and the inability to revoke a secret
-already delivered in memory. OpenAI still invokes the startup-scope read lazily for
-each subscribed configured-provider request; it does not receive the app-private
+already delivered in memory. OpenAI reads lazily against the selected revision's
+scope (startup or live capture); it does not receive the app-private
 service or native storage access. Failure remains with that selected instance, never
 an account fallback. The [public contract](../packages/plugin_backend_support/README.md)
 owns usage and fixed failures. Local test ownership is split between
@@ -2330,10 +2335,9 @@ and one presented Session with multiple independently active Sessions, not multi
 active Runs per Session. Global scalar settings and nonsecret configuration records
 are implemented, with startup-only scalar delivery to frontends and backends.
 Global Settings manages host-only credential associations separately from runtime
-delivery. OpenAI's configured API-key providers use that delivery lazily, with a
-restart required after record or credential changes. Automatic selection/resume,
-Profiles, Session provider/model selection, live provider reconfiguration, and
-workbench persistence remain absent.
+delivery. OpenAI's configured API-key providers use that delivery lazily and
+support [targeted record apply](#global-settings). Automatic selection/resume,
+Profiles, Session provider/model selection, and workbench persistence remain absent.
 Current model-provider selection is the source-checkout seam above, not finished
 settings.
 Intended UX belongs to

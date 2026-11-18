@@ -108,8 +108,8 @@ The version-1 envelope contains `manifestVersion`, `metadata`, and `components`.
 `metadata` supplies `PluginMetadata`; optional installation-level `settingsSchema`
 and `recordsSchema` reference independent declarative assets. The required
 `components` object may be empty, retaining a metadata-only installation. A backend component supplies
-an `artifact` path and optional `consumesCapabilities`, `consumesRecordTypes`, and
-`consumesCredentialSlots`;
+an `artifact` path and optional `consumesCapabilities`, `consumesRecordTypes`,
+`consumesCredentialSlots`, and `appliesRecordTypes`;
 a frontend supplies an
 `artifact` path and descriptors.
 The in-memory catalog captures parsed metadata, setting/record declarations, and
@@ -444,6 +444,34 @@ The stock publisher opts OpenAI into exactly `dev.adele.openai.api-key` / `api-k
 without changing its authored record schema or backend behavior. The
 [record declaration tests](test/prepared_records_schema_test.dart) exercise the
 separate opt-in, immutable snapshots, bounds, and exact-installation checks.
+
+`components.backend.appliesRecordTypes` optionally declares a host-callable unary
+control for each record type the backend can apply. Example backend component:
+
+```json
+{
+  "artifact": "backend.aot",
+  "consumesRecordTypes": ["org.example.plugin.api"],
+  "appliesRecordTypes": [
+    {"recordType": "org.example.plugin.api", "serviceId": "org.example.configuration", "method": "refreshRecord"}
+  ]
+}
+```
+
+Omission or `[]` declares no control. Each entry accepts exactly `recordType`,
+`serviceId`, and `method`. At most 128 entries may name types owned by this
+installation's validated schema and listed in `consumesRecordTypes`. Both the
+type and the `(serviceId, method)` pair must be unique: the request carries no
+type selector. Service IDs use the public grammar (up to 256 code units); methods
+match `[A-Za-z][A-Za-z0-9_]*` (up to 128 characters). The `plugin` service and
+`shutdown` method are reserved. Invalid declarations omit only the backend.
+
+`backendRecordApplyHandlers` is host-only metadata, not backend startup data.
+The connection reserves whole service IDs against ordinary channels, including
+frontend and Capability routes. `requestRecordApply` accepts the captured handler
+and record ID, not an arbitrary service, method or payload. It grants no credential
+permission. See
+[Settings record apply](../../docs/architecture/profiles-and-configuration.md#applying-confirmed-record-changes).
 
 `PreparedCommandExtension` uses `kind: 'command'` and exactly these required fields:
 

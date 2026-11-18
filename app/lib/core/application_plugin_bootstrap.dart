@@ -579,6 +579,8 @@ final class ApplicationPluginBootstrap {
             startupArgumentsOnly: true,
             settings: settings,
             records: records,
+            recordApplyHandlers:
+                backend.installation.backendRecordApplyHandlers,
             createInfrastructureServices: (connection) {
               final services = <String, AdeleBackendDispatcher>{
                 ...?createInfrastructureServices?.call(connection),

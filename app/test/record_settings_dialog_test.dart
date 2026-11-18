@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:adele_desktop/core/global_settings_service.dart';
+import 'package:adele_desktop/core/record_apply_coordinator.dart';
 import 'package:adele_desktop/ui/settings/global_settings_dialog.dart';
 import 'package:adele_platform_storage/adele_platform_storage.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
@@ -60,6 +61,7 @@ void main() {
     WidgetTester tester, {
     List<String> recordIssues = const [],
     GlobalSettingsService? settingsService,
+    RecordApplication? application,
   }) async {
     await tester.binding.setSurfaceSize(const Size(1000, 1100));
     addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -72,6 +74,7 @@ void main() {
                 context: context,
                 builder: (_) => GlobalSettingsDialog(
                   service: () async => settingsService ?? service,
+                  recordApplication: () => application,
                   recordDeclarationIssues: () => recordIssues,
                 ),
               ),
@@ -130,6 +133,146 @@ void main() {
     await _tap(tester, _key('record-save-jobs-$id'));
     await _loaded(tester);
   }
+
+  testWidgets(
+    'only the supported type reports runtime outcomes, independently of drafts and persistence',
+    (tester) => tester.runAsync(() async {
+      final application = RecordApplicationProbe(_job);
+      final key = _jobKey('supported');
+      await seed('supported', caption: 'same-title');
+      await service.createRecord(
+        _note,
+        ConfigurationRecordId('same-title'),
+        {},
+      );
+      await mount(tester, application: application);
+      await openRecords(tester);
+      expect(find.text('same-title'), findsNWidgets(2));
+      expect(find.textContaining('No confirmed result'), findsOneWidget);
+      await _edit(tester, 'same-title');
+      await save(tester, 'same-title');
+      await _edit(tester, 'supported');
+      expect(application.saves, isEmpty);
+      final original = file('supported').readAsBytesSync();
+      await save(tester, 'supported'); // An acknowledged no-op still applies.
+      expect(file('supported').readAsBytesSync(), original);
+      expect(application.saves, [(key, false)]);
+      expect(find.text('Runtime application: Applying...'), findsOneWidget);
+      await _tap(tester, _key('record-edit-jobs-supported'));
+      await _enter(tester, _editInput('supported', 'caption'), 'Draft');
+      application.report(
+        key,
+        const RecordApplyOutcome(
+          RecordApplyStatus.failed,
+          'private-backend-diagnostic',
+        ),
+      );
+      await tester.pump();
+      expect(find.text('Runtime application: Not applied'), findsOneWidget);
+      expect(find.textContaining('private-backend'), findsNothing);
+      expect(_enabled(tester, _key('record-save-jobs-supported')), isTrue);
+      await _section(tester, 'Preferences');
+      await openRecords(tester);
+      await _tap(tester, find.text('Retry application'));
+      expect(application.retries, [key]);
+      expect(application.saves, [(key, false)]);
+      expect(service.updates, 2);
+      expect(
+        tester
+            .widget<TextField>(_editInput('supported', 'caption'))
+            .controller!
+            .text,
+        'Draft',
+      );
+      await unmount(tester);
+      expect(application.observed, isFalse);
+      application.report(
+        key,
+        const RecordApplyOutcome(
+          RecordApplyStatus.applied,
+          'ok',
+          cleanupPending: true,
+        ),
+      );
+      await mount(tester, application: application);
+      await openRecords(tester);
+      expect(find.text('Runtime application: Applied'), findsOneWidget);
+      expect(
+        find.textContaining('Cleanup of the previous configuration'),
+        findsOneWidget,
+      );
+      expect(find.text('Retry application'), findsNothing);
+      application.report(
+        key,
+        const RecordApplyOutcome(RecordApplyStatus.restartRequired, 'unknown'),
+      );
+      await tester.pump();
+      expect(find.textContaining('Restart required'), findsOneWidget);
+      expect(find.text('Retry application'), findsNothing);
+      expect(service.updates, 2);
+      await unmount(tester);
+    }),
+    skip: !Platform.isLinux,
+  );
+
+  testWidgets(
+    'only the latest deletion is shown and retry survives reopening without another delete',
+    (tester) => tester.runAsync(() async {
+      final application = RecordApplicationProbe(_job);
+      for (final id in ['first', 'second']) {
+        await seed(id);
+      }
+      await mount(tester, application: application);
+      await openRecords(tester);
+      VoidCallback? previousRetry;
+      for (final id in ['first', 'second']) {
+        await _expand(tester, id);
+        await _tap(tester, _key('record-delete-jobs-$id'));
+        await _tap(tester, _key('record-delete-confirm-jobs-$id'));
+        await _loaded(tester);
+        final key = _jobKey(id);
+        expect(application.saves.last, (key, true));
+        application.report(
+          key,
+          const RecordApplyOutcome(
+            RecordApplyStatus.unavailable,
+            'backend_unavailable',
+          ),
+        );
+        await tester.pump();
+        expect(find.text('Deleted record: $id'), findsOneWidget);
+        expect(find.text('Runtime application: Unavailable'), findsOneWidget);
+        previousRetry?.call();
+        expect(application.retries, isEmpty);
+        previousRetry = tester
+            .widget<TextButton>(
+              find.widgetWithText(TextButton, 'Retry application'),
+            )
+            .onPressed!;
+      }
+      await unmount(tester);
+      previousRetry!();
+      expect(application.retries, isEmpty);
+      await mount(tester, application: application);
+      await openRecords(tester);
+      expect(find.text('Deleted record: first'), findsNothing);
+      expect(find.text('Deleted record: second'), findsOneWidget);
+      await _tap(tester, find.text('Retry application'));
+      final latest = _jobKey('second');
+      expect(application.retries, [latest]);
+      expect(service.deletes, 2);
+      expect(application.saves, [(_jobKey('first'), true), (latest, true)]);
+      application.report(
+        latest,
+        const RecordApplyOutcome(RecordApplyStatus.noChange, 'already_absent'),
+      );
+      await tester.pump();
+      expect(find.text('Runtime application: No change'), findsOneWidget);
+      expect(find.text('Retry application'), findsNothing);
+      await unmount(tester);
+    }),
+    skip: !Platform.isLinux,
+  );
 
   testWidgets(
     'published Agents collection uses ordinary Global Settings controls for CRUD',
@@ -833,7 +976,12 @@ void main() {
         (tester) => tester.runAsync(() async {
           await seed('uncertain');
           await seed('independent');
-          await mount(tester);
+          final application = RecordApplicationProbe(_job);
+          application.report(
+            _jobKey('uncertain'),
+            const RecordApplyOutcome(RecordApplyStatus.applied, 'added'),
+          );
+          await mount(tester, application: application);
           await openRecords(tester);
           await _edit(tester, 'uncertain');
           await _enter(
@@ -879,6 +1027,8 @@ void main() {
             isFalse,
           );
           expect(file('uncertain').existsSync(), !(deleting && published));
+          expect(application.saves, isEmpty);
+          expect(find.text('Runtime application: Applied'), findsNothing);
           if (!deleting) {
             expect(
               file('uncertain').readAsStringSync(),
@@ -913,6 +1063,7 @@ void main() {
             deleting && published ? findsNothing : findsOneWidget,
           );
           expect(find.text('Independent saved'), findsOneWidget);
+          expect(application.saves, [(_jobKey('independent'), false)]);
           await unmount(tester);
         }),
         skip: !Platform.isLinux,
@@ -988,7 +1139,8 @@ void main() {
       'dialog close does not cancel admitted ${deleting ? 'delete' : 'update'}',
       (tester) => tester.runAsync(() async {
         await seed('after-close');
-        await mount(tester);
+        final application = RecordApplicationProbe(_job);
+        await mount(tester, application: application);
         await openRecords(tester);
         await _edit(tester, 'after-close');
         await _enter(
@@ -1015,6 +1167,8 @@ void main() {
           await tester.pump();
           Navigator.of(tester.element(find.byType(GlobalSettingsDialog))).pop();
           await tester.pumpAndSettle();
+          expect(application.saves, isEmpty);
+          expect(application.observed, isFalse);
         } finally {
           service.gate = null;
           gate.complete();
@@ -1028,6 +1182,8 @@ void main() {
                 ).readAsStringSync().contains('Saved after close'),
         );
         expect(tester.takeException(), isNull);
+        await _until(tester, () => application.saves.isNotEmpty);
+        expect(application.saves, [(_jobKey('after-close'), deleting)]);
         await tester.tap(find.text('Open settings'));
         await tester.pump();
         await _until(tester, () => _enabled(tester, _key('settings-reload')));
@@ -1523,7 +1679,8 @@ void main() {
       'unconfirmed ${lostAcknowledgement ? 'published' : 'failed'} creation requires Reload without losing draft',
       (tester) {
         return tester.runAsync(() async {
-          await mount(tester);
+          final application = RecordApplicationProbe(_job);
+          await mount(tester, application: application);
           await openRecords(tester);
           await add(tester, 'uncertain');
           await fillRequired(tester, caption: 'Retained uncertain draft');
@@ -1559,6 +1716,7 @@ void main() {
             lostAcknowledgement ? findsOneWidget : findsNothing,
           );
           expect(service.creates, 1);
+          expect(application.saves, isEmpty);
           await unmount(tester);
         });
       },
@@ -1570,13 +1728,15 @@ void main() {
     'confirmed creation uses its returned view without a handle-revoking refresh',
     (tester) {
       return tester.runAsync(() async {
-        await mount(tester);
+        final application = RecordApplicationProbe(_job);
+        await mount(tester, application: application);
         await openRecords(tester);
         await add(tester, 'requested-id');
         await fillRequired(tester, caption: 'Requested title');
         service.returnDifferentPersistedRecord = true;
         service.failNextLoad = true;
         await create(tester);
+        expect(application.saves, [(_jobKey('actual-id'), false)]);
         expect(find.text('Created actual-id.'), findsOneWidget);
         expect(find.text('Actual persisted title'), findsOneWidget);
         expect(service.recordLoads, 1);
@@ -1726,7 +1886,8 @@ void main() {
     'closing pending creation leaves its admitted native write intact',
     (tester) {
       return tester.runAsync(() async {
-        await mount(tester);
+        final application = RecordApplicationProbe(_job);
+        await mount(tester, application: application);
         await openRecords(tester);
         await add(tester, 'after-close');
         await fillRequired(tester, caption: 'Created after close');
@@ -1743,7 +1904,12 @@ void main() {
           service.gate = null;
           gate.complete();
         }
-        await _until(tester, () => file('after-close').existsSync());
+        await _until(
+          tester,
+          () =>
+              file('after-close').existsSync() && application.saves.isNotEmpty,
+        );
+        expect(application.saves, [(_jobKey('after-close'), false)]);
         expect(tester.takeException(), isNull);
         await tester.tap(find.text('Open settings'));
         await tester.pump();
@@ -1756,6 +1922,70 @@ void main() {
     },
     skip: !Platform.isLinux,
   );
+}
+
+RecordApplyKey _jobKey(String id) =>
+    (collection: _collection, type: _job, id: ConfigurationRecordId(id));
+
+// Shared by the two Settings widget suites. Persistence and credential workflows
+// stay real; only independent runtime notifications and requests are controlled.
+final class RecordApplicationProbe extends ChangeNotifier
+    implements RecordApplication {
+  RecordApplicationProbe(this.type);
+  final RecordTypeId type;
+  final saves = <(RecordApplyKey, bool)>[];
+  final retries = <RecordApplyKey>[];
+  final reconciliations = <RecordApplyKey>[];
+  final _outcomes = <RecordApplyKey, RecordApplyOutcome>{};
+  RecordApplyKey? _deletion;
+  bool get observed => hasListeners;
+
+  void report(RecordApplyKey key, RecordApplyOutcome outcome) {
+    _outcomes[key] = outcome;
+    notifyListeners();
+  }
+
+  @override
+  bool supports(RecordApplyKey key) => key.type == type;
+  @override
+  void unconfirmed(RecordApplyKey key) {
+    _outcomes.remove(key);
+    notifyListeners();
+  }
+
+  @override
+  RecordApplyOutcome? outcome(RecordApplyKey key) => _outcomes[key];
+  @override
+  RecordApplyKey? recentDeletion(RecordCollectionId collection) =>
+      _deletion?.collection == collection ? _deletion : null;
+
+  @override
+  void saved(RecordApplyKey key, {bool deleted = false}) {
+    saves.add((key, deleted));
+    if (deleted) _deletion = key;
+    report(
+      key,
+      const RecordApplyOutcome(RecordApplyStatus.applying, 'pending'),
+    );
+  }
+
+  @override
+  void retry(RecordApplyKey key) {
+    retries.add(key);
+    report(
+      key,
+      const RecordApplyOutcome(RecordApplyStatus.applying, 'pending'),
+    );
+  }
+
+  @override
+  void reconciled(RecordApplyKey key) {
+    reconciliations.add(key);
+    report(
+      key,
+      const RecordApplyOutcome(RecordApplyStatus.notApplied, 'reconciled'),
+    );
+  }
 }
 
 RecordCatalog _catalog() {

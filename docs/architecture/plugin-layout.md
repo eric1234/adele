@@ -250,6 +250,11 @@ authority; prepared declarations alone establish no such binding. The
 [catalog schema](../../packages/plugin_runtime/README.md#component-declarations)
 owns the exact representation, bounds, and immutable typed API.
 
+`appliesRecordTypes` optionally names a private apply control for an owned,
+consumed type. It is backend component metadata, independent of credential-slot
+access and public advertisements. See the [prepared fields](../../packages/plugin_runtime/README.md#component-declarations)
+and [runtime apply lifecycle](profiles-and-configuration.md#applying-confirmed-record-changes).
+
 ### Prepared frontend descriptors
 
 Prepared frontend metadata tells the host which supported interpreted entrypoints

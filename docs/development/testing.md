@@ -588,9 +588,9 @@ reopening, and explicit Reload after disk changes. Its credential flow uses the
 application's real retained
 association coordinator with a deterministic storage adapter to check independent
 OpenAI associations, explicit storage checks, replacement, Forget before deletion,
-and reopening without automatic vault reads. It also saves ordinary scalar Settings
-and checks no immediate provider activation from Settings edits, alongside independent
-schema and catalog-aggregation failures.
+and reopening without automatic vault reads. These installations have declarations
+but no backend artifact: writes must work without activating a provider. This is not
+a test of runtime apply on an active backend.
 Pipe-gated locks verify accepted application exit drains admitted record updates and
 deletes before releasing the settings worker.
 
@@ -626,9 +626,11 @@ endpoint policy, credential-failure mapping and Responses behavior.
 controlled reverse responses and HTTP objects for identity/endpoint validation,
 safe diagnostics, all credential-failure mappings, fresh per-invocation reads,
 cancellation/pause propagation and temporary-client cleanup.
-`test/openai_configured_refresh_test.dart` owns serialized reconciliation, lazy
-adoption, capture/publication capacity, safe failure outcomes, and release after
-route drain with real public clients and scripted reverse transport.
+`test/openai_configured_refresh_test.dart` exercises the eight-capture bound with
+catalog calls held on retired routes. It checks explicit retry after drain, refusal
+to retry unknown publication, and release of the exact scope after admitted work
+settles. `app/test/core/backend_credential_host_test.dart` checks host capacity
+during pending capture, release and unconfirmed cleanup.
 `test/openai_record_startup_test.dart` covers startup decoding and advertisements;
 `test/openai_configuration_context_integration_test.dart` compiles the real shared
 host and OpenAI backend and invokes the ordinary generated model-provider service.
@@ -654,14 +656,24 @@ held HTTP on old routes, exact inference/catalog associations and repeated refre
 without capture accumulation. Pending credential gates check cancellation/retirement before HTTP and
 continued Settings I/O; they do not establish a bound on OS unlock prompts.
 
+For Global Settings apply, `record_settings_dialog_test.dart` and
+`record_credential_settings_dialog_test.dart` isolate which acknowledgements
+trigger apply and which actions must not. `core/record_apply_coordinator_test.dart`
+checks exact-owner dispatch, coalescing, safe outcomes and retirement with a
+controlled transport. In `core/openai_record_startup_integration_test.dart`, run
+the Global Settings cases for the UI-to-AOT path, not just the explicit refresh
+helper. These app paths are relative to `app/test/`.
+
 After bootstrap/current generation, use the pinned toolchain:
 
 ```sh
 # Repository root
+dart tools/adele.dart test --target plugin_runtime
 dart tools/adele.dart test --target openai_model_provider_backend
 dart tools/adele.dart test --target adele_capabilities
 dart test test/tools/app_plugin_boundary_test.dart test/tools/backend_artifacts_test.dart test/tools/adele_test.dart
 # app/
+flutter test --no-pub --concurrency 1 test/record_settings_dialog_test.dart test/record_credential_settings_dialog_test.dart test/core/record_apply_coordinator_test.dart
 flutter test --no-pub --concurrency 1 test/core/openai_record_startup_integration_test.dart test/core/backend_credential_integration_test.dart test/core/startup_credential_authority_test.dart test/session_execution_test.dart
 ```
 
@@ -669,10 +681,10 @@ Keep the existing experimental ChatGPT authorization regressions and generic run
 generation/registry checks. `app/test/session_execution_test.dart` owns explicit
 selected-provider failure without fallback and retained bindings across retirement;
 the app's temporary selection still explicitly names ChatGPT, regardless of new
-configured providers in the registry. These fixtures add no Session selection UI,
-preference policy, automatic Settings propagation or external OpenAI validation. Test paths describe
-coverage owners, not recorded passing results. Production backend AOT changes also
-require the maintained Linux profile build, not only isolated AOT fixtures.
+configured providers in the registry. Use deterministic storage and loopback HTTP
+for record apply; neither Settings nor refresh should authenticate with OpenAI.
+These are validation procedures, not recorded passing results. Production backend
+AOT changes also require the maintained Linux profile build, not only isolated AOT fixtures.
 
 ## Credential storage checks
 

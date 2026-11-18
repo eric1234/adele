@@ -9,6 +9,8 @@ import 'package:adele_model_tool/adele_model_tool.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_settings/adele_settings.dart';
 
+import 'backend_host_protocol.dart';
+
 /// One prepared installation, without activation, configured values, or source data.
 final class PreparedPluginInstallation {
   PreparedPluginInstallation({
@@ -17,6 +19,7 @@ final class PreparedPluginInstallation {
     required Uri? backendArtifactUri,
     Iterable<CapabilityKey> backendConsumedCapabilities = const [],
     Iterable<RecordTypeId> backendConsumedRecordTypes = const [],
+    Iterable<PreparedRecordApplyHandler> backendRecordApplyHandlers = const [],
     Iterable<PreparedBackendCredentialSlots> backendConsumedCredentialSlots =
         const [],
     Iterable<ExtensionId> authorizationPolicies = const [],
@@ -29,6 +32,7 @@ final class PreparedPluginInstallation {
          backendArtifactUri: backendArtifactUri,
          backendConsumedCapabilities: backendConsumedCapabilities,
          backendConsumedRecordTypes: backendConsumedRecordTypes,
+         backendRecordApplyHandlers: backendRecordApplyHandlers,
          backendConsumedCredentialSlots: backendConsumedCredentialSlots,
          authorizationPolicies: authorizationPolicies,
          frontend: frontend,
@@ -43,6 +47,7 @@ final class PreparedPluginInstallation {
     required this.backendArtifactUri,
     Iterable<CapabilityKey> backendConsumedCapabilities = const [],
     Iterable<RecordTypeId> backendConsumedRecordTypes = const [],
+    Iterable<PreparedRecordApplyHandler> backendRecordApplyHandlers = const [],
     Iterable<PreparedBackendCredentialSlots> backendConsumedCredentialSlots =
         const [],
     Iterable<ExtensionId> authorizationPolicies = const [],
@@ -58,6 +63,9 @@ final class PreparedPluginInstallation {
          backendConsumedRecordTypes,
          owner: metadata.id,
          schema: recordsSchema,
+       ),
+       backendRecordApplyHandlers = PreparedRecordApplyHandler.snapshot(
+         backendRecordApplyHandlers,
        ),
        backendConsumedCredentialSlots = List.unmodifiable(
          backendConsumedCredentialSlots.take(
@@ -76,6 +84,10 @@ final class PreparedPluginInstallation {
       owner: metadata.id,
       schema: recordsSchema,
       consumedRecordTypes: this.backendConsumedRecordTypes,
+    );
+    _validateApplyConsumption(
+      this.backendRecordApplyHandlers,
+      this.backendConsumedRecordTypes,
     );
     if (backendArtifactUri == null &&
         this.backendConsumedCapabilities.isNotEmpty) {
@@ -130,6 +142,9 @@ final class PreparedPluginInstallation {
   /// This grants no credential access, provider activation, or frontend access.
   final List<RecordTypeId> backendConsumedRecordTypes;
 
+  /// Host-only application controls for exact owned and consumed record types.
+  final List<PreparedRecordApplyHandler> backendRecordApplyHandlers;
+
   /// Separately requested slots of exact consumed record types. This carries no
   /// secrets, references, namespace authority, or frontend access.
   final List<PreparedBackendCredentialSlots> backendConsumedCredentialSlots;
@@ -160,6 +175,63 @@ final class PreparedPluginInstallation {
         'slots': [for (final slot in declaration.slots) slot.value],
       },
   ];
+}
+
+/// A fixed unary control on the default context of the owning backend.
+final class PreparedRecordApplyHandler {
+  PreparedRecordApplyHandler({
+    required this.recordType,
+    required this.serviceId,
+    required this.method,
+  }) {
+    _schemaText(
+      recordType.value,
+      'apply recordType',
+      PreparedRecordsSchema.maxIdLength,
+    );
+    _schemaText(serviceId, 'apply serviceId', maxServiceIdLength);
+    adeleValidateServiceId(serviceId);
+    if (serviceId == backendHostRawServiceId) {
+      throw const FormatException('Record apply requires a dedicated service.');
+    }
+    // Existing backends handle the shared host's shutdown method before routing.
+    if (method.length > maxMethodLength ||
+        !_methodId.hasMatch(method) ||
+        method == 'shutdown') {
+      throw const FormatException('Invalid record apply method.');
+    }
+  }
+
+  static const maxHandlers =
+      PreparedPluginInstallation.maxBackendConsumedRecordTypes;
+  static const maxServiceIdLength = 256;
+  static const maxMethodLength = 128;
+  static final _methodId = RegExp(r'^[A-Za-z][A-Za-z0-9_]*$');
+
+  final RecordTypeId recordType;
+  final String serviceId;
+  final String method;
+
+  /// The only argument sent is a record ID, so each route must identify one type.
+  static List<PreparedRecordApplyHandler> snapshot(
+    Iterable<PreparedRecordApplyHandler> handlers,
+  ) {
+    final result = List<PreparedRecordApplyHandler>.unmodifiable(
+      handlers.take(maxHandlers + 1),
+    );
+    if (result.length > maxHandlers) {
+      throw const FormatException('Too many record apply handlers.');
+    }
+    final types = <RecordTypeId>{};
+    final routes = <(String, String)>{};
+    for (final handler in result) {
+      if (!types.add(handler.recordType) ||
+          !routes.add((handler.serviceId, handler.method))) {
+        throw const FormatException('Duplicate record apply type or route.');
+      }
+    }
+    return result;
+  }
 }
 
 /// Backend-only credential consumption metadata for one exact record type.
@@ -1001,6 +1073,7 @@ final class PreparedPluginCatalog {
         Uri? backendArtifactUri;
         List<CapabilityKey> backendConsumedCapabilities = const [];
         List<RecordTypeId> backendConsumedRecordTypes = const [];
+        List<PreparedRecordApplyHandler> backendRecordApplyHandlers = const [];
         List<PreparedBackendCredentialSlots> backendConsumedCredentialSlots =
             const [];
         PreparedFrontendComponent? frontend;
@@ -1113,6 +1186,7 @@ final class PreparedPluginCatalog {
                       'artifact',
                       'consumesCapabilities',
                       'consumesRecordTypes',
+                      'appliesRecordTypes',
                       'consumesCredentialSlots',
                     });
                 final consumedCapabilities = _backendConsumedCapabilityKeys(
@@ -1157,6 +1231,10 @@ final class PreparedPluginCatalog {
                   schema: recordsSchema,
                   consumedRecordTypes: consumedRecordTypes,
                 );
+                final applyHandlers = backend.containsKey('appliesRecordTypes')
+                    ? _recordApplyHandlers(backend['appliesRecordTypes'])
+                    : const <PreparedRecordApplyHandler>[];
+                _validateApplyConsumption(applyHandlers, consumedRecordTypes);
                 backendArtifactUri = await _artifact(
                   backend['artifact'],
                   'backend.artifact',
@@ -1164,6 +1242,7 @@ final class PreparedPluginCatalog {
                 );
                 backendConsumedCapabilities = consumedCapabilities;
                 backendConsumedRecordTypes = consumedRecordTypes;
+                backendRecordApplyHandlers = applyHandlers;
                 backendConsumedCredentialSlots = consumedCredentialSlots;
               case PreparedPluginComponent.frontend:
                 frontend = await _frontend(
@@ -1204,6 +1283,7 @@ final class PreparedPluginCatalog {
             backendArtifactUri: backendArtifactUri,
             backendConsumedCapabilities: backendConsumedCapabilities,
             backendConsumedRecordTypes: backendConsumedRecordTypes,
+            backendRecordApplyHandlers: backendRecordApplyHandlers,
             backendConsumedCredentialSlots: backendConsumedCredentialSlots,
             authorizationPolicies: authorizationPolicies,
             allowUnavailableAuthorizationPolicies: true,
@@ -2200,6 +2280,64 @@ List<RecordTypeId> _backendConsumedRecordTypeIds(
     ids.add(id);
   }
   return List.unmodifiable(ids);
+}
+
+List<PreparedRecordApplyHandler> _recordApplyHandlers(Object? value) {
+  if (value is! List<Object?> ||
+      value.length > PreparedRecordApplyHandler.maxHandlers) {
+    throw const FormatException(
+      'backend.appliesRecordTypes must be a bounded array.',
+    );
+  }
+  return PreparedRecordApplyHandler.snapshot(
+    value.map((entry) {
+      const label = 'backend.appliesRecordTypes entry';
+      final fields = _object(entry, label, {
+        'recordType',
+        'serviceId',
+        'method',
+      });
+      try {
+        return PreparedRecordApplyHandler(
+          recordType: RecordTypeId(
+            _schemaText(
+              fields['recordType'],
+              '$label.recordType',
+              PreparedRecordsSchema.maxIdLength,
+            ),
+          ),
+          serviceId: _schemaText(
+            fields['serviceId'],
+            '$label.serviceId',
+            PreparedRecordApplyHandler.maxServiceIdLength,
+          ),
+          method: _schemaText(
+            fields['method'],
+            '$label.method',
+            PreparedRecordApplyHandler.maxMethodLength,
+          ),
+        );
+      } on FormatException {
+        // Public identity constructors can include the input in their error.
+        throw const FormatException(
+          'Invalid backend.appliesRecordTypes identity.',
+        );
+      }
+    }),
+  );
+}
+
+void _validateApplyConsumption(
+  List<PreparedRecordApplyHandler> handlers,
+  List<RecordTypeId> validatedConsumedTypes,
+) {
+  // Consumption has already been matched to exact definitions of this installation.
+  final consumed = validatedConsumedTypes.toSet();
+  if (handlers.any((handler) => !consumed.contains(handler.recordType))) {
+    throw const FormatException(
+      'backend.appliesRecordTypes requires exact owned types in consumesRecordTypes.',
+    );
+  }
 }
 
 List<PreparedBackendCredentialSlots> _backendCredentialSlots(Object? value) {

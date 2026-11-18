@@ -869,21 +869,23 @@ void main() {
   });
 
   for (final location in ['manifest', 'metadata', 'components']) {
-    test('credential consumption is rejected at $location level', () async {
-      final manifest = _manifest();
-      final target = location == 'manifest'
-          ? manifest
-          : Map<String, Object?>.of(
-              manifest[location]! as Map<String, Object?>,
-            );
-      target['consumesCredentialSlots'] = <Object?>[];
-      if (location != 'manifest') manifest[location] = target;
-      await install('misplaced', manifest);
-      final catalog = await PreparedPluginCatalog.discover(root.path);
-      expect(catalog.installations, isEmpty);
-      expect(catalog.issues.single.component, isNull);
-      expect(catalog.issues.single.message, contains('unsupported fields'));
-    });
+    for (final field in ['consumesCredentialSlots', 'appliesRecordTypes']) {
+      test('$field is rejected at $location level', () async {
+        final manifest = _manifest();
+        final target = location == 'manifest'
+            ? manifest
+            : Map<String, Object?>.of(
+                manifest[location]! as Map<String, Object?>,
+              );
+        target[field] = <Object?>[];
+        if (location != 'manifest') manifest[location] = target;
+        await install('misplaced', manifest);
+        final catalog = await PreparedPluginCatalog.discover(root.path);
+        expect(catalog.installations, isEmpty);
+        expect(catalog.issues.single.component, isNull);
+        expect(catalog.issues.single.message, contains('unsupported fields'));
+      });
+    }
     test('record consumption is rejected at $location level', () async {
       final manifest = _manifest();
       final target = location == 'manifest'
@@ -2255,6 +2257,7 @@ void main() {
       'consumesCapabilities',
       'consumesRecordTypes',
       'consumesCredentialSlots',
+      'appliesRecordTypes',
       'unknown',
     ])
       'unsupported $field': {..._mainContent, field: 'unsupported'},
@@ -2866,6 +2869,7 @@ void main() {
       'consumesCapabilities',
       'consumesRecordTypes',
       'consumesCredentialSlots',
+      'appliesRecordTypes',
       'canRequestSourceDisplay',
       'canInspectSessionContent',
       'richDocumentEditor',
@@ -2916,6 +2920,7 @@ void main() {
       'consumesCapabilities',
       'consumesRecordTypes',
       'consumesCredentialSlots',
+      'appliesRecordTypes',
       'canRequestSourceDisplay',
       'canInspectSessionContent',
       'richDocumentEditor',

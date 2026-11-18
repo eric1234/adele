@@ -31,7 +31,7 @@ final class OwningBackendChannel {
       );
     }
     // Validate context ownership even when there are no allowlisted services.
-    connection.channelFor(configurationContext, 'context-validation');
+    connection.validateConfigurationContext(configurationContext);
     validate();
   }
 
