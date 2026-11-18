@@ -60,15 +60,17 @@ supplied endpoint, ordinary values or raw exception.
 The plugin owns this deterministic identity mapping, independent of display name,
 endpoint, key, credential reference and backend generation:
 
-| Record ID | Stable `ProviderId` | Live Configuration Context |
-| --- | --- | --- |
-| `work-openai` | `dev.adele.openai.api-key.work-openai` | `api-key-record:work-openai` |
-| `personal-openai` | `dev.adele.openai.api-key.personal-openai` | `api-key-record:personal-openai` |
+| Record ID | Stable Inference `ProviderId` |
+| --- | --- |
+| `work-openai` | `dev.adele.openai.api-key.work-openai` |
+| `personal-openai` | `dev.adele.openai.api-key.personal-openai` |
 
-Provider IDs and context strings use the existing public validators. Records retain
-stable record-ID advertisement order and separate dispatchers for
-`modelProviderServiceId` within one
-`AdeleConfigurationContextRouter`, all in **one OpenAI AOT backend generation**.
+Provider IDs use the existing public validators. Startup records retain stable
+record-ID advertisement order. `OpenAiConfiguredProviders` allocates a fresh opaque,
+retireable route with `AdeleConfigurationContextRouter.registerContext` for every
+configured revision, including startup revisions. Routes are not derived from record
+IDs and are never rebound to new configuration. Separate inference/catalog dispatchers
+share one revision's route, all in **one OpenAI AOT backend generation**.
 The exact capability binding selects the context; generated model request payloads,
 model IDs and provider options cannot select another account. Unknown contexts and
 services fail closed. Duplicate record identities fail structural decoding rather
@@ -76,12 +78,15 @@ than selecting a winner. An empty record list creates no configured providers.
 
 Advertisement establishes a valid configured route, not local credential presence
 or successful OpenAI authentication. `OpenAiConfiguredModelProvider` creates a
-single-subscription lazy stream. On every subscription it uses `AdeleCredentialClient`
-through the generation's `AdeleHostRequestMultiplexer` and infrastructure grant to
-request exactly `collection: providers`, `recordType: dev.adele.openai.api-key`, that
-configuration's `recordId`, and `slot: api-key`. No uninvoked sibling is read and no
-HTTP begins until the selected credential read succeeds. A logical provider does not
-retain a decrypted key for reuse by later invocations.
+single-subscription lazy stream. Every subscription requests exactly
+`collection: providers`, `recordType: dev.adele.openai.api-key`, that configuration's
+`recordId`, and `slot: api-key`. Startup revisions retain the original
+`AdeleCredentialClient.readCredential` path through the generation's
+`AdeleHostRequestMultiplexer` and infrastructure grant. Refreshed revisions instead
+use an injected reader bound to their fresh `AdeleCredentialCapture`; failure never
+falls back to startup authority. No uninvoked sibling is read and no HTTP begins until
+the selected credential read succeeds. A logical provider does not retain a decrypted
+key for reuse by later invocations.
 
 Each invocation creates and owns a temporary `OpenAiModelProvider` and its HTTP
 client, reusing the existing Responses implementation and generated dispatcher.
@@ -93,13 +98,12 @@ handles reverse responses independently of forward dispatch, and closes its host
 multiplexer before draining the router on shutdown. Configured requests do not
 follow redirects to another endpoint or downgrade to HTTP.
 
-The current [configuration lifecycle](../../../../docs/architecture/profiles-and-configuration.md#configured-openai-providers)
-captures startup state: record creation/deletion, display name, endpoint, identity/type,
-credential association, replacement and Forget require a new backend generation.
-Restart ADELE to apply them. There is no live refresh or automatic restart; a later
-credential read can fail stale instead of retargeting the old route. Already-started
-HTTP may continue with a delivered key. Forget does not retract network authorization
-already in flight, and dropping Dart strings is not a zeroization guarantee.
+The [configuration lifecycle](../../../../docs/architecture/profiles-and-configuration.md#configured-openai-providers)
+supports explicit targeted refresh within that generation. Without refresh, a revision
+keeps its immutable configuration and credential scope; a changed record can make later
+credential reads fail stale rather than retarget the route. Already-started HTTP may
+continue with a delivered key. Forget does not retract network authorization already
+in flight, and dropping Dart strings is not a zeroization guarantee.
 
 The legacy explicit development `OPENAI_API_KEY` / `ADELE_OPENAI_ENDPOINT` mode keeps
 `dev.adele.openai.api-key` in the default context. Experimental ChatGPT keeps
@@ -109,6 +113,82 @@ cannot override their credentials or routes. `startupArgumentsOnly` continues to
 suppress inherited environment configuration; `--chatgpt-only` constrains that legacy
 startup path, not independently delivered records. The app's explicit ChatGPT
 selection and the registry's provisional default rank/ID ordering are unchanged.
+
+## Explicit Configured Refresh
+
+[`OpenAiConfiguredProviders`](lib/src/openai_configured_refresh.dart) owns configured
+revisions, their association-closed inference/catalog publication groups, and their
+route/capture lifetimes. The [entrypoint](bin/openai_model_provider_backend.dart)
+handles its control requests asynchronously so reverse host replies and data-plane
+traffic continue. Startup does not request a live capture or eagerly adopt ready
+groups: each original pair is adopted only when first targeted for replacement or
+retirement, preserving its original exact registrations without consuming finite
+publication handles for every untouched startup record.
+
+The trusted host control surface is **not advertised** as a Capability or exposed to
+frontends or peer Capability consumers:
+
+| Field | Exact Value |
+| --- | --- |
+| Service | `dev.adele.openai.configuration` |
+| Configuration context | The backend connection's default context, not a configured record route |
+| Unary method | `refreshConfiguredProvider` |
+| Payload | Exactly `{"recordId":"work-openai"}`, with the selected portable record ID |
+
+Callers retain and validate the exact `InstalledBackendActivation` with `validate()`
+and use its `connection.channelFor(...)` transport; they do not discover this service
+by Provider ID or re-resolve a replacement backend. No host invocation context,
+credential, endpoint, scope handle, or additional payload field is accepted. This
+plugin-local control adds no framework or production application plugin import; see
+the [control boundary](../../../../docs/architecture/contracts-and-capabilities.md#dynamic-capability-publication).
+
+Each eligible refresh captures current nonsecret records and fresh credential
+authority together, then prepares only the selected valid record's revision. It
+performs no credential read, keyring unlock, model-list request or inference HTTP.
+Inference and catalog share that revision's scoped reader and read lazily per operation.
+Record edits and credential-only replacement both require a fresh revision even when
+ordinary values compare equal. Forget leaves a valid record publishable but its next
+credential read fails `notConfigured`; confirmed record deletion retires its pair.
+Partial observations that omit the target fail, never treating omission as deletion.
+The canonical [lifecycle rules](../../../../docs/architecture/profiles-and-configuration.md#configured-openai-providers)
+define publication ordering, preflight failure, uncertainty and admitted-work behavior.
+
+Every unary control result contains exactly `status`, a fixed snake_case `code`, and
+Boolean `cleanupPending`, never record values, endpoint, credential/reference, capture
+handle, native exception or response body:
+
+| Status | Meaning / Representative Codes |
+| --- | --- |
+| `applied` | Confirmed `added`, `replaced` or `retired` publication. Not proof of authentication. |
+| `noChange` | `already_absent`: complete observation confirms absence and no current revision exists. Equal ordinary values alone never produce this status. |
+| `failed` | Rejected request, configuration, capture or preflight, such as `invalid_request`, `invalid_record_id`, `invalid_configuration` or `incomplete_observation`. |
+| `unavailable` | Missing grants, shutdown, exhausted refresh admission, unavailable replacement or uncertain publication; no fallback or automatic retry. |
+
+Capture and publication failures use fixed `credential_capture_` and `publication_`
+code prefixes; raw host diagnostics never become codes. `publication_outcome_unknown`
+requires restart, not a speculative retry.
+
+`cleanupPending` reports outstanding retired-route drain or unconfirmed cleanup,
+not whether configuration publication succeeded. It can be true on an `applied`
+result while old work finishes; a cleanup failure keeps it true for the generation.
+Reference-counted capture leases are released only after every owning revision's
+exact route drains, including admitted inference streams and catalog calls. Refresh
+does not wait in its queue for old HTTP or paused streams to finish.
+
+Refreshes are serialized with at most **32 outstanding requests**, including the active
+one. The host's **8-scope capture bound** counts retained refreshed revisions and
+pending/draining captures, not just requests in this queue; startup authority is
+separate. The existing [publication bounds](../../../../docs/architecture/contracts-and-capabilities.md#dynamic-capability-publication)
+also apply. Exhaustion fails without eviction, startup fallback or forced retirement
+of healthy siblings. Each targeted refresh currently retains one batch for its paired
+services. If all eight scopes belong to active refreshed records, even a later
+replacement or deletion cannot first capture fresh authority; restart is required.
+Transient exhaustion from draining work may clear when that work settles.
+An uncertain publication outcome blocks all further configured
+refresh until backend restart; unrelated inference/catalog, legacy and ChatGPT routes
+remain available. Automatic Settings propagation and refresh-outcome UI remain
+**I-4c3** work; ordinary Settings changes do not call this control today. Restart
+ADELE remains the user-facing way to apply them without an explicit trusted caller.
 
 ## Configured Model Catalogs
 
@@ -128,9 +208,10 @@ independent of name, endpoint, credential and generation. Its namespace is disjo
 from inference identity. Each catalog declares an `AdeleProviderAssociation` naming
 `dev.adele.model.provider`, major 1, and its own exact inference Provider ID. Normal
 host activation verifies and retains the exact sibling registrations; matching
-text or sharing a context is not association evidence. Both services share that
-record's `api-key-record:<record-id>` context in the existing router, with distinct
-generated `modelCatalog` and `modelProvider` service identities.
+text or sharing a context is not association evidence. Both services share their
+revision's fresh opaque context in the existing router, with distinct generated
+`modelCatalog` and `modelProvider` service identities. Refresh keeps these semantic
+Provider IDs but publishes fresh exact registrations and a fresh association.
 
 ### Endpoint Policy
 
@@ -157,9 +238,9 @@ that explicitly reports unsupported discovery.
 
 Parameterless `listModels()` reads only the selected record's `providers` /
 `dev.adele.openai.api-key` / `<record-id>` / `api-key` credential through the same
-`AdeleCredentialClient` and generation grant as inference. Configuration supplies
-the shared selector helper and both paths reuse API-key validation; discovery also
-requires printable ASCII before using a key as an HTTP header. Advertisement,
+revision-bound reader as inference: startup authority for untouched routes, the
+captured scope for refreshed routes. Both paths reuse API-key validation; discovery
+also requires printable ASCII before using a key as an HTTP header. Advertisement,
 metadata discovery and association verification read no credentials. Each operation
 reads afresh; no credential or catalog cache, account fallback, automatic retry,
 polling or background refresh is introduced.
@@ -192,13 +273,15 @@ cleanup wait. Shutdown closes catalogs before draining generated dispatchers;
 pending credential completions cannot initiate late HTTP. Late connection acquisition
 is aborted before authorization headers are submitted. Platform connection acquisition
 or cancellation can outlive their wait, but cannot publish data or retry. OS credential
-waits are outside HTTP deadlines; retirement fences them rather than claiming to
-cancel a keyring prompt. Already transmitted authorization cannot be retracted.
+waits are outside HTTP deadlines; backend-generation retirement fences them rather
+than claiming to cancel a keyring prompt. Graceful configured-route retirement instead
+drains admitted calls. Already transmitted authorization cannot be retracted.
 
 Repeated calls query current server data without restarting ADELE. Provider records
-and credential authority still belong to the current startup capture, as described
-above; general live reconfiguration is later work, not a restart requirement in the
-Model Catalog contract. The intended configuration direction remains live application.
+and credential authority belong to the selected immutable revision, not whichever
+record now has the same ID. Explicit refresh makes a new catalog available to fresh
+resolution; old held bindings fail rather than follow it. Catalog calls admitted
+before route retirement can settle on their original dispatcher and captured scope.
 
 ### Safe Failures
 
@@ -229,12 +312,12 @@ codes use the `openai_credential_` prefix:
 | Host Outcome | Provider Code Suffix | Required Recovery / Meaning |
 | --- | --- | --- |
 | `notAuthorized` | `not_authorized` | The exact record/slot access is not authorized. |
-| `notConfigured` | `not_configured` | Attach the record's API key and restart. |
+| `notConfigured` | `not_configured` | Attach the record's API key, then explicitly refresh or restart. |
 | `missingLocally` | `missing_locally` | The referenced key is absent on this machine; recover through Settings. |
 | `storageUnavailable` | `storage_unavailable` | OS storage or strict authority validation is unavailable. |
 | `invalidCredentialBinding` | `invalid_binding` | The stored protected binding is invalid; no repair is attempted. |
 | `reconciliationRequired` | `reconciliation_required` | Explicit Settings reconciliation is required. |
-| `staleConfiguration` | `stale_configuration` | Restart ADELE to capture current record/credential state. |
+| `staleConfiguration` | `stale_configuration` | Explicitly refresh or restart to capture current record/credential state; old bindings are not repaired. |
 | `generationUnavailable` | `generation_unavailable` | The generation cannot use its credential grant. |
 | `credentialAccessFailed` | `access_failed` | Credential access could not be completed. |
 
@@ -567,6 +650,11 @@ validity; backend request/replay errors retain their existing explicit failure
 semantics.
 
 ## Validation Scope
+
+`test/openai_configured_refresh_test.dart` owns controller lifecycle checks. The app's
+`test/core/openai_record_startup_integration_test.dart` exercises explicit control
+through exact activation validation and the default-context channel, alongside
+real prepared inference/catalog publication, credential capture and route replacement.
 
 `test/openai_model_catalog_test.dart` covers finite HTTP decoding, exact IDs and
 bounds, safe failures, endpoint derivation, no fallback, fresh reads and cleanup

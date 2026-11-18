@@ -367,19 +367,42 @@ old transport. Deliberate retirement or credential revocation can still interrup
 affected work and does not promise effect rollback. Unrelated providers and Runs
 are not retired by the group operation.
 
-The mediator has bounded live handles, request sizes, queued mutations, and fixed
-value-free failures. It releases retired group bookkeeping rather than accumulating
-replacement history. A lost acknowledgement is an uncertain outcome, not evidence
-of rollback or permission for automatic retry. Registration ownership remains with
+The mediator permits at most **64 live group handles** and **64 pending mutations**
+per connection; each group candidate contains **1..64 members**. It uses
+bounded request values and fixed value-free failures, and releases retired group
+bookkeeping rather than accumulating replacement history. A lost acknowledgement
+is an uncertain outcome, not evidence of rollback or permission for automatic retry.
+Registration ownership remains with
 the activation even if a publication handle is lost, so generation shutdown cleans
 up every acquired registration.
 
 See [backend support](../../packages/plugin_backend_support/README.md#capability-publication)
 for the public facade and failure vocabulary, and
 [`plugin_runtime`](../../packages/plugin_runtime/README.md) for native lifecycle APIs.
-This mechanism does not implement live OpenAI configuration, Settings notifications,
-record comparison, or capture ownership. The OpenAI backend still uses startup
-configuration until it explicitly adopts this lifecycle.
+This mechanism does not own Settings notifications, record comparison or capture
+ownership. OpenAI composes it with credential captures and retireable routes in its
+[explicit configured-refresh lifecycle](profiles-and-configuration.md#configured-openai-providers).
+Each target's inference/catalog pair is one association-closed group. Startup pairs
+are adopted only when first changed, not eagerly at readiness; adoption preserves
+their original exact registrations without exhausting finite handles for untouched
+records. A preflight refusal preserves registrations, not proof that a separately
+captured credential is still current. Uncertain publication blocks further OpenAI
+refresh until backend restart, without stopping unrelated data-plane routes.
+
+OpenAI's refresh entry is a **trusted, nonadvertised default-context service**,
+`dev.adele.openai.configuration`, not a provider-selected Capability or a frontend
+grant. A trusted caller retains the exact `InstalledBackendActivation`, invokes its
+`validate()`, and uses that activation's `connection.channelFor(...)` with the default
+context and service. It must not discover another backend by semantic Provider ID,
+retarget a retired activation, or treat an unvalidated raw channel as a live binding.
+The plugin-local unary `refreshConfiguredProvider` payload contains only `recordId`;
+it supplies no endpoint, credential, capture handle, host invocation context or
+additional authority. The [backend README](../../plugins/openai/packages/backend/README.md#explicit-configured-refresh)
+owns its exact control/result shape and admission limit. This reuses existing exact
+activation validation and transport, not a new refresh framework or production
+application dependency on plugin packages. Peer Capability consumers and prepared
+frontends acquire no access to this private control by discovering model services.
+Automatic Settings propagation and outcome UI remain separate I-4c3 work.
 
 ### Configuration context
 
@@ -399,7 +422,7 @@ management are not established by these live routes. See
 [`capabilities`](../../packages/capabilities/README.md).
 
 `AdeleConfigurationContextRouter.registerContext` installs a service-map snapshot
-after startup and allocates a fresh opaque route identity. Dynamic contexts are
+at startup or later and allocates a fresh opaque route identity. Dynamic contexts are
 never reused within that router, and their dispatchers cannot be shared with another
 active or draining route. An old route is never rebound to new configuration.
 Route retirement synchronously bars new requests/stream opens but retains exact
@@ -426,14 +449,21 @@ the bounded transport representation. Credential access requires the separate
 remains a distinct boundary.
 
 OpenAI implements that materialization inside its backend: each valid captured
-API-key record has its own stable semantic Provider ID and independent live context,
-with a `modelProviderServiceId` dispatcher in the existing
-`AdeleConfigurationContextRouter`. All such routes share one backend generation;
-model IDs and generated method payloads never select the configured account.
+API-key record has stable, distinct inference/catalog Provider IDs and one fresh
+opaque live context per revision, including its startup revision. Its
+`modelProviderServiceId` and `modelCatalogServiceId` dispatchers share that route in
+the existing `AdeleConfigurationContextRouter`. Refresh preserves semantic IDs while
+publishing fresh exact registrations and association evidence on a new route. All
+such routes share one backend generation; model IDs and generated method payloads
+never select the configured account. Retirement keeps already-admitted operations
+on the old dispatcher but bars new calls, including through previously extracted
+channels; held bindings never follow the replacement. The revision retains its
+credential-scope lease until its exact route drains, not merely until publication
+or a model-domain terminal event.
 Unknown contexts or services fail closed, without routing through the default,
 another record or the independent ChatGPT context. Mapping belongs to the
 [OpenAI backend](../../plugins/openai/packages/backend/README.md#configured-api-key-instances),
-while immutable snapshots and restart requirements belong to the
+while immutable revisions, refresh and restart behavior belong to the
 [configuration lifecycle](profiles-and-configuration.md#configured-openai-providers).
 
 ### Strategy-compatible Session input
@@ -1332,13 +1362,17 @@ zeroization guarantee or automatic provider restart. These host
 API restrictions are not an OS sandbox for native AOT code.
 
 The configured OpenAI consumer binds `AdeleCredentialClient` through the existing
-`AdeleHostRequestMultiplexer`, separately from its configuration router. Each new
-subscribed model invocation still uses startup `readCredential` for the captured
-record's exact declared slot before HTTP; startup and uninvoked siblings perform no
-credential reads. The backend maps fixed credential failures to safe model-provider
-failure terminals, never raw
-credential exceptions or an alternate account. Cancellation or generation retirement
-while the read is pending must fence subsequent HTTP without pretending to cancel
+`AdeleHostRequestMultiplexer`, separately from its configuration router. Untouched
+startup revisions use startup `readCredential`; explicitly refreshed revisions use
+their own `AdeleCredentialCapture.readCredential`, shared by inference and catalog
+without startup fallback. Each operation reads only its captured record's exact
+declared slot before HTTP. Startup, refresh and uninvoked siblings perform no
+credential reads or keyring unlock; refresh captures authority without fetching a
+secret. Reference-counted scope leases survive replacement until the old route and
+its admitted operations drain. The backend maps fixed credential failures to safe
+model-provider failure terminals or catalog failures, never raw credential exceptions
+or an alternate account. Cancellation or generation retirement while the read is
+pending must fence subsequent HTTP without pretending to cancel
 the OS operation. The [backend README](../../plugins/openai/packages/backend/README.md#credential-failures)
 owns provider-specific codes and resource behavior; no public model-provider failure
 enum or semantic request fields are added for credential selection.

@@ -329,8 +329,10 @@ draining work has freed capacity. See the
 Fresh capture does not update provider registrations or existing Run bindings, and
 does not repair stale earlier captures. The host's
 [capture and freshness rules](../../docs/architecture/profiles-and-configuration.md#live-credential-captures)
-own coherent authority and external-writer limits. OpenAI still uses startup
-credentials and requires restart to apply configuration changes.
+own coherent authority and external-writer limits. OpenAI separately combines this
+API with publication and route retirement for its
+[explicit configured refresh](../../plugins/openai/packages/backend/README.md#explicit-configured-refresh);
+capture alone never applies provider changes.
 
 ### Failures and validation
 

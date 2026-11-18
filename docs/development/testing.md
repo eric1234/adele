@@ -626,6 +626,9 @@ endpoint policy, credential-failure mapping and Responses behavior.
 controlled reverse responses and HTTP objects for identity/endpoint validation,
 safe diagnostics, all credential-failure mappings, fresh per-invocation reads,
 cancellation/pause propagation and temporary-client cleanup.
+`test/openai_configured_refresh_test.dart` owns serialized reconciliation, lazy
+adoption, capture/publication capacity, safe failure outcomes, and release after
+route drain with real public clients and scripted reverse transport.
 `test/openai_record_startup_test.dart` covers startup decoding and advertisements;
 `test/openai_configuration_context_integration_test.dart` compiles the real shared
 host and OpenAI backend and invokes the ordinary generated model-provider service.
@@ -644,8 +647,11 @@ The injected protected-storage adapter is deterministic, not a real keyring. Cas
 check independent Work/Personal keys and endpoints in one generation, no startup or
 uninvoked-sibling reads, payload/model IDs unable to select an account, safe missing,
 invalid, unavailable and reconciliation-required outcomes without fallback, and
-stale-after-edit/Replace/Forget/delete-recreate behavior followed by a fresh
-generation. Pending credential gates check cancellation/retirement before HTTP and
+stale-after-edit/Replace/Forget/delete-recreate behavior followed by either explicit
+refresh or a fresh generation. Live-refresh cases verify add/edit/delete, unchanged
+nonsecret bytes after credential replacement, Forget, partial-observation refusal,
+held HTTP on old routes, exact inference/catalog associations and repeated refresh
+without capture accumulation. Pending credential gates check cancellation/retirement before HTTP and
 continued Settings I/O; they do not establish a bound on OS unlock prompts.
 
 After bootstrap/current generation, use the pinned toolchain:
@@ -664,7 +670,7 @@ generation/registry checks. `app/test/session_execution_test.dart` owns explicit
 selected-provider failure without fallback and retained bindings across retirement;
 the app's temporary selection still explicitly names ChatGPT, regardless of new
 configured providers in the registry. These fixtures add no Session selection UI,
-preference policy, live rotation or external OpenAI validation. Test paths describe
+preference policy, automatic Settings propagation or external OpenAI validation. Test paths describe
 coverage owners, not recorded passing results. Production backend AOT changes also
 require the maintained Linux profile build, not only isolated AOT fixtures.
 

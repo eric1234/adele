@@ -114,6 +114,18 @@ void main() {
         final message = await ready.first as Map;
         expect(message['kind'], 'ready');
         final exposures = message['capabilityExposures'] as List;
+        final contexts = <String, String>{};
+        for (final id in ['personal', 'work']) {
+          final pair = exposures.cast<Map<Object?, Object?>>().where(
+            (entry) => (entry['providerId'] as String).endsWith('.$id'),
+          );
+          expect(pair, hasLength(2));
+          final context = pair.first['configurationContext'] as String;
+          expect(context, matches(r'^dynamic:[0-9]+$'));
+          expect(pair.last['configurationContext'], context);
+          contexts[id] = context;
+        }
+        expect(contexts.values.toSet(), hasLength(2));
         expect(exposures, [
           if (arguments.length == 2)
             AdeleCapabilityExposure(
@@ -131,7 +143,7 @@ void main() {
               capabilityMajorVersion: 1,
               serviceId: 'modelProvider',
               displayName: id,
-              configurationContext: 'api-key-record:$id',
+              configurationContext: contexts[id]!,
             ).toMap(),
             AdeleCapabilityExposure(
               providerId: 'dev.adele.openai.model-catalog.$id',
@@ -139,7 +151,7 @@ void main() {
               capabilityMajorVersion: 1,
               serviceId: 'modelCatalog',
               displayName: id,
-              configurationContext: 'api-key-record:$id',
+              configurationContext: contexts[id]!,
               association: AdeleProviderAssociation(
                 capabilityId: 'dev.adele.model.provider',
                 capabilityMajorVersion: 1,
