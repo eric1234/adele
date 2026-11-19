@@ -1,3 +1,5 @@
+import 'package:flutter/widgets.dart';
+
 /// Interpreted-only requests for the exact contribution and Session attachment.
 /// Snapshots contain only this contribution's local id, title, and canClose.
 /// Retired access returns an empty snapshot; rejected requests return false.
@@ -16,6 +18,13 @@ Map<String, dynamic> readMainContentContext() =>
 /// The current pane's local ID, or an empty string during initialization or after
 /// retirement. IDs are data, not authority to access another contribution.
 String readMainContentPaneId() =>
+    throw UnsupportedError('Main Content requires a prepared contribution.');
+
+/// Places a semantic accessory location inside this mounted strategy pane. The
+/// host supplies the captured Session; the only selector is the location ID
+/// (`execution-configuration`). Unknown, unavailable or ungranted locations
+/// occupy no space. Placement does not grant execution or backend access.
+Widget buildSessionAccessoryLocation(String locationId) =>
     throw UnsupportedError('Main Content requires a prepared contribution.');
 
 /// Rejects an existing local ID without replacing or focusing its pane, or

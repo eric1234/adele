@@ -80,6 +80,7 @@ import '../../tool/terminal_frontend_compiler.dart';
 import '../../tool/tool_inspection_frontend_compiler.dart';
 import '../support/git_worktree_fixture.dart';
 import '../support/markdown_paste_fixture.dart';
+import '../support/session_accessory_frontend_fixture.dart';
 
 const _gitPluginId = 'dev.adele.plugin.git';
 const _agentsMdPluginId = 'dev.adele.plugin.agents-md';
@@ -6186,11 +6187,45 @@ printf '%s\n' 'S2B_SHELL_DONE'
         await subscription.cancel();
       });
       try {
-        await fixture.launch(tester, prepared, endpoint: server);
+        final root = await prepared.copyInstallations(fixture.directory);
+        final plugin = await Directory(
+          '${root.path}/test.frontend-only',
+        ).create();
+        final artifact = await compileAccessoryProbe(plugin);
+        await File(
+          '${plugin.path}/adele_plugin.installation.json',
+        ).writeAsString(
+          jsonEncode({
+            'manifestVersion': 1,
+            'metadata': {
+              'id': 'test.frontend-only',
+              'version': '1',
+              'displayName': 'Probe',
+            },
+            'components': {
+              'frontend': {
+                'artifact': artifact.uri.pathSegments.last,
+                'presentations': [
+                  {
+                    'role': 'sessionAccessory',
+                    'extensionId': 'test.frontend-only.control',
+                    'library': accessoryProbeLibrary,
+                    'entrypoint': 'localAccessory',
+                    'order': 0,
+                    'location': 'execution-configuration',
+                  },
+                ],
+              },
+            },
+          }),
+        );
+        await fixture.launch(tester, prepared, root: root, endpoint: server);
         await fixture.openTask(tester);
         await _tap(tester, 'New Chat Session');
         await _pumpUntil(tester, () => _composer().evaluate().isNotEmpty);
         final session = _session(tester);
+        final accessory = find.text('Local ${session.id.value}');
+        expect(accessory, findsOneWidget);
         final runtime = fixture.runtime;
         final chat = _chatClient(
           runtime.plugins.backends
@@ -6202,11 +6237,13 @@ printf '%s\n' 'S2B_SHELL_DONE'
         );
         await _breadcrumb(tester, 'task-breadcrumb');
         await _pumpUntil(tester, () => _composer().evaluate().isEmpty);
+        expect(accessory, findsNothing);
         await chat.setDraftRequest(session.id.value, restored);
         await _openSession(tester, session.id);
         await _pumpUntil(tester, () => _composer().evaluate().isNotEmpty);
         final owner = _composerOwner(tester);
         final state = _composerState(tester);
+        expect(accessory, findsOneWidget);
         expect(owner.snapshot()['markdown'], restored);
         expect(owner.revision, 0);
         expect(state.editable, isTrue);

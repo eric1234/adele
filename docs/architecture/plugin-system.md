@@ -178,6 +178,7 @@ Examples illustrate different contracts, not a universal rule:
 | Commands | [Core extension contracts](../../packages/core_extensions/README.md#commands) compose independent semantic operations; duplicate Command IDs are ambiguous, and invocation revalidates the exact unique binding and current enabled state. |
 | Task Browser | [UI](../../packages/ui/README.md#task-browser) requires exactly one active browser contribution; zero is unavailable and multiple are ambiguous, without fallback. |
 | Main Content | [UI](../../packages/ui/README.md#grouped-main-content) composes independent ordered groups; each exact registration controls only its own contiguous panes. |
+| Session accessories | [UI](../../packages/ui/README.md#session-accessories) composes independent controls only where a strategy mounts their semantic location. |
 
 Prefer structured typed contributions when an extension influences an operation,
 not opaque mutation of host objects through universal `beforeX`/`afterX` hooks.
@@ -524,6 +525,37 @@ experiences rather than fixed extension coordinates.
 
 UI affordances may consume the independent [Command domain](#commands-and-input);
 they do not make Command registration or behavior presentation-owned.
+
+### Session semantic locations
+
+A Session strategy decides **whether and where** to show a semantic location
+in its presentation. The first location, `execution-configuration`, is for
+controls that affect subsequent execution. It does not designate a toolbar,
+composer, or any other physical region. Chat mounts it beside its Draft Request
+controls. If a strategy omits it, or no strategy pane is present, nothing is
+shown: the common shell never supplies a fallback.
+
+`sessionAccessoryContributions` is an additive UI extension point. At an explicit
+mount, the host composes controls by ascending `order`, then lexical ExtensionId.
+An empty location needs no space. The first active mount owns its location for
+the Session attachment; a duplicate mount stays empty rather than creating a
+second control. Each registration has its own presentation, retained across
+ordinary rebuilds and retired independently. Leaving and returning to a Session
+does not revive the old attachment. Accepted exit may retain an inert display,
+not authority to keep acting on the Session.
+
+The placing pane supplies no Session selector. The host captures the enclosing
+canonical Session, but **does not pass the placing plugin's services** to a
+control, or expose the control's services to the pane. A prepared accessory
+can run frontend-only. If it requests backend services, its allowlist applies
+only to the exact backend and configuration context of its own installation;
+an old presentation never switches to a replacement generation.
+
+The contributor owns its control's behavior, configuration and any persistence.
+There is no host selection store. Visibility is not execution participation:
+omitting a location does not disable an inference-context source, grant or deny
+tools, choose a provider, or change Run binding. Those decisions belong to
+their execution contracts, independently of UI.
 
 ### Grouped Main Content
 

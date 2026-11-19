@@ -1731,6 +1731,12 @@ binding, backend, or deactivation hook.
 `AdeleShell.sessionPresented` selects Session versus Browser layout independently
 of whether strategy content is available.
 
+Each pane supplies its captured attachment to the [Session accessory host](lib/ui/main_content/session_accessory_host.dart),
+but only an explicitly placed widget mounts a location. For an installed pane,
+`PreparedSessionServices.bind` validates the exact owning strategy before enabling
+placement. The accessory runtime is created separately by the frontend activation
+that registered it, not by the placing pane. See the [public API and manifest example](../packages/ui/README.md#session-accessories).
+
 The same live groups supply optional actions to common chrome, including when
 there are no panes. Each explicit opening creates a fresh, bounded input dialog
 over that attachment's access; departure/retirement closes it. The host renders

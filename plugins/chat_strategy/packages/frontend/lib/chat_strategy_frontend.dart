@@ -41,6 +41,9 @@ Future<Widget> buildChat() async {
           sessionId: sessionId,
           initialFailure: failure,
           initialStateRevision: stateRevision,
+          executionConfiguration: buildSessionAccessoryLocation(
+            'execution-configuration',
+          ),
         ),
         buildSessionExecutionStatus(),
       ],
@@ -55,12 +58,14 @@ class ChatFrontend extends StatefulWidget {
     required this.sessionId,
     required this.initialFailure,
     required this.initialStateRevision,
+    required this.executionConfiguration,
   });
   final ChatSessionServiceClient client;
   final ChatSessionSnapshot? initialSnapshot;
   final String sessionId;
   final String initialFailure;
   final int initialStateRevision;
+  final Widget executionConfiguration;
 
   @override
   State<ChatFrontend> createState() => _ChatFrontendState();
@@ -698,6 +703,7 @@ class _ChatFrontendState extends State<ChatFrontend> {
     }
     if (documentFailure.isNotEmpty) children.add(Text(documentFailure));
     if (importWarning.isNotEmpty) children.add(Text(importWarning));
+    children.add(widget.executionConfiguration);
     children.add(Text('Ask ADELE...'));
     if (editor.isNotEmpty) {
       children.add(

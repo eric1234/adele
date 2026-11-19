@@ -14,6 +14,7 @@ import 'package:adele_desktop/frontend/session_execution_bridge.dart';
 import 'package:adele_desktop/frontend/session_presentation_lifecycle_bridge.dart';
 import 'package:adele_desktop/ui/inspection/activity_inspection_selection.dart';
 import 'package:adele_desktop/ui/main_content/main_content_controller.dart';
+import 'package:adele_desktop/ui/main_content/main_content_host.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:adele_ui/adele_ui.dart';
@@ -245,6 +246,7 @@ void main() {
     'prepared entrypoint returns a widget after generated snapshot loading',
     () async {
       final bridges = PreparedFrontendBridges([
+        MainContentBridge(context: const {}, isActive: () => source.active),
         SessionPresentationLifecycleBridge(isActive: () => source.active),
         RichDocumentEditorBridge(isActive: () => source.active),
         SessionExecutionBridge(source: source, isActive: () => source.active),
@@ -260,6 +262,94 @@ void main() {
         ..addPlugin(bridges);
       final result = await runtime.executeLib(chatFrontendLibrary, 'buildChat');
       expect(result is $Value ? result.$reified : result, isA<Widget>());
+    },
+  );
+
+  testWidgets(
+    'compiled Chat places execution configuration between history and composer',
+    (tester) async {
+      final session = Session(
+        id: SessionId(source.sessionId),
+        taskId: TaskId('task'),
+        strategyId: chatStrategyId,
+      );
+      source.entries.add(
+        const ChatEntry(
+          id: 'answer',
+          role: 'assistant',
+          content: 'Canonical answer',
+          runId: null,
+          feedback: null,
+        ),
+      );
+      late MainContentAccess chat;
+      final mounts = <SessionAccessoryAccess>[];
+      final extensions = ExtensionRegistry()
+        ..register(
+          point: sessionAccessoryContributions,
+          id: ExtensionId('test.configuration'),
+          value: SessionAccessoryContribution(
+            location: SessionAccessoryLocation.executionConfiguration,
+            order: 0,
+            createPresentation: (access) {
+              mounts.add(access);
+              return const Text('Contributed configuration');
+            },
+          ),
+        )
+        ..register(
+          point: mainContentContributions,
+          id: ExtensionId('test.chat'),
+          value: MainContentContribution(
+            order: 100,
+            attach: (access) {
+              chat = access;
+              access.open(
+                MainContentPane(
+                  id: 'chat',
+                  title: 'Chat',
+                  createPresentation: () => _presentation(
+                    generation,
+                    source,
+                    placementAccess: access,
+                  ),
+                ),
+              );
+            },
+          ),
+        );
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: MainContentHost(session: session, extensions: extensions),
+          ),
+        ),
+      );
+      await _frames(tester);
+      final accessory = find.text('Contributed configuration');
+      expect(accessory, findsOneWidget);
+      final mount = mounts.single;
+      expect(mount.session, same(session));
+      expect(
+        tester.getBottomLeft(find.text('Canonical answer')).dy,
+        lessThanOrEqualTo(tester.getTopLeft(accessory).dy),
+      );
+      expect(
+        tester.getBottomLeft(accessory).dy,
+        lessThanOrEqualTo(tester.getTopLeft(find.text('Ask ADELE...')).dy),
+      );
+      await _enterText(tester, 'New draft');
+      expect(mounts, [mount]);
+      expect(source.starts, 0);
+      expect(source.configurations, 0);
+
+      generation.invalidate();
+      // Bridge retirement fences the rendered accessory before unmount, even
+      // though the native Main Content group still belongs to this Session.
+      expect(chat.isActive, isTrue);
+      expect(mount.isActive, isFalse);
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(tester.takeException(), isNull);
     },
   );
 
@@ -3501,6 +3591,7 @@ Widget _presentation(
   PreparedFrontend generation,
   _Source source, {
   bool backendAvailable = true,
+  MainContentAccess? placementAccess,
 }) => generation.createPresentation(
   library: chatFrontendLibrary,
   entrypoint: 'buildChat',
@@ -3508,15 +3599,18 @@ Widget _presentation(
   createBridge: () {
     source.serviceAcquisitions++;
     if (!backendAvailable) throw StateError('Backend unavailable');
+    final pane = MainContentBridge(
+      access: placementAccess,
+      context: {'sessionId': source.sessionId},
+      isActive: () => source.active,
+      inspectSessionContent: (kind, occurrence) {
+        source.contentInspections.add((kind.value, occurrence.value));
+        return source.inspectContent?.call(kind, occurrence) ?? true;
+      },
+    );
+    if (placementAccess != null) pane.allowSessionAccessoryPlacement(() {});
     return PreparedFrontendBridges([
-      MainContentBridge(
-        context: {'sessionId': source.sessionId},
-        isActive: () => source.active,
-        inspectSessionContent: (kind, occurrence) {
-          source.contentInspections.add((kind.value, occurrence.value));
-          return source.inspectContent?.call(kind, occurrence) ?? true;
-        },
-      ),
+      pane,
       source.lifecycle = SessionPresentationLifecycleBridge(
         isActive: () => source.active,
       ),

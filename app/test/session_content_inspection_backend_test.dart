@@ -19,8 +19,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_eval/flutter_eval.dart';
 import 'package:flutter_eval/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
+
+import 'support/session_content_backend_fixture.dart';
 
 const _library = 'package:content_backend_renderer/main.dart';
 const _kind = 'fixture.content';
@@ -39,30 +40,10 @@ void main() {
   setUpAll(() async {
     temporary = await Directory.systemTemp.createTemp('content-backend-');
     addTearDown(() => temporary.delete(recursive: true));
-    final dart = _dartExecutable();
-    aotRuntime = File(dart).parent.uri
-        .resolve(Platform.isWindows ? 'dartaotruntime.exe' : 'dartaotruntime')
-        .toFilePath();
-    hostArtifact = File('${temporary.path}/host.aot');
-    backendArtifact = File('${temporary.path}/backend.aot');
-    for (final target in [
-      (
-        entrypoint: 'packages/plugin_backend_host/bin/adele_backend_host.dart',
-        artifact: hostArtifact,
-      ),
-      (
-        entrypoint: 'app/test/fixtures/session_content_inspection_backend.dart',
-        artifact: backendArtifact,
-      ),
-    ]) {
-      await compileAotSnapshot(
-        dartExecutable: dart,
-        workingDirectory: Directory.current.parent,
-        entrypoint: target.entrypoint,
-        artifact: target.artifact,
-        stage: 'session-content-inspection-backend',
-      );
-    }
+    final compiled = await compileContentBackend(temporary);
+    aotRuntime = compiled.runtime;
+    hostArtifact = compiled.host;
+    backendArtifact = compiled.backend;
     final program =
         (Compiler()
               ..addPlugin(flutterEvalPlugin)
@@ -609,14 +590,7 @@ Future<void> _settled(
   expect(probe.result, expected);
 }
 
-Future<Object?> _control(
-  PluginBackendConnection connection,
-  String method, [
-  Map<String, Object?> payload = const {},
-]) => connection
-    .channelFor(connection.defaultConfigurationContext, 'fixture.control')
-    .request(method, payload)
-    .timeout(_bound);
+const _control = contentBackendControl;
 
 Future<List<Object?>> _audit(PluginBackendConnection connection) async =>
     List<Object?>.from(await _control(connection, 'snapshot') as List<Object?>);
@@ -632,22 +606,6 @@ Map<String, Object?> _request(
   'payload': {'sessionId': 'session', 'occurrenceId': occurrence},
   'hostInvocationContext': null,
 };
-
-String _dartExecutable() {
-  final root = Platform.environment['FLUTTER_ROOT'];
-  if (root != null) {
-    final dart = File('$root/bin/cache/dart-sdk/bin/dart');
-    if (dart.existsSync()) return dart.path;
-  }
-  var directory = File(Platform.resolvedExecutable).parent;
-  while (!File('${directory.path}/dart-sdk/bin/dart').existsSync()) {
-    if (directory.parent.path == directory.path) {
-      throw StateError('Pinned Dart SDK not found.');
-    }
-    directory = directory.parent;
-  }
-  return '${directory.path}/dart-sdk/bin/dart';
-}
 
 const _rendererSource = r'''
 import 'package:adele_ui/owning_backend_bridge.dart';

@@ -4,6 +4,8 @@ import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_ui/adele_ui.dart';
 import 'package:dart_eval/dart_eval_bridge.dart';
 import 'package:dart_eval/stdlib/core.dart';
+import 'package:flutter/widgets.dart';
+import 'package:flutter_eval/widgets.dart';
 
 import 'prepared_frontend.dart';
 import 'structured_bridge_data.dart';
@@ -44,6 +46,11 @@ class MainContentDeclarations implements EvalPlugin {
         const <BridgeParameter>[],
       ),
       ('readMainContentPaneId', string, const <BridgeParameter>[]),
+      (
+        'buildSessionAccessoryLocation',
+        const BridgeTypeAnnotation($Widget.$type),
+        const [BridgeParameter('locationId', string, false)],
+      ),
       (
         'inspectSessionContent',
         boolean,
@@ -131,6 +138,7 @@ final class MainContentBridge extends MainContentDeclarations
   )?
   _inspectSessionContent;
   final Zone _nativeZone = Zone.current;
+  VoidCallback? _validateStrategyPane;
   bool _active = true;
   bool _configured = false;
 
@@ -164,6 +172,27 @@ final class MainContentBridge extends MainContentDeclarations
   }
 
   String readPaneId() => isActive ? _paneId : '';
+
+  /// Only the service binder for an exact owning-strategy pane supplies this
+  /// validator, before eval starts. It checks the original binding, not its ID.
+  void allowSessionAccessoryPlacement(VoidCallback validate) {
+    if (!_active || _configured || _validateStrategyPane != null) {
+      throw StateError('Session accessory placement is already bound.');
+    }
+    _validateStrategyPane = validate;
+  }
+
+  bool _isPlacementActive() {
+    final validate = _validateStrategyPane;
+    if (validate == null || !isActive) return false;
+    try {
+      validate();
+      return true;
+    } on Object {
+      _validateStrategyPane = null;
+      return false;
+    }
+  }
 
   Map<String, Object?> readContext() {
     if (!isActive) return const {};
@@ -259,6 +288,31 @@ final class MainContentBridge extends MainContentDeclarations
         'readMainContentPaneId',
         (_, _, _) => $String(readPaneId()),
       )
+      ..registerBridgeFunc(_library, 'buildSessionAccessoryLocation', (
+        _,
+        _,
+        args,
+      ) {
+        return _nativeZone.run(() {
+          try {
+            final id = args.single?.$value;
+            final location = SessionAccessoryLocation.values
+                .where((location) => location.id == id)
+                .firstOrNull;
+            if (location != null && _access != null && _isPlacementActive()) {
+              return $Widget.wrap(
+                _access.buildSessionAccessoryLocation(
+                  location,
+                  isPresentationActive: _isPlacementActive,
+                ),
+              );
+            }
+          } on Object {
+            // Never expose native validation diagnostics to the pane.
+          }
+          return $Widget.wrap(const SizedBox.shrink());
+        });
+      })
       ..registerBridgeFunc(_library, 'inspectSessionContent', (_, _, args) {
         try {
           return $bool(
@@ -347,5 +401,8 @@ final class MainContentBridge extends MainContentDeclarations
   }
 
   @override
-  void invalidate() => _active = false;
+  void invalidate() {
+    _active = false;
+    _validateStrategyPane = null;
+  }
 }
