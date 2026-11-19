@@ -1,5 +1,5 @@
 name: agent_configuration_backend
-description: Live catalog of Agent Configuration records.
+description: Live Agent catalog and persistent Session Agent selection.
 publish_to: none
 version: 0.1.0
 
@@ -11,6 +11,7 @@ resolution: workspace
 dependencies:
   adele_contract: ^0.1.0
   adele_plugin_backend_support: ^0.1.0
+  adele_project_storage: ^0.1.0
   agent_configuration_contract: ^0.1.0
 
 dev_dependencies:

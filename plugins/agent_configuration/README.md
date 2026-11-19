@@ -1,7 +1,8 @@
 # Agent Configuration
 
-`dev.adele.plugin.agent-configuration` owns declarative Agent definitions, not
-Agent execution. Its version-1 [`records.schema.json`](records.schema.json)
+`dev.adele.plugin.agent-configuration` owns global Agent definitions and
+Session-associated selected Agent identity, not Agent execution. Its version-1
+[`records.schema.json`](records.schema.json)
 declares the `agents` collection (Agents) and record type
 `dev.adele.plugin.agent-configuration.agent` (Agent).
 
@@ -38,10 +39,44 @@ Stock preparation publishes the schema and backend AOT together, with no fronten
 If the backend is unavailable the catalog cannot be read; the declaration and
 ordinary Global Settings CRUD remain available independently.
 
-Defining an Agent does not select one for a Session, start a Run, inject context,
-or change provider requests or tool authorization. Stock default records and their
-one-time provisioning, Model Preset references, Session selection, and context
-injection are deferred. Collections may remain empty; no records are provisioned,
+## Session selection
+
+The separate generated `AgentSelectionService` exposes
+`readSessionSelection(sessionId)` and
+`updateSessionSelection(sessionId, selectedAgentId, expectedRevision)`. Its
+immutable snapshot contains `sessionId`, nullable `selectedAgentId`, and `revision`.
+A new Session reads as null at revision zero; there is no default Agent or
+automatic selection. Every acknowledged update, including a clear or reselect,
+advances the revision. Callers must supply a previously read revision.
+
+Only the stable record ID is stored, never the name or instructions. Setting an ID
+requires a fresh authorized catalog observation containing that Agent. An unseen
+ID in an incomplete observation is not proven absent; unavailable configuration
+fails rather than becoming an empty catalog. Reading or clearing a selection does
+not require catalog access.
+
+Renaming a definition leaves selection unchanged. Deleting it also leaves the
+stored ID intact: selection is a Session preference, not ownership of the global
+definition. It becomes an unresolved reference for later consumers to report, not
+a reason to silently choose another Agent. Validation and persistence are not one
+distributed transaction, so deletion can race an otherwise valid selection.
+
+Durable Projects retain selections across backend replacement and Project reopen.
+Explicitly volatile Projects use host-owned temporary backing for their live
+Project lifetime. See the [backend map](packages/backend/README.md#selection-storage)
+for the table, revision limits, and uncertain-write reconciliation. Missing or
+failed Agent functionality does not block core Project or Session restoration.
+
+## Execution boundary
+
+Global definitions and stored Session selection are implemented. Effective-Agent
+binding for a Run and Agent context injection are separate future integrations.
+Selection currently affects neither an executing Run nor future inference; it
+does not change the Session's permanent orchestration strategy, model routing,
+provider requests, or tool authorization. There is no selection UI in this plugin.
+
+Stock default records and their one-time provisioning and Model Preset references
+remain deferred. Collections may remain empty; no records are provisioned,
 reserved, or recreated after deletion. Agents currently have no provider, model,
 reasoning, or `defaultModelPresetId` fields.
 

@@ -1,7 +1,8 @@
-/// Read-only access to Agent definitions, independent of selection or execution.
+/// Global Agent definitions and Session selection data, independent of execution.
 library;
 
 import 'package:adele_contract/adele_contract.dart';
+import 'package:adele_settings/adele_settings.dart' as settings;
 
 part 'agent_configuration_contract.g.dart';
 
@@ -61,4 +62,78 @@ final class AgentCatalogFailure implements Exception {
 
   @override
   String toString() => 'AgentCatalogFailure($code): $message';
+}
+
+abstract final class AgentSelectionLimits {
+  static const int maxSessionIdLength = 512;
+  static const int maxRevision = 2147483647;
+}
+
+/// A stored preference only, not a Run binding or inference-context contribution.
+@AdeleService('agentSelection')
+abstract interface class AgentSelectionService {
+  @AdeleMethod('readSessionSelection')
+  Future<AgentSelectionSnapshot> readSessionSelection(String sessionId);
+
+  /// Requires a previously read revision. Null explicitly clears the selection.
+  /// An unacknowledged mutation must be reconciled by reading, never replayed.
+  @AdeleMethod('updateSessionSelection')
+  Future<AgentSelectionSnapshot> updateSessionSelection(
+    String sessionId,
+    String? selectedAgentId,
+    int expectedRevision,
+  );
+}
+
+@AdeleValue('agentSelection.snapshot')
+final class AgentSelectionSnapshot {
+  AgentSelectionSnapshot({
+    required this.sessionId,
+    required this.selectedAgentId,
+    required this.revision,
+  }) {
+    if (sessionId.isEmpty ||
+        sessionId.trim() != sessionId ||
+        sessionId.length > AgentSelectionLimits.maxSessionIdLength ||
+        revision < 0 ||
+        revision > AgentSelectionLimits.maxRevision ||
+        (revision == 0 && selectedAgentId != null)) {
+      throw const FormatException('Invalid Agent selection snapshot.');
+    }
+    if (selectedAgentId != null) {
+      try {
+        settings.ConfigurationRecordId(selectedAgentId!);
+      } on FormatException {
+        throw const FormatException('Invalid selected Agent record ID.');
+      }
+    }
+  }
+
+  final String sessionId;
+
+  /// May reference a subsequently deleted definition; reads never resolve it.
+  final String? selectedAgentId;
+
+  /// Zero means no stored row. Clearing retains a positive revision.
+  final int revision;
+}
+
+/// Definite prewrite failures: invalid_request, agent_not_found,
+/// catalog_incomplete, catalog_unavailable, storage_unavailable, corrupt_state,
+/// stale_revision, revision_exhausted. outcome_uncertain means an admitted write
+/// was not acknowledged, not that it rolled back. Read before another change.
+@AdeleFailure('agentSelection.failure')
+final class AgentSelectionFailure implements Exception {
+  const AgentSelectionFailure({
+    required this.code,
+    required this.message,
+    this.details = const {},
+  });
+
+  final String code;
+  final String message;
+  final Map<String, Object?> details;
+
+  @override
+  String toString() => 'AgentSelectionFailure($code): $message';
 }

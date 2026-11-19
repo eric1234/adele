@@ -984,6 +984,20 @@ object. See the [product model](product-model.md) and
 [profiles and configuration](profiles-and-configuration.md) for their ownership
 and persistence boundaries.
 
+### Agent Configuration participation
+
+Agent Configuration owns a Session's selected global Agent record ID as
+plugin-owned Project state, distinct from the globally configured definition and
+the Session's permanent strategy. It uses the generation-scoped storage grant,
+not a Run or Capability. Durable selection survives backend replacement and
+Project reopen; explicitly volatile selection uses host-owned temporary backing
+for the live Project lifetime. Clearing retains revision history. Deleted global
+definitions leave unresolved IDs rather than triggering implicit replacement or
+deletion. Core restoration does not depend on Agent availability or resolution.
+Selection is data only, not effective-Agent Run binding or context injection.
+The [Agent Configuration map](../../plugins/agent_configuration/README.md)
+owns the service and local failure semantics.
+
 ### Diff participation
 
 Diff owns pending review-comment identities, immutable source anchors, and
