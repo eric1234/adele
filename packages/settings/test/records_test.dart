@@ -166,6 +166,52 @@ void main() {
   );
 
   test(
+    'Markdown editor preserves ordinary string values and field presence',
+    () {
+      expect(_field('text', const StringSettingType()).editor, isNull);
+      for (final required in [false, true]) {
+        final field = _field(
+          'text',
+          const StringSettingType(),
+          required: required,
+          editor: RecordFieldEditor.markdown,
+        );
+        expect(field.editor, RecordFieldEditor.markdown);
+        final type = _type(fields: [field]);
+        for (final value in ['', '  # Heading\r\n\r\n```unclosed\n']) {
+          expect(type.validate(_record, {'text': value}), {'text': value});
+        }
+        if (required) {
+          expect(
+            () => type.validate(_record, {}),
+            throwsA(_invalid('text', 'Required field is missing.')),
+          );
+        } else {
+          expect(type.validate(_record, {}), isEmpty);
+        }
+        expect(
+          () => type.validate(_record, {'text': null}),
+          throwsA(_invalid('text', 'Expected a string.')),
+        );
+      }
+    },
+  );
+
+  test('Markdown editor rejects boolean, integer and string-enum fields', () {
+    for (final type in <SettingType<Object>>[
+      const BooleanSettingType(),
+      IntegerSettingType(),
+      EnumSettingType([SettingEnumOption('markdown')]),
+    ]) {
+      expect(_field('value', type).editor, isNull);
+      expect(
+        () => _field('value', type, editor: RecordFieldEditor.markdown),
+        throwsA(isA<ArgumentError>().having((e) => e.name, 'name', 'editor')),
+      );
+    }
+  });
+
+  test(
     'credential slots are copied, ordered, immutable and duplicate-free',
     () {
       final z = _slot('z');
@@ -565,12 +611,14 @@ RecordFieldDefinition<T> _field<T extends Object>(
   String id,
   SettingType<T> type, {
   bool required = false,
+  RecordFieldEditor? editor,
 }) => RecordFieldDefinition(
   id: RecordFieldId(id),
   label: '  Field  ',
   description: 'Field\nexplanation',
   type: type,
   required: required,
+  editor: editor,
 );
 
 RecordTypeDefinition _type({

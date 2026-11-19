@@ -1669,6 +1669,7 @@ RecordFieldDefinition<Object> _recordFieldDefinition(
     'description',
     'type',
     'required',
+    if (kind == 'string') 'editor',
     if (kind == 'integer') ...['minimum', 'maximum'],
     if (kind == 'enum') 'options',
   });
@@ -1697,6 +1698,12 @@ RecordFieldDefinition<Object> _recordFieldDefinition(
       maxLabelLength: PreparedRecordsSchema.maxLabelLength,
     ),
     required: required,
+    editor: value.containsKey('editor')
+        ? switch (value['editor']) {
+            'markdown' => RecordFieldEditor.markdown,
+            _ => throw FormatException('$label.editor must be "markdown".'),
+          }
+        : null,
   );
 }
 

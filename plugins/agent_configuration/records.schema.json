@@ -31,6 +31,7 @@
           "id": "instructions",
           "label": "Instructions",
           "type": "string",
+          "editor": "markdown",
           "required": true
         }
       ]

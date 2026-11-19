@@ -188,6 +188,11 @@ distinct from false, zero and empty strings. There are no field defaults, explic
 nulls, nested values, executable validators or cross-record validation. Unknown
 persisted data remains untouched, including when an owner is unavailable.
 
+A string field may request a Markdown editor for presentation. This selects a
+native Settings control; it does not validate Markdown as a record constraint,
+change field presence, or introduce a new stored type. Without the hint,
+Settings uses the ordinary scalar control.
+
 A type may declare one `displayField` referencing a required string field. Discovery
 validates that reference; omission preserves existing declarations. Presentation uses
 the declared value when usable and otherwise the stable record ID, never a host

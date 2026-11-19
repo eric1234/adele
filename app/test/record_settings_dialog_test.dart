@@ -3,16 +3,21 @@ import 'dart:io';
 
 import 'package:adele_desktop/core/global_settings_service.dart';
 import 'package:adele_desktop/core/record_apply_coordinator.dart';
+import 'package:adele_desktop/editor/native_rich_document_editor.dart';
 import 'package:adele_desktop/ui/settings/global_settings_dialog.dart';
 import 'package:adele_platform_storage/adele_platform_storage.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_settings/adele_settings.dart';
+import 'package:appflowy_editor/appflowy_editor.dart' as rich;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
 import '../../tools/backend_artifacts.dart';
+import 'native_rich_document_editor_test.dart'
+    as native_input
+    show control, frames, input, insertAtSelection;
 
 final _collection = RecordCollectionId('jobs');
 final _job = RecordTypeId('dev.example.records.job');
@@ -352,12 +357,14 @@ void main() {
     skip: !Platform.isLinux,
   );
 
-  testWidgets(
-    'Global Settings manages published Agents even if the backend artifact is missing',
-    (tester) => tester.runAsync(() async {
-      const pluginId = 'dev.adele.plugin.agent-configuration';
-      final agents = RecordCollectionId('agents');
-      final type = RecordTypeId('$pluginId.agent');
+  group('published Agents in Global Settings', () {
+    const pluginId = 'dev.adele.plugin.agent-configuration';
+    final agents = RecordCollectionId('agents');
+    final type = RecordTypeId('$pluginId.agent');
+    late _ControlledService settings;
+    late GlobalSettingsService reader;
+    File agentFile() => File('${roots.configurationRoot}/agents/reviewer.toml');
+    setUp(() async {
       await publishStockPluginInstallation(
         repositoryRoot: Directory.current.parent,
         installationDirectory: Directory(
@@ -373,99 +380,440 @@ void main() {
       expect(prepared.issues.single.component?.name, 'backend');
       expect(prepared.installations.single.backendArtifactUri, isNull);
       expect(prepared.installations.single.frontend, isNull);
-      final settings = GlobalSettingsService(
+      settings = _ControlledService(
         catalog: prepared.settings,
         records: prepared.records,
         roots: roots,
       );
       addTearDown(settings.close);
+      // Independent owner: reads real TOML without revoking the dialog's handle.
+      reader = GlobalSettingsService(
+        catalog: prepared.settings,
+        records: prepared.records,
+        roots: roots,
+      );
+      addTearDown(reader.close);
       expect(settings.records.collectionLabel(agents), 'Agents');
       expect(settings.records.definition(type).credentialSlots, isEmpty);
-      final recordFile = File(
-        '${roots.configurationRoot}/agents/reviewer.toml',
-      );
-      Future<void> loaded() =>
-          _until(tester, () => _enabled(tester, _key('records-reload-agents')));
+    });
 
+    Future<void> loaded(WidgetTester tester) =>
+        _until(tester, () => _enabled(tester, _key('records-reload-agents')));
+    Future<void> open(WidgetTester tester) async {
       await mount(tester, settingsService: settings);
       await _section(tester, 'Agents');
-      await loaded();
-      expect(
-        find.text('No readable records in this collection.'),
-        findsOneWidget,
-      );
-      expect(Directory(roots.configurationRoot).existsSync(), isFalse);
-      await _tap(tester, _key('records-add-agents'));
-      await _enter(tester, _key('record-id-agents'), 'reviewer');
-      expect(find.text('Agent'), findsOneWidget);
-      expect(_enabled(tester, _key('record-create-agents')), isFalse);
-      const values = {
+      await loaded(tester);
+    }
+
+    Future<void> seedAgent(String instructions) async {
+      await settings.createRecord(type, ConfigurationRecordId('reviewer'), {
         'name': 'Reviewer',
-        'description': 'Reviews changes.',
-        'when-to-use': 'Before merging.',
-        'instructions': '# Review\n\nReport **risks** and missing tests.',
-      };
-      for (final field in settings.records.definition(type).fields) {
-        final presence = _key('record-presence-agents-${field.id}');
-        final input = _key('record-input-agents-${field.id}');
-        expect(tester.widget<CheckboxListTile>(presence).value, isFalse);
+        'instructions': instructions,
+      });
+    }
+
+    Future<void> edit(WidgetTester tester) async {
+      await _edit(tester, 'reviewer', collection: 'agents');
+    }
+
+    Future<Map<String, Object?>> stored() async =>
+        (await reader.loadRecords(agents)).records.single.values;
+    final saveButton = _key('record-save-agents-reviewer');
+    final createButton = _key('record-create-agents');
+    Future<void> submit(WidgetTester tester, Finder button) async {
+      expect(_enabled(tester, button), isTrue);
+      await _richTap(tester, button);
+      await loaded(tester);
+    }
+
+    testWidgets(
+      'creates, edits and reloads formatted instructions without a backend',
+      (tester) => tester.runAsync(() async {
+        final recordFile = agentFile();
+        await open(tester);
         expect(
-          tester.widget<TextField>(input).decoration!.labelText,
-          field.label,
-        );
-        await _tap(tester, presence);
-        await _enter(tester, input, values[field.id.value]!);
-      }
-      await _tap(tester, _key('record-create-agents'));
-      await loaded();
-      expect(recordFile.existsSync(), isTrue);
-      expect(recordFile.readAsStringSync(), contains('recordType = "$type"'));
-      expect(find.text('Reviewer'), findsOneWidget);
-      await _tap(tester, find.text('Reviewer'));
-      await tester.pumpAndSettle();
-      expect(find.text('Collection: agents'), findsOneWidget);
-      expect(find.text('Record ID: reviewer'), findsOneWidget);
-      expect(find.text('Record type: $type'), findsOneWidget);
-      for (final field in settings.records.definition(type).fields) {
-        expect(
-          find.text('${field.label}: ${values[field.id.value]}'),
+          find.text('No readable records in this collection.'),
           findsOneWidget,
         );
-      }
-      expect(find.text('Credentials'), findsNothing);
+        expect(Directory(roots.configurationRoot).existsSync(), isFalse);
+        await _tap(tester, _key('records-add-agents'));
+        await _enter(tester, _key('record-id-agents'), 'reviewer');
+        expect(find.text('Agent'), findsOneWidget);
+        expect(_enabled(tester, createButton), isFalse);
+        const markdown = '```dart\nreport();\n```\n\nReview **risks**';
+        const values = {
+          'name': 'Reviewer',
+          'description': 'Reviews changes.',
+          'when-to-use': 'Before merging.',
+          'instructions': markdown,
+        };
+        for (final field in settings.records.definition(type).fields) {
+          final presence = _key('record-presence-agents-${field.id}');
+          final input = _key('record-input-agents-${field.id}');
+          expect(tester.widget<CheckboxListTile>(presence).value, isFalse);
+          if (field.id.value == 'instructions') continue;
+          expect(
+            tester.widget<TextField>(input).decoration!.labelText,
+            field.label,
+          );
+          await _tap(tester, presence);
+          await _enter(tester, input, values[field.id.value]!);
+        }
+        expect(_enabled(tester, createButton), isFalse);
+        await _tap(tester, _key('record-presence-agents-instructions'));
+        expect(
+          _enabled(tester, createButton),
+          isTrue,
+        ); // Present empty is valid.
+        final creation = _instructionsOwner(tester, 'agents');
+        final state = await _selectInstructions(tester, 'agents');
+        await native_input.insertAtSelection(tester, '```dart');
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await native_input.frames(tester);
+        await native_input.insertAtSelection(tester, 'report();');
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.altLeft);
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.altLeft);
+        await native_input.frames(tester);
+        await native_input.insertAtSelection(tester, 'Review risks');
+        state.selection = rich.Selection.single(
+          path: [1],
+          startOffset: 7,
+          endOffset: 12,
+        );
+        await native_input.frames(tester);
+        await native_input.control(tester, LogicalKeyboardKey.keyB);
+        await submit(tester, createButton);
+        expect(creation.isDisposed, isTrue);
+        expect(await stored(), values);
+        expect(recordFile.existsSync(), isTrue);
+        expect(recordFile.readAsStringSync(), contains('recordType = "$type"'));
+        expect(find.text('Reviewer'), findsOneWidget);
+        await _tap(tester, find.text('Reviewer'));
+        await tester.pumpAndSettle();
+        expect(find.text('Collection: agents'), findsOneWidget);
+        expect(find.text('Record ID: reviewer'), findsOneWidget);
+        expect(find.text('Record type: $type'), findsOneWidget);
+        for (final field in settings.records.definition(type).fields) {
+          expect(
+            find.text('${field.label}: ${values[field.id.value]}'),
+            findsOneWidget,
+          );
+        }
+        expect(find.text('Credentials'), findsNothing);
 
-      await _tap(tester, _key('record-edit-agents-reviewer'));
-      await _enter(
-        tester,
-        _key('record-input-agents-reviewer-name'),
-        'Renamed Reviewer',
+        await _tap(tester, _key('record-edit-agents-reviewer'));
+        await _enter(
+          tester,
+          _key('record-input-agents-reviewer-name'),
+          'Renamed Reviewer',
+        );
+        final existing = _instructionsOwner(tester, 'agents-reviewer');
+        final editing = await _selectInstructions(
+          tester,
+          'agents-reviewer',
+          offset: 9,
+        );
+        final code = editing.document.root.children.first;
+        expect(code.type, 'code_block');
+        expect(code.attributes['language'], 'dart');
+        expect(code.delta!.toPlainText(), 'report();');
+        await native_input.insertAtSelection(tester, ' // tested');
+        await submit(tester, saveButton);
+        expect(existing.isDisposed, isTrue);
+        await _tap(tester, _key('records-reload-agents'));
+        await loaded(tester);
+        expect(await stored(), {
+          ...values,
+          'name': 'Renamed Reviewer',
+          'instructions': markdown.replaceFirst(
+            'report();',
+            'report(); // tested',
+          ),
+        });
+        expect(find.text('Renamed Reviewer'), findsOneWidget);
+        expect(recordFile.existsSync(), isTrue);
+        expect(recordFile.parent.listSync().map((entry) => entry.path), [
+          recordFile.path,
+        ]);
+        await _tap(tester, _key('record-edit-agents-reviewer'));
+        final deleted = _instructionsOwner(tester, 'agents-reviewer');
+        await _tap(tester, _key('record-delete-agents-reviewer'));
+        expect(find.byType(AlertDialog), findsOneWidget);
+        await _tap(tester, _key('record-delete-confirm-agents-reviewer'));
+        await loaded(tester);
+        expect(deleted.isDisposed, isTrue);
+        await _tap(tester, _key('records-reload-agents'));
+        await loaded(tester);
+        expect(_key('record-agents-reviewer'), findsNothing);
+        expect(recordFile.existsSync(), isFalse);
+        expect(
+          find.text('No readable records in this collection.'),
+          findsOneWidget,
+        );
+        expect(File(settings.filePath).existsSync(), isFalse);
+        await unmount(tester);
+      }),
+    );
+
+    for (final (kind, source) in [
+      ('supported', '# Review\r\n\r\n~~~dart\r\n  report();  \r\n~~~\r\n'),
+      ('unsupported', 'Review ![diagram](agent.png)\r\n\r\nEnd.  \r\n'),
+    ]) {
+      testWidgets(
+        '$kind untouched Markdown survives a no-op and a rename exactly',
+        (tester) => tester.runAsync(() async {
+          await seedAgent(source);
+          final file = agentFile();
+          file.writeAsStringSync(
+            '\n# Keep unknown data\nfuture = [1, 2]\n',
+            mode: FileMode.append,
+          );
+          final before = file.readAsBytesSync();
+          await open(tester);
+          await edit(tester);
+          final owner = _instructionsOwner(tester, 'agents-reviewer');
+          expect(owner.snapshot()['markdown'], source);
+          expect(owner.readOnly, kind == 'unsupported');
+          if (kind == 'unsupported') {
+            final field = _instructions('agents-reviewer');
+            expect(
+              find.descendant(
+                of: field,
+                matching: find.byType(rich.AppFlowyEditor),
+              ),
+              findsNothing,
+            );
+            expect(
+              find.descendant(
+                of: field,
+                matching: find.textContaining('Read-only Markdown:'),
+              ),
+              findsOneWidget,
+            );
+            expect(
+              find.descendant(of: field, matching: find.text(source)),
+              findsOneWidget,
+            );
+          } else {
+            await _selectInstructions(tester, 'agents-reviewer', offset: 3);
+          }
+          await submit(tester, saveButton);
+          expect(file.readAsBytesSync(), before);
+          await _tap(tester, _key('record-edit-agents-reviewer'));
+          await _enter(
+            tester,
+            _key('record-input-agents-reviewer-name'),
+            'New name',
+          );
+          await submit(tester, saveButton);
+          expect(await stored(), {'name': 'New name', 'instructions': source});
+          expect(
+            file.readAsStringSync(),
+            contains('# Keep unknown data\nfuture = [1, 2]'),
+          );
+          await unmount(tester);
+        }),
       );
-      await _tap(tester, _key('record-save-agents-reviewer'));
-      await loaded();
-      await _tap(tester, _key('records-reload-agents'));
-      await loaded();
-      expect(find.text('Renamed Reviewer'), findsOneWidget);
-      expect(recordFile.existsSync(), isTrue);
-      expect(recordFile.parent.listSync().map((entry) => entry.path), [
-        recordFile.path,
-      ]);
-      await _tap(tester, _key('record-delete-agents-reviewer'));
-      expect(find.byType(AlertDialog), findsOneWidget);
-      await _tap(tester, _key('record-delete-confirm-agents-reviewer'));
-      await loaded();
-      await _tap(tester, _key('records-reload-agents'));
-      await loaded();
-      expect(_key('record-agents-reviewer'), findsNothing);
-      expect(recordFile.existsSync(), isFalse);
-      expect(
-        find.text('No readable records in this collection.'),
-        findsOneWidget,
-      );
-      expect(File(settings.filePath).existsSync(), isFalse);
-      await unmount(tester);
-    }),
-    skip: !Platform.isLinux,
-  );
+    }
+
+    testWidgets(
+      'collapse and section navigation retain native history; Cancel discards only the draft',
+      (tester) => tester.runAsync(() async {
+        const suffix = 'agents-reviewer';
+        await seedAgent('Seed');
+        final original = agentFile().readAsBytesSync();
+        await open(tester);
+        await edit(tester);
+        final owner = _instructionsOwner(tester, suffix);
+        final state = await _selectInstructions(tester, suffix, offset: 4);
+        await native_input.insertAtSelection(tester, '!');
+        expect(owner.snapshot()['markdown'], 'Seed!');
+        await _richTap(tester, _recordTile('agents', 'reviewer'));
+        expect(owner.editingEnabled, isFalse);
+        await tester.pumpAndSettle();
+        expect(_instructions(suffix), findsNothing);
+        expect(tester.testTextInput.hasAnyClients, isFalse);
+        await _tap(tester, _recordTile('agents', 'reviewer'));
+        await tester.pumpAndSettle();
+        expect(_instructionsOwner(tester, suffix), same(owner));
+        expect(
+          await _selectInstructions(tester, suffix, offset: 5),
+          same(state),
+        );
+        await _richTap(tester, _key('settings-section'));
+        await tester.pumpAndSettle();
+        await _tap(tester, find.text('Preferences').last);
+        await tester.pumpAndSettle();
+        expect(_instructions(suffix), findsNothing);
+        expect(tester.testTextInput.hasAnyClients, isFalse);
+        await _section(tester, 'Agents');
+        expect(_instructionsOwner(tester, suffix), same(owner));
+        expect(
+          await _selectInstructions(tester, suffix, offset: 5),
+          same(state),
+        );
+        await native_input.control(tester, LogicalKeyboardKey.keyZ);
+        expect(owner.snapshot()['markdown'], 'Seed');
+        await native_input.control(tester, LogicalKeyboardKey.keyY);
+        expect(owner.snapshot()['markdown'], 'Seed!');
+        await _richTap(tester, _key('record-cancel-$suffix'));
+        expect(owner.isDisposed, isTrue);
+        expect(state.isDisposed, isTrue);
+        expect(settings.updates, 0);
+        expect(agentFile().readAsBytesSync(), original);
+        await _tap(tester, _key('record-edit-$suffix'));
+        final reopened = _instructionsOwner(tester, suffix);
+        expect(reopened, isNot(same(owner)));
+        expect(reopened.snapshot()['markdown'], 'Seed');
+        await _selectInstructions(tester, suffix);
+        await _richTap(tester, find.byTooltip('Close Settings'));
+        await tester.pumpAndSettle();
+        expect(reopened.isDisposed, isTrue);
+        expect(tester.testTextInput.hasAnyClients, isFalse);
+        expect(agentFile().readAsBytesSync(), original);
+        await unmount(tester);
+      }),
+    );
+
+    testWidgets(
+      'a stale Save retains native edits without overwriting disk until confirmed Reload',
+      (tester) => tester.runAsync(() async {
+        const suffix = 'agents-reviewer';
+        await seedAgent('Seed');
+        await open(tester);
+        await edit(tester);
+        final owner = _instructionsOwner(tester, suffix);
+        await _selectInstructions(tester, suffix, offset: 4);
+        await native_input.insertAtSelection(tester, ' draft');
+        final file = agentFile();
+        file.writeAsStringSync(
+          file.readAsStringSync().replaceFirst('Seed', 'External'),
+        );
+        final external = file.readAsBytesSync();
+        await submit(tester, saveButton);
+        expect(
+          find.textContaining('this record changed on disk'),
+          findsOneWidget,
+        );
+        expect(_enabled(tester, saveButton), isFalse);
+        expect(file.readAsBytesSync(), external);
+        expect(owner.isDisposed, isFalse);
+        expect(owner.snapshot()['markdown'], 'Seed draft');
+        await _tap(tester, _key('records-reload-agents'));
+        await _tap(tester, _key('records-reload-cancel-agents'));
+        await loaded(tester);
+        expect(_instructionsOwner(tester, suffix), same(owner));
+        await _tap(tester, _key('records-reload-agents'));
+        await _tap(tester, _key('records-reload-confirm-agents'));
+        await loaded(tester);
+        expect(owner.isDisposed, isTrue);
+        await _tap(tester, _key('record-edit-$suffix'));
+        expect(
+          _instructionsOwner(tester, suffix).snapshot()['markdown'],
+          'External',
+        );
+        expect(file.readAsBytesSync(), external);
+        await unmount(tester);
+      }),
+    );
+
+    testWidgets(
+      'IME composition refuses Create, including a previously enabled callback',
+      (tester) => tester.runAsync(() async {
+        await open(tester);
+        await _tap(tester, _key('records-add-agents'));
+        await _enter(tester, _key('record-id-agents'), 'reviewer');
+        for (final field in ['name', 'instructions']) {
+          await _tap(tester, _key('record-presence-agents-$field'));
+        }
+        final create = tester
+            .widget<ButtonStyleButton>(createButton)
+            .onPressed!;
+        final owner = _instructionsOwner(tester, 'agents');
+        await _selectInstructions(tester, 'agents');
+        final initial = TextEditingValue.fromJSON(
+          tester.testTextInput.editingState!,
+        );
+        final at = initial.selection.start;
+        final composing = TextEditingValue(
+          text: initial.text.replaceRange(at, initial.selection.end, 'x'),
+          selection: TextSelection.collapsed(offset: at + 1),
+          composing: TextRange(start: at, end: at + 1),
+        );
+        await native_input.input(tester, composing);
+        expect(owner.snapshot()['error'], 'composition_pending');
+        expect(_enabled(tester, createButton), isFalse);
+        create();
+        await native_input.frames(tester);
+        expect(find.textContaining('Finish composing'), findsOneWidget);
+        expect(settings.creates, 0);
+        expect(agentFile().existsSync(), isFalse);
+        expect(_instructionsOwner(tester, 'agents'), same(owner));
+        final presence = _key('record-presence-agents-instructions');
+        await _richTap(tester, presence);
+        expect(owner.editingEnabled, isFalse);
+        expect(owner.snapshot()['error'], 'composition_pending');
+        await _richTap(tester, presence);
+        expect(owner.editingEnabled, isTrue);
+        expect(_enabled(tester, createButton), isFalse);
+        // Reattach input; only an actual settled delta can clear the fence.
+        await _selectInstructions(tester, 'agents', offset: 1);
+        await native_input.input(tester, composing);
+        await native_input.input(
+          tester,
+          composing.copyWith(composing: TextRange.empty),
+        );
+        await submit(tester, createButton);
+        expect(await stored(), {'name': '', 'instructions': 'x'});
+        expect(settings.creates, 1);
+        await unmount(tester);
+      }),
+    );
+
+    testWidgets(
+      'unserializable edit refuses Save without writing; native Undo recovers',
+      (tester) => tester.runAsync(() async {
+        const suffix = 'agents-reviewer';
+        await seedAgent('Keep');
+        final original = agentFile().readAsBytesSync();
+        await open(tester);
+        await edit(tester);
+        final owner = _instructionsOwner(tester, suffix);
+        final state = await _selectInstructions(tester, suffix, offset: 4);
+        final save = tester.widget<ButtonStyleButton>(saveButton).onPressed!;
+        // Exercise a document attribute the native shortcuts do not offer.
+        await state.apply(
+          state.transaction..formatText(
+            state.document.root.children.single,
+            0,
+            4,
+            {'underline': true},
+          ),
+        );
+        await native_input.frames(tester);
+        expect(owner.snapshot, throwsFormatException);
+        expect(_enabled(tester, saveButton), isFalse);
+        save();
+        await native_input.frames(tester);
+        expect(find.textContaining('Undo'), findsOneWidget);
+        expect(settings.updates, 0);
+        expect(agentFile().readAsBytesSync(), original);
+        expect(_instructionsOwner(tester, suffix), same(owner));
+        await native_input.control(tester, LogicalKeyboardKey.keyZ);
+        expect(owner.snapshot()['markdown'], 'Keep');
+        await _selectInstructions(tester, suffix, offset: 4);
+        await native_input.insertAtSelection(tester, ' safe');
+        await submit(tester, saveButton);
+        expect(await stored(), {
+          'name': 'Reviewer',
+          'instructions': 'Keep safe',
+        });
+        expect(settings.updates, 1);
+        await unmount(tester);
+      }),
+    );
+  }, skip: !Platform.isLinux);
 
   testWidgets(
     'existing scalar edits validate presence and preserve immutable identity and unknown data',
@@ -2250,22 +2598,72 @@ Finder _editInput(String id, String field) =>
 Finder _editPresence(String id, String field) =>
     _key('record-presence-jobs-$id-$field');
 
-Future<void> _expand(WidgetTester tester, String id) async {
-  await _tap(
-    tester,
-    find
-        .descendant(
-          of: _key('record-jobs-$id'),
-          matching: find.byType(ListTile),
-        )
-        .first,
+Finder _instructions(String suffix) =>
+    _key('record-input-$suffix-instructions');
+
+NativeRichDocumentEditor _instructionsOwner(
+  WidgetTester tester,
+  String suffix,
+) => tester
+    .widget<NativeRichDocumentEditorView>(
+      find.descendant(
+        of: _instructions(suffix),
+        matching: find.byType(NativeRichDocumentEditorView),
+      ),
+    )
+    .editor;
+
+Future<rich.EditorState> _selectInstructions(
+  WidgetTester tester,
+  String suffix, {
+  int offset = 0,
+}) async {
+  final field = _instructions(suffix);
+  await tester.ensureVisible(field);
+  await native_input.frames(tester);
+  final editor = tester.widget<rich.AppFlowyEditor>(
+    find.descendant(of: field, matching: find.byType(rich.AppFlowyEditor)),
   );
+  editor.focusNode!.requestFocus();
+  editor.editorState.selection = rich.Selection.collapsed(
+    rich.Position(path: [0], offset: offset),
+  );
+  await native_input.frames(tester);
+  expect(tester.testTextInput.hasAnyClients, isTrue);
+  return editor.editorState;
+}
+
+// A focused native caret may keep scheduling frames while we scroll to the action.
+Future<void> _richTap(WidgetTester tester, Finder target) async {
+  await tester.ensureVisible(target);
+  await native_input.frames(tester);
+  await tester.tap(target);
+  await native_input.frames(tester);
+}
+
+Finder _recordTile(String collection, String id) => find
+    .descendant(
+      of: _key('record-$collection-$id'),
+      matching: find.byType(ListTile),
+    )
+    .first;
+
+Future<void> _expand(
+  WidgetTester tester,
+  String id, {
+  String collection = 'jobs',
+}) async {
+  await _tap(tester, _recordTile(collection, id));
   await tester.pumpAndSettle();
 }
 
-Future<void> _edit(WidgetTester tester, String id) async {
-  await _expand(tester, id);
-  await _tap(tester, _key('record-edit-jobs-$id'));
+Future<void> _edit(
+  WidgetTester tester,
+  String id, {
+  String collection = 'jobs',
+}) async {
+  await _expand(tester, id, collection: collection);
+  await _tap(tester, _key('record-edit-$collection-$id'));
 }
 
 Future<void> _tap(WidgetTester tester, Finder finder) async {
