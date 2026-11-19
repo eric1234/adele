@@ -1,10 +1,14 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:adele_capabilities/adele_capabilities.dart';
+import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/global_settings_service.dart';
 import 'package:adele_desktop/core/record_apply_coordinator.dart';
 import 'package:adele_desktop/editor/native_rich_document_editor.dart';
 import 'package:adele_desktop/ui/settings/global_settings_dialog.dart';
+import 'package:adele_model_provider/adele_model_provider.dart'
+    show ModelReasoningEffort;
 import 'package:adele_platform_storage/adele_platform_storage.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_settings/adele_settings.dart';
@@ -814,6 +818,177 @@ void main() {
       }),
     );
   }, skip: !Platform.isLinux);
+
+  testWidgets(
+    'Global Settings persists published Model Presets without applying them',
+    (tester) => tester.runAsync(() async {
+      const pluginId = 'dev.adele.plugin.model-configuration';
+      final installed = Directory('${temporary.path}/installed');
+      await publishStockPluginInstallation(
+        repositoryRoot: Directory.current.parent,
+        installationDirectory: Directory(
+          '${installed.path}/model-configuration',
+        ),
+        pluginId: pluginId,
+        displayName: 'Model Configuration',
+      );
+      final plugins = ApplicationPluginBootstrap(
+        CapabilityRegistry(),
+        ExtensionRegistry(),
+      );
+      addTearDown(plugins.close);
+      await plugins.start(installationRoot: installed.path);
+      final prepared = plugins.catalog!;
+      expect(prepared.issues, isEmpty);
+      final settings = GlobalSettingsService(
+        catalog: prepared.settings,
+        records: prepared.records,
+        roots: roots,
+      );
+      addTearDown(settings.close);
+      final application = RecordApplyCoordinator(plugins, prepared);
+      addTearDown(application.close);
+
+      final collection = RecordCollectionId('model-presets');
+      final type = RecordTypeId('$pluginId.preset');
+      const id = 'review';
+      final key = (
+        collection: collection,
+        type: type,
+        id: ConfigurationRecordId(id),
+      );
+      final row = '$collection-$id';
+      final recordFile = File(
+        '${roots.configurationRoot}/$collection/$id.toml',
+      );
+      final reload = _key('records-reload-$collection');
+      final edit = _key('record-edit-$row');
+      final save = _key('record-save-$row');
+      Future<void> loaded() => _until(tester, () => _enabled(tester, reload));
+      Future<void> submit(Finder button) async {
+        await _tap(tester, button);
+        await loaded();
+      }
+
+      void expectNoApplication() {
+        expect(find.textContaining('Runtime application:'), findsNothing);
+        expect(find.text('Retry application'), findsNothing);
+        expect(application.outcome(key), isNull);
+        expect(application.recentDeletion(collection), isNull);
+      }
+
+      await mount(tester, settingsService: settings, application: application);
+      await _section(tester, 'Model Presets');
+      await loaded();
+      final empty = find.text('No readable records in this collection.');
+      expect(empty, findsOneWidget);
+      expect(Directory(roots.configurationRoot).existsSync(), isFalse);
+      expect(application.supports(key), isFalse);
+
+      await _tap(tester, _key('records-add-$collection'));
+      await _enter(tester, _key('record-id-$collection'), id);
+      expect(find.text('Model Preset'), findsOneWidget);
+      final create = _key('record-create-$collection');
+      for (final (field, label, value) in [
+        ('name', 'Name', 'Code Review'),
+        ('provider-id', 'Provider ID', 'dev.adele.openai.api-key.work'),
+        ('model-id', 'Model ID', 'review-model-v1'),
+      ]) {
+        expect(find.text('Include $label (required)'), findsOneWidget);
+        expect(_enabled(tester, create), isFalse);
+        await _tap(tester, _key('record-presence-$collection-$field'));
+        await _enter(tester, _key('record-input-$collection-$field'), value);
+      }
+      expect(find.text('Include Description (optional)'), findsOneWidget);
+      expect(find.text('Include Reasoning Effort (optional)'), findsOneWidget);
+      expect(_enabled(tester, create), isTrue);
+      await submit(create);
+      await _tap(tester, find.text('Code Review'));
+      await tester.pumpAndSettle();
+      expect(find.text('Record type: $type'), findsOneWidget);
+      expect(
+        find.text('Provider ID: dev.adele.openai.api-key.work'),
+        findsOneWidget,
+      );
+      expect(find.text('Model ID: review-model-v1'), findsOneWidget);
+      expect(find.text('Description: Not provided'), findsOneWidget);
+      expect(find.text('Reasoning Effort: Not provided'), findsOneWidget);
+      final original = recordFile.readAsStringSync();
+      expect(original, isNot(contains('reasoning-effort')));
+      expectNoApplication();
+
+      await _tap(tester, edit);
+      final name = _key('record-input-$row-name');
+      final effortPresence = _key('record-presence-$row-reasoning-effort');
+      expect(tester.widget<CheckboxListTile>(effortPresence).value, isFalse);
+      await _enter(tester, name, 'Detailed Review');
+      await _tap(tester, _key('record-presence-$row-description'));
+      await _enter(
+        tester,
+        _key('record-input-$row-description'),
+        'Review pending changes.',
+      );
+      await _section(tester, 'Preferences');
+      expect(name, findsNothing);
+      expect(recordFile.readAsStringSync(), original);
+      await _section(tester, 'Model Presets');
+      expect(
+        tester.widget<TextField>(name).controller!.text,
+        'Detailed Review',
+      );
+      await submit(save);
+      expect(
+        recordFile.readAsStringSync(),
+        isNot(contains('reasoning-effort')),
+      );
+      await submit(reload);
+      expect(find.text('Detailed Review'), findsOneWidget);
+      expect(find.text('Record ID: $id'), findsOneWidget);
+      expect(find.text('Description: Review pending changes.'), findsOneWidget);
+      expect(find.text('Reasoning Effort: Not provided'), findsOneWidget);
+      expect(recordFile.parent.listSync().map((entry) => entry.path), [
+        recordFile.path,
+      ]);
+      expectNoApplication();
+
+      await _tap(tester, edit);
+      await _tap(tester, effortPresence);
+      final effort = _key('record-input-$row-reasoning-effort');
+      final menu = tester.widget<DropdownButton<String>>(effort);
+      expect(menu.value, isNull);
+      expect(_enabled(tester, save), isFalse);
+      expect(
+        menu.items!.map((item) => item.value),
+        ModelReasoningEffort.values.map((effort) => effort.name),
+      );
+      await _choose(tester, effort, 'None');
+      await submit(save);
+      expectNoApplication();
+
+      // An external edit makes a real worker reread observable, not just a repaint.
+      recordFile.writeAsStringSync(
+        recordFile.readAsStringSync().replaceFirst(
+          'review-model-v1',
+          'review-model-v2',
+        ),
+      );
+      expect(find.text('Model ID: review-model-v1'), findsOneWidget);
+      await submit(reload);
+      expect(find.text('Model ID: review-model-v2'), findsOneWidget);
+      expect(find.text('Reasoning Effort: none'), findsOneWidget);
+
+      await _tap(tester, _key('record-delete-$row'));
+      await submit(_key('record-delete-confirm-$row'));
+      expect(recordFile.existsSync(), isFalse);
+      expectNoApplication();
+      await submit(reload);
+      expect(_key('record-$row'), findsNothing);
+      expect(empty, findsOneWidget);
+      expect(File(settings.filePath).existsSync(), isFalse);
+      await unmount(tester);
+    }),
+    skip: !Platform.isLinux,
+  );
 
   testWidgets(
     'existing scalar edits validate presence and preserve immutable identity and unknown data',

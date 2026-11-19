@@ -568,13 +568,13 @@ void main() {
   });
 
   test(
-    'a declaration-only installation starts no backend host or record consumer',
+    'declaration-only installations start no backend host or record consumer',
     () async {
       final directory = await Directory.systemTemp.createTemp(
         'declaration-only-',
       );
       addTearDown(() => directory.delete(recursive: true));
-      // Publish just the authored schema, independently of stock composition.
+      // Schema-only Agent fixture alongside the stock data-only installation.
       await publishStockPluginInstallation(
         repositoryRoot: Directory.current.parent,
         installationDirectory: Directory(
@@ -582,6 +582,14 @@ void main() {
         ),
         pluginId: 'dev.adele.plugin.agent-configuration',
         displayName: 'Agent Configuration',
+      );
+      await publishStockPluginInstallation(
+        repositoryRoot: Directory.current.parent,
+        installationDirectory: Directory(
+          '${directory.path}/model-configuration',
+        ),
+        pluginId: 'dev.adele.plugin.model-configuration',
+        displayName: 'Model Configuration',
       );
       final bootstrap = ApplicationPluginBootstrap(
         CapabilityRegistry(),
@@ -603,12 +611,16 @@ void main() {
       expect(bootstrap.backends, isEmpty);
       final catalog = bootstrap.catalog!;
       expect(catalog.issues, isEmpty);
-      final installation = catalog.installations.single;
-      expect(installation.backendArtifactUri, isNull);
-      expect(installation.frontend, isNull);
-      expect(bootstrap.backendForInstallation(installation), isNull);
+      for (final installation in catalog.installations) {
+        expect(installation.backendArtifactUri, isNull);
+        expect(installation.frontend, isNull);
+        expect(bootstrap.backendForInstallation(installation), isNull);
+      }
       expect(bootstrap.expectedToolAuthorizationPolicies, isEmpty);
-      expect(catalog.records.collections.single.value, 'agents');
+      expect(catalog.records.collections.map((id) => id.value), [
+        'agents',
+        'model-presets',
+      ]);
     },
   );
 

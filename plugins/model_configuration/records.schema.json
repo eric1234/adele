@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "recordTypes": [
+    {
+      "id": "dev.adele.plugin.model-configuration.preset",
+      "collection": "model-presets",
+      "collectionLabel": "Model Presets",
+      "label": "Model Preset",
+      "description": "A named configuration for one model on one configured provider instance.",
+      "displayField": "name",
+      "fields": [
+        {
+          "id": "name",
+          "label": "Name",
+          "type": "string",
+          "required": true
+        },
+        {
+          "id": "description",
+          "label": "Description",
+          "type": "string",
+          "required": false
+        },
+        {
+          "id": "provider-id",
+          "label": "Provider ID",
+          "description": "Stable ProviderId of one configured ModelProvider instance, not a vendor name or plugin ID.",
+          "type": "string",
+          "required": true
+        },
+        {
+          "id": "model-id",
+          "label": "Model ID",
+          "description": "Exact model identifier expected by that provider.",
+          "type": "string",
+          "required": true
+        },
+        {
+          "id": "reasoning-effort",
+          "label": "Reasoning Effort",
+          "description": "Requested effort, if supported. Omit for no preference; None explicitly requests no reasoning effort.",
+          "type": "enum",
+          "required": false,
+          "options": [
+            {"value": "none", "label": "None"},
+            {"value": "minimal", "label": "Minimal"},
+            {"value": "low", "label": "Low"},
+            {"value": "medium", "label": "Medium"},
+            {"value": "high", "label": "High"},
+            {"value": "xhigh", "label": "Extra High"},
+            {"value": "max", "label": "Max"}
+          ]
+        }
+      ]
+    }
+  ]
+}
