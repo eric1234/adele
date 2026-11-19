@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_contract/adele_contract.dart';
+import 'package:adele_settings/adele_settings.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:test/test.dart';
 
@@ -651,6 +652,65 @@ void main() {
       },
     );
   });
+
+  test(
+    'record apply service cannot be advertised, published or used in a replacement',
+    () async {
+      final handler = PreparedRecordApplyHandler(
+        recordType: RecordTypeId('dev.adele.provider.account'),
+        serviceId: 'configuration',
+        method: 'apply',
+      );
+      final collision = {...secondExposure, 'serviceId': handler.serviceId};
+      final fake = _FakeHost.create(
+        readyFields: {
+          'capabilityExposures': [firstExposure, collision],
+        },
+      );
+      addTearDown(fake.dispose);
+      final host = await fake.start();
+      addTearDown(host.close);
+      final connection = await host.startPlugin(
+        pluginId: 'dev.adele.provider',
+        artifactUri: Uri.file('/unused.aot'),
+        recordApplyHandlers: [handler],
+      );
+      final registry = CapabilityRegistry();
+      await expectLater(
+        PluginCapabilityActivation.registerAdvertised(
+          connection: connection,
+          registry: registry,
+        ),
+        throwsStateError,
+      );
+      expect(registry.providersFor(capability), isEmpty);
+
+      final activation = await PluginCapabilityActivation.register(
+        connection: connection,
+        registry: registry,
+        exposures: [],
+      );
+      addTearDown(activation.close);
+      final advertised = connection.capabilityExposures;
+      final previous = await activation.publishCapabilityGroup(
+        exposures: [advertised.first],
+      );
+      final binding = registry.resolve(capability);
+      await expectLater(
+        activation.publishCapabilityGroup(exposures: [advertised.last]),
+        throwsStateError,
+      );
+      await expectLater(
+        activation.replaceCapabilityGroup(
+          expected: previous,
+          exposures: [advertised.last],
+        ),
+        throwsStateError,
+      );
+      expect(registry.providersFor(capability), hasLength(1));
+      expect(registry.resolve(capability).isSameRegistration(binding), isTrue);
+    },
+  );
 
   for (final advertised in [false, true]) {
     test(

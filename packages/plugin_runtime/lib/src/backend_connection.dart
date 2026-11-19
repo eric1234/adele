@@ -4,10 +4,10 @@ import 'dart:math';
 
 import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_plugin_backend_support/adele_plugin_backend_support.dart';
+import 'package:adele_settings/adele_settings.dart';
 
 import 'backend_host_protocol.dart';
-
-const String _rawPluginServiceId = 'plugin';
+import 'prepared_plugin_catalog.dart';
 
 typedef PluginDiagnosticSink = void Function(String message);
 
@@ -190,6 +190,8 @@ final class PluginBackendHost {
   /// declaration validation; this transport accepts only bool, int, and String.
   /// [records] is likewise captured before callbacks or awaits, with strict bounded
   /// nonsecret record shape validation. It grants no configuration or host access.
+  /// [recordApplyHandlers] is the owning prepared installation's host-only policy;
+  /// captured before callbacks, never sent to the backend as bootstrap data.
   /// [createInfrastructureServices] supplies only explicitly granted services for
   /// this exact connection. Dispatchers remain caller-owned. Capture the connection's
   /// [PluginBackendConnection.validateInfrastructureContext] for service-entry checks.
@@ -200,6 +202,7 @@ final class PluginBackendHost {
     bool startupArgumentsOnly = false,
     Map<String, Object> settings = const {},
     List<Map<String, Object?>> records = const [],
+    Iterable<PreparedRecordApplyHandler> recordApplyHandlers = const [],
     Map<String, AdeleBackendDispatcher> Function(
       PluginBackendConnection connection,
     )?
@@ -207,6 +210,9 @@ final class PluginBackendHost {
   }) async {
     final capturedSettings = adeleCopyBackendSettings(settings);
     final capturedRecords = adeleCopyBackendRecords(records);
+    final capturedHandlers = PreparedRecordApplyHandler.snapshot(
+      recordApplyHandlers,
+    );
     if (_plugins.containsKey(pluginId)) {
       throw StateError('Plugin $pluginId is already connected.');
     }
@@ -221,6 +227,7 @@ final class PluginBackendHost {
     final PluginBackendConnection connection = PluginBackendConnection._(
       host: this,
       pluginId: pluginId,
+      recordApplyHandlers: capturedHandlers,
     );
     _startingPlugins[pluginId] = connection;
     bool readyReceived = false;
@@ -375,6 +382,7 @@ final class PluginBackendHost {
     Map<String, Object?> payload, {
     String? hostInvocationContext,
     void Function()? onContextualResponse,
+    bool requireApplyAcknowledgement = false,
   }) async {
     final String pluginId = owner.pluginId;
     if (owner.isClosed || _plugins[pluginId] != owner) {
@@ -394,6 +402,19 @@ final class PluginBackendHost {
         'hostInvocationContext': ?hostInvocationContext,
       },
     );
+    // A matching request ID alone doesn't attest that this is the owning
+    // backend's control reply. Never mistake a transport error for its result.
+    if (requireApplyAcknowledgement &&
+        (response.length != 6 ||
+            response['protocolVersion'] != backendHostProtocolVersion ||
+            response['kind'] != 'response' ||
+            response['pluginId'] != pluginId ||
+            response['ok'] != true ||
+            !response.containsKey('payload'))) {
+      throw const BackendHostProtocolException(
+        'Unconfirmed record application.',
+      );
+    }
     if (response['ok'] == true) return response['payload'];
     throw _remoteFailure(response);
   }
@@ -1330,10 +1351,15 @@ final class PluginBackendConnection implements AdeleStreamChannel {
   PluginBackendConnection._({
     required PluginBackendHost host,
     required this.pluginId,
-  }) : _host = host;
+    required List<PreparedRecordApplyHandler> recordApplyHandlers,
+  }) : _host = host,
+       _applyHandlers = recordApplyHandlers,
+       _applyServices = {for (final h in recordApplyHandlers) h.serviceId};
 
   final PluginBackendHost _host;
   final String pluginId;
+  final List<PreparedRecordApplyHandler> _applyHandlers;
+  final Set<String> _applyServices;
   final String _generation = _opaqueHostId();
   List<AdeleCapabilityExposure> _capabilityExposures = const [];
   List<AdeleCapabilityExposure> get capabilityExposures => _capabilityExposures;
@@ -1464,7 +1490,7 @@ final class PluginBackendConnection implements AdeleStreamChannel {
     return _host._request(
       this,
       defaultConfigurationContext._wireValue,
-      _rawPluginServiceId,
+      backendHostRawServiceId,
       method,
       payload,
     );
@@ -1480,7 +1506,7 @@ final class PluginBackendConnection implements AdeleStreamChannel {
     return _host._stream(
       this,
       defaultConfigurationContext._wireValue,
-      _rawPluginServiceId,
+      backendHostRawServiceId,
       method,
       payload,
     );
@@ -1491,10 +1517,8 @@ final class PluginBackendConnection implements AdeleStreamChannel {
     return ConfigurationContextId._(this, opaqueId);
   }
 
-  AdeleStreamChannel channelFor(
-    ConfigurationContextId context,
-    String serviceId,
-  ) {
+  /// Checks generation ownership without granting a service channel.
+  void validateConfigurationContext(ConfigurationContextId context) {
     if (!identical(context._owner, this)) {
       throw ArgumentError.value(
         context,
@@ -1502,10 +1526,44 @@ final class PluginBackendConnection implements AdeleStreamChannel {
         'Configuration context belongs to another plugin generation.',
       );
     }
+  }
+
+  AdeleStreamChannel channelFor(
+    ConfigurationContextId context,
+    String serviceId,
+  ) {
+    validateConfigurationContext(context);
+    // Capability publication and frontend grants create arbitrary-method channels.
+    // A dedicated apply service can never be bound on either path.
+    if (_applyServices.contains(serviceId)) {
+      throw StateError('Record apply services cannot be used as channels.');
+    }
     if (serviceId.isEmpty) {
       throw ArgumentError.value(serviceId, 'serviceId', 'Service ID is empty.');
     }
     return _ConfigurationContextChannel(this, context._wireValue, serviceId);
+  }
+
+  /// Invokes only a captured declaration, with no caller-provided route or data
+  /// other than the validated record ID. Never returns a general-purpose channel.
+  Future<Object?> requestRecordApply(
+    PreparedRecordApplyHandler handler,
+    ConfigurationRecordId recordId,
+  ) async {
+    validateInfrastructureContext();
+    if (!_applyHandlers.any((captured) => identical(captured, handler))) {
+      throw StateError('Record apply handler does not belong to this backend.');
+    }
+    final result = await _host._request(
+      this,
+      defaultConfigurationContext._wireValue,
+      handler.serviceId,
+      handler.method,
+      {'recordId': recordId.value},
+      requireApplyAcknowledgement: true,
+    );
+    validateInfrastructureContext();
+    return result;
   }
 
   Future<void> close() {

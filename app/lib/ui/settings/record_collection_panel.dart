@@ -9,6 +9,7 @@ import 'package:flutter/services.dart';
 
 import '../../core/credential_service.dart';
 import '../../core/global_settings_service.dart';
+import '../../core/record_apply_coordinator.dart';
 import 'record_credential_controls.dart';
 import 'scalar_input.dart';
 
@@ -18,6 +19,7 @@ final class RecordCollectionPanel extends StatefulWidget {
     required this.service,
     required this.collection,
     this.credentialAssociations,
+    this.recordApplication,
     this.active = true,
     this.declarationIssues,
   });
@@ -25,6 +27,7 @@ final class RecordCollectionPanel extends StatefulWidget {
   final GlobalSettingsService service;
   final RecordCollectionId collection;
   final RecordCredentialService? credentialAssociations;
+  final RecordApplication? recordApplication;
   final bool active;
   final List<String> Function()? declarationIssues;
 
@@ -193,22 +196,14 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
       _creationError = null;
       _message = null;
     });
+    final application = widget.recordApplication;
+    RecordView? acknowledged;
     try {
-      final saved = await widget.service.createRecord(
+      acknowledged = await widget.service.createRecord(
         definition.id,
         id,
         values,
       );
-      if (!mounted) return;
-      setState(() {
-        // The returned handle is usable; a collection read would revoke siblings.
-        _records = [..._records, saved]
-          ..sort((a, b) => a.id.value.compareTo(b.id.value));
-        _message = 'Created ${saved.id}.';
-        _adding = false;
-        _creationDrafts[definition.id] = _RecordDraft(definition);
-        draft.dispose();
-      });
     } on ConfigurationConflictException catch (error) {
       if (!mounted) return;
       setState(() {
@@ -217,13 +212,20 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
             'Not created: the record ID is already occupied or changed on disk. '
             'No existing file was overwritten. Reload before creating again.\n$error';
       });
+      return;
     } on InvalidRecordValue catch (error) {
       if (mounted) {
         setState(
           () => _creationError = 'Not created: correct the values.\n$error',
         );
       }
+      return;
     } on Object catch (error) {
+      application?.unconfirmed((
+        collection: definition.collection,
+        type: definition.id,
+        id: id,
+      ));
       if (!mounted) return;
       setState(() {
         _creationRequiresReload = true;
@@ -231,9 +233,24 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
             'Could not confirm creation. Your draft is retained. '
             'Reload to check persisted records before creating again.\n$error';
       });
+      return;
     } finally {
+      // The worker gate has released. Notify only on acknowledged success,
+      // before releasing UI admission or consulting the dialog's lifetime.
+      if (acknowledged != null) _saved(application, acknowledged);
       if (mounted) setState(() => _busy = false);
     }
+    final saved = acknowledged;
+    if (!mounted) return;
+    setState(() {
+      // The returned handle is usable; a collection read would revoke siblings.
+      _records = [..._records, saved]
+        ..sort((a, b) => a.id.value.compareTo(b.id.value));
+      _message = 'Created ${saved.id}.';
+      _adding = false;
+      _creationDrafts[definition.id] = _RecordDraft(definition);
+      draft.dispose();
+    });
   }
 
   void _edit(RecordView record) {
@@ -277,6 +294,8 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
       return;
     }
     final deleting = draft == null;
+    final application = widget.recordApplication;
+    RecordView? acknowledged;
     setState(() {
       _busy = true;
       _confirming = deleting;
@@ -305,19 +324,12 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
         _recordErrors.remove(record.id);
         _message = null;
       });
-      final RecordView? saved;
       if (deleting) {
         await widget.service.deleteRecord(record);
-        saved = null;
+        acknowledged = record;
       } else {
-        saved = await widget.service.updateRecord(record, values!);
+        acknowledged = await widget.service.updateRecord(record, values!);
       }
-      if (!mounted) return;
-      setState(() {
-        _replaceRecord(record, saved);
-        _drafts.remove(record.id)?.dispose();
-        _message = '${deleting ? 'Deleted' : 'Saved'} ${record.id}.';
-      });
     } on ConfigurationRecordCredentialsPresent {
       if (!mounted) return;
       setState(() {
@@ -327,7 +339,9 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
             'If unknown credential entries remain, manual TOML correction may be '
             'necessary. No deletion was attempted; the record and drafts are kept.';
       });
+      return;
     } on ConfigurationConflictException catch (error) {
+      application?.unconfirmed(_applyKey(record));
       if (!mounted) return;
       setState(() {
         _fencedRecords.add(record.id);
@@ -336,13 +350,16 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
             'Not ${deleting ? 'deleted' : 'saved'}: this record changed on disk. '
             'Your draft is retained. Reload before changing this record again.\n$error';
       });
+      return;
     } on InvalidRecordValue catch (error) {
       if (mounted) {
         setState(() {
           _recordErrors[record.id] = 'Not saved: correct the values.\n$error';
         });
       }
+      return;
     } on Object catch (error) {
+      application?.unconfirmed(_applyKey(record));
       if (!mounted) return;
       setState(() {
         _fencedRecords.add(record.id);
@@ -352,7 +369,11 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
             'The operation may have been published. Your draft is retained. '
             'Reload to check persisted state before changing this record again.\n$error';
       });
+      return;
     } finally {
+      if (acknowledged != null) {
+        _saved(application, acknowledged, deleted: deleting);
+      }
       if (mounted) {
         setState(() {
           _busy = false;
@@ -360,6 +381,12 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
         });
       }
     }
+    if (!mounted) return;
+    setState(() {
+      _replaceRecord(record, deleting ? null : acknowledged);
+      _drafts.remove(record.id)?.dispose();
+      _message = '${deleting ? 'Deleted' : 'Saved'} ${record.id}.';
+    });
   }
 
   Future<void> _credentialOperation(
@@ -369,6 +396,7 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
     CredentialSecret? secret,
   ) async {
     final service = widget.credentialAssociations;
+    final application = widget.recordApplication;
     final key = (record.id, slot.id);
     if (service == null ||
         !_enabled ||
@@ -382,6 +410,7 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
       _confirming = action == RecordCredentialAction.forget;
       _pendingCredential = key;
     });
+    RecordCredentialResult? acknowledged;
     try {
       if (_confirming) {
         final definition = widget.service.records.definition(record.type);
@@ -407,7 +436,7 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
         _confirming = false;
         _credentialErrors.remove(key);
       });
-      final result = await switch (action) {
+      acknowledged = await switch (action) {
         RecordCredentialAction.check => service.inspect(record, slot.id),
         RecordCredentialAction.reconcile => service.reconcile(record, slot.id),
         RecordCredentialAction.attach => service.attach(
@@ -427,13 +456,12 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
         ),
         RecordCredentialAction.forget => service.forget(record, slot.id),
       };
-      if (!mounted) return;
-      setState(() {
-        _replaceRecord(record, result.record);
-        _credentialStatuses[key] = result.status;
-        _recordErrors.remove(record.id);
-      });
     } on RecordCredentialFailure catch (failure) {
+      if (!failure.preservesApplyState &&
+          action != RecordCredentialAction.check &&
+          action != RecordCredentialAction.reconcile) {
+        application?.unconfirmed(_applyKey(record));
+      }
       if (!mounted) return;
       setState(() {
         if (failure.record case final acknowledged?) {
@@ -462,7 +490,12 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
         }
         _credentialErrors[key] = recordCredentialFailureMessage(kind);
       });
+      return;
     } on Object {
+      if (action != RecordCredentialAction.check &&
+          action != RecordCredentialAction.reconcile) {
+        application?.unconfirmed(_applyKey(record));
+      }
       if (!mounted) return;
       setState(() {
         // An unexpected acknowledgement failure cannot establish a new baseline.
@@ -473,7 +506,11 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
           RecordCredentialFailureKind.configurationFailure,
         );
       });
+      return;
     } finally {
+      if (acknowledged != null) {
+        _credentialAcknowledged(application, acknowledged, action);
+      }
       if (mounted) {
         setState(() {
           _busy = false;
@@ -482,12 +519,56 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
         });
       }
     }
+    final result = acknowledged;
+    if (!mounted) return;
+    setState(() {
+      _replaceRecord(record, result.record);
+      _credentialStatuses[key] = result.status;
+      _recordErrors.remove(record.id);
+    });
+  }
+
+  static void _credentialAcknowledged(
+    RecordApplication? application,
+    RecordCredentialResult result,
+    RecordCredentialAction action,
+  ) {
+    switch (action) {
+      case RecordCredentialAction.check:
+        break;
+      case RecordCredentialAction.reconcile:
+        // A validated reconciliation issues a fresh handle. Locked, invalid,
+        // uncertain and no-reference inspections do not authorize an apply.
+        final key = _applyKey(result.record);
+        if ((result.status == RecordCredentialStatus.stored ||
+                result.status == RecordCredentialStatus.missingLocal) &&
+            application != null &&
+            application.supports(key)) {
+          application.reconciled(key);
+        }
+      case RecordCredentialAction.attach ||
+          RecordCredentialAction.replace ||
+          RecordCredentialAction.establishLocal ||
+          RecordCredentialAction.forget:
+        _saved(application, result.record);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
+    final application = widget.recordApplication;
+    return application == null
+        ? _collection(context)
+        : ListenableBuilder(
+            listenable: application,
+            builder: (context, _) => _collection(context),
+          );
+  }
+
+  Widget _collection(BuildContext context) {
     final collection = widget.collection;
     final creationEnabled = _enabled && !_creationRequiresReload;
+    final deletion = widget.recordApplication?.recentDeletion(collection);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -503,7 +584,8 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
               children: [
                 const Text(
                   'These records store nonsecret configuration, not credentials. '
-                  'Changing a record does not activate or configure a running service.',
+                  'Plugins that support live application report its outcome '
+                  'separately from saving.',
                 ),
                 for (final issue
                     in widget.declarationIssues?.call() ?? <String>[])
@@ -517,6 +599,9 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
                   _diagnostic(context, error),
                 if (_message case final message?)
                   Semantics(liveRegion: true, child: Text(message)),
+                if (deletion != null &&
+                    !_records.any((record) => _applyKey(record) == deletion))
+                  ?_applyFeedback(deletion),
                 Align(
                   alignment: Alignment.centerLeft,
                   child: FilledButton.icon(
@@ -643,6 +728,90 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
     );
   }
 
+  Widget? _applyFeedback(RecordApplyKey key, {RecordView? record}) {
+    final application = widget.recordApplication;
+    if (application == null || !application.supports(key)) return null;
+    final deleted = record == null;
+    final outcome = application.outcome(key, deleted: deleted);
+    bool canRetry() =>
+        _enabled &&
+        widget.active &&
+        identical(widget.recordApplication, application) &&
+        (record == null
+            ? application.recentDeletion(key.collection) == key &&
+                  !_records.any((current) => _applyKey(current) == key)
+            : _current(record) && !_fencedRecords.contains(record.id)) &&
+        switch (application.outcome(key, deleted: deleted)?.status) {
+          RecordApplyStatus.failed ||
+          RecordApplyStatus.unavailable ||
+          RecordApplyStatus.notApplied => true,
+          _ => false,
+        };
+
+    final status = outcome?.status;
+    final suffix = '${key.collection}-${key.type}-${key.id}';
+    return Padding(
+      key: ValueKey('record-apply-$suffix'),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Semantics(
+            liveRegion: true,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (record == null)
+                  Text('Deleted record: ${key.id}')
+                else if (outcome != null)
+                  const Text('Saved configuration'),
+                Text(switch (status) {
+                  null => 'Runtime application: No confirmed result',
+                  RecordApplyStatus.applying =>
+                    'Runtime application: Applying...',
+                  RecordApplyStatus.applied => 'Runtime application: Applied',
+                  RecordApplyStatus.noChange =>
+                    'Runtime application: No change',
+                  RecordApplyStatus.failed || RecordApplyStatus.notApplied =>
+                    'Runtime application: Not applied',
+                  RecordApplyStatus.unavailable =>
+                    'Runtime application: Unavailable',
+                  RecordApplyStatus.restartRequired =>
+                    'Runtime application: Restart required',
+                }),
+                if (outcome?.cleanupPending ?? false)
+                  const Text(
+                    'Cleanup of the previous configuration is pending.',
+                  ),
+                if (status == RecordApplyStatus.restartRequired)
+                  const Text(
+                    'The runtime outcome is unknown. Restart ADELE before trying again.',
+                  )
+                else if (status == RecordApplyStatus.unavailable ||
+                    status == RecordApplyStatus.failed)
+                  const Text(
+                    'Retry when ready, or restart ADELE if the problem persists.',
+                  ),
+              ],
+            ),
+          ),
+          if (status == RecordApplyStatus.failed ||
+              status == RecordApplyStatus.unavailable ||
+              status == RecordApplyStatus.notApplied)
+            TextButton(
+              key: ValueKey('record-apply-retry-$suffix'),
+              onPressed: canRetry()
+                  ? () {
+                      if (canRetry()) application.retry(key);
+                    }
+                  : null,
+              child: const Text('Retry application'),
+            ),
+        ],
+      ),
+    );
+  }
+
   Widget _creationForm(RecordTypeDefinition type, bool enabled) {
     final draft = _creationDrafts[type.id]!;
     return _RecordForm(
@@ -661,6 +830,7 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
       record: record,
       definition: widget.service.records.definition(record.type),
       error: _recordErrors[record.id],
+      applyFeedback: _applyFeedback(_applyKey(record), record: record),
       credentials: (expanded) => [
         for (final slot
             in widget.service.records.definition(record.type).credentialSlots)
@@ -898,6 +1068,7 @@ final class _RecordDetails extends StatefulWidget {
     required this.onEdit,
     required this.onDelete,
     required this.credentials,
+    this.applyFeedback,
     this.editor,
     this.error,
   });
@@ -907,6 +1078,7 @@ final class _RecordDetails extends StatefulWidget {
   final VoidCallback? onEdit;
   final VoidCallback? onDelete;
   final List<Widget> Function(bool expanded) credentials;
+  final Widget? applyFeedback;
   final Widget? editor;
   final String? error;
 
@@ -921,74 +1093,93 @@ final class _RecordDetailsState extends State<_RecordDetails> {
   Widget build(BuildContext context) {
     final record = widget.record;
     final definition = widget.definition;
-    return Card(
-      child: ExpansionTile(
-        maintainState: true,
-        onExpansionChanged: (expanded) => setState(() => _expanded = expanded),
-        title: Text(_recordTitle(record, definition)),
-        subtitle: Text('${definition.label} | ${record.id}'),
-        childrenPadding: const EdgeInsets.all(16),
-        expandedCrossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          ExcludeFocus(
-            excluding: !_expanded,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                SelectableText('Collection: ${record.collection}'),
-                SelectableText('Record ID: ${record.id}'),
-                SelectableText('Record type: ${record.type}'),
-                if (widget.error case final error?) _diagnostic(context, error),
-                if (widget.editor case final editor?)
-                  editor
-                else ...[
-                  for (final field in definition.fields)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 8),
-                      child: SelectableText(
-                        '${field.label}: ${record.values.containsKey(field.id.value) ? (record.values[field.id.value] == '' ? '(empty string)' : record.values[field.id.value]) : 'Not provided'}',
-                      ),
-                    ),
-                  Align(
-                    alignment: Alignment.centerLeft,
-                    child: TextButton(
-                      key: ValueKey(
-                        'record-edit-${record.collection}-${record.id}',
-                      ),
-                      onPressed: widget.onEdit,
-                      child: const Text('Edit'),
+    final details = ExpansionTile(
+      maintainState: true,
+      onExpansionChanged: (expanded) => setState(() => _expanded = expanded),
+      title: Text(_recordTitle(record, definition)),
+      subtitle: Text('${definition.label} | ${record.id}'),
+      childrenPadding: const EdgeInsets.all(16),
+      expandedCrossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        ExcludeFocus(
+          excluding: !_expanded,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              SelectableText('Collection: ${record.collection}'),
+              SelectableText('Record ID: ${record.id}'),
+              SelectableText('Record type: ${record.type}'),
+              if (widget.error case final error?) _diagnostic(context, error),
+              if (widget.editor case final editor?)
+                editor
+              else ...[
+                for (final field in definition.fields)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: SelectableText(
+                      '${field.label}: ${record.values.containsKey(field.id.value) ? (record.values[field.id.value] == '' ? '(empty string)' : record.values[field.id.value]) : 'Not provided'}',
                     ),
                   ),
-                ],
-                if (definition.credentialSlots.isNotEmpty) ...[
-                  const Divider(),
-                  Text(
-                    'Credentials',
-                    style: Theme.of(context).textTheme.titleMedium,
-                  ),
-                  const Text(
-                    'Credentials use OS-protected storage. Stored locally does not '
-                    'mean authenticated. Provider runtime integration is not yet '
-                    'implemented; these records do not activate a backend.',
-                  ),
-                  ...widget.credentials(_expanded),
-                ],
                 Align(
                   alignment: Alignment.centerLeft,
                   child: TextButton(
                     key: ValueKey(
-                      'record-delete-${record.collection}-${record.id}',
+                      'record-edit-${record.collection}-${record.id}',
                     ),
-                    onPressed: widget.onDelete,
-                    child: const Text('Delete'),
+                    onPressed: widget.onEdit,
+                    child: const Text('Edit'),
                   ),
                 ),
               ],
-            ),
+              if (definition.credentialSlots.isNotEmpty) ...[
+                const Divider(),
+                Text(
+                  'Credentials',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+                const Text(
+                  'Credentials use OS-protected storage. Stored locally does not '
+                  'mean authenticated, even after configuration is applied.',
+                ),
+                ...widget.credentials(_expanded),
+              ],
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton(
+                  key: ValueKey(
+                    'record-delete-${record.collection}-${record.id}',
+                  ),
+                  onPressed: widget.onDelete,
+                  child: const Text('Delete'),
+                ),
+              ),
+            ],
           ),
-        ],
-      ),
+        ),
+      ],
     );
+    return Card(
+      child: widget.applyFeedback == null
+          ? details
+          : Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [details, ?widget.applyFeedback],
+            ),
+    );
+  }
+}
+
+RecordApplyKey _applyKey(RecordView record) =>
+    (collection: record.collection, type: record.type, id: record.id);
+
+void _saved(
+  RecordApplication? application,
+  RecordView record, {
+  bool deleted = false,
+}) {
+  final key = _applyKey(record);
+  if (application != null && application.supports(key)) {
+    application.saved(key, deleted: deleted);
   }
 }
 

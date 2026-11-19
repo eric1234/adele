@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../core/global_settings_service.dart';
+import '../../core/record_apply_coordinator.dart';
 import 'record_collection_panel.dart';
 import 'scalar_settings_panel.dart';
 
@@ -12,12 +13,14 @@ final class GlobalSettingsDialog extends StatefulWidget {
     super.key,
     required this.service,
     this.credentialAssociations,
+    this.recordApplication,
     this.declarationIssues,
     this.recordDeclarationIssues,
   });
 
   final Future<GlobalSettingsService> Function() service;
   final RecordCredentialService Function()? credentialAssociations;
+  final RecordApplication? Function()? recordApplication;
   final List<String> Function()? declarationIssues;
   final List<String> Function()? recordDeclarationIssues;
 
@@ -123,6 +126,8 @@ final class _GlobalSettingsDialogState extends State<GlobalSettingsDialog> {
                               service: _service!,
                               credentialAssociations: widget
                                   .credentialAssociations
+                                  ?.call(),
+                              recordApplication: widget.recordApplication
                                   ?.call(),
                               active: active,
                               collection: RecordCollectionId(value),

@@ -6,13 +6,17 @@ import 'dart:io';
 import 'package:adele_configuration_store/adele_configuration_store.dart';
 import 'package:adele_desktop/core/credential_service.dart';
 import 'package:adele_desktop/core/global_settings_service.dart';
+import 'package:adele_desktop/core/record_apply_coordinator.dart';
 import 'package:adele_desktop/ui/settings/global_settings_dialog.dart';
+import 'package:adele_desktop/ui/settings/record_credential_controls.dart';
 import 'package:adele_platform_storage/adele_platform_storage.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_settings/adele_settings.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+import 'record_settings_dialog_test.dart' show RecordApplicationProbe;
 
 final _collection = RecordCollectionId('jobs');
 final _single = RecordTypeId('dev.example.credentials.single');
@@ -132,7 +136,10 @@ void main() {
     return record;
   }
 
-  Future<void> mount(WidgetTester tester) async {
+  Future<void> mount(
+    WidgetTester tester, {
+    RecordApplicationProbe? application,
+  }) async {
     await tester.binding.setSurfaceSize(const Size(1000, 1100));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     await tester.pumpWidget(
@@ -145,6 +152,7 @@ void main() {
                 builder: (_) => GlobalSettingsDialog(
                   service: () async => settings,
                   credentialAssociations: () => coordinator,
+                  recordApplication: () => application,
                 ),
               ),
               child: const Text('Open settings'),
@@ -194,6 +202,9 @@ void main() {
     await _tap(tester, _action('forget-confirm', id));
     await _loaded(tester);
   }
+
+  RecordApplyKey key(String id) =>
+      (collection: _collection, type: _single, id: ConfigurationRecordId(id));
 
   scenario(
     'declarations render zero, one and multiple slots without vault reads',
@@ -269,9 +280,10 @@ void main() {
   scenario(
     'records keep independent references and replacement never prefills a secret',
     (tester) async {
+      final application = RecordApplicationProbe(_single);
       await seed('first');
       await seed('second');
-      await mount(tester);
+      await mount(tester, application: application);
       for (final id in ['first', 'second']) {
         await _expand(tester, id);
         await check(tester, id);
@@ -288,6 +300,11 @@ void main() {
       final original = file('first').readAsBytesSync();
       final sibling = file('second').readAsBytesSync();
       await submit(tester, 'first', 'replace', secret: _replacement);
+      expect(application.saves, [
+        (key('first'), false),
+        (key('second'), false),
+        (key('first'), false),
+      ]);
       expect(reference('first'), first);
       expect(file('first').readAsBytesSync(), original);
       expect(file('second').readAsBytesSync(), sibling);
@@ -479,8 +496,9 @@ void main() {
     'transferred reference is established locally without replacing TOML identity',
     (tester) async {
       await seed('transferred', transferred: true);
+      final application = RecordApplicationProbe(_single);
       final before = file('transferred').readAsBytesSync();
-      await mount(tester);
+      await mount(tester, application: application);
       await _expand(tester, 'transferred');
       expect(storage.calls, isEmpty);
       await check(tester, 'transferred');
@@ -488,6 +506,7 @@ void main() {
       _expectActions('transferred', const ['check', 'establish', 'forget']);
       expect(find.text('Set credential on this machine'), findsOneWidget);
       await submit(tester, 'transferred', 'establish');
+      expect(application.saves, [(key('transferred'), false)]);
       _expectStatus('transferred', _stored);
       expect(reference('transferred'), _transferred);
       expect(file('transferred').readAsBytesSync(), before);
@@ -752,6 +771,43 @@ void main() {
   }
 
   scenario(
+    'busy credential preflight preserves a pending runtime application',
+    (tester) async {
+      await seed('busy', secret: _firstSecret);
+      final application = RecordApplicationProbe(_single);
+      await mount(tester, application: application);
+      await _expand(tester, 'busy');
+      await _tap(tester, _key('record-edit-jobs-busy'));
+      await _tap(tester, _key('record-save-jobs-busy'));
+      await _loaded(tester);
+      await check(tester, 'busy');
+
+      final record = tester
+          .widget<RecordCredentialControls>(_slot('busy'))
+          .record;
+      final gate = _Gate();
+      storage.calls.clear();
+      storage.actions('read').add(_Action(gate: gate));
+      final inspection = coordinator.inspect(record, _token);
+      try {
+        await gate.entered.future;
+        await submit(tester, 'busy', 'replace', secret: _replacement);
+        expect(
+          find.textContaining('Another credential operation is pending'),
+          findsOneWidget,
+        );
+        expect(find.text('Runtime application: Applying...'), findsOneWidget);
+        expect(application.saves, [(key('busy'), false)]);
+        expect(application.retries, isEmpty);
+        expect(storage.calls, [('read', reference('busy')!)]);
+      } finally {
+        gate.release();
+        await inspection;
+      }
+    },
+  );
+
+  scenario(
     'replacement accepts the exact full-envelope limit but rejects one extra byte',
     (tester) async {
       await seed('limit', secret: _firstSecret);
@@ -761,7 +817,12 @@ void main() {
       final overhead = utf8.encode(jsonEncode(envelope)).length;
       final secret = 'x' * (CredentialSecret.maximumBytes - overhead);
       final before = file('limit').readAsBytesSync();
-      await mount(tester);
+      final application = RecordApplicationProbe(_single);
+      application.report(
+        key('limit'),
+        const RecordApplyOutcome(RecordApplyStatus.failed, 'capture_failed'),
+      );
+      await mount(tester, application: application);
       await _expand(tester, 'limit');
       await check(tester, 'limit');
       storage.calls.clear();
@@ -772,6 +833,12 @@ void main() {
       );
       expect(storage.calls, isEmpty);
       _expectSecret(storage, ref, _firstSecret);
+      expect(application.saves, isEmpty);
+      expect(application.retries, isEmpty);
+      expect(find.text('Runtime application: Not applied'), findsOneWidget);
+      await _tap(tester, find.text('Retry application'));
+      expect(application.retries, [key('limit')]);
+      expect(storage.calls, isEmpty);
       await check(tester, 'limit');
       await submit(tester, 'limit', 'replace', secret: secret);
       _expectStatus('limit', _stored);
@@ -790,8 +857,14 @@ void main() {
       'partial attach ${unavailable ? 'locked' : 'failed'} adopts latest handle and retains scalar draft',
       (tester) async {
         await seed('partial', type: _multiple);
+        final application = RecordApplicationProbe(_multiple);
+        application.report((
+          collection: _collection,
+          type: _multiple,
+          id: ConfigurationRecordId('partial'),
+        ), const RecordApplyOutcome(RecordApplyStatus.applied, 'added'));
         await seed('independent');
-        await mount(tester);
+        await mount(tester, application: application);
         await _expand(tester, 'partial');
         await _tap(tester, _key('record-edit-jobs-partial'));
         await _enter(
@@ -808,6 +881,12 @@ void main() {
             .actions('contains')
             .add(_Action(errorBefore: _storageError(unavailable)));
         await submit(tester, 'partial', 'set');
+        expect(application.saves, isEmpty);
+        expect(application.reconciliations, isEmpty);
+        expect(
+          find.text('Runtime application: No confirmed result'),
+          findsOneWidget,
+        );
         _expectStatus('partial', unavailable ? _unavailable : _failed);
         _expectStatus('partial', _unchecked, 'backup');
         final ref = reference('partial')!;
@@ -979,11 +1058,20 @@ void main() {
     'failed reconciliation retains uncertainty and never retries the write',
     (tester) async {
       await seed('reconcile');
-      await mount(tester);
+      final application = RecordApplicationProbe(_single);
+      application.report(
+        key('reconcile'),
+        const RecordApplyOutcome(RecordApplyStatus.applied, 'added'),
+      );
+      await mount(tester, application: application);
       await _expand(tester, 'reconcile');
       await check(tester, 'reconcile');
       storage.actions('write').add(_Action(errorAfter: _storageError(false)));
       await submit(tester, 'reconcile', 'set');
+      expect(
+        find.text('Runtime application: No confirmed result'),
+        findsOneWidget,
+      );
       final ref = reference('reconcile')!;
       final protected = storage.values[ref]!;
       for (final corrupt in [false, true]) {
@@ -997,6 +1085,8 @@ void main() {
         await _tap(tester, _action('reconcile', 'reconcile'));
         await _loaded(tester);
         _expectStatus('reconcile', corrupt ? _invalid : _unavailable);
+        expect(application.reconciliations, isEmpty);
+        expect(find.text('Retry application'), findsNothing);
         expect(credentials.requiresReconciliation(ref), isTrue);
         final calls = List.of(storage.calls);
         await check(tester, 'reconcile');
@@ -1007,6 +1097,13 @@ void main() {
       await _tap(tester, _action('reconcile', 'reconcile'));
       await _loaded(tester);
       _expectStatus('reconcile', _stored);
+      expect(application.saves, isEmpty);
+      expect(application.reconciliations, [key('reconcile')]);
+      expect(application.retries, isEmpty);
+      final calls = List.of(storage.calls);
+      await _tap(tester, find.text('Retry application'));
+      expect(application.retries, [key('reconcile')]);
+      expect(storage.calls, calls);
       expect(storage.calls.where((call) => call.$1 == 'write'), hasLength(1));
       _expectSecret(storage, ref, _firstSecret);
     },
@@ -1019,7 +1116,8 @@ void main() {
       await seed('sibling', secret: _secondSecret);
       final sibling = file('sibling').readAsBytesSync();
       final target = file('target').readAsBytesSync();
-      await mount(tester);
+      final application = RecordApplicationProbe(_single);
+      await mount(tester, application: application);
       await _expand(tester, 'target');
       await _tap(tester, _key('record-delete-jobs-target'));
       await _tap(tester, _key('record-delete-confirm-jobs-target'));
@@ -1074,7 +1172,9 @@ void main() {
       staleConfirm();
       await tester.pump();
       expect(storage.calls, isEmpty);
+      expect(application.saves, isEmpty);
       await forget(tester, 'target');
+      expect(application.saves, [(key('target'), false)]);
       _expectStatus('target', _noReference);
       expect(reference('target'), isNull);
       expect(file('target').existsSync(), isTrue);
@@ -1085,6 +1185,10 @@ void main() {
       await _tap(tester, _key('record-delete-confirm-jobs-target'));
       await _loaded(tester);
       expect(file('target').existsSync(), isFalse);
+      expect(application.saves, [
+        (key('target'), false),
+        (key('target'), true),
+      ]);
       expect(_key('record-jobs-target'), findsNothing);
       _expectSecret(storage, reference('sibling')!, _secondSecret);
     },
@@ -1224,7 +1328,8 @@ void main() {
       'closing Settings does not cancel an admitted ${fails ? 'uncertain' : 'successful'} write',
       (tester) async {
         await seed('closed');
-        await mount(tester);
+        final application = RecordApplicationProbe(_single);
+        await mount(tester, application: application);
         await _expand(tester, 'closed');
         await check(tester, 'closed');
         await _tap(tester, _action('set', 'closed'));
@@ -1244,6 +1349,8 @@ void main() {
           await gate.entered.future;
           await tester.pump();
           await _close(tester);
+          expect(application.saves, isEmpty);
+          expect(application.observed, isFalse);
           commit();
           await tester.pump();
           expect(storage.values, isEmpty);
@@ -1252,6 +1359,7 @@ void main() {
         }
         // A real queued Settings operation waits for the entire admitted workflow.
         await settings.load();
+        expect(application.saves, [if (!fails) (key('closed'), false)]);
         expect(storage.calls.where((call) => call.$1 == 'write'), hasLength(1));
         _expectSecret(storage, reference('closed')!, _firstSecret);
         storage.calls.clear();

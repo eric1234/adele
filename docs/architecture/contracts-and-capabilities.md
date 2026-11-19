@@ -389,20 +389,16 @@ records. A preflight refusal preserves registrations, not proof that a separatel
 captured credential is still current. Uncertain publication blocks further OpenAI
 refresh until backend restart, without stopping unrelated data-plane routes.
 
-OpenAI's refresh entry is a **trusted, nonadvertised default-context service**,
-`dev.adele.openai.configuration`, not a provider-selected Capability or a frontend
-grant. A trusted caller retains the exact `InstalledBackendActivation`, invokes its
-`validate()`, and uses that activation's `connection.channelFor(...)` with the default
-context and service. It must not discover another backend by semantic Provider ID,
-retarget a retired activation, or treat an unvalidated raw channel as a live binding.
-The plugin-local unary `refreshConfiguredProvider` payload contains only `recordId`;
-it supplies no endpoint, credential, capture handle, host invocation context or
-additional authority. The [backend README](../../plugins/openai/packages/backend/README.md#explicit-configured-refresh)
-owns its exact control/result shape and admission limit. This reuses existing exact
-activation validation and transport, not a new refresh framework or production
-application dependency on plugin packages. Peer Capability consumers and prepared
-frontends acquire no access to this private control by discovering model services.
-Automatic Settings propagation and outcome UI remain separate I-4c3 work.
+[Settings record apply](profiles-and-configuration.md#applying-confirmed-record-changes)
+uses a **trusted, nonadvertised default-context service**, not a provider-selected
+Capability or a frontend grant. The host retains the exact `InstalledBackendActivation`
+and connection, calls `validate()` before the unary request and after the await, and
+does not re-resolve a replacement. The connection reserves the control's service
+ID against ordinary channels. Its private apply path selects the declared handler
+in the default context and sends only `recordId`, never an endpoint, credential,
+capture handle or host invocation context. The
+[OpenAI backend](../../plugins/openai/packages/backend/README.md#explicit-configured-refresh)
+owns its control implementation; record apply needs no OpenAI import or IDs in the app.
 
 ### Configuration context
 

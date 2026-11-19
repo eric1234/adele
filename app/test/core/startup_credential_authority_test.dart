@@ -511,6 +511,27 @@ void main() {
   );
 
   test(
+    'preflight rejection preserves the existing credential capture',
+    () async {
+      final record = await create('first');
+      final snapshot = await capture();
+      await expectLater(
+        service.attach(record, _slot, CredentialSecret('not-stored')),
+        throwsA(
+          isA<RecordCredentialFailure>().having(
+            (e) => e.preservesApplyState,
+            'prewrite rejection',
+            isTrue,
+          ),
+        ),
+      );
+      expect(await read(snapshot), _secret);
+      expect(storage.writes, 1);
+    },
+    skip: !Platform.isLinux,
+  );
+
+  test(
     'symlink-root owners share same-reference mutation epochs per record',
     () async {
       await create('first');

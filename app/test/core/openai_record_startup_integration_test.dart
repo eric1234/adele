@@ -4,18 +4,27 @@ library;
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:ui' show AppExitResponse;
 
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_contract/adele_contract.dart';
+import 'package:adele_desktop/application.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/credential_service.dart';
 import 'package:adele_desktop/core/global_settings_service.dart';
+import 'package:adele_desktop/core/prepared_records.dart'
+    show StartupCredentialReader;
 import 'package:adele_desktop/core/prepared_settings.dart';
+import 'package:adele_desktop/core/record_apply_coordinator.dart';
+import 'package:adele_desktop/terminal/native_adele_runtime.dart';
+import 'package:adele_desktop/ui/settings/global_settings_dialog.dart';
+import 'package:adele_desktop/ui/settings/record_credential_controls.dart';
 import 'package:adele_model_provider/adele_model_catalog.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:adele_platform_storage/adele_platform_storage.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_settings/adele_settings.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
@@ -97,6 +106,402 @@ void main() {
     );
     return fixture;
   }
+
+  void applicationScenario(
+    String name,
+    Future<void> Function(_ProviderSettings, _ProviderFixture, List<_ReadGate>)
+    exercise, {
+    int heldCaptures = 0,
+    bool holdBeforeScan = false,
+  }) {
+    testWidgets(
+      name,
+      (tester) => tester.runAsync(() async {
+        final fixture = await prepareProviders();
+        final app = NativeAdeleRuntime(
+          localStateRoot: () => fixture.roots.localStateRoot,
+        );
+        fixture._bootstrap = app.plugins;
+        final gates = List.generate(heldCaptures, (_) => _ReadGate());
+        late StartupCredentialReader reader;
+        late Future<void> starting;
+        try {
+          await tester.binding.setSurfaceSize(const Size(1100, 1000));
+          await tester.pumpWidget(
+            AdeleApplication(
+              createRuntime: () => app,
+              createCredentials: () => fixture.credentials,
+              createCredentialAssociations:
+                  ({required settings, required credentials}) {
+                    final owner = RecordCredentialService(
+                      settings: settings,
+                      credentials: credentials,
+                    );
+                    if (gates.isNotEmpty) {
+                      reader = _HeldCaptures(
+                        owner,
+                        gates,
+                        beforeScan: holdBeforeScan,
+                      );
+                    }
+                    return owner;
+                  },
+              configurationRoots: fixture.roots,
+              readChatGptConfiguration: () => null,
+              bootstrapPlugins: (plugins) {
+                if (gates.isNotEmpty) {
+                  plugins.configureCredentialAssociations(() => reader);
+                }
+                return starting = plugins.start(
+                  installationRoot: fixture.installationRoot,
+                  dartaotruntimeExecutable: fixture.runtime,
+                  hostArtifactPath: fixture.host,
+                );
+              },
+            ),
+          );
+          await starting;
+          expect(
+            fixture.backend.state,
+            InstalledBackendState.active,
+            reason: '${fixture.backend.failure}',
+          );
+          final ui = _ProviderSettings(tester);
+          await ui.open();
+          await exercise(ui, fixture, gates);
+          expect(tester.takeException(), isNull);
+        } finally {
+          for (final gate in gates) {
+            gate.release();
+          }
+          if (fixture.bootstrap.state != ApplicationPluginState.closed) {
+            await tester.binding.handleRequestAppExit();
+          }
+          await tester.pumpWidget(const SizedBox.shrink());
+          await app.close();
+          await tester.binding.setSurfaceSize(null);
+        }
+      }),
+    );
+  }
+
+  applicationScenario(
+    'Global Settings automatically publishes, updates and deletes '
+    'an OpenAI account and its credential revisions on one AOT connection',
+    (ui, fixture, _) async {
+      final connection = fixture.connection;
+      final host = fixture.bootstrap.host!;
+      final personal = fixture.capture('personal');
+      final work = fixture.capture('work');
+      final file = fixture.recordFile('third');
+      const id = 'third-openai';
+      expect(file.existsSync(), isFalse);
+      expect(
+        () => fixture.client('third'),
+        throwsA(isA<ProviderUnavailable>()),
+      );
+
+      Future<_ConfiguredBinding> current() async {
+        await ui.status(id, 'Applied');
+        expect(fixture.connection, same(connection));
+        expect(fixture.bootstrap.host, same(host));
+        expect(fixture.backend.validate, returnsNormally);
+        personal.expectSame(fixture.capture('personal'));
+        work.expectSame(fixture.capture('work'));
+        _expectCatalogAssociations(
+          fixture.bootstrap,
+          fixture.registry,
+          ids: ['third'],
+        );
+        return fixture.capture('third');
+      }
+
+      await ui.create(id, 'Third account', '${fixture.origin}/third/responses');
+      final created = await current();
+      expect(created.catalog.provider.displayName, 'Third account');
+      expect(
+        file.readAsStringSync(),
+        contains('${fixture.origin}/third/responses'),
+      );
+      await fixture.expectFailure('not_configured', id: 'third');
+      expect(fixture.requests, isEmpty);
+      expect(fixture.storage.calls, isEmpty);
+
+      await ui.expand(id);
+      await ui.credential('check', id);
+      await ui.store('set', id, 'test-third-key');
+      final attached = await current();
+      created.expectReplacement(attached);
+      final reference = fixture.storage.values.keys.singleWhere(
+        (key) => file.readAsStringSync().contains(key.value),
+      );
+      await fixture.expectRoutes(
+        attached,
+        'third',
+        'test-third-key',
+        reference,
+      );
+
+      await ui.update(
+        id,
+        'Renamed third',
+        '${fixture.origin}/updated/responses',
+      );
+      final edited = await current();
+      attached.expectReplacement(edited);
+      await attached.expectRetired(fixture);
+      expect(edited.inference.provider.displayName, 'Renamed third');
+      expect(edited.catalog.provider.displayName, 'Renamed third');
+      await fixture.expectRoutes(
+        edited,
+        'updated',
+        'test-third-key',
+        reference,
+      );
+
+      // Ordinary record values and the exact protected reference are unchanged.
+      final bytes = file.readAsBytesSync();
+      await ui.credential('check', id);
+      await ui.store('replace', id, 'test-replacement-key');
+      final replaced = await current();
+      edited.expectReplacement(replaced);
+      expect(file.readAsBytesSync(), bytes);
+      await edited.expectRetired(fixture);
+      await fixture.expectRoutes(
+        replaced,
+        'updated',
+        'test-replacement-key',
+        reference,
+      );
+
+      await ui.credential('forget', id);
+      await ui.credential('forget-confirm', id);
+      final forgotten = await current();
+      replaced.expectReplacement(forgotten);
+      await replaced.expectRetired(fixture);
+      final reads = fixture.storage.readReferences.length;
+      final requests = fixture.requests.length;
+      expect(fixture.storage.values.containsKey(reference), isFalse);
+      await fixture.expectFailure('not_configured', id: 'third');
+      await expectLater(
+        forgotten.catalogClient.listModels(),
+        throwsA(
+          isA<ModelCatalogFailure>().having(
+            (e) => e.code,
+            'code',
+            'unavailable',
+          ),
+        ),
+      );
+      expect(fixture.storage.readReferences, hasLength(reads));
+      expect(fixture.requests, hasLength(requests));
+
+      await ui.press('record-delete-providers-$id');
+      await ui.press('record-delete-confirm-providers-$id');
+      await ui.until(
+        () => ui.key('record-providers-$id').evaluate().isEmpty,
+        'delete acknowledgement',
+      );
+      await ui.status(id, 'Applied');
+      expect(find.text('Deleted record: $id'), findsOneWidget);
+      expect(file.existsSync(), isFalse);
+      await forgotten.expectRetired(fixture);
+      for (final (capability, providerId) in [
+        (modelProviderCapability, '$_recordType.$id'),
+        (modelCatalogCapability, '$_catalogProviderId.$id'),
+      ]) {
+        expect(
+          () => fixture.registry.resolve(
+            capability,
+            providerId: ProviderId(providerId),
+          ),
+          throwsA(isA<ProviderUnavailable>()),
+        );
+      }
+      personal.expectSame(fixture.capture('personal'));
+      work.expectSame(fixture.capture('work'));
+      await fixture.expectRoutes(
+        personal,
+        'personal',
+        'test-personal-key',
+        fixture.reference('personal'),
+      );
+      expect(fixture.connection, same(connection));
+      await ui.section('Preferences');
+      await ui.section('Providers');
+      expect(find.text('Deleted record: $id'), findsOneWidget);
+      await ui.status(id, 'Applied');
+    },
+  );
+
+  applicationScenario(
+    'Global Settings retries a failed AOT capture without re-saving the record or its draft',
+    (ui, fixture, gates) async {
+      const id = 'work-openai';
+      final connection = fixture.connection;
+      final old = fixture.capture('work');
+      final personal = fixture.capture('personal');
+      final file = fixture.recordFile('work');
+      final endpoint = '${fixture.origin}/retry/responses';
+      await ui.expand(id);
+      await ui.update(id, 'Saved work', endpoint);
+      final gate = gates.single;
+      await gate.entered.future.timeout(const Duration(seconds: 10));
+      final saved = file.readAsBytesSync();
+      expect(utf8.decode(saved), contains(endpoint));
+      // The write was acknowledged. Only now make the next real enumeration
+      // ambiguous; neither the record nor its protected association changes.
+      final alias = File('${fixture.roots.configurationRoot}/providers.')
+        ..createSync(exclusive: true);
+      try {
+        gate.release();
+        await ui.status(id, 'Not applied');
+      } finally {
+        alias.deleteSync();
+      }
+      expect(find.text('Saved configuration'), findsOneWidget);
+      old.expectSame(fixture.capture('work'));
+      personal.expectSame(fixture.capture('personal'));
+      expect(file.readAsBytesSync(), saved);
+      await ui.press('record-edit-providers-$id');
+      final field = 'record-input-providers-$id-display-name';
+      final editor = ui.tester.widget<TextField>(ui.key(field)).controller!;
+      expect(editor.text, 'Saved work');
+      await ui._enter(field, 'Unsaved work');
+      final slot = find.descendant(
+        of: ui.key('record-providers-$id'),
+        matching: find.byType(RecordCredentialControls),
+      );
+      final savedHandle = ui.tester
+          .widget<RecordCredentialControls>(slot)
+          .record;
+      await ui.press('record-apply-retry-providers-$_recordType-$id');
+      await ui.status(id, 'Applied');
+      expect(file.readAsBytesSync(), saved);
+      expect(
+        ui.tester.widget<TextField>(ui.key(field)).controller,
+        same(editor),
+      );
+      expect(editor.text, 'Unsaved work');
+      expect(fixture.storage.calls, isEmpty);
+      expect(fixture.requests, isEmpty);
+      expect(fixture.connection, same(connection));
+      final fresh = fixture.capture('work');
+      old.expectReplacement(fresh);
+      await old.expectRetired(fixture);
+      expect(fresh.inference.provider.displayName, 'Saved work');
+      expect(fresh.catalog.provider.displayName, 'Saved work');
+      _expectCatalogAssociations(fixture.bootstrap, fixture.registry);
+      personal.expectSame(fixture.capture('personal'));
+      // Even a repeated no-op update would retire the UI's worker revision.
+      // Checking this slot uses that same acknowledged revision, without Reload.
+      expect(
+        ui.tester.widget<RecordCredentialControls>(slot).record,
+        same(savedHandle),
+      );
+      await ui.credential('check', id);
+      expect(find.text('Credential stored locally'), findsOneWidget);
+      await fixture.expectRoutes(
+        fresh,
+        'retry',
+        'test-work-key',
+        fixture.reference('work'),
+      );
+    },
+    heldCaptures: 1,
+    holdBeforeScan: true,
+  );
+
+  applicationScenario(
+    'Global Settings orders overlapping saves and applies the '
+    'latest endpoint even after the Settings route is gone',
+    (ui, fixture, gates) async {
+      const id = 'work-openai';
+      final original = fixture.capture('work');
+      final personal = fixture.capture('personal');
+      await ui.expand(id);
+      await ui.update(id, 'First edit', '${fixture.origin}/first/responses');
+      await gates[0].entered.future.timeout(const Duration(seconds: 10));
+      await ui.status(id, 'Applying...');
+      await ui.update(id, 'Latest edit', '${fixture.origin}/latest/responses');
+      expect(
+        fixture.recordFile('work').readAsStringSync(),
+        contains('/latest/responses'),
+      );
+      original.expectSame(fixture.capture('work'));
+      gates[0].release();
+      // The backend serialized the calls: the first response has now returned,
+      // but it must not mark the second acknowledged edit Applied.
+      await gates[1].entered.future.timeout(const Duration(seconds: 10));
+      await ui.status(id, 'Applying...');
+      final first = fixture.capture('work');
+      original.expectReplacement(first);
+      expect(first.inference.provider.displayName, 'First edit');
+      await ui.dismiss();
+      final published = fixture.registry.changes.firstWhere(
+        (_) => fixture.registry
+            .providersFor(modelProviderCapability)
+            .any((p) => p.displayName == 'Latest edit'),
+      );
+      gates[1].release();
+      await published.timeout(const Duration(seconds: 10));
+      expect(find.byType(GlobalSettingsDialog), findsNothing);
+      final latest = fixture.capture('work');
+      first.expectReplacement(latest);
+      await first.expectRetired(fixture);
+      personal.expectSame(fixture.capture('personal'));
+      await fixture.expectRoutes(
+        latest,
+        'latest',
+        'test-work-key',
+        fixture.reference('work'),
+      );
+      await ui.open();
+      await ui.status(id, 'Applied');
+    },
+    heldCaptures: 2,
+  );
+
+  applicationScenario(
+    'accepted application exit fences a Global Settings apply with a real '
+    'worker capture still pending on its AOT connection',
+    (ui, fixture, gates) async {
+      const id = 'work-openai';
+      final application = ui.tester
+          .widget<GlobalSettingsDialog>(find.byType(GlobalSettingsDialog))
+          .recordApplication!()!;
+      final key = (
+        collection: RecordCollectionId('providers'),
+        type: RecordTypeId(_recordType),
+        id: ConfigurationRecordId(id),
+      );
+      await ui.expand(id);
+      await ui.update(
+        id,
+        'Saved before exit',
+        '${fixture.origin}/exit/responses',
+      );
+      final gate = gates.single;
+      await gate.entered.future.timeout(const Duration(seconds: 10));
+      await ui.status(id, 'Applying...');
+      final exiting = ui.tester.binding.handleRequestAppExit();
+      await ui.until(
+        () => application.outcome(key)?.status == RecordApplyStatus.unavailable,
+        'exit fencing pending application',
+      );
+      gate.release();
+      expect(await exiting, AppExitResponse.exit);
+      expect(fixture.bootstrap.state, ApplicationPluginState.closed);
+      expect(gate.returned.isCompleted, isTrue);
+      expect(application.outcome(key)?.status, RecordApplyStatus.unavailable);
+      expect(
+        fixture.recordFile('work').readAsStringSync(),
+        contains('/exit/responses'),
+      );
+      expect(fixture.requests, isEmpty);
+    },
+    heldCaptures: 1,
+  );
 
   for (final chatGpt in [false, true]) {
     test('real configured Work and Personal use only their own HTTP authority '
@@ -692,7 +1097,7 @@ void main() {
       fixture.storage.calls.clear();
       fixture.storage.readReferences.clear();
       expect(
-        await fixture.refresh({'recordId': 'third-openai'}),
+        await fixture.refresh('third-openai'),
         _refreshResult('applied', 'added', cleanupPending: false),
       );
       expect(
@@ -986,7 +1391,7 @@ void main() {
         'invalid = [ # test-work-key ${fixture.origin}',
       );
       expect(
-        await fixture.refresh({'recordId': 'missing-openai'}),
+        await fixture.refresh('missing-openai'),
         _refreshResult('failed', 'incomplete_observation'),
       );
       old.expectSame(fixture.capture('work'));
@@ -1182,6 +1587,34 @@ void main() {
     await fixture.start();
     final old = fixture.capture('work');
     final personal = fixture.capture('personal');
+    // Prepared connections reserve the control service. Keep testing OpenAI's
+    // own wire-level validation using the same binary with no prepared grants.
+    expect(
+      () => fixture.connection.channelFor(
+        fixture.connection.defaultConfigurationContext,
+        _configurationService,
+      ),
+      throwsStateError,
+    );
+    final raw = await fixture.bootstrap.host!.startPlugin(
+      pluginId: 'test.openai.raw-control',
+      artifactUri: openaiArtifact.uri,
+      startupArgumentsOnly: true,
+    );
+    addTearDown(raw.close);
+    final rawControl = raw.channelFor(
+      raw.defaultConfigurationContext,
+      _configurationService,
+    );
+    Future<Object?> invalidRequest(Map<String, Object?> payload) async {
+      final result = await rawControl.request(
+        'refreshConfiguredProvider',
+        payload,
+      );
+      _expectProviderRedacted(result);
+      return result;
+    }
+
     for (final payload in <Map<String, Object?>>[
       {},
       {
@@ -1191,7 +1624,7 @@ void main() {
       {'recordId': 'work-openai', 'secret': 'test-work-key'},
     ]) {
       expect(
-        await fixture.refresh(payload),
+        await invalidRequest(payload),
         _refreshResult('failed', 'invalid_request'),
       );
     }
@@ -1205,7 +1638,7 @@ void main() {
       'a' * 257,
     ]) {
       expect(
-        await fixture.refresh({'recordId': id}),
+        await invalidRequest({'recordId': id}),
         _refreshResult('failed', 'invalid_record_id'),
       );
     }
@@ -1881,6 +2314,184 @@ final class _HttpGate {
   }
 }
 
+/// Only delays admission or delivery of a genuine worker capture. Nothing holds
+/// the Settings writer, fabricates a reply or substitutes for the AOT control.
+final class _HeldCaptures implements StartupCredentialReader {
+  _HeldCaptures(this.owner, List<_ReadGate> gates, {required this.beforeScan})
+    : pending = [...gates];
+  final RecordCredentialService owner;
+  final List<_ReadGate> pending;
+  final bool beforeScan;
+
+  @override
+  Future<StartupRecordsView> captureCurrentConfiguration(
+    PreparedPluginCatalog catalog,
+    PreparedPluginInstallation installation,
+  ) async {
+    Future<StartupRecordsView> read() =>
+        owner.captureCurrentConfiguration(catalog, installation);
+    if (pending.isEmpty) return read();
+    final gate = pending.removeAt(0);
+    final captured = beforeScan ? null : await read();
+    gate.entered.complete();
+    await gate.resumed.future;
+    gate.returned.complete();
+    return captured ?? await read();
+  }
+
+  @override
+  Future<void> releaseStartupRecords(StartupRecordsView snapshot) =>
+      owner.releaseStartupRecords(snapshot);
+
+  @override
+  Future<String> readStartupCredential(
+    StartupRecordsView snapshot, {
+    required String collection,
+    required String recordType,
+    required String recordId,
+    required String slot,
+    required void Function() validateGeneration,
+  }) => owner.readStartupCredential(
+    snapshot,
+    collection: collection,
+    recordType: recordType,
+    recordId: recordId,
+    slot: slot,
+    validateGeneration: validateGeneration,
+  );
+}
+
+final class _ProviderSettings {
+  _ProviderSettings(this.tester);
+  final WidgetTester tester;
+  Finder key(String value) => find.byKey(ValueKey(value));
+
+  Future<void> until(bool Function() ready, String reason) async {
+    final clock = Stopwatch()..start();
+    await tester.pump();
+    while (!ready()) {
+      if (clock.elapsed >= const Duration(seconds: 10)) {
+        fail('Timed out waiting for $reason.');
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      await tester.pump(const Duration(milliseconds: 20));
+    }
+  }
+
+  bool _enabled(String value) =>
+      key(value).evaluate().isNotEmpty &&
+      tester.widget<ButtonStyleButton>(key(value)).onPressed != null;
+
+  Future<void> status(String id, String label) => until(
+    () => find
+        .descendant(
+          of: key('record-apply-providers-$_recordType-$id'),
+          matching: find.text('Runtime application: $label'),
+        )
+        .evaluate()
+        .isNotEmpty,
+    '$id: $label',
+  );
+
+  Future<void> _tap(Finder finder) async {
+    await tester.ensureVisible(finder);
+    await tester.pump();
+    await tester.tap(finder);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+  }
+
+  Future<void> press(String action) => _tap(key(action));
+
+  Future<void> _enter(String field, String value) async {
+    await tester.ensureVisible(key(field));
+    await tester.enterText(key(field), value);
+    await tester.pump();
+  }
+
+  Future<void> section(String label) async {
+    await press('settings-section');
+    await _tap(find.text(label).last);
+    if (label == 'Providers') {
+      await until(
+        () => _enabled('records-add-providers'),
+        'Providers collection',
+      );
+    }
+  }
+
+  Future<void> open() async {
+    await press('settings-button');
+    await until(() => _enabled('settings-reload'), 'Settings load');
+    await section('Providers');
+  }
+
+  Future<void> dismiss() async {
+    await _tap(find.byTooltip('Close Settings'));
+    await until(
+      () => find.byType(GlobalSettingsDialog).evaluate().isEmpty,
+      'Settings dismissal',
+    );
+  }
+
+  Future<void> expand(String id) => _tap(
+    find
+        .descendant(
+          of: key('record-providers-$id'),
+          matching: find.byType(ListTile),
+        )
+        .first,
+  );
+
+  Future<void> create(String id, String name, String endpoint) async {
+    await press('records-add-providers');
+    await _enter('record-id-providers', id);
+    for (final (field, value) in [
+      ('display-name', name),
+      ('endpoint', endpoint),
+    ]) {
+      await press('record-presence-providers-$field');
+      await _enter('record-input-providers-$field', value);
+    }
+    await press('record-create-providers');
+    await until(
+      () => key('record-providers-$id').evaluate().isNotEmpty,
+      'create acknowledgement',
+    );
+  }
+
+  Future<void> update(String id, String name, String endpoint) async {
+    await press('record-edit-providers-$id');
+    await _enter('record-input-providers-$id-display-name', name);
+    await _enter('record-input-providers-$id-endpoint', endpoint);
+    await press('record-save-providers-$id');
+    await until(
+      () => _enabled('record-edit-providers-$id'),
+      'save acknowledgement',
+    );
+  }
+
+  Future<void> credential(String action, String id) async {
+    await press('credential-$action-providers-$id-api-key');
+    if (action != 'forget') {
+      await until(
+        () => _enabled('records-reload-providers'),
+        'credential $action',
+      );
+    }
+  }
+
+  Future<void> store(String action, String id, String secret) async {
+    await credential(action, id);
+    await _enter('credential-input-providers-$id-api-key', secret);
+    await credential('submit', id);
+    await until(
+      () => _enabled('credential-replace-providers-$id-api-key'),
+      'credential acknowledgement',
+    );
+  }
+}
+
 final class _ProviderFixture {
   _ProviderFixture(this.directory, this.runtime, this.host);
 
@@ -1899,7 +2510,8 @@ final class _ProviderFixture {
   int catalogStatus = HttpStatus.ok;
   Object? catalogBody;
   Completer<Socket>? pendingCatalogSocket;
-  final registry = CapabilityRegistry();
+  final _standaloneRegistry = CapabilityRegistry();
+  CapabilityRegistry get registry => bootstrap.registry;
   final readers = <GlobalSettingsService>[];
   final backendAssociations = <RecordCredentialService>[];
   late final credentials = CredentialService(storage);
@@ -2155,7 +2767,7 @@ final class _ProviderFixture {
 
   Future<void> start() async {
     _bootstrap = ApplicationPluginBootstrap(
-      registry,
+      _standaloneRegistry,
       ExtensionRegistry(),
       loadSettings: (catalog) async =>
           PreparedSettingsSnapshot.resolve(catalog),
@@ -2227,9 +2839,7 @@ final class _ProviderFixture {
   Future<Map<String, Object?>> listModels(String id) =>
       catalogCall('listModels', {'slot': id});
 
-  Future<Map<String, Object?>> refresh([
-    Map<String, Object?> payload = const {'recordId': 'work-openai'},
-  ]) async {
+  Future<Map<String, Object?>> refresh([String id = 'work-openai']) async {
     final owner = backend;
     final captured = connection;
     final generation = captured.defaultConfigurationContext;
@@ -2240,9 +2850,10 @@ final class _ProviderFixture {
     final requestCount = requests.length;
     owner.validate();
     final result = Map<String, Object?>.from(
-      await captured
-              .channelFor(generation, _configurationService)
-              .request('refreshConfiguredProvider', payload)
+      await captured.requestRecordApply(
+            owner.installation.backendRecordApplyHandlers.single,
+            ConfigurationRecordId(id),
+          )
           as Map,
     );
     expect(result.keys, unorderedEquals(['status', 'code', 'cleanupPending']));
@@ -2316,6 +2927,43 @@ final class _ProviderFixture {
         .resolve(modelProviderCapability, providerId: ProviderId(_chatGpt))
         .streamChannel,
   ).invoke(_providerRequest('same-model'));
+
+  Future<void> expectRoutes(
+    _ConfiguredBinding binding,
+    String path,
+    String key,
+    CredentialReference reference,
+  ) async {
+    final before = requests.length;
+    final reads = storage.readReferences.length;
+    final models = catalogModels.putIfAbsent(
+      '/$path/models',
+      () => ['$path-model'],
+    );
+    _expectCompleted(
+      await binding.inferenceClient
+          .invoke(_providerRequest('same-model'))
+          .toList(),
+      '/$path/responses',
+    );
+    expect(
+      (await binding.catalogClient.listModels()).models.map(
+        (model) => model.modelId,
+      ),
+      models,
+    );
+    expect(requests.skip(before).map((request) => request['path']), [
+      '/$path/responses',
+      '/$path/models',
+    ]);
+    expect(
+      requests
+          .skip(before)
+          .every((request) => request['authorization'] == 'Bearer $key'),
+      isTrue,
+    );
+    expect(storage.readReferences.skip(reads), [reference, reference]);
+  }
 
   Future<void> expectFailure(String code, {String id = 'work'}) async {
     final events = await invoke(id).toList();

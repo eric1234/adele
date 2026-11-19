@@ -264,12 +264,7 @@ final class ConfigurationRecordStore {
   /// Removes only this record in this layer, conditional on its observed bytes.
   Future<void> delete(ConfigurationRecordSnapshot expected) async {
     _checkCatalog(expected);
-    if (expected.hasCredentialEntries) {
-      throw ConfigurationRecordCredentialsPresent(
-        expected.collection,
-        expected.id,
-      );
-    }
+    expected.requireNoCredentialEntries();
     await _checkIdentity(expected.collection, expected.id);
     _file(expected.collection, expected.id).delete(expected._baseline);
   }
@@ -542,6 +537,13 @@ final class ConfigurationRecordSnapshot {
   final bool hasCredentialEntries;
   RecordCollectionId get collection => type.collection;
   TomlDocument get document => _baseline.document;
+
+  /// Checks the deletion guard on this snapshot without touching storage.
+  void requireNoCredentialEntries() {
+    if (hasCredentialEntries) {
+      throw ConfigurationRecordCredentialsPresent(collection, id);
+    }
+  }
 }
 
 final class ConfigurationRecordEnumeration {

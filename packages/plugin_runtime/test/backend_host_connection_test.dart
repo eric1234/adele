@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_contract/adele_contract.dart';
+import 'package:adele_settings/adele_settings.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:test/test.dart';
 
@@ -379,6 +380,73 @@ void main() {
           expect(response['payload'], payload);
         }
         expect(await connection.request('count', {}), 3);
+      },
+    );
+
+    test(
+      'record apply captures exact handlers and grants no frontend channel',
+      () async {
+        PreparedRecordApplyHandler declared() => PreparedRecordApplyHandler(
+          recordType: RecordTypeId('dev.adele.owner.account'),
+          serviceId: 'account.configuration',
+          method: 'applyAccount',
+        );
+        final handler = declared();
+        final input = [handler];
+        final owner = await host.startPlugin(
+          pluginId: 'dev.adele.owner',
+          artifactUri: Uri.file('/unused'),
+          recordApplyHandlers: input,
+          createInfrastructureServices: (_) {
+            input.clear();
+            return {};
+          },
+        );
+        addTearDown(owner.close);
+        final id = ConfigurationRecordId('account-a');
+        for (final context in [
+          owner.defaultConfigurationContext,
+          owner.configurationContext('other'),
+        ]) {
+          // Neither arbitrary-method channels (including streams and contextual
+          // calls) nor presentation-local grants may use a reserved service.
+          expect(
+            () => owner.channelFor(context, handler.serviceId),
+            throwsStateError,
+          );
+          expect(
+            () => OwningBackendChannel(
+              connection: owner,
+              configurationContext: context,
+              backendServices: [handler.serviceId],
+              validateOwner: () {},
+              validatePresentation: () {},
+            ),
+            throwsStateError,
+          );
+        }
+        await expectLater(
+          owner.requestRecordApply(declared(), id),
+          throwsStateError,
+        );
+        await expectLater(
+          connection.requestRecordApply(handler, id),
+          throwsStateError,
+        );
+        expect(await owner.request('count', {}), 0);
+        final response = await owner.requestRecordApply(handler, id) as Map;
+        expect(response['serviceId'], handler.serviceId);
+        expect(response['method'], handler.method);
+        expect(response['configurationContext'], 'default');
+        expect(response['pluginId'], 'dev.adele.owner');
+        expect(response['payload'], {'recordId': 'account-a'});
+        expect(response.containsKey('hostInvocationContext'), isFalse);
+        owner.revokeInfrastructureContext();
+        await expectLater(
+          owner.requestRecordApply(handler, id),
+          throwsA(isA<PluginConnectionClosed>()),
+        );
+        expect(await owner.request('count', {}), 1);
       },
     );
 

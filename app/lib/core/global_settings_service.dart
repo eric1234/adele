@@ -907,6 +907,9 @@ final class _SettingsOwner {
           }
           if (request.operation != _Operation.refreshRecord) {
             await records.validateCurrent(expected);
+            if (request.operation == _Operation.deleteRecord) {
+              expected.requireNoCredentialEntries();
+            }
             await _mutating(expected.collection, expected.id);
           }
           if (request.operation == _Operation.setCredentialReference) {

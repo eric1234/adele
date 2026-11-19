@@ -130,6 +130,7 @@ void main() {
               );
               expect(installation.recordsSchema, records ? isNotNull : isNull);
               expect(installation.backendConsumedRecordTypes, isEmpty);
+              expect(installation.backendRecordApplyHandlers, isEmpty);
               expect(installation.backendConsumedCredentialSlots, isEmpty);
               expect(
                 () => installation.backendConsumedCredentialSlots.clear(),
@@ -169,6 +170,267 @@ void main() {
     expect(catalog.issues, isEmpty);
     expect(catalog.installations.single.recordsSchema, isNotNull);
     expect(catalog.records.definitions, isEmpty);
+  });
+
+  group('record apply handlers', () {
+    const type = 'org.example.plugin.api';
+    const other = 'org.example.plugin.other';
+    const handler = <String, Object?>{
+      'recordType': type,
+      'serviceId': 'org.example.configuration',
+      'method': 'apply',
+    };
+
+    Map<String, Object?> components(
+      Object? handlers, {
+      List<String> consumed = const [type],
+    }) {
+      final components = _recordConsumer(consumed);
+      (components['backend']! as Map<String, Object?>)['appliesRecordTypes'] =
+          handlers;
+      return components;
+    }
+
+    test(
+      'captures exact typed routes, independent of collection and frontend',
+      () async {
+        final controls = components(
+          [
+            {...handler, 'recordType': other, 'method': 'applyOther'},
+            handler,
+          ],
+          consumed: [type, other],
+        );
+        controls['frontend'] = {
+          ...(_components['frontend']! as Map<String, Object?>),
+          'appliesRecordTypes': [handler],
+        };
+        await install(
+          'good',
+          schema: _schema([_type(), _type(id: other)]),
+          components: controls,
+        );
+        final catalog = await PreparedPluginCatalog.discover(root.path);
+        final parsed = catalog.installations.single;
+        expect(
+          catalog.issues.single.component,
+          PreparedPluginComponent.frontend,
+        );
+        expect(parsed.frontend, isNull);
+        expect(parsed.backendArtifactUri, isNotNull);
+        expect(
+          parsed.backendRecordApplyHandlers.map(
+            (h) => (h.recordType, h.serviceId, h.method),
+          ),
+          [
+            (RecordTypeId(other), 'org.example.configuration', 'applyOther'),
+            (RecordTypeId(type), 'org.example.configuration', 'apply'),
+          ],
+        );
+
+        final copy = parsed.backendRecordApplyHandlers.toList();
+        PreparedPluginInstallation construct({
+          Iterable<PreparedRecordApplyHandler>? handlers,
+          List<RecordTypeId>? consumed,
+          bool backend = true,
+        }) => PreparedPluginInstallation(
+          metadata: parsed.metadata,
+          installationDirectory: parsed.installationDirectory,
+          backendArtifactUri: backend ? parsed.backendArtifactUri : null,
+          backendRecordApplyHandlers: handlers ?? copy,
+          backendConsumedRecordTypes:
+              consumed ?? parsed.backendConsumedRecordTypes,
+          recordsSchema: parsed.recordsSchema,
+        );
+        final installed = construct();
+        expect(
+          () => construct(handlers: [copy.first, copy.first]),
+          throwsFormatException,
+        );
+        expect(
+          () => construct(consumed: [RecordTypeId(type)]),
+          throwsFormatException,
+        );
+        expect(() => construct(backend: false), throwsFormatException);
+        copy.clear();
+        expect(
+          installed.backendRecordApplyHandlers,
+          parsed.backendRecordApplyHandlers,
+        );
+        expect(
+          installed.backendRecordApplyHandlers.clear,
+          throwsUnsupportedError,
+        );
+      },
+    );
+
+    for (final invalid in <String, Object?>{
+      'null': null,
+      'non-array': handler,
+      'partial array': [handler, 7],
+      'duplicate': [handler, handler],
+      'conflicting type': [
+        handler,
+        {...handler, 'method': 'alsoApply'},
+      ],
+      'ambiguous route': [
+        handler,
+        {...handler, 'recordType': other},
+      ],
+      'foreign field': [
+        {...handler, 'configurationContext': 'choice'},
+      ],
+      for (final key in handler.keys)
+        'missing $key': [
+          {...handler}..remove(key),
+        ],
+      for (final key in handler.keys)
+        'wrong $key type': [
+          {...handler, key: false},
+        ],
+      for (final (key, value) in [
+        ('recordType', 'Org.example.bad'),
+        ('recordType', 'org.example.plugin.${'x' * 256}'),
+        ('recordType', 'org.example.plugin.unknown'),
+        ('serviceId', 'plugin'),
+        ('serviceId', 'service/name'),
+        (
+          'serviceId',
+          'x' * (PreparedRecordApplyHandler.maxServiceIdLength + 1),
+        ),
+        ('method', 'shutdown'),
+        ('method', 'not.public'),
+        ('method', 'apply\n'),
+        ('method', 'x' * (PreparedRecordApplyHandler.maxMethodLength + 1)),
+      ])
+        '$key: $value': [
+          {...handler, key: value},
+        ],
+      'oversized array': List.filled(
+        PreparedRecordApplyHandler.maxHandlers + 1,
+        handler,
+      ),
+    }.entries) {
+      test(
+        'rejects ${invalid.key} without dropping healthy metadata',
+        () async {
+          await install(
+            'bad',
+            schema: _schema([_type(), _type(id: other)]),
+            components: components(invalid.value, consumed: [type, other]),
+          );
+          final catalog = await PreparedPluginCatalog.discover(root.path);
+          final parsed = catalog.installations.single;
+          expect(
+            catalog.issues.single.component,
+            PreparedPluginComponent.backend,
+          );
+          expect(parsed.backendArtifactUri, isNull);
+          expect(parsed.backendRecordApplyHandlers, isEmpty);
+          expect(parsed.backendConsumedRecordTypes, isEmpty);
+          expect(parsed.frontend, isNotNull);
+          expect(parsed.settingsSchema, isNotNull);
+          expect(catalog.records.definitions, hasLength(2));
+        },
+      );
+    }
+
+    test(
+      'cannot borrow definitions or consumption from a nested owner',
+      () async {
+        const nested = 'org.example.plugin.child';
+        const childType = '$nested.api';
+        final childDeclaration = {...handler, 'recordType': childType};
+        await install(
+          'parent',
+          schema: _schema([_type()]),
+          components: components([childDeclaration]),
+        );
+        await install(
+          'child',
+          id: nested,
+          schema: _schema([_type(id: childType)]),
+          components: components([childDeclaration], consumed: [childType]),
+        );
+        final catalog = await PreparedPluginCatalog.discover(root.path);
+        expect(catalog.records.definitions, hasLength(2));
+        expect(catalog.issues.single.pluginId!.value, 'org.example.plugin');
+        expect(
+          catalog.installations
+              .where((i) => i.backendArtifactUri != null)
+              .single
+              .backendRecordApplyHandlers
+              .single
+              .recordType
+              .value,
+          childType,
+        );
+      },
+    );
+
+    test('ownership without consumption does not authorize apply', () async {
+      await install(
+        'owned',
+        schema: _schema([_type()]),
+        components: components([handler], consumed: []),
+      );
+      final catalog = await PreparedPluginCatalog.discover(root.path);
+      expect(catalog.issues.single.component, PreparedPluginComponent.backend);
+      expect(catalog.installations.single.backendRecordApplyHandlers, isEmpty);
+      expect(
+        catalog.installations.single.recordsSchema!.definitions.single.id,
+        RecordTypeId(type),
+      );
+    });
+
+    test(
+      'explicit empty handlers need neither records nor consumption',
+      () async {
+        await install(
+          'empty',
+          declareRecords: false,
+          components: components([], consumed: []),
+        );
+        final catalog = await PreparedPluginCatalog.discover(root.path);
+        expect(catalog.issues, isEmpty);
+        expect(
+          catalog.installations.single.backendRecordApplyHandlers,
+          isEmpty,
+        );
+        expect(catalog.installations.single.backendArtifactUri, isNotNull);
+      },
+    );
+
+    test('accepts exact count and identity length bounds', () async {
+      const prefix = 'org.example.plugin.';
+      final types = [
+        '$prefix${'x' * (PreparedRecordsSchema.maxIdLength - prefix.length)}',
+        for (var i = 1; i < PreparedRecordApplyHandler.maxHandlers; i++)
+          '${prefix}type-$i',
+      ];
+      await install(
+        'max',
+        schema: _schema([for (final id in types) _type(id: id)]),
+        components: components([
+          for (final (i, id) in types.indexed)
+            {
+              'recordType': id,
+              'serviceId': 'x' * PreparedRecordApplyHandler.maxServiceIdLength,
+              'method': i == 0
+                  ? 'x' * PreparedRecordApplyHandler.maxMethodLength
+                  : 'apply$i',
+            },
+        ], consumed: types),
+      );
+      final catalog = await PreparedPluginCatalog.discover(root.path);
+      expect(catalog.issues, isEmpty);
+      expect(
+        catalog.installations.single.backendRecordApplyHandlers.map(
+          (h) => h.recordType.value,
+        ),
+        types,
+      );
+    });
   });
 
   test(

@@ -9,6 +9,7 @@ import 'package:adele_desktop/core/global_settings_service.dart';
 import 'package:adele_desktop/core/native_credential_storage_adapter.dart';
 import 'package:adele_desktop/core/prepared_settings.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
+import 'package:adele_desktop/core/record_apply_coordinator.dart';
 import 'package:adele_desktop/core/resource_cleanup.dart';
 import 'package:adele_desktop/core/run_id_source.dart';
 import 'package:adele_desktop/core/window_session_context.dart';
@@ -151,6 +152,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
   DialogRoute<ResolvedCommand>? _palette;
   DialogRoute<void>? _settingsDialog;
   GlobalSettingsService? _settings;
+  RecordApplyCoordinator? _recordApplication;
   RecordCredentialService? _credentialAssociations;
   Object? _settingsCatalogFailure;
   Object? _recordsCatalogFailure;
@@ -495,6 +497,9 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
       records: records,
       roots: _configurationRoots!,
     );
+    if (_recordsCatalogFailure == null) {
+      _recordApplication = RecordApplyCoordinator(_runtime.plugins, catalog);
+    }
     _credentialAssociations = _createCredentialAssociations(
       settings: service,
       credentials: _credentials,
@@ -554,6 +559,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
       context: navigator.context,
       builder: (_) => GlobalSettingsDialog(
         service: _settingsService,
+        recordApplication: () => _recordApplication,
         credentialAssociations: () => _credentialAssociations!,
         declarationIssues: () => [
           if (_settingsCatalogFailure case final failure?)
@@ -1030,6 +1036,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     // Publish the irreversible fence before invoking any resource callbacks.
     final completion = Completer<void>();
     _closing = completion.future;
+    _recordApplication?.close();
     _mainContentHost.cancelExitPreflight();
     completion.complete(Future<void>.sync(_drainAndCloseRuntime));
     return completion.future;

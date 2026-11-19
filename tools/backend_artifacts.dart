@@ -49,6 +49,16 @@ const _stockBackendConsumedRecordTypes = {
   ],
 };
 
+const _stockBackendRecordApplyHandlers = {
+  'dev.adele.openai': [
+    {
+      'recordType': 'dev.adele.openai.api-key',
+      'serviceId': 'dev.adele.openai.configuration',
+      'method': 'refreshConfiguredProvider',
+    },
+  ],
+};
+
 const _stockBackendConsumedCredentialSlots = {
   'dev.adele.openai': [
     {
@@ -638,6 +648,7 @@ Future<void> publishStockPluginInstallation({
           'backend': <String, Object?>{
             'artifact': 'backend.aot',
             'consumesRecordTypes': ?_stockBackendConsumedRecordTypes[pluginId],
+            'appliesRecordTypes': ?_stockBackendRecordApplyHandlers[pluginId],
             'consumesCredentialSlots':
                 ?_stockBackendConsumedCredentialSlots[pluginId],
           },

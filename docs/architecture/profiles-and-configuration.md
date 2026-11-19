@@ -21,9 +21,10 @@ changes. OpenAI materializes independently addressable API-key inference/catalog
 and supports explicit targeted refresh within one backend generation, composing fresh
 captures with dynamic publication and route retirement. Untouched startup routes keep
 lazy startup-scope credential reads. Advertisement is not proof of successful
-authentication. Automatic Settings propagation and refresh-outcome UI remain I-4c3
-work; Session provider/model selection, record-based OAuth, and Profiles remain
-unimplemented. The [Agent Configuration plugin](../../plugins/agent_configuration/README.md)
+authentication. [Record apply](#applying-confirmed-record-changes) connects confirmed
+Global Settings mutations to an opted-in backend. Session provider/model selection,
+record-based OAuth, and Profiles remain unimplemented.
+The [Agent Configuration plugin](../../plugins/agent_configuration/README.md)
 projects its ordinary global Agent records through a read-only catalog using fresh
 nonsecret observations. Agent selection and execution are separate from that service.
 
@@ -250,11 +251,42 @@ The OpenAI schema contains required `display-name` and optional nonsecret `endpo
 strings, plus an `api-key` credential slot, never a secret under ordinary values.
 Its backend separately opts into startup record metadata and its `api-key` slot;
 the [configured-provider lifecycle](#configured-openai-providers) consumes these
-distinct grants without exposing credential associations to plugins. Record editing
-does not change the running generation or select an account for Chat. Future Profiles
+distinct grants without exposing credential associations to plugins. Applying an edit
+does not replace the backend generation or select an account for Chat. Future Profiles
 may contain the same kinds of collections, but no Profile identity, ordered record
 composition or merge rules exist yet. Record UI uses the established host-owned
 serialized I/O boundary, not another writer isolate or persistence service.
+
+### Applying confirmed record changes
+
+Saving configuration and applying it to a running backend are separate operations.
+Global Settings schedules runtime apply for the affected record only after a
+confirmed Create, Save, Delete, or credential Attach, Replace, Establish Local or
+Forget. Check, Reconcile, Reload, drafts and scalar Save/Reset do not trigger record
+apply. Neither do failed, conflicted or uncertain writes, external edits or direct
+store calls. This is not a file watcher or a general change notification.
+
+The optional [prepared backend declaration](../../packages/plugin_runtime/README.md#component-declarations)
+maps an owned, consumed record type to a private unary control. The app validates
+the exact installation and its live backend activation before dispatch and again
+before accepting the reply. The payload contains only the stable record ID; the
+backend reads current configuration and owns its interpretation. No declaration
+means persistence only. An unavailable owner is not started or replaced by a
+matching plugin, provider, or another generation.
+
+Settings reports persistence separately from runtime application, including after
+deletion. A runtime failure never rolls back a confirmed write. Retry repeats
+only the runtime request for that record, never the file or credential mutation.
+Reconcile can recover usable local credential state; it does not confirm a runtime
+apply. Applying that recovered state requires a separate runtime request.
+An acknowledged preflight failure is retryable. If the backend reports unknown
+publication, or its apply acknowledgement is lost, malformed, or replaced by a
+transport error, the app cannot establish that publication did not happen. It
+fences further applies to that exact live generation and shows restart instead
+of Retry. The one-minute acknowledgement deadline ends the wait, not backend
+execution; a late success cannot clear the fence. Pending cleanup is
+reported separately: an applied change is not undone while old work drains, and
+successful publication does not imply authentication or a change of Session model.
 
 ### Backend record snapshots
 
@@ -295,7 +327,7 @@ bootstrap rechecks this fence after pending reads so shutdown cannot spawn a lat
 record edits do not update this capture; a subsequent generation may capture
 new values. Running backends can separately request live observations or explicitly
 capture fresh credential authority as described below.
-No live notification, watcher or restart automation exists.
+There is no subscription to this snapshot, file watcher or automatic restart.
 Record identity is neither configured-provider identity nor credential authority.
 The receiving plugin owns any interpretation into configured providers and live
 routing contexts. OpenAI uses that boundary for independent API-key routes; neither
@@ -304,8 +336,7 @@ provider on its behalf.
 
 ### Live record observations
 
-Live application is the intended Settings direction, but observation and runtime
-application are separate boundaries. An already running backend can explicitly pull
+Observation is separate from runtime application. A running backend can explicitly pull
 current nonsecret records through `AdeleConfigurationClient.currentRecords()`, using
 the existing generation-scoped infrastructure grant rather than a provider Capability.
 Its exact installation's nonempty `consumesRecordTypes` authorizes the same types as
@@ -562,11 +593,8 @@ loads current disk contents when opened; Reload deliberately replaces the editin
 snapshot and discards drafts. These snapshots are separate from startup consumer
 values. Opening or dismissing Settings does not navigate a Session or reconstruct
 its workbench. Applying scalar changes requires restarting ADELE, including for later
-Chat Runs and Source editors opened in the same application. Backends can explicitly
-observe fresh records, and a trusted caller can request OpenAI configured refresh as
-described below. Settings does not yet propagate those changes or display refresh
-outcomes automatically (I-4c3); no live UI notification or automatic runtime
-reconfiguration is implemented.
+Chat Runs and Source editors opened in the same application. Named records instead
+follow the [confirmed-write apply boundary](#applying-confirmed-record-changes).
 
 Malformed TOML and I/O failures prevent editing, rather than becoming an empty
 document. Invalid known overrides have no displayed effective value and can be
@@ -680,8 +708,9 @@ or retire untargeted siblings.
 | Invalid selected configuration or failed capture | Fail before replacing the old registrations; never substitute defaults or another account. |
 
 After host publication confirms replacement or retirement, the old backend route
-synchronously fences new requests and stream opens. Already-admitted inference and
-catalog operations retain their old dispatcher, configuration and credential scope;
+synchronously fences new requests and stream opens. Holding a binding, channel or
+unsubscribed stream is not admission. Only requests and stream opens already
+admitted by that route retain their old dispatcher, configuration and credential scope;
 stream credit/cancellation and transport completion still reach that dispatcher.
 Draining is asynchronous and does not block fresh selection or the refresh queue.
 Capture ownership is reference-counted across preparation and revisions: the last
@@ -694,12 +723,11 @@ remain subject to the host's configuration freshness and generation checks.
 Refresh admission is serialized and bounded, independently of the host's finite
 [capture scopes](contracts-and-capabilities.md#backend-credential-access) and
 [publication groups](contracts-and-capabilities.md#dynamic-capability-publication).
-Retained refreshed revisions, pending captures and released scopes still draining
-reads all consume capture capacity; startup authority is separate. Exhaustion fails
-explicitly, without evicting active revisions or releasing dependencies early to make
-room. A rejected preflight preserves the old registration, **not proof that its old
-credential capture remains valid** after persisted configuration changed. Subsequent
-reads can still fail stale.
+The eight capture slots per connection include retained refreshed revisions, pending
+captures and released scopes still draining reads; startup authority is separate.
+Exhaustion fails without evicting active revisions or releasing dependencies early
+to make room. A rejected preflight preserves the old registration, not the validity
+of its credential capture. A later read can still fail stale.
 
 Failure after old-registration retirement reports unavailable rather than reviving
 the old binding. An uncertain publication acknowledgement is not proof of rollback:
@@ -713,10 +741,9 @@ owns exact response fields and codes.
 An already-held binding never retargets to the new revision. Later operations through
 retired bindings fail; only fresh resolution can select the replacement. Existing
 Runs retain their captured provider, model and reasoning effort, not permission to
-substitute a new account or route. Without explicit refresh, existing revisions remain
-unchanged and changed captures can fail stale. Automatic Settings propagation and
-refresh-outcome UI remain **I-4c3** work. Restart ADELE remains the user-facing apply
-workflow without a trusted explicit caller; no watcher or automatic restart is supplied.
+substitute a new account or route. Edits outside the Global Settings write path do
+not trigger refresh. Without a targeted apply or restart, the existing revision
+remains unchanged and credential reads can fail stale.
 
 An HTTP request already started with a delivered credential may continue; Forget
 cannot retract network authorization already in flight or erase immutable backend
@@ -1058,8 +1085,8 @@ Run override layer.
 
 The Chat backend requires the resolved startup value and captures it when
 materializing each Run. Continuations and approval resume retain that capture.
-Changing global Settings neither mutates active Runs nor changes later Runs on the
-same application startup snapshot; restarting ADELE applies saved values. The
+Changing this scalar neither mutates active Runs nor changes the budget for later
+Runs on the same application startup snapshot; restarting ADELE applies it. The
 limit is absent from Chat Session state, public snapshots, and relational storage;
 `configureSession` changes instructions only. Native fixtures supply an explicit
 positive constructor value, and standalone AOT hosts inject a value at backend
@@ -1154,7 +1181,7 @@ Implemented foundations and current limits:
   [application documentation](../../app/README.md#chatgpt-source-checkout-configuration).
 
 Not implemented: Profile manager/persistence, profile-aware activation/routing,
-Session provider/model selection, record-based OAuth, live provider reconfiguration,
+Session provider/model selection, record-based OAuth,
 or production workbench-state persistence.
 
 ## Deferred decisions
@@ -1169,7 +1196,7 @@ or production workbench-state persistence.
 - Hierarchical security/policy configuration beyond global startup participation.
 - Account-management and general public/plugin credential-storage APIs; additional
   native credential platforms require separate implementation and validation.
-- Live plugin reconfiguration and automated restart mechanisms.
+- General live plugin reconfiguration and automated restart mechanisms.
 - Richer provider suitability/default policy, including non-capability selection.
 - Remembered workbench-state keying and garbage collection.
 

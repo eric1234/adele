@@ -125,8 +125,10 @@ groups: each original pair is adopted only when first targeted for replacement o
 retirement, preserving its original exact registrations without consuming finite
 publication handles for every untouched startup record.
 
-The trusted host control surface is **not advertised** as a Capability or exposed to
-frontends or peer Capability consumers:
+Stock preparation declares this control in `backend.appliesRecordTypes` for
+`dev.adele.openai.api-key`. [Global Settings](../../../../docs/architecture/profiles-and-configuration.md#applying-confirmed-record-changes)
+uses that declaration, not an OpenAI-specific app adapter. The service is **not
+advertised** as a Capability or granted to frontends or peer Capability consumers:
 
 | Field | Exact Value |
 | --- | --- |
@@ -135,9 +137,9 @@ frontends or peer Capability consumers:
 | Unary method | `refreshConfiguredProvider` |
 | Payload | Exactly `{"recordId":"work-openai"}`, with the selected portable record ID |
 
-Callers retain and validate the exact `InstalledBackendActivation` with `validate()`
-and use its `connection.channelFor(...)` transport; they do not discover this service
-by Provider ID or re-resolve a replacement backend. No host invocation context,
+The app validates the exact `InstalledBackendActivation` before dispatch and after
+the await. It uses the connection's declared-handler path, not an ordinary service
+channel, Provider ID lookup or replacement backend. No host invocation context,
 credential, endpoint, scope handle, or additional payload field is accepted. This
 plugin-local control adds no framework or production application plugin import; see
 the [control boundary](../../../../docs/architecture/contracts-and-capabilities.md#dynamic-capability-publication).
@@ -186,9 +188,7 @@ replacement or deletion cannot first capture fresh authority; restart is require
 Transient exhaustion from draining work may clear when that work settles.
 An uncertain publication outcome blocks all further configured
 refresh until backend restart; unrelated inference/catalog, legacy and ChatGPT routes
-remain available. Automatic Settings propagation and refresh-outcome UI remain
-**I-4c3** work; ordinary Settings changes do not call this control today. Restart
-ADELE remains the user-facing way to apply them without an explicit trusted caller.
+remain available. Restart captures persisted records without preserving live scopes.
 
 ## Configured Model Catalogs
 
@@ -312,7 +312,7 @@ codes use the `openai_credential_` prefix:
 | Host Outcome | Provider Code Suffix | Required Recovery / Meaning |
 | --- | --- | --- |
 | `notAuthorized` | `not_authorized` | The exact record/slot access is not authorized. |
-| `notConfigured` | `not_configured` | Attach the record's API key, then explicitly refresh or restart. |
+| `notConfigured` | `not_configured` | Attach the record's API key in Global Settings and check the runtime apply outcome. |
 | `missingLocally` | `missing_locally` | The referenced key is absent on this machine; recover through Settings. |
 | `storageUnavailable` | `storage_unavailable` | OS storage or strict authority validation is unavailable. |
 | `invalidCredentialBinding` | `invalid_binding` | The stored protected binding is invalid; no repair is attempted. |
@@ -652,9 +652,9 @@ semantics.
 ## Validation Scope
 
 `test/openai_configured_refresh_test.dart` owns controller lifecycle checks. The app's
-`test/core/openai_record_startup_integration_test.dart` exercises explicit control
-through exact activation validation and the default-context channel, alongside
-real prepared inference/catalog publication, credential capture and route replacement.
+`test/core/openai_record_startup_integration_test.dart` exercises Global Settings
+and explicit control against the prepared backend, with real inference/catalog
+publication, credential capture and route replacement.
 
 `test/openai_model_catalog_test.dart` covers finite HTTP decoding, exact IDs and
 bounds, safe failures, endpoint derivation, no fallback, fresh reads and cleanup

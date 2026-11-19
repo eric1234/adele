@@ -255,6 +255,10 @@ Plugins receive no configuration paths, TOML store, or access to another plugin'
 settings. Missing required consumed values fail explicitly. Resolution and
 component-local failures belong to [ordinary configuration](profiles-and-configuration.md#ordinary-configuration-resolution).
 
+For named records a backend can declare a private [record apply control](profiles-and-configuration.md#applying-confirmed-record-changes).
+It targets the exact running owner, not a provider resolved by ID, and does not
+activate a backend, grant access to a frontend, or retarget a captured Run.
+
 ### Frontend and collaboration
 
 Prepared plugin frontends execute through the interpreted Flutter path in the

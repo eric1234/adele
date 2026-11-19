@@ -41,6 +41,11 @@ const String _gitEntrypoint =
     'plugins/git/packages/backend/bin/git_backend.dart';
 const String _openaiEntrypoint =
     'plugins/openai/packages/backend/bin/openai_model_provider_backend.dart';
+const _openaiApplyHandler = {
+  'recordType': 'dev.adele.openai.api-key',
+  'serviceId': 'dev.adele.openai.configuration',
+  'method': 'refreshConfiguredProvider',
+};
 const String _agentsMdEntrypoint =
     'plugins/agents_md/packages/backend/bin/agents_md_backend.dart';
 const String _agentConfigurationEntrypoint =
@@ -2176,7 +2181,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
   for (final backend in [false, true]) {
     for (final frontend in [false, true]) {
       test(
-        'stock OpenAI record and credential opt-in backend=$backend frontend=$frontend',
+        'stock OpenAI record, credential and apply opt-in backend=$backend frontend=$frontend',
         () async {
           final installations = Directory('${root.path}/published');
           final directory = Directory.fromUri(
@@ -2211,6 +2216,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
             expect(components['backend'], {
               'artifact': 'backend.aot',
               'consumesRecordTypes': ['dev.adele.openai.api-key'],
+              'appliesRecordTypes': [_openaiApplyHandler],
               'consumesCredentialSlots': [
                 {
                   'recordType': 'dev.adele.openai.api-key',
@@ -2229,6 +2235,16 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           expect(installation.backendConsumedRecordTypesToJson(), [
             if (backend) 'dev.adele.openai.api-key',
           ]);
+          expect(
+            installation.backendRecordApplyHandlers.map(
+              (handler) => {
+                'recordType': handler.recordType.value,
+                'serviceId': handler.serviceId,
+                'method': handler.method,
+              },
+            ),
+            [if (backend) _openaiApplyHandler],
+          );
           expect(installation.backendConsumedCredentialSlotsToJson(), [
             if (backend)
               {
@@ -2751,6 +2767,8 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
                       'dev.adele.plugin.agent-configuration.agent',
                     ],
                   if (plugin.directory == 'openai')
+                    'appliesRecordTypes': [_openaiApplyHandler],
+                  if (plugin.directory == 'openai')
                     'consumesCredentialSlots': [
                       {
                         'recordType': 'dev.adele.openai.api-key',
@@ -2842,6 +2860,13 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
               installation.metadata.id.value == 'dev.adele.openai',
         );
         expect(recordsInstallation.metadata.id.value, 'dev.adele.openai');
+        expect(
+          catalog.installations.where(
+            (installation) =>
+                installation.backendRecordApplyHandlers.isNotEmpty,
+          ),
+          [recordsInstallation],
+        );
         expect(recordsInstallation.backendConsumedRecordTypesToJson(), [
           'dev.adele.openai.api-key',
         ]);
