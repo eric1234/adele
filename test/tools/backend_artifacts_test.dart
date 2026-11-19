@@ -2032,9 +2032,19 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
     final source = jsonDecode(schemaFile.readAsStringSync()) as Map;
     expect(source['schemaVersion'], 1);
     final declared = (source['recordTypes'] as List).single as Map;
+    final fields = (declared['fields'] as List).cast<Map<String, dynamic>>();
+    expect(fields.map((field) => field['type']), [
+      'string',
+      'string',
+      'string',
+      'string',
+    ]);
     expect(
-      (declared['fields'] as List).map((field) => (field as Map)['type']),
-      ['string', 'string', 'string', 'string'],
+      {
+        for (final field in fields)
+          if (field.containsKey('editor')) field['id']: field['editor'],
+      },
+      {'instructions': 'markdown'},
     );
 
     final catalog = await PreparedPluginCatalog.discover(installations.path);

@@ -11,11 +11,14 @@ declares the `agents` collection (Agents) and record type
 | `name` | Mutable display name, used as the record's display field. | Required |
 | `description` | Summary of the Agent's purpose. | Optional |
 | `when-to-use` | Guidance about when the Agent is appropriate. | Optional |
-| `instructions` | Markdown instructions, stored as ordinary string data. | Required |
+| `instructions` | Agent instructions. Only this field declares `"editor": "markdown"`. | Required |
 
-All fields are strings. Required means present, not nonblank. Optional absence
-remains distinct from an explicitly empty string. The immutable record ID is
-separate from the editable name; renaming does not change identity.
+In Global Settings, edit instructions with the native rich Markdown editor;
+the other three fields use ordinary text controls. All fields are strings. The
+editor hint does not change how instructions are stored or returned by the
+catalog. Required means present, not nonblank. Optional
+absence remains distinct from an explicitly empty string. The immutable record
+ID is separate from the editable name; renaming does not change identity.
 
 These are ordinary global configuration records managed by the existing generic
 Global Settings UI and host persistence. See the

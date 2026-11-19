@@ -617,6 +617,10 @@ void main() {
       'maximum': 1,
     },
     'boolean bound': {..._definition(), 'minimum': 0},
+    'record editor on scalar setting': {
+      ..._definition(type: 'string', defaultValue: ''),
+      'editor': 'markdown',
+    },
     'string options': {
       ..._definition(type: 'string', defaultValue: ''),
       'options': <Object?>[],

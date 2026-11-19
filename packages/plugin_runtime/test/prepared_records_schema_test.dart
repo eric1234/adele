@@ -1488,7 +1488,11 @@ void main() {
             ..._type(),
             'description': 'Type\nprose',
             'fields': [
-              {..._field(id: 'text'), 'description': 'Field\nprose'},
+              {
+                ..._field(id: 'text'),
+                'description': 'Field\nprose',
+                'editor': 'markdown',
+              },
               {
                 ..._field(id: 'mode', type: 'enum'),
                 'required': true,
@@ -1530,6 +1534,7 @@ void main() {
         'enabled',
       ]);
       expect(type.fields.first.description, 'Field\nprose');
+      expect(type.fields.first.editor, RecordFieldEditor.markdown);
       expect(type.fields.first.required, isFalse);
       expect(type.fields[1].required, isTrue);
       expect(
@@ -1676,28 +1681,48 @@ void main() {
     },
   );
 
+  Future<void> installStockRecords(String plugin, String id) async {
+    var repository = Directory.current;
+    while (!File.fromUri(
+      repository.uri.resolve('tools/adele.dart'),
+    ).existsSync()) {
+      if (repository.parent.path == repository.path) {
+        throw StateError('Repository root not found.');
+      }
+      repository = repository.parent;
+    }
+    final directory = await install(
+      plugin,
+      id: id,
+      components: {},
+      settings: false,
+    );
+    await File.fromUri(
+      repository.uri.resolve('plugins/$plugin/records.schema.json'),
+    ).copy(directory.uri.resolve('records.schema.json').toFilePath());
+  }
+
+  test('real Agent schema declares Markdown only for instructions', () async {
+    const owner = 'dev.adele.plugin.agent-configuration';
+    await installStockRecords('agent_configuration', owner);
+    final catalog = await PreparedPluginCatalog.discover(root.path);
+    expect(catalog.issues, isEmpty);
+    final type = catalog.records.definition(RecordTypeId('$owner.agent'));
+    expect(
+      {for (final field in type.fields) field.id.value: field.editor},
+      {
+        'name': null,
+        'description': null,
+        'when-to-use': null,
+        'instructions': RecordFieldEditor.markdown,
+      },
+    );
+  });
+
   test(
     'real OpenAI schema declares display-name and credential slot without code',
     () async {
-      var repository = Directory.current;
-      while (!File.fromUri(
-        repository.uri.resolve('tools/adele.dart'),
-      ).existsSync()) {
-        if (repository.parent.path == repository.path) {
-          throw StateError('Repository root not found.');
-        }
-        repository = repository.parent;
-      }
-      final source = await File.fromUri(
-        repository.uri.resolve('plugins/openai/records.schema.json'),
-      ).readAsString();
-      await install(
-        'openai',
-        id: 'dev.adele.openai',
-        schema: jsonDecode(source),
-        components: {},
-        settings: false,
-      );
+      await installStockRecords('openai', 'dev.adele.openai');
       final catalog = await PreparedPluginCatalog.discover(root.path);
       expect(catalog.issues, isEmpty);
       final type = catalog.records.definitions.single;
@@ -1717,6 +1742,7 @@ void main() {
       );
       expect(type.fields.first.required, isTrue);
       expect(type.fields.last.required, isFalse);
+      expect(type.fields.map((field) => field.editor), everyElement(isNull));
       expect(catalog.installations.single.backendArtifactUri, isNull);
       expect(catalog.installations.single.frontend, isNull);
       expect(
@@ -1994,6 +2020,7 @@ void main() {
         '$field $text': {..._type(), field: text},
     'description null': {..._type(), 'description': null},
     'description object': {..._type(), 'description': <String, Object?>{}},
+    'editor on record type': {..._type(), 'editor': 'markdown'},
     for (final displayField in <Object?>[
       null,
       false,
@@ -2088,6 +2115,7 @@ void main() {
       'object',
       'String',
       'secret-text',
+      'markdown',
     ])
       'type $type': {..._field(), 'type': type},
     for (final required in <Object?>[null, 0, 'true', [], {}])
@@ -2095,6 +2123,27 @@ void main() {
     for (final text in [null, 1, '', ' ', 'a\nb', 'a\u0000b'])
       'label $text': {..._field(), 'label': text},
     'null description': {..._field(), 'description': null},
+    for (final editor in <Object?>[
+      null,
+      false,
+      1,
+      [],
+      {},
+      '',
+      'plain',
+      'Markdown',
+      ' markdown',
+    ])
+      'editor ${jsonEncode(editor)}': {..._field(), 'editor': editor},
+    for (final type in ['boolean', 'integer', 'enum'])
+      'markdown editor on $type': {
+        ..._field(type: type),
+        if (type == 'enum')
+          'options': [
+            {'value': 'one'},
+          ],
+        'editor': 'markdown',
+      },
     for (final bound in ['minimum', 'maximum'])
       for (final value in <Object?>[null, false, '1', 1.0, [], {}])
         '$bound $value': {..._field(type: 'integer'), bound: value},

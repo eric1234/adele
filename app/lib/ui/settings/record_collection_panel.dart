@@ -10,6 +10,7 @@ import 'package:flutter/services.dart';
 import '../../core/credential_service.dart';
 import '../../core/global_settings_service.dart';
 import '../../core/record_apply_coordinator.dart';
+import '../../editor/native_rich_document_editor.dart';
 import 'record_credential_controls.dart';
 import 'scalar_input.dart';
 
@@ -816,6 +817,7 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
     final draft = _creationDrafts[type.id]!;
     return _RecordForm(
       draft: draft,
+      active: widget.active && _adding && type.id == _type,
       enabled: enabled && _adding && type.id == _type,
       onChanged: () => setState(() {}),
       onSubmit: (id, values) => _create(draft, id, values),
@@ -853,9 +855,10 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
       onDelete: enabled ? () => _mutate(record) : null,
       editor: draft == null
           ? null
-          : _RecordForm(
+          : (expanded) => _RecordForm(
               key: ObjectKey(draft),
               draft: draft,
+              active: widget.active && expanded,
               enabled: enabled,
               onChanged: () => setState(() {}),
               onSubmit: (_, values) =>
@@ -872,9 +875,15 @@ final class _RecordDraft {
       final value = record?.values[field.id.value];
       if (record?.values.containsKey(field.id.value) ?? false) {
         present.add(field.id);
-        values[field.id] = value;
       }
-      text[field.id] = TextEditingController(text: value?.toString() ?? '');
+      if (field.editor == RecordFieldEditor.markdown) {
+        markdown[field.id] = NativeRichDocumentEditor(
+          markdown: value as String? ?? '',
+        );
+      } else {
+        values[field.id] = value;
+        text[field.id] = TextEditingController(text: value?.toString() ?? '');
+      }
     }
   }
 
@@ -884,6 +893,8 @@ final class _RecordDraft {
   final present = <RecordFieldId>{};
   final values = <RecordFieldId, Object?>{};
   final text = <RecordFieldId, TextEditingController>{};
+  final markdown = <RecordFieldId, NativeRichDocumentEditor>{};
+  late final markdownChanges = Listenable.merge(markdown.values.toList());
   bool disposed = false;
 
   bool get dirty => definition.fields.any((field) {
@@ -893,6 +904,13 @@ final class _RecordDraft {
     }
     final value = before[field.id.value];
     // Invalid or temporarily excluded text is still a draft worth retaining.
+    if (markdown[field.id] case final editor?) {
+      try {
+        return editor.snapshot()['markdown'] != (value ?? '');
+      } on FormatException {
+        return true;
+      }
+    }
     if (field.type is StringSettingType || field.type is IntegerSettingType) {
       return text[field.id]!.text != (value?.toString() ?? '');
     }
@@ -902,14 +920,41 @@ final class _RecordDraft {
   Map<String, Object> validate(ConfigurationRecordId recordId) =>
       definition.validate(recordId, {
         for (final field in definition.fields)
-          if (present.contains(field.id)) field.id.value: values[field.id],
+          if (present.contains(field.id))
+            field.id.value: markdown.containsKey(field.id)
+                ? _snapshot(recordId, field.id)
+                : values[field.id],
       });
+
+  String _snapshot(ConfigurationRecordId recordId, RecordFieldId fieldId) {
+    final editor = markdown[fieldId]!;
+    try {
+      final snapshot = editor.snapshot();
+      if (snapshot['markdown'] case final String current) return current;
+      throw InvalidRecordValue(
+        definition.collection,
+        recordId,
+        fieldId,
+        'Finish composing text before saving.',
+      );
+    } on FormatException catch (error) {
+      throw InvalidRecordValue(
+        definition.collection,
+        recordId,
+        fieldId,
+        'Cannot save this Markdown: ${error.message} Edit it or use Undo.',
+      );
+    }
+  }
 
   void dispose() {
     disposed = true;
     id.dispose();
     for (final controller in text.values) {
       controller.dispose();
+    }
+    for (final editor in markdown.values) {
+      editor.dispose();
     }
   }
 }
@@ -918,6 +963,7 @@ final class _RecordForm extends StatelessWidget {
   const _RecordForm({
     super.key,
     required this.draft,
+    required this.active,
     required this.enabled,
     required this.onChanged,
     required this.onSubmit,
@@ -925,6 +971,7 @@ final class _RecordForm extends StatelessWidget {
   });
 
   final _RecordDraft draft;
+  final bool active;
   final bool enabled;
   final VoidCallback onChanged;
   final void Function(ConfigurationRecordId, Map<String, Object>) onSubmit;
@@ -932,6 +979,20 @@ final class _RecordForm extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (draft.markdown.isEmpty) return _controls(context);
+    for (final entry in draft.markdown.entries) {
+      entry.value.setEditingEnabled(
+        active && enabled && draft.present.contains(entry.key),
+      );
+    }
+    // Composition completion can make Save safe without a document change.
+    return ListenableBuilder(
+      listenable: draft.markdownChanges,
+      builder: (context, _) => _controls(context),
+    );
+  }
+
+  Widget _controls(BuildContext context) {
     final definition = draft.definition;
     final record = draft.record;
     final suffix =
@@ -991,7 +1052,8 @@ final class _RecordForm extends StatelessWidget {
                     if (draft.disposed) return;
                     if (present == true) {
                       draft.present.add(field.id);
-                      if (field.type is StringSettingType) {
+                      if (field.type is StringSettingType &&
+                          !draft.markdown.containsKey(field.id)) {
                         draft.values[field.id] = draft.text[field.id]!.text;
                       } else if (field.type is IntegerSettingType) {
                         draft.values[field.id] = int.tryParse(
@@ -1006,21 +1068,41 @@ final class _RecordForm extends StatelessWidget {
                   }
                 : null,
           ),
-          ScalarInput(
-            inputKey: ValueKey('record-input-$suffix-${field.id}'),
-            type: field.type,
-            label: field.label,
-            value: draft.values[field.id],
-            text: draft.text[field.id]!,
-            enabled: enabled && draft.present.contains(field.id),
-            allowUnsetBoolean: true,
-            error: fieldError?.fieldId == field.id ? fieldError!.message : null,
-            onChanged: (value) {
-              if (draft.disposed) return;
-              draft.values[field.id] = value;
-              onChanged();
-            },
-          ),
+          if (draft.markdown[field.id] case final editor?)
+            InputDecorator(
+              key: ValueKey('record-input-$suffix-${field.id}'),
+              decoration: InputDecoration(
+                labelText: field.label,
+                floatingLabelBehavior: FloatingLabelBehavior.always,
+                enabled: enabled && draft.present.contains(field.id),
+                errorText: fieldError?.fieldId == field.id
+                    ? fieldError!.message
+                    : null,
+                errorMaxLines: 4,
+              ),
+              child: SizedBox(
+                height: 220,
+                child: active ? editor.buildView() : null,
+              ),
+            )
+          else
+            ScalarInput(
+              inputKey: ValueKey('record-input-$suffix-${field.id}'),
+              type: field.type,
+              label: field.label,
+              value: draft.values[field.id],
+              text: draft.text[field.id]!,
+              enabled: enabled && draft.present.contains(field.id),
+              allowUnsetBoolean: true,
+              error: fieldError?.fieldId == field.id
+                  ? fieldError!.message
+                  : null,
+              onChanged: (value) {
+                if (draft.disposed) return;
+                draft.values[field.id] = value;
+                onChanged();
+              },
+            ),
           const SizedBox(height: 8),
         ],
         Wrap(
@@ -1079,7 +1161,7 @@ final class _RecordDetails extends StatefulWidget {
   final VoidCallback? onDelete;
   final List<Widget> Function(bool expanded) credentials;
   final Widget? applyFeedback;
-  final Widget? editor;
+  final Widget Function(bool expanded)? editor;
   final String? error;
 
   @override
@@ -1111,7 +1193,7 @@ final class _RecordDetailsState extends State<_RecordDetails> {
               SelectableText('Record type: ${record.type}'),
               if (widget.error case final error?) _diagnostic(context, error),
               if (widget.editor case final editor?)
-                editor
+                editor(_expanded)
               else ...[
                 for (final field in definition.fields)
                   Padding(

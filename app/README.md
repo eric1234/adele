@@ -422,6 +422,15 @@ presence handling, and `RecordTypeDefinition.validate`; the worker and host adap
 validate again before persistence. Absent fields remain distinct from false, zero,
 and empty strings, with no inferred defaults. Edits preserve unknown data and comments
 within the native document API's limits.
+
+For a string field declared with `editor: "markdown"`, the draft owns a
+[native rich-document editor](#native-rich-document-editor). Hiding the form
+does not discard the document or its undo history. Create and Save use the
+current safe Markdown snapshot, preserving the original string when unedited.
+Unsupported restored Markdown is shown read-only; unfinished input composition
+or unrepresentable edits block writing the included field rather than saving an
+older value.
+
 Malformed or unavailable records remain attributable filename diagnostics alongside
 healthy siblings, without Edit/Delete actions. Each existing record has a separate
 draft retained through details collapse and section navigation. Cancel editing
