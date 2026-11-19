@@ -747,8 +747,7 @@ A stock Agent Configuration/Policy plugin may define concepts resembling:
 Agent
     stockContext
     allowedTools
-    defaultModelType
-    defaultReasoningEffort
+    defaultModelPresetId
     submitLabel = "Send"
 ```
 
@@ -792,13 +791,8 @@ Application Command registration, Command Palette, and keybinding resolution are
 
 # 16. Agent/model controls
 
-The Draft Request composer may expose selected Agent, provider, semantic model type, reasoning effort, and Send/Refine/etc.
-
-Example:
-
-```text
-Code ▾        OpenAI · Cheap · High            Send
-```
+The Draft Request composer may expose the selected Agent and Model Preset,
+the effective provider, model and reasoning effort, and actions such as Send or Refine.
 
 These controls are expected to be plugin-contributed Chat prompt accessories rather than hard-coded knowledge inside Chat.
 
@@ -806,24 +800,25 @@ Agent selection is relatively prominent. Provider/model/reasoning are visually s
 
 ## 16.1 Persistent overrides
 
-If the user changes model type or reasoning from the Agent default, the override can persist until changed/reset or Agent changes. Model/reasoning state affects subsequent inference resolution, never an already-resolved invocation. Agent selection follows the next-user-invocation workflow semantics described above rather than automatically changing a continuation within the current turn.
+If the user overrides a future Agent default preset or its reasoning effort, the override can persist until changed/reset or the Agent changes. Model/reasoning state affects subsequent inference resolution, never an already-resolved invocation. Agent selection follows the next-user-invocation workflow semantics described above rather than automatically changing a continuation within the current turn.
 
-## 16.2 Model types per provider
+## 16.2 Model Presets
 
-Model type describes intent while concrete mapping is provider-specific:
+Users give a concrete model configuration a name that conveys its purpose. Each
+[Model Preset](../../architecture/profiles-and-configuration.md#model-presets)
+identifies one configured provider instance and one exact model, with optional
+reasoning effort. Users need not define an equivalent for any other provider.
+Renaming a preset does not change its ID.
 
-```text
-Cheap
-    OpenAI     → configured inexpensive OpenAI model
-    Anthropic  → configured Haiku-class model
-    Google     → configured inexpensive Gemini model
-```
-
-Provider and semantic model type are independent dimensions that resolve to a concrete configured model.
+Global Settings starts with no presets and accepts typed provider and model IDs.
+Stock definitions are deferred until ADELE has general configuration defaults.
+Future work starts with a read-only live catalog of user presets. Discovery of
+available providers and their models can then guide editing. Session selection
+and integration with execution come later; saving a preset selects nothing.
 
 ## 16.3 Custom model
 
-The user can bypass semantic type mapping and select a concrete model directly for experimentation. The composer should display that concrete override honestly.
+A future composer could let the user bypass presets and select a configured provider and concrete model directly for experimentation. It should display that override rather than present it as a named preset.
 
 ---
 

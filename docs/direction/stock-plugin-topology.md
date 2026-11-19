@@ -535,19 +535,19 @@ The proposed stock Agent integration distinguishes selected Agent state from the
 
 ## 6.2 Model Routing / Control
 
-The name is provisional; "Model Selection" is too narrow.
+The name is provisional; "Model Selection" is too narrow. The data foundation
+is [Model Configuration](../../plugins/model_configuration/README.md): each
+user-defined preset names one configured provider, its model, and optional
+reasoning effort.
 
 Likely provides:
 
-- semantic model types such as `Fast` or `Powerful`;
-- mapping from those types to concrete ModelProvider/configured instance/model choices;
-- reasoning/thinking preference configuration;
-- settings UI;
+- discovery of available configured ModelProviders and their models to guide preset editing;
 - optional Chat prompt control;
 - model-callable tools for changing model/reasoning state;
 - structured inference preference/constraint contributions.
 
-It consumes active ModelProviders/configured instances and provider metadata/catalogs.
+Those future controls may consume active ModelProviders and provider metadata/catalogs; storing a preset does not require them.
 
 Without this plugin, a strategy can still invoke a configured provider using that provider's own default model/options.
 
@@ -793,7 +793,7 @@ Likely provides:
 - provider/account quota/rate-limit/allowance information where available;
 - pricing metadata where useful to Accounting/Model Routing.
 
-It does not own semantic `Fast`/`Powerful` model types, global model preference policy, Agent definitions, or Chat orchestration.
+It does not own Model Presets, global model preference policy, Agent definitions, or Chat orchestration.
 
 Provider-specific authentication, request policy, raw response interpretation,
 and native replay belong to OpenAI, not the shared backend host or Chat. Provider

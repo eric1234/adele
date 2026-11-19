@@ -257,6 +257,29 @@ may contain the same kinds of collections, but no Profile identity, ordered reco
 composition or merge rules exist yet. Record UI uses the established host-owned
 serialized I/O boundary, not another writer isolate or persistence service.
 
+### Model Presets
+
+A Model Preset names one concrete configuration: one configured ModelProvider
+`ProviderId`, one exact model ID for that provider, and optionally a requested
+reasoning effort. The stable record ID identifies the preset even when the user
+edits its name or changes either target identifier. It is not a model type with
+a separate mapping for every installed provider.
+
+The [Model Configuration plugin](../../plugins/model_configuration/README.md)
+contributes the declaration, not preset instances. Installation makes the empty
+collection editable in Global Settings; nothing is seeded, selected or reserved.
+Stock definitions await general configuration defaults. A preset neither
+installs a provider plugin nor creates the provider instance it names. It can
+outlive that instance's availability. Saving it needs no credentials, live
+Capability binding, or Model Catalog observation. A catalog observation may
+guide a later edit but is not the authoritative contents of a preset.
+
+An Agent definition, a Session's selected preset, and a Run's resolved provider
+and model are separate concerns. A preset stores no generation, binding,
+`configurationContext`, credential reference or route. Editing a definition does
+not change an already-resolved invocation. Preset projection, Session model
+selection and execution integration are not part of record editing.
+
 ### Applying confirmed record changes
 
 Saving configuration and applying it to a running backend are separate operations.

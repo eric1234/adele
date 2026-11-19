@@ -1,6 +1,9 @@
 import 'dart:convert';
 import 'dart:io';
 
+// Match the package types returned by runtime discovery in this workspace test.
+// ignore: depend_on_referenced_packages
+import 'package:adele_settings/adele_settings.dart';
 import 'package:test/test.dart';
 
 // ignore: avoid_relative_lib_imports
@@ -46,6 +49,26 @@ const _openaiApplyHandler = {
   'serviceId': 'dev.adele.openai.configuration',
   'method': 'refreshConfiguredProvider',
 };
+const _modelConfigurationId = 'dev.adele.plugin.model-configuration';
+const _modelPresetSchema = 'plugins/model_configuration/records.schema.json';
+const _stockInstallationDirectories = [
+  'agent-configuration',
+  'model-configuration',
+  'git',
+  'openai',
+  'agents-md',
+  'conservative-tool-policy',
+  'search-tools',
+  'chat-strategy',
+  'filesystem-tools',
+  'command-tools',
+  'local-directory-project',
+  'task-browser',
+  'terminal',
+  'source-editor',
+  'diff-viewer',
+  'session-evaluator',
+];
 const String _agentsMdEntrypoint =
     'plugins/agents_md/packages/backend/bin/agents_md_backend.dart';
 const String _agentConfigurationEntrypoint =
@@ -171,6 +194,7 @@ void main() {
       'plugins/git/packages/backend/native/git_pty_helper.c',
       'plugins/openai/records.schema.json',
       'plugins/agent_configuration/records.schema.json',
+      _modelPresetSchema,
       'plugins/chat_strategy/settings.schema.json',
       'plugins/conservative_tool_policy/settings.schema.json',
       'plugins/source_editor/settings.schema.json',
@@ -2080,6 +2104,150 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
     expect(commands.existsSync(), isFalse);
   });
 
+  test(
+    'Model Presets are discoverable and valid without any provider',
+    () async {
+      final installations = Directory('${root.path}/published');
+      final directory = Directory.fromUri(
+        installations.uri.resolve('model-configuration/'),
+      );
+      await publishStockPluginInstallation(
+        repositoryRoot: root,
+        installationDirectory: directory,
+        pluginId: _modelConfigurationId,
+        displayName: 'Model Configuration',
+      );
+
+      final catalog = await PreparedPluginCatalog.discover(installations.path);
+      expect(catalog.issues, isEmpty);
+      final installation = catalog.installations.single;
+      expect(installation.metadata.id.value, _modelConfigurationId);
+      expect(installation.backendArtifactUri, isNull);
+      expect(installation.frontend, isNull);
+      expect(installation.settingsSchema, isNull);
+      final schema = installation.recordsSchema!;
+      expect(schema.artifactUri, directory.uri.resolve('records.schema.json'));
+      expect(
+        File.fromUri(schema.artifactUri).readAsBytesSync(),
+        File(_modelPresetSchema).readAsBytesSync(),
+      );
+      final preset = schema.definitions.single;
+      expect(catalog.records.definitions, [preset]);
+      expect(preset.id.value, '$_modelConfigurationId.preset');
+      expect(preset.owner.value, _modelConfigurationId);
+      expect(preset.collection.value, 'model-presets');
+      expect(
+        catalog.records.collectionLabel(preset.collection),
+        'Model Presets',
+      );
+      expect(preset.label, 'Model Preset');
+      expect(preset.displayField?.value, 'name');
+      expect(preset.credentialSlots, isEmpty);
+      expect(
+        preset.fields.map(
+          (field) => (field.id.value, field.label, field.required),
+        ),
+        [
+          ('name', 'Name', true),
+          ('description', 'Description', false),
+          ('provider-id', 'Provider ID', true),
+          ('model-id', 'Model ID', true),
+          ('reasoning-effort', 'Reasoning Effort', false),
+        ],
+      );
+      expect(
+        preset.fields.take(4).map((field) => field.type),
+        everyElement(isA<StringSettingType>()),
+      );
+      final effort = preset.fields.last.type as EnumSettingType;
+      expect(effort.options.map((option) => (option.value, option.label)), [
+        ('none', 'None'),
+        ('minimal', 'Minimal'),
+        ('low', 'Low'),
+        ('medium', 'Medium'),
+        ('high', 'High'),
+        ('xhigh', 'Extra High'),
+        ('max', 'Max'),
+      ]);
+
+      final recordId = ConfigurationRecordId('work');
+      const requiredValues = {
+        'name': 'Work model',
+        'provider-id': 'work-provider',
+        'model-id': 'model-a',
+      };
+      expect(preset.validate(recordId, requiredValues), requiredValues);
+      for (final option in effort.options) {
+        final values = {...requiredValues, 'reasoning-effort': option.value};
+        expect(preset.validate(recordId, values), values);
+      }
+      expect(
+        () => preset.validate(recordId, {
+          ...requiredValues,
+          'reasoning-effort': 'Extra High',
+        }),
+        throwsA(
+          isA<InvalidRecordValue>().having(
+            (e) => e.fieldId?.value,
+            'field',
+            'reasoning-effort',
+          ),
+        ),
+      );
+      expect(
+        directory.listSync().map((entry) => entry.uri.pathSegments.last),
+        unorderedEquals([
+          'adele_plugin.installation.json',
+          'records.schema.json',
+        ]),
+      );
+      expect(commands.existsSync(), isFalse);
+    },
+  );
+
+  test(
+    'invalid preset schema leaves Agent and OpenAI declarations healthy',
+    () async {
+      final installations = Directory('${root.path}/published');
+      for (final (directory, id, name) in [
+        ('model-configuration', _modelConfigurationId, 'Model Configuration'),
+        (
+          'agent-configuration',
+          'dev.adele.plugin.agent-configuration',
+          'Agent Configuration',
+        ),
+        ('openai', 'dev.adele.openai', 'OpenAI'),
+      ]) {
+        await publishStockPluginInstallation(
+          repositoryRoot: root,
+          installationDirectory: Directory.fromUri(
+            installations.uri.resolve('$directory/'),
+          ),
+          pluginId: id,
+          displayName: name,
+        );
+      }
+      File.fromUri(
+        installations.uri.resolve('model-configuration/records.schema.json'),
+      ).writeAsStringSync('{invalid');
+
+      final catalog = await PreparedPluginCatalog.discover(installations.path);
+      final issue = catalog.issues.single;
+      expect(issue.pluginId?.value, _modelConfigurationId);
+      expect(issue.isRecordsSchemaIssue, isTrue);
+      expect(
+        catalog.records.definitions.map(
+          (type) => (type.collection.value, type.id.value),
+        ),
+        [
+          ('providers', 'dev.adele.openai.api-key'),
+          ('agents', 'dev.adele.plugin.agent-configuration.agent'),
+        ],
+      );
+      expect(commands.existsSync(), isFalse);
+    },
+  );
+
   test('missing Agent backend leaves its record schema discoverable', () async {
     final installations = Directory('${root.path}/published');
     final directory = Directory.fromUri(
@@ -2425,6 +2593,11 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
       final Set<String> outputDirectories = <String>{};
       final Map<String, String> retainedArtifacts = <String, String>{};
       Map<String, String>? firstDefines;
+      final configHome = Directory('${root.path}/xdg-config');
+      environment['XDG_CONFIG_HOME'] = configHome.path;
+      final presetRecords = Directory.fromUri(
+        configHome.uri.resolve('adele/config/model-presets/'),
+      )..createSync(recursive: true);
       // Preparation must replace inherited inputs with this checkout's paths.
       environment['ADELE_REPOSITORY_ROOT'] = '/wrong-repository';
       environment['ADELE_CHAT_FRONTEND_OUTPUT'] = '/wrong-output';
@@ -2605,23 +2778,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
             (entry) =>
                 entry.uri.pathSegments.where((part) => part.isNotEmpty).last,
           ),
-          unorderedEquals([
-            'agent-configuration',
-            'git',
-            'openai',
-            'agents-md',
-            'conservative-tool-policy',
-            'search-tools',
-            'chat-strategy',
-            'filesystem-tools',
-            'command-tools',
-            'local-directory-project',
-            'task-browser',
-            'terminal',
-            'source-editor',
-            'diff-viewer',
-            'session-evaluator',
-          ]),
+          unorderedEquals(_stockInstallationDirectories),
         );
         final installedIds = <String>{};
         for (final plugin in [
@@ -2630,6 +2787,12 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
             id: 'dev.adele.plugin.agent-configuration',
             name: 'Agent Configuration',
             backend: true,
+          ),
+          (
+            directory: 'model-configuration',
+            id: _modelConfigurationId,
+            name: 'Model Configuration',
+            backend: false,
           ),
           (
             directory: 'git',
@@ -2722,6 +2885,11 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           final presentations = stockFrontendDescriptors[plugin.id];
           final extensions = stockFrontendExtensionDescriptors[plugin.id];
           final hasFrontend = presentations != null || extensions != null;
+          final hasRecordsSchema = const {
+            'openai',
+            'agent-configuration',
+            'model-configuration',
+          }.contains(plugin.directory);
           final manifest = File.fromUri(
             directory.uri.resolve('adele_plugin.installation.json'),
           );
@@ -2744,9 +2912,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
                 plugin.directory == 'chat-strategy' ||
                 plugin.directory == 'conservative-tool-policy')
               'settingsSchema': 'settings.schema.json',
-            if (plugin.directory == 'openai' ||
-                plugin.directory == 'agent-configuration')
-              'recordsSchema': 'records.schema.json',
+            if (hasRecordsSchema) 'recordsSchema': 'records.schema.json',
             if (plugin.directory == 'conservative-tool-policy')
               'authorizationPolicies': [
                 {
@@ -2793,8 +2959,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
                   (plugin.directory == 'source-editor' ? 1 : 0) +
                   (plugin.directory == 'chat-strategy' ? 1 : 0) +
                   (plugin.directory == 'conservative-tool-policy' ? 1 : 0) +
-                  (plugin.directory == 'openai' ? 1 : 0) +
-                  (plugin.directory == 'agent-configuration' ? 1 : 0) +
+                  (hasRecordsSchema ? 1 : 0) +
                   (plugin.directory == 'git' ? 1 : 0),
             ),
           );
@@ -2808,7 +2973,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
             retainedArtifacts[file.path] = file.readAsStringSync();
           }
         }
-        expect(installedIds, hasLength(15));
+        expect(installedIds, hasLength(_stockInstallationDirectories.length));
         final catalog = await PreparedPluginCatalog.discover(
           installations.path,
         );
@@ -2929,17 +3094,31 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
             'plugins/agent_configuration/records.schema.json',
           ).readAsBytesSync(),
         );
+        final presets = catalog.installations.singleWhere(
+          (installation) =>
+              installation.metadata.id.value == _modelConfigurationId,
+        );
+        expect(presets.backendArtifactUri, isNull);
+        expect(presets.frontend, isNull);
         expect(catalog.records.definitions, [
-          ...recordsSchema.definitions,
-          ...agents.recordsSchema!.definitions,
+          recordsSchema.definitions.single,
+          agents.recordsSchema!.definitions.single,
+          presets.recordsSchema!.definitions.single,
         ]);
         expect(catalog.records.definitions.map((type) => type.id.value), [
           'dev.adele.openai.api-key',
           'dev.adele.plugin.agent-configuration.agent',
+          '$_modelConfigurationId.preset',
         ]);
         expect(
           catalog.records.collections.map((collection) => collection.value),
-          ['agents', 'providers'],
+          ['agents', 'model-presets', 'providers'],
+        );
+        expect(
+          presetRecords.listSync(recursive: true).whereType<File>(),
+          isEmpty,
+          reason:
+              'Publishing declarations must not seed configuration records.',
         );
         final evaluator = catalog.installations.singleWhere(
           (installation) =>
@@ -3377,7 +3556,10 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         ).delete();
 
         final catalog = await PreparedPluginCatalog.discover(rootPath);
-        expect(catalog.installations, hasLength(15));
+        expect(
+          catalog.installations,
+          hasLength(_stockInstallationDirectories.length),
+        );
         expect(catalog.issues.single.component, missing);
         final command = catalog.installations.singleWhere(
           (installation) =>
@@ -3422,7 +3604,10 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
     await File('$rootPath/local-directory-project/frontend.evc').delete();
 
     final catalog = await PreparedPluginCatalog.discover(rootPath);
-    expect(catalog.installations, hasLength(15));
+    expect(
+      catalog.installations,
+      hasLength(_stockInstallationDirectories.length),
+    );
     expect(catalog.issues.single.component, PreparedPluginComponent.frontend);
     final localDirectoryProject = catalog.installations.singleWhere(
       (installation) =>
@@ -3502,7 +3687,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
             .where(
               (file) => file.path.endsWith('adele_plugin.installation.json'),
             );
-        expect(manifests, hasLength(15));
+        expect(manifests, hasLength(_stockInstallationDirectories.length));
         for (final manifest in manifests) {
           for (final forbidden in [
             'secret-',
@@ -3606,6 +3791,11 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
       kind: 'records',
       source: 'agent_configuration',
       installation: 'agent-configuration',
+    ),
+    (
+      kind: 'records',
+      source: 'model_configuration',
+      installation: 'model-configuration',
     ),
   ]) {
     for (final failure in ['missing', 'empty', 'directory']) {
@@ -3997,6 +4187,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
     'policy-settings',
     'records',
     'agent-records',
+    'model-presets',
     'descriptors',
   ]) {
     test(
@@ -4010,6 +4201,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
             'policy-settings' => 'plugins/conservative_tool_policy/settings.schema.json',
             'records' => 'plugins/openai/records.schema.json',
             'agent-records' => 'plugins/agent_configuration/records.schema.json',
+            'model-presets' => _modelPresetSchema,
             _ => 'tools/stock_frontend_descriptors.dart',
           }}',
         );
@@ -4019,6 +4211,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
             'policy-settings' => 'Enable Conservative Tool Authorization',
             'records' => 'OpenAI API',
             'agent-records' => 'When to Use',
+            'model-presets' => 'Reasoning Effort',
             _ => 'Open Source...',
           }, 'Revised metadata label'),
         );
@@ -4457,7 +4650,10 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           launchDefines()['ADELE_PLUGIN_INSTALLATION_ROOT']!,
         );
         expect(catalog.issues, isEmpty);
-        expect(catalog.installations, hasLength(15));
+        expect(
+          catalog.installations,
+          hasLength(_stockInstallationDirectories.length),
+        );
         final stable = launchDefines();
         expect(await prepare(), stable);
         expect(compilations(), isEmpty);

@@ -28,10 +28,17 @@ const _stockSchemaSources = {
   'dev.adele.plugin.agent-configuration': {
     'records': 'plugins/agent_configuration/records.schema.json',
   },
+  'dev.adele.plugin.model-configuration': {
+    'records': 'plugins/model_configuration/records.schema.json',
+  },
 };
 
-const _stockMetadataOnlyInstallations =
-    <String, ({String directory, String displayName})>{};
+const _stockMetadataOnlyInstallations = {
+  'dev.adele.plugin.model-configuration': (
+    directory: 'model-configuration',
+    displayName: 'Model Configuration',
+  ),
+};
 
 const _stockAuthorizationPolicies = {
   'dev.adele.plugin.conservative-tool-policy': [

@@ -13,6 +13,8 @@ import 'package:adele_settings_host/adele_settings_host.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
+import '../../../tools/backend_artifacts.dart';
+
 void main() {
   const workerName = 'dev.adele.global-settings-owner';
   final owner = SettingOwnerId('dev.example.settings');
@@ -582,6 +584,109 @@ void main() {
       expect(target.readAsStringSync(), '"${enabled.value}" = false\n');
     });
   }, skip: !Platform.isLinux);
+
+  test(
+    'published model presets persist by ID and respect record revisions',
+    () async {
+      const plugin = 'dev.adele.plugin.model-configuration';
+      final installation = Directory(
+        '${temporary.path}/installed/model-configuration',
+      );
+      await publishStockPluginInstallation(
+        repositoryRoot: Directory.current.parent,
+        installationDirectory: installation,
+        pluginId: plugin,
+        displayName: 'Model Configuration',
+      );
+      final prepared = await PreparedPluginCatalog.discover(
+        installation.parent.path,
+      );
+      expect(prepared.issues, isEmpty);
+      final presets = createOwner(
+        settings: prepared.settings,
+        records: prepared.records,
+      );
+      final collection = RecordCollectionId('model-presets');
+      final type = RecordTypeId('$plugin.preset');
+      Future<List<RecordView>> reload() async {
+        final view = await presets.loadRecords(collection);
+        expect(view.diagnostics, isEmpty);
+        return view.records;
+      }
+
+      expect(await reload(), isEmpty);
+      expect(temporary.listSync().map((entry) => entry.path), [
+        installation.parent.path,
+      ]);
+
+      final first = ConfigurationRecordId('first');
+      final second = ConfigurationRecordId('second');
+      const minimal = {
+        'name': 'Research',
+        'provider-id': 'dev.example.provider.work-01',
+        'model-id': 'Team-A/Research:V2',
+      };
+      const none = {
+        ...minimal,
+        'description': 'Quick lookup',
+        'reasoning-effort': 'none',
+      };
+      final created = await presets.createRecord(type, first, minimal);
+      await presets.createRecord(type, second, none);
+      final directory = presets.collectionPath(collection);
+      final firstFile = File('$directory/$first.toml');
+      final secondFile = File('$directory/$second.toml');
+      final siblingBytes = secondFile.readAsBytesSync();
+
+      const unknown = '[future]\nlabels = ["retain"] # hand-edited\n';
+      final external = '${firstFile.readAsStringSync()}\n$unknown';
+      firstFile.writeAsStringSync(external);
+      const edited = {
+        'name': 'Deep research',
+        'provider-id': 'dev.example.provider.lab-02',
+        'model-id': 'Lab-B/Experimental:V3+Preview',
+        'reasoning-effort': 'xhigh',
+      };
+      await expectLater(
+        presets.updateRecord(created, edited),
+        throwsA(isA<ConfigurationConflictException>()),
+      );
+      expect(firstFile.readAsStringSync(), external);
+
+      var loaded = await reload();
+      expect(loaded.map((record) => record.id), [first, second]);
+      expect(loaded.first.values, minimal);
+      expect(loaded.last.values, none);
+      await expectLater(
+        presets.updateRecord(loaded.first, {
+          ...edited,
+          'reasoning-effort': 'turbo',
+        }),
+        throwsA(
+          isA<InvalidRecordValue>().having(
+            (error) => error.fieldId,
+            'field',
+            RecordFieldId('reasoning-effort'),
+          ),
+        ),
+      );
+      expect(firstFile.readAsStringSync(), external);
+      await presets.updateRecord(loaded.first, edited);
+      expect(firstFile.readAsStringSync(), contains(unknown));
+      loaded = await reload();
+      expect(loaded.map((record) => record.id), [first, second]);
+      expect(loaded.first.values, edited);
+      await presets.deleteRecord(loaded.first);
+      expect(firstFile.existsSync(), isFalse);
+      expect(secondFile.readAsBytesSync(), siblingBytes);
+      final sibling = (await reload()).single;
+      expect(sibling.id, second);
+      expect(sibling.values, none);
+      await presets.deleteRecord(sibling);
+      expect(await reload(), isEmpty);
+    },
+    skip: !Platform.isLinux,
+  );
 
   group('configuration records', () {
     final collection = RecordCollectionId('jobs');
