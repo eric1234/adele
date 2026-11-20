@@ -503,6 +503,7 @@ exit "$CLIPPY_EXIT"
           'adele_settings_host',
           'filesystem_tools_frontend',
           'command_tools_frontend',
+          'agent_configuration_frontend',
           'chat_strategy_frontend',
           'session_evaluator_frontend',
           'task_browser_frontend',
@@ -2036,6 +2037,10 @@ exit "$CLIPPY_EXIT"
         in <({String name, String path})>[
           (name: 'adele_ui', path: 'packages/ui'),
           (
+            name: 'agent_configuration_frontend',
+            path: 'plugins/agent_configuration/packages/frontend',
+          ),
+          (
             name: 'chat_strategy_frontend',
             path: 'plugins/chat_strategy/packages/frontend',
           ),
@@ -2099,6 +2104,7 @@ exit "$CLIPPY_EXIT"
       expect(
         stockFrontendDescriptors.keys,
         containsAll([
+          'dev.adele.plugin.agent-configuration',
           'dev.adele.diff-viewer',
           'dev.adele.source-editor',
           'dev.adele.plugin.terminal',
@@ -2178,6 +2184,7 @@ exit "$CLIPPY_EXIT"
               ('mainContent', 'extensionId') => 'main-content',
               ('console', 'extensionId') => 'consoles',
               ('taskBrowser', 'extensionId') => 'task-browsers',
+              ('sessionAccessory', 'extensionId') => 'session-accessories',
               ('sessionContentInspection', 'extensionId') =>
                 'session-content-inspections',
               ('toolActivity', 'inspectionExtensionId') =>
@@ -2331,6 +2338,10 @@ exit "$CLIPPY_EXIT"
       expect(
         registrations,
         containsAll([
+          (
+            'session-accessories',
+            'dev.adele.plugin.agent-configuration.selector',
+          ),
           ('main-content', 'dev.adele.diff-viewer.main-content'),
           ('main-content', 'dev.adele.source-editor.main-content'),
           ('consoles', 'dev.adele.plugin.terminal.console'),
@@ -2645,6 +2656,7 @@ exit "$CLIPPY_EXIT"
         'agents_md_backend|dart|plugins/agents_md/packages/backend|test',
         'agent_configuration_contract|dart|plugins/agent_configuration/packages/contract|test',
         'agent_configuration_backend|dart|plugins/agent_configuration/packages/backend|test',
+        'agent_configuration_frontend|flutter|plugins/agent_configuration/packages/frontend|test',
         'conservative_tool_policy_backend|dart|plugins/conservative_tool_policy/packages/backend|test',
         'chat_strategy_contract|dart|plugins/chat_strategy/packages/contract|test',
         'chat_strategy_backend|dart|plugins/chat_strategy/packages/backend|test',

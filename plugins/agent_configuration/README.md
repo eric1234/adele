@@ -38,7 +38,8 @@ an empty collection) from one where the host omitted invalid records.
 The [backend](packages/backend/README.md) reads current records from the host on
 each call. Once a Settings edit succeeds, the next successful read sees the change
 without restarting the backend. A failed read does not return an earlier snapshot.
-Stock preparation publishes the schema and backend AOT together, with no frontend.
+Stock preparation publishes the schema, backend AOT, and selector frontend EVC
+in the same installation.
 If the backend is unavailable the catalog cannot be read; the declaration and
 ordinary Global Settings CRUD remain available independently.
 
@@ -70,13 +71,36 @@ Project lifetime. See the [backend map](packages/backend/README.md#selection-sto
 for the table, revision limits, and uncertain-write reconciliation. Missing or
 failed Agent functionality does not block core Project or Session restoration.
 
+### Choosing an Agent
+
+Create definitions in **Global Settings > Agents**. In a Chat Session, open the
+Agent control and choose a name, or choose **No Agent** to clear the stored ID.
+The [prepared frontend](packages/frontend/) contributes
+`dev.adele.plugin.agent-configuration.selector` at `execution-configuration`.
+Any strategy mounting that [Session accessory location](../../packages/ui/README.md#session-accessories)
+can show it; the strategy neither supplies the choices nor persists the result.
+
+Opening the choices reads the live catalog. **Refresh** also rereads the
+Session selection, including changes saved by another window. A complete catalog
+can confirm a missing Agent; an incomplete or unavailable catalog cannot. None
+of these observations clears the stored ID. The user may explicitly replace or
+clear it, and an empty catalog does not provision a default.
+
+The control writes against the revision it last read or received in an
+acknowledgement. If a change is not acknowledged, it asks the user to refresh
+before making another change. The interpreted bridge does not expose native
+failure codes, so it does not guess whether a write conflicted or committed.
+A fresh read shows the current state; it neither acknowledges the old request
+nor retries it. Leaving the Session retires the control, not a transaction
+already admitted by its backend.
+
 ## Execution boundary
 
 Global definitions and stored Session selection are implemented. Effective-Agent
 binding for a Run and Agent context injection are separate future integrations.
 Selection currently affects neither an executing Run nor future inference; it
 does not change the Session's permanent orchestration strategy, model routing,
-provider requests, or tool authorization. There is no selection UI in this plugin.
+provider requests, or tool authorization.
 
 Stock default records and their one-time provisioning and Model Preset references
 remain deferred. Collections may remain empty; no records are provisioned,

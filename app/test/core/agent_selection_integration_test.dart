@@ -12,6 +12,8 @@ import 'package:adele_desktop/core/global_settings_service.dart';
 import 'package:adele_desktop/core/prepared_settings.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/project_storage_host.dart';
+import 'package:adele_desktop/frontend/application_frontend_bootstrap.dart';
+import 'package:adele_desktop/ui/main_content/main_content_host.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_platform_storage/adele_platform_storage.dart';
@@ -20,16 +22,19 @@ import 'package:adele_plugin_backend_support/adele_backend_configuration.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:adele_project_storage/adele_project_storage.dart';
 import 'package:adele_settings/adele_settings.dart';
+import 'package:adele_ui/adele_ui.dart';
 import 'package:agent_configuration_contract/agent_configuration_contract.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:sqlite3/sqlite3.dart' hide Session;
 
 import '../../../tools/backend_artifacts.dart';
+import '../support/agent_selector_installation.dart';
 import '../support/gated_project_storage.dart';
 
-const _plugin = 'dev.adele.plugin.agent-configuration';
+const _plugin = agentConfigurationPluginId;
 const _projectPlugin = 'dev.adele.plugin.local-directory-project';
 const _bound = Duration(seconds: 15);
 final _type = RecordTypeId('$_plugin.agent');
@@ -88,6 +93,7 @@ void main() {
   Future<_Fixture> start({
     ProductIdSource? ids,
     PlatformStorageRoots? roots,
+    Directory? selectorInstallations,
   }) async {
     if (roots == null) {
       final temporary = await _temporary('agent-selection-settings-');
@@ -102,7 +108,7 @@ void main() {
     final fixture = _Fixture(roots, ids: ids);
     addTearDown(fixture.close);
     await fixture.bootstrap.start(
-      installationRoot: installations.path,
+      installationRoot: (selectorInstallations ?? installations).path,
       dartaotruntimeExecutable: aotRuntime,
       hostArtifactPath: host.path,
       startupArguments: const {},
@@ -121,7 +127,10 @@ void main() {
     final backend = fixture.bootstrap.backends.singleWhere(
       (backend) => backend.installation.metadata.id.value == _plugin,
     );
-    expect(backend.installation.frontend, isNull);
+    expect(
+      backend.installation.frontend,
+      selectorInstallations == null ? isNull : isNotNull,
+    );
     expect(backend.installation.backendConsumedRecordTypes, [_type]);
     expect(backend.installation.backendConsumedCredentialSlots, isEmpty);
     fixture.agent = backend.connection!;
@@ -720,6 +729,235 @@ void main() {
       },
     );
   }
+
+  group('compiled Agent selector', () {
+    const location = SessionAccessoryLocation.executionConfiguration;
+    late Directory withSelector;
+    late _Fixture fixture;
+    late _Graph graph;
+    late ApplicationFrontendBootstrap frontends;
+    late Session current;
+
+    setUpAll(() async {
+      withSelector = await _temporary('agent-selector-installations-');
+      for (final id in [_plugin, _projectPlugin]) {
+        final directory = await Directory('${withSelector.path}/$id').create();
+        await File(
+          '${installations.path}/$id/backend.aot',
+        ).copy('${directory.path}/backend.aot');
+        if (id == _plugin) {
+          await publishAgentSelector(directory);
+        } else {
+          const manifest = 'adele_plugin.installation.json';
+          await File(
+            '${installations.path}/$id/$manifest',
+          ).copy('${directory.path}/$manifest');
+        }
+      }
+    });
+
+    setUp(() async {
+      fixture = await start(selectorInstallations: withSelector);
+      graph = await fixture.createGraph(
+        await _temporary('agent-selector-project-'),
+      );
+      current = graph.session;
+      frontends = ApplicationFrontendBootstrap(
+        extensions: fixture.runtime.extensions,
+        backends: fixture.bootstrap,
+        loadSettings: (catalog) async =>
+            PreparedSettingsSnapshot.resolve(catalog),
+      );
+      addTearDown(frontends.close);
+      await frontends.start(fixture.bootstrap.catalog!);
+      expect(
+        frontends.generations.single.state,
+        InstalledFrontendState.active,
+        reason: '${frontends.generations.single.failure}',
+      );
+      final selector = fixture.runtime.extensions
+          .discover(sessionAccessoryContributions)
+          .single;
+      expect(selector.id.value, '$_plugin.selector');
+      expect(selector.value.location, location);
+    });
+
+    void registerPane({bool placeLocation = true}) {
+      final pane = fixture.runtime.extensions.register(
+        point: mainContentContributions,
+        id: ExtensionId('test.non-chat.pane'),
+        value: MainContentContribution(
+          order: 0,
+          attach: (access) {
+            if (access.session.strategyId != _strategy) return;
+            access.open(
+              MainContentPane(
+                id: 'main',
+                title: 'Non-Chat strategy',
+                createPresentation: () => placeLocation
+                    ? access.buildSessionAccessoryLocation(location)
+                    : const Text('Plain strategy pane'),
+              ),
+            );
+          },
+        ),
+      );
+      addTearDown(pane.close);
+    }
+
+    Future<void> present(WidgetTester tester, Session session) async {
+      current = session;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: MainContentHost(
+              extensions: fixture.runtime.extensions,
+              session: session,
+              isCurrent: () => identical(current, session),
+            ),
+          ),
+        ),
+      );
+    }
+
+    Future<void> until(
+      WidgetTester tester,
+      bool Function() ready,
+      String reason,
+    ) async {
+      // Real AOT replies and widget-zone continuations both need to advance.
+      final deadline = DateTime.now().add(_bound);
+      while (!ready() && DateTime.now().isBefore(deadline)) {
+        await Future<void>.delayed(Duration.zero);
+        await tester.pump();
+      }
+      expect(ready(), isTrue, reason: reason);
+    }
+
+    Future<void> waitForText(WidgetTester tester, String label) => until(
+      tester,
+      () => find.text(label).evaluate().isNotEmpty,
+      'Waiting for "$label".',
+    );
+
+    Future<StorageTransactionGate> selectAndHold(WidgetTester tester) async {
+      await fixture.createAgent('reviewer');
+      await waitForText(tester, 'Agent: No Agent');
+      await tester.tap(find.text('Agent: No Agent'));
+      await waitForText(tester, 'reviewer');
+      final gate = fixture.probe.holdTransaction(afterCommit: true);
+      addTearDown(gate.release);
+      await tester.tap(find.text('reviewer'));
+      await until(
+        tester,
+        () => gate.entered.isCompleted,
+        'Waiting for the committed selection.',
+      );
+      return gate;
+    }
+
+    testWidgets(
+      'a strategy without the location never reads or shows the selector',
+      (tester) async {
+        registerPane(placeLocation: false);
+        await present(tester, graph.session);
+        await tester.pumpAndSettle();
+        expect(find.text('Plain strategy pane'), findsOneWidget);
+        expect(find.textContaining('Agent'), findsNothing);
+        expect(fixture.recordReads, 0);
+        expect(fixture.probe.calls, isEmpty);
+      },
+    );
+
+    testWidgets(
+      'a late update belongs to A after navigation to B',
+      (tester) => tester.runAsync(() async {
+        registerPane();
+        final b = graph.otherSession.id.value;
+        await fixture.createAgent('writer');
+        await fixture.client.updateSessionSelection(b, 'writer', 0);
+        await present(tester, graph.session);
+        final gate = await selectAndHold(tester);
+        await present(tester, graph.otherSession);
+        // B's read can queue behind A's held acknowledgement, but not inherit it.
+        await waitForText(tester, 'Loading Agents...');
+        gate.release();
+        await waitForText(tester, 'Agent: writer');
+        expect(_fields(await fixture.client.readSessionSelection(b)), (
+          b,
+          'writer',
+          1,
+        ));
+        expect(find.text('Agent: reviewer'), findsNothing);
+        await present(tester, graph.session);
+        await waitForText(tester, 'Agent: reviewer');
+        _expectNoExecution(fixture.runtime, graph);
+        expect(tester.takeException(), isNull);
+      }),
+    );
+
+    for (final backendReplacement in [false, true]) {
+      testWidgets(
+        backendReplacement
+            ? 'a mounted selector cannot refresh against a replacement backend'
+            : 'retiring the selector during an update leaves its sibling interactive',
+        (tester) => tester.runAsync(() async {
+          registerPane();
+          Session? invoked;
+          final sibling = fixture.runtime.extensions.register(
+            point: sessionAccessoryContributions,
+            id: ExtensionId('test.independent.control'),
+            value: SessionAccessoryContribution(
+              location: location,
+              order: 0,
+              createPresentation: (access) => TextButton(
+                onPressed: () => invoked = access.session,
+                child: const Text('Sibling control'),
+              ),
+            ),
+          );
+          addTearDown(sibling.close);
+          await present(tester, graph.session);
+          final gate = await selectAndHold(tester);
+          if (backendReplacement) {
+            await fixture.replaceAgent();
+          } else {
+            await frontends.generations.single.close();
+          }
+          gate.release();
+          await gate.settled.future.timeout(_bound);
+          if (backendReplacement) {
+            await waitForText(
+              tester,
+              'Change not confirmed. Refresh to check the current selection.',
+            );
+            final reads = fixture.recordReads;
+            await tester.tap(find.text('Refresh'));
+            await waitForText(tester, 'Agent selection is unavailable.');
+            expect(fixture.recordReads, reads);
+            expect(
+              fixture.probe.calls,
+              isEmpty,
+              reason: 'The replacement was never called.',
+            );
+          } else {
+            await tester.pumpAndSettle();
+            expect(find.text('Refresh'), findsNothing);
+            expect(find.textContaining('Agent:'), findsNothing);
+          }
+          await tester.tap(find.text('Sibling control'));
+          expect(invoked, same(graph.session));
+          final a = graph.session.id.value;
+          expect(_fields(await fixture.client.readSessionSelection(a)), (
+            a,
+            'reviewer',
+            1,
+          ));
+          expect(tester.takeException(), isNull);
+        }),
+      );
+    }
+  });
 }
 
 final class _Fixture {

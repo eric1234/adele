@@ -582,6 +582,14 @@ a `backendServices` allowlist containing generated `chatSessionServiceId`, and
 of `hostAdapter`, still under manifest version 1. Rebuild prepared artifacts and
 descriptors together. No deployment define is added.
 
+Agent Configuration's [selector](../../plugins/agent_configuration/README.md#choosing-an-agent)
+is compiled by `app/tool/agent_configuration_frontend_compiler.dart` with the
+generated eval catalog and selection clients. Its `agent-configuration/frontend.evc`
+is a separate cache component from `agent-configuration/backend.aot`; editing
+the selector does not require rebuilding the backend. The Session accessory
+descriptor grants the two services of that installation, not the strategy's
+backend or access to Settings files.
+
 `tools/backend_artifacts.dart` still owns stock source entrypoints and writes
 `adele_plugin.installation.json` beside each installation's independently optional
 `backend.aot` and `frontend.evc`. The same stock publication helper copies
