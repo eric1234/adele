@@ -9,6 +9,8 @@ import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/global_settings_service.dart';
 import 'package:adele_desktop/core/prepared_settings.dart';
+import 'package:adele_orchestration/adele_orchestration.dart';
+import 'package:adele_orchestration/remote_inference_context.dart';
 import 'package:adele_platform_storage/adele_platform_storage.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_settings/adele_settings.dart';
@@ -146,7 +148,13 @@ void main() {
     expect(backend.installation.backendConsumedCredentialSlots, isEmpty);
     connection = backend.connection!;
     expect(connection.capabilityExposures, isEmpty);
-    expect(connection.extensionExposures, isEmpty);
+    expect(connection.extensionExposures.single.toMap(), {
+      'extensionPointId': inferenceContextSources.value,
+      'extensionId': '$_plugin.instructions',
+      'serviceId': remoteRunBoundInferenceContextSourceServiceId,
+      'configurationContext': 'default',
+      'metadata': {'failureMode': 'required'},
+    });
     client = AgentCatalogServiceClient(
       connection.channelFor(
         connection.defaultConfigurationContext,

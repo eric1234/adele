@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:isolate';
 
 import 'package:adele_contract/adele_contract.dart';
+import 'package:adele_orchestration/remote_inference_context.dart';
 import 'package:adele_plugin_backend_support/adele_plugin_backend_support.dart';
 import 'package:adele_project_storage/adele_project_storage.dart';
 import 'package:agent_configuration_backend/agent_configuration_backend.dart';
@@ -42,6 +43,10 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
       defaultContext: {
         agentCatalogServiceId: AgentCatalogServiceDispatcher(catalog),
         agentSelectionServiceId: AgentSelectionServiceDispatcher(selection),
+        remoteRunBoundInferenceContextSourceServiceId:
+            RemoteRunBoundInferenceContextSourceServiceDispatcher(
+              AgentInferenceContextBackend(selection, catalog),
+            ),
       },
     },
   );
@@ -51,6 +56,15 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
       'kind': 'ready',
       'commandPort': requests.sendPort,
       'pluginBackendProtocolVersion': adelePluginBackendProtocolVersion,
+      'extensionExposures': [
+        AdeleExtensionExposure(
+          extensionPointId: 'dev.adele.extension.inference-context-sources',
+          extensionId: 'dev.adele.plugin.agent-configuration.instructions',
+          serviceId: remoteRunBoundInferenceContextSourceServiceId,
+          configurationContext: defaultContext,
+          metadata: const {'failureMode': 'required'},
+        ).toMap(),
+      ],
     });
     await for (final Object? request in requests) {
       if (hostRequests.handleResponse(request)) continue;

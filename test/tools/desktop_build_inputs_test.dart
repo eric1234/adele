@@ -312,9 +312,12 @@ part 'public.g.dart';
             '$agentPackages/backend/pubspec.yaml',
             '$agentPackages/backend/bin/agent_configuration_backend.dart',
             '$agentPackages/backend/lib/agent_configuration_backend.dart',
+            '$agentPackages/backend/lib/src/agent_inference_context_backend.dart',
             '$agentPackages/contract/pubspec.yaml',
             '$agentPackages/contract/lib/agent_configuration_contract.dart',
             '$agentPackages/contract/lib/agent_configuration_contract.g.dart',
+            'packages/orchestration/lib/remote_inference_context.dart',
+            'packages/orchestration/lib/remote_inference_context.g.dart',
           ])
             File(path).absolute.path,
         ]),

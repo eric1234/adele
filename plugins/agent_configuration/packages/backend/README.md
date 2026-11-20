@@ -1,12 +1,11 @@
 # Agent Configuration backend
 
 [`bin/agent_configuration_backend.dart`](bin/agent_configuration_backend.dart)
-registers the generated `agentCatalog` and `agentSelection` dispatchers on the
-same shared AOT backend's default configuration context. It exposes no Capability
-or Extension Point. The public
-[contract](../contract/lib/agent_configuration_contract.dart) returns global
-definitions and Session selection data, not an executable binding, an inference
-contribution, or authority to run anything.
+registers the generated `agentCatalog`, `agentSelection`, and
+`runBoundInferenceContextSource` dispatchers on the same shared AOT backend's
+default configuration context. The [Agent contract](../contract/lib/agent_configuration_contract.dart)
+returns global definitions and Session selection data. The separate inference
+service consumes those same implementations; none exposes a Capability.
 
 The prepared backend opts in to exactly `dev.adele.plugin.agent-configuration.agent`
 from its [installation's schema](../../records.schema.json), and to no credential
@@ -68,6 +67,18 @@ grant; a replacement reads the same data with a fresh grant, without retargeting
 old clients. See [plugin-owned persistence](../../../../docs/architecture/plugin-system.md#plugin-owned-state-and-persistence)
 for the shared host lifecycle boundary.
 
-The [plugin map](../../README.md#session-selection) explains why deleted definitions
-leave unresolved selections. Effective-Agent Run binding and context injection
-remain future work; persisting a selection changes no current or future inference.
+## Inference source
+
+The ready advertisement contributes `dev.adele.plugin.agent-configuration.instructions`
+to `dev.adele.extension.inference-context-sources` with `failureMode: required`.
+`AgentInferenceContextBackend.captureRun` reads the selection once; a storage
+failure stops preparation. `snapshot` needs no catalog for a null binding. For
+a captured ID it calls `readAgents()` afresh, returning at most one material
+with key `instructions` and no revision. See the [plugin map](../../README.md#instructions-during-a-run)
+for edit, deletion, and partial-observation behavior.
+
+Both reads use existing generation-scoped infrastructure. There is no host
+invocation token, Environment access, private Run map, or executable Run handle.
+The [host's Run-binding lifecycle](../../../../docs/architecture/execution-model.md#inference-preparation)
+keeps the binding on this exact registration. Retirement fails the next snapshot;
+a same-ID replacement can serve a new Run but not the retired registration's Run.

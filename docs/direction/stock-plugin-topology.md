@@ -534,7 +534,7 @@ Chat does not call an `AgentSelector`; the Agent plugin independently participat
 
 In the expected stock workflow, a model-callable `set_agent`/selection tool routes the user to the Agent used for the **next user invocation**. It does not implicitly change the Agent for a model continuation that still belongs to the current user turn. A future orchestration strategy may deliberately define an explicit intra-Run Agent handoff, but that is separate orchestration behavior rather than an accidental consequence of changing the selected Agent.
 
-The proposed stock Agent integration distinguishes selected Agent state from the effective Agent for an already-started user turn. In that design, Chat snapshots/binds the effective Agent for the turn's model/tool continuations. The Agent plugin owns selected-Agent state; `set_agent` changes that selection for a later user-submitted turn rather than replacing the current turn binding. This integration and its storage/API remain directional. User input that merely resolves an interruption would not retroactively replace an effective-Agent binding; treatment of queued/new-turn input remains strategy-specific.
+The [Agent plugin's Run-bound source](../../plugins/agent_configuration/README.md#instructions-during-a-run), not Chat, captures the effective Agent. A future `set_agent` would change Session selection for a later Run, not replace the binding during a continuation. Treatment of queued/new-turn input remains strategy-specific.
 
 ## 6.2 Model Routing / Control
 
@@ -912,7 +912,7 @@ selection/presentation composition, but is not required by this flow.
 
 ```text
 user submits Chat turn
-    -> Chat snapshots the currently selected Agent as this turn's effective Agent
+    -> Run preparation captures the Agent source's selected ID, if registered
     -> Chat strategy calls public orchestration/execution service
     -> core structured composition gathers
         Chat strategy/history material
