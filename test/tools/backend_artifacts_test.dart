@@ -109,6 +109,8 @@ const String _toolFrontendHarness =
     'tool/compile_tool_inspection_frontends.dart';
 const String _openaiFrontendHarness =
     'tool/compile_openai_activity_frontend.dart';
+const String _agentConfigurationFrontendHarness =
+    'tool/compile_agent_configuration_frontend.dart';
 const String _sessionEvaluatorFrontendHarness =
     'tool/compile_session_evaluator_frontend.dart';
 const String _localDirectoryProjectFrontendHarness =
@@ -140,6 +142,7 @@ const _frontendCompilations = {
   'filesystem': '$_toolFrontendHarness|filesystem',
   'command': '$_toolFrontendHarness|command',
   'openai': _openaiFrontendHarness,
+  'agent-configuration': _agentConfigurationFrontendHarness,
   'session-evaluator': _sessionEvaluatorFrontendHarness,
   'local-directory-project': _localDirectoryProjectFrontendHarness,
   'task-browser': _taskBrowserFrontendHarness,
@@ -214,6 +217,9 @@ void main() {
     ).writeAsStringSync('void main() {}');
     File(
       '${root.path}/app/$_openaiFrontendHarness',
+    ).writeAsStringSync('void main() {}');
+    File(
+      '${root.path}/app/$_agentConfigurationFrontendHarness',
     ).writeAsStringSync('void main() {}');
     File(
       '${root.path}/app/$_sessionEvaluatorFrontendHarness',
@@ -506,6 +512,10 @@ elif [ "\$1" = test ]; then
     kind=openai
     output="\$ADELE_OPENAI_ACTIVITY_FRONTEND_OUTPUT"
     label='$_openaiFrontendHarness'
+  elif [ "\$5" = '$_agentConfigurationFrontendHarness' ]; then
+    kind=agent-configuration
+    output="\$ADELE_AGENT_CONFIGURATION_FRONTEND_OUTPUT"
+    label='$_agentConfigurationFrontendHarness'
   elif [ "\$5" = '$_localDirectoryProjectFrontendHarness' ]; then
     kind=local-directory-project
     output="\$ADELE_LOCAL_DIRECTORY_PROJECT_FRONTEND_OUTPUT"
@@ -1425,6 +1435,7 @@ TZ=UTC touch -m -t 200001010000 '${override.parent.path}'
           'agents_md_backend',
           'agent_configuration_contract',
           'agent_configuration_backend',
+          'agent_configuration_frontend',
           'conservative_tool_policy_backend',
           'search_tools_backend',
           'filesystem_tools_backend',
@@ -2574,6 +2585,9 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         _conservativeToolPolicyEntrypoint,
         'plugins/conservative_tool_policy/packages/backend/lib/conservative_tool_policy_backend.dart',
         'plugins/conservative_tool_policy/packages/backend/pubspec.yaml',
+        'plugins/agent_configuration/packages/frontend/lib/agent_configuration_frontend.dart',
+        'app/$_agentConfigurationFrontendHarness',
+        'app/tool/agent_configuration_frontend_compiler.dart',
         _sessionEvaluatorEntrypoint,
         'plugins/session_evaluator/packages/frontend/lib/session_evaluator_frontend.dart',
         'plugins/session_evaluator/packages/frontend/lib/src/read_prepared_handoff.dart',
@@ -2611,6 +2625,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
       // Preparation must replace inherited inputs with this checkout's paths.
       environment['ADELE_REPOSITORY_ROOT'] = '/wrong-repository';
       environment['ADELE_CHAT_FRONTEND_OUTPUT'] = '/wrong-output';
+      environment['ADELE_AGENT_CONFIGURATION_FRONTEND_OUTPUT'] = '/wrong-agent';
       environment['ADELE_TASK_BROWSER_FRONTEND_OUTPUT'] = '/wrong-task-browser';
       environment['ADELE_TERMINAL_FRONTEND_OUTPUT'] = '/wrong-terminal';
       environment['ADELE_SOURCE_EDITOR_FRONTEND_OUTPUT'] =
@@ -2650,6 +2665,8 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
             'compiled|$_toolFrontendHarness|command',
             'compile|$_openaiFrontendHarness',
             'compiled|$_openaiFrontendHarness',
+            'compile|$_agentConfigurationFrontendHarness',
+            'compiled|$_agentConfigurationFrontendHarness',
             'compile|$_sessionEvaluatorFrontendHarness',
             'compiled|$_sessionEvaluatorFrontendHarness',
             'compile|$_localDirectoryProjectFrontendHarness',
@@ -3004,7 +3021,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           catalog.installations.where(
             (installation) => installation.frontend != null,
           ),
-          hasLength(10),
+          hasLength(_frontendCompilations.length),
         );
         final conservative = catalog.installations.singleWhere(
           (installation) =>
@@ -3080,7 +3097,25 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           File.fromUri(agents.backendArtifactUri!).readAsStringSync(),
           'snapshot $_agentConfigurationEntrypoint\n',
         );
-        expect(agents.frontend, isNull);
+        final agentFrontend = agents.frontend!;
+        expect(
+          agentFrontend.artifactUri,
+          installations.uri.resolve('agent-configuration/frontend.evc'),
+        );
+        expect(agentFrontend.extensions, isEmpty);
+        final selector =
+            agentFrontend.presentations.single
+                as PreparedSessionAccessoryPresentation;
+        expect(selector.toJson(), {
+          'role': 'sessionAccessory',
+          'extensionId': 'dev.adele.plugin.agent-configuration.selector',
+          'library':
+              'package:agent_configuration_frontend/agent_configuration_frontend.dart',
+          'entrypoint': 'buildAgentSelector',
+          'location': 'execution-configuration',
+          'order': 100,
+          'backendServices': ['agentCatalog', 'agentSelection'],
+        });
         expect(agents.settingsSchema, isNull);
         expect(agents.backendConsumedCapabilities, isEmpty);
         expect(agents.backendConsumedRecordTypesToJson(), [
@@ -3958,6 +3993,10 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
       expected: [_agentConfigurationEntrypoint],
     ),
     (
+      path: 'app/$_agentConfigurationFrontendHarness',
+      expected: [_agentConfigurationFrontendHarness],
+    ),
+    (
       path: _conservativeToolPolicyEntrypoint,
       expected: [_conservativeToolPolicyEntrypoint],
     ),
@@ -4425,7 +4464,16 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
       final receipts = files.where(
         (file) => file.uri.pathSegments.last == 'receipt.json',
       );
-      expect(receipts, hasLength(28));
+      // Component receipts, plus the native PTY helper, snapshot and startup.
+      expect(
+        receipts,
+        hasLength(
+          _toolStages.length +
+              _backendStages.length +
+              _frontendCompilations.length +
+              3,
+        ),
+      );
       for (final receipt in receipts) {
         final decoded =
             jsonDecode(receipt.readAsStringSync()) as Map<String, dynamic>;

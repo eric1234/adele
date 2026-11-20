@@ -1,0 +1,25 @@
+name: agent_configuration_frontend
+description: Interpreted Flutter Session Agent selector for Agent Configuration.
+publish_to: none
+version: 0.1.0
+
+environment:
+  sdk: ">=3.10.9 <4.0.0"
+  flutter: ">=3.38.10"
+
+resolution: workspace
+
+dependencies:
+  adele_ui: ^0.1.0
+  agent_configuration_contract: ^0.1.0
+  flutter:
+    sdk: flutter
+
+dev_dependencies:
+  adele_contract: ^0.1.0
+  adele_desktop: ^0.1.0
+  flutter_test:
+    sdk: flutter
+
+flutter:
+  uses-material-design: true

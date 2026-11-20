@@ -579,7 +579,16 @@ shared-host AOT startup and live Settings CRUD on one backend generation.
 `test/core/agent_selection_integration_test.dart` adds ordinary compiled Agent
 selection over real host-mediated Project transactions, durable reopen and
 temporary backing, revision conflicts, corruption, and lost-acknowledgement
-reconciliation. These tests use isolated Settings roots and no Chat Run.
+reconciliation. Its compiled selector cases also mount a non-Chat pane with and
+without the accessory location, and retire or navigate away from a selector
+while a committed write is awaiting acknowledgement. These tests use isolated
+Settings roots and no Chat Run.
+Run `dart tools/adele.dart test --target agent_configuration_frontend` from the
+repository root for the compiled selector's loading, live refresh, revision and
+unacknowledged-write behavior. The `normal Chat restores rich Markdown` case in
+`test/core/normal_chatgpt_run_integration_test.dart` installs the stock selector
+beside a second accessory: a choice created through Global Settings survives
+departure/return without changing the submitted Draft Request or model input.
 `test/core/durable_chat_session_integration_test.dart` covers Chat and Project
 reopen when Agent activation fails. Declaration-only installations still need no
 executable host, as tested by `test/core/application_plugin_bootstrap_test.dart`.

@@ -1,6 +1,18 @@
 /// Build-time stock presentation metadata, keyed by owning PluginId.
 /// Keep this SDK-only so the launcher and prepared-installation fixtures share it.
 const Map<String, List<Map<String, Object?>>> stockFrontendDescriptors = {
+  'dev.adele.plugin.agent-configuration': [
+    {
+      'role': 'sessionAccessory',
+      'extensionId': 'dev.adele.plugin.agent-configuration.selector',
+      'location': 'execution-configuration',
+      'order': 100,
+      'library':
+          'package:agent_configuration_frontend/agent_configuration_frontend.dart',
+      'entrypoint': 'buildAgentSelector',
+      'backendServices': ['agentCatalog', 'agentSelection'],
+    },
+  ],
   'dev.adele.diff-viewer': [
     {
       'role': 'mainContent',

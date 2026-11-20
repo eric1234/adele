@@ -37,6 +37,10 @@ const _backends = {
 
 const _frontends = {
   'chat': ('chat_strategy', 'compile_chat_frontend.dart'),
+  'agent-configuration': (
+    'agent_configuration',
+    'compile_agent_configuration_frontend.dart',
+  ),
   'filesystem': ('filesystem_tools', 'compile_tool_inspection_frontends.dart'),
   'command': ('command_tools', 'compile_tool_inspection_frontends.dart'),
   'openai': ('openai', 'compile_openai_activity_frontend.dart'),
@@ -101,6 +105,7 @@ void main() {
       'command',
       'rich_document_editor',
       'session_content_inspection',
+      'session_accessory',
       'session_execution',
       'session_feedback',
       'session_presentation_lifecycle',
@@ -149,6 +154,7 @@ dev_dependencies:
     );
     write('plugins/source_editor/packages/frontend/lib/source_documents.dart');
     for (final plugin in [
+      'agent_configuration',
       'chat_strategy',
       'command_tools',
       'diff_viewer',
@@ -314,7 +320,37 @@ part 'public.g.dart';
         ]),
       );
       expect(agent.any((file) => file.contains('/app/')), isFalse);
+      final agentFrontend = inputs['agent-configuration-frontend-compilation']!;
+      expect(
+        agentFrontend,
+        containsAll([
+          for (final path in [
+            'app/tool/compile_agent_configuration_frontend.dart',
+            'app/tool/agent_configuration_frontend_compiler.dart',
+            '$agentPackages/frontend/pubspec.yaml',
+            '$agentPackages/frontend/lib/agent_configuration_frontend.dart',
+            '$agentPackages/contract/lib/agent_configuration_contract.dart',
+            '$agentPackages/contract/lib/agent_configuration_contract.g.dart',
+            'packages/contract_codegen/lib/src/eval_client_emitter.dart',
+            for (final bridge in [
+              'session_accessory_bridge.dart',
+              'owning_backend_bridge.dart',
+            ]) ...['app/lib/frontend/$bridge', 'packages/ui/lib/$bridge'],
+            'packages/ui/lib/inspection_display.dart',
+          ])
+            File(path).absolute.path,
+        ]),
+      );
       for (final entry in inputs.entries) {
+        if (entry.key != 'agent-configuration-frontend-compilation') {
+          expect(
+            entry.value.any(
+              (file) => file.contains('/$agentPackages/frontend/'),
+            ),
+            isFalse,
+            reason: entry.key,
+          );
+        }
         if (entry.key.contains('-frontend-')) {
           expect(
             entry.value.any((file) => file.contains('/packages/backend/')),

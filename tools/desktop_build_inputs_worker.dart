@@ -142,6 +142,17 @@ const _frontends =
         ui: ['command_bridge.dart', 'owning_backend_bridge.dart'],
         contract: 'session_evaluator',
       ),
+      'agent-configuration': (
+        plugin: 'agent_configuration',
+        harness: 'compile_agent_configuration_frontend.dart',
+        sources: ['agent_configuration_frontend.dart'],
+        ui: [
+          'session_accessory_bridge.dart',
+          'owning_backend_bridge.dart',
+          'inspection_display.dart',
+        ],
+        contract: 'agent_configuration',
+      ),
       'terminal': (
         plugin: 'terminal',
         harness: 'compile_terminal_frontend.dart',

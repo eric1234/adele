@@ -45,6 +45,7 @@ import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_platform_storage/adele_platform_storage.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
+import 'package:adele_settings/adele_settings.dart';
 import 'package:adele_ui/adele_ui.dart';
 import 'package:appflowy_editor/appflowy_editor.dart' as rich;
 import 'package:chat_strategy_contract/chat_strategy_contract.dart';
@@ -78,6 +79,7 @@ import '../../tool/source_editor_frontend_compiler.dart';
 import '../../tool/task_browser_frontend_compiler.dart';
 import '../../tool/terminal_frontend_compiler.dart';
 import '../../tool/tool_inspection_frontend_compiler.dart';
+import '../support/agent_selector_installation.dart';
 import '../support/git_worktree_fixture.dart';
 import '../support/markdown_paste_fixture.dart';
 import '../support/session_accessory_frontend_fixture.dart';
@@ -6144,6 +6146,8 @@ printf '%s\n' 'S2B_SHELL_DONE'
           'Keep **bold** and *italic* with `code`, read_file and stream_transport.\n\n'
           '```dart\n  final count = 2;\n  print(count);  \n```';
       const answer = 'The exact rich request reached the local provider.';
+      const agentInstructions =
+          'These instructions must not enter the model request.';
       final release = Completer<void>();
       final outbound = <Map<String, Object?>>[];
       final failures = <(Object, StackTrace)>[];
@@ -6156,6 +6160,7 @@ printf '%s\n' 'S2B_SHELL_DONE'
               jsonDecode(await utf8.decoder.bind(request).join())
                   as Map<String, Object?>;
           outbound.add(body);
+          expect(jsonEncode(body), isNot(contains(agentInstructions)));
           expect(body['input'], [
             {
               'type': 'message',
@@ -6191,6 +6196,20 @@ printf '%s\n' 'S2B_SHELL_DONE'
         final plugin = await Directory(
           '${root.path}/test.frontend-only',
         ).create();
+        // Install the stock Agent components alongside the independent accessory
+        // only in this fixture, not as a prerequisite for starting normal Chat.
+        final agent = await Directory(
+          '${root.path}/$agentConfigurationPluginId',
+        ).create();
+        await compileAotSnapshot(
+          dartExecutable: prepared.dart,
+          workingDirectory: Directory.current.parent,
+          entrypoint:
+              'plugins/agent_configuration/packages/backend/bin/agent_configuration_backend.dart',
+          artifact: File('${agent.path}/backend.aot'),
+          stage: 'chat-agent-selection',
+        );
+        await publishAgentSelector(agent);
         final artifact = await compileAccessoryProbe(plugin);
         await File(
           '${plugin.path}/adele_plugin.installation.json',
@@ -6220,12 +6239,29 @@ printf '%s\n' 'S2B_SHELL_DONE'
           }),
         );
         await fixture.launch(tester, prepared, root: root, endpoint: server);
+        await _terminalTap(
+          tester,
+          find.byKey(const ValueKey('settings-button')),
+        );
+        final settings = await tester
+            .widget<GlobalSettingsDialog>(find.byType(GlobalSettingsDialog))
+            .service();
+        await settings.createRecord(
+          RecordTypeId('$agentConfigurationPluginId.agent'),
+          ConfigurationRecordId('reviewer'),
+          {'name': 'Reviewer', 'instructions': agentInstructions},
+        );
+        await _terminalTap(tester, find.byTooltip('Close Settings'));
         await fixture.openTask(tester);
         await _tap(tester, 'New Chat Session');
         await _pumpUntil(tester, () => _composer().evaluate().isNotEmpty);
         final session = _session(tester);
         final accessory = find.text('Local ${session.id.value}');
         expect(accessory, findsOneWidget);
+        await _tap(tester, 'Agent: No Agent');
+        await _tap(tester, 'Reviewer');
+        final selectedAgent = find.text('Agent: Reviewer');
+        await _pumpUntil(tester, () => selectedAgent.evaluate().isNotEmpty);
         final runtime = fixture.runtime;
         final chat = _chatClient(
           runtime.plugins.backends
@@ -6238,12 +6274,14 @@ printf '%s\n' 'S2B_SHELL_DONE'
         await _breadcrumb(tester, 'task-breadcrumb');
         await _pumpUntil(tester, () => _composer().evaluate().isEmpty);
         expect(accessory, findsNothing);
+        expect(selectedAgent, findsNothing);
         await chat.setDraftRequest(session.id.value, restored);
         await _openSession(tester, session.id);
         await _pumpUntil(tester, () => _composer().evaluate().isNotEmpty);
         final owner = _composerOwner(tester);
         final state = _composerState(tester);
         expect(accessory, findsOneWidget);
+        await _pumpUntil(tester, () => selectedAgent.evaluate().isNotEmpty);
         expect(owner.snapshot()['markdown'], restored);
         expect(owner.revision, 0);
         expect(state.editable, isTrue);
