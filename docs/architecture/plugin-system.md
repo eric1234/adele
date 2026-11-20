@@ -1031,6 +1031,16 @@ captures that preference; the selection store itself does not retain Run binding
 The [Agent Configuration map](../../plugins/agent_configuration/README.md)
 owns the service and local failure semantics.
 
+### Model Configuration participation
+
+[Model Configuration](../../plugins/model_configuration/README.md) uses two
+different host grants: its own nonsecret record type for current definitions,
+and generation-scoped Project storage for the Session's selected record ID.
+Both services belong to the plugin's default configuration context. Neither
+is a Capability, a provider binding, or an inference-context source. See
+[Model Presets](profiles-and-configuration.md#model-presets) for the difference
+between an unresolved preference and an executable configuration.
+
 ### Diff participation
 
 Diff owns pending review-comment identities, immutable source anchors, and

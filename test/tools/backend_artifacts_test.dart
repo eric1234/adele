@@ -73,6 +73,8 @@ const String _agentsMdEntrypoint =
     'plugins/agents_md/packages/backend/bin/agents_md_backend.dart';
 const String _agentConfigurationEntrypoint =
     'plugins/agent_configuration/packages/backend/bin/agent_configuration_backend.dart';
+const String _modelConfigurationEntrypoint =
+    'plugins/model_configuration/packages/backend/bin/model_configuration_backend.dart';
 const String _conservativeToolPolicyEntrypoint =
     'plugins/conservative_tool_policy/packages/backend/bin/conservative_tool_policy_backend.dart';
 const String _searchToolsEntrypoint =
@@ -95,6 +97,7 @@ const _backendEntrypoints = [
   _openaiEntrypoint,
   _agentsMdEntrypoint,
   _agentConfigurationEntrypoint,
+  _modelConfigurationEntrypoint,
   _conservativeToolPolicyEntrypoint,
   _searchToolsEntrypoint,
   _filesystemToolsEntrypoint,
@@ -128,6 +131,7 @@ const _backendStages = {
   'openai-compilation': _openaiEntrypoint,
   'agents-md-compilation': _agentsMdEntrypoint,
   'agent-configuration-compilation': _agentConfigurationEntrypoint,
+  'model-configuration-compilation': _modelConfigurationEntrypoint,
   'conservative-tool-policy-compilation': _conservativeToolPolicyEntrypoint,
   'search-tools-compilation': _searchToolsEntrypoint,
   'filesystem-tools-compilation': _filesystemToolsEntrypoint,
@@ -1436,6 +1440,8 @@ TZ=UTC touch -m -t 200001010000 '${override.parent.path}'
           'agent_configuration_contract',
           'agent_configuration_backend',
           'agent_configuration_frontend',
+          'model_configuration_contract',
+          'model_configuration_backend',
           'conservative_tool_policy_backend',
           'search_tools_backend',
           'filesystem_tools_backend',
@@ -2137,13 +2143,21 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         installationDirectory: directory,
         pluginId: _modelConfigurationId,
         displayName: 'Model Configuration',
+        backend: true,
       );
+      final artifact = File.fromUri(directory.uri.resolve('backend.aot'));
+      await artifact.writeAsString('Discovery does not execute this artifact.');
 
       final catalog = await PreparedPluginCatalog.discover(installations.path);
       expect(catalog.issues, isEmpty);
       final installation = catalog.installations.single;
       expect(installation.metadata.id.value, _modelConfigurationId);
-      expect(installation.backendArtifactUri, isNull);
+      expect(installation.backendArtifactUri, artifact.uri);
+      expect(installation.backendConsumedRecordTypesToJson(), [
+        '$_modelConfigurationId.preset',
+      ]);
+      expect(installation.backendConsumedCredentialSlots, isEmpty);
+      expect(installation.backendConsumedCapabilities, isEmpty);
       expect(installation.frontend, isNull);
       expect(installation.settingsSchema, isNull);
       final schema = installation.recordsSchema!;
@@ -2220,8 +2234,15 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         unorderedEquals([
           'adele_plugin.installation.json',
           'records.schema.json',
+          'backend.aot',
         ]),
       );
+      await artifact.delete();
+      final missing = await PreparedPluginCatalog.discover(installations.path);
+      expect(missing.issues.single.component, PreparedPluginComponent.backend);
+      expect(missing.installations.single.backendArtifactUri, isNull);
+      expect(missing.installations.single.backendConsumedRecordTypes, isEmpty);
+      expect(missing.records.definitions.single.id, preset.id);
       expect(commands.existsSync(), isFalse);
     },
   );
@@ -2819,7 +2840,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
             directory: 'model-configuration',
             id: _modelConfigurationId,
             name: 'Model Configuration',
-            backend: false,
+            backend: true,
           ),
           (
             directory: 'git',
@@ -2961,6 +2982,8 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
                     ],
                   if (plugin.directory == 'openai')
                     'appliesRecordTypes': [_openaiApplyHandler],
+                  if (plugin.directory == 'model-configuration')
+                    'consumesRecordTypes': ['$_modelConfigurationId.preset'],
                   if (plugin.directory == 'openai')
                     'consumesCredentialSlots': [
                       {
@@ -3015,7 +3038,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           catalog.installations.where(
             (installation) => installation.backendArtifactUri != null,
           ),
-          hasLength(12),
+          hasLength(_backendEntrypoints.length - 1), // Excludes shared host.
         );
         expect(
           catalog.installations.where(
@@ -3121,13 +3144,6 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         expect(agents.backendConsumedRecordTypesToJson(), [
           'dev.adele.plugin.agent-configuration.agent',
         ]);
-        expect(
-          catalog.installations.where(
-            (installation) =>
-                installation.backendConsumedRecordTypes.isNotEmpty,
-          ),
-          unorderedEquals([agents, recordsInstallation]),
-        );
         expect(agents.backendConsumedCredentialSlots, isEmpty);
         expect(
           agents.recordsSchema!.artifactUri,
@@ -3143,7 +3159,21 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           (installation) =>
               installation.metadata.id.value == _modelConfigurationId,
         );
-        expect(presets.backendArtifactUri, isNull);
+        expect(
+          catalog.installations.where(
+            (installation) =>
+                installation.backendConsumedRecordTypes.isNotEmpty,
+          ),
+          unorderedEquals([agents, presets, recordsInstallation]),
+        );
+        expect(
+          presets.backendArtifactUri,
+          installations.uri.resolve('model-configuration/backend.aot'),
+        );
+        expect(
+          File.fromUri(presets.backendArtifactUri!).readAsStringSync(),
+          'snapshot $_modelConfigurationEntrypoint\n',
+        );
         expect(presets.frontend, isNull);
         expect(catalog.records.definitions, [
           recordsSchema.definitions.single,
@@ -3623,7 +3653,11 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           catalog.installations.where(
             (installation) => installation.backendArtifactUri != null,
           ),
-          hasLength(missing == PreparedPluginComponent.backend ? 11 : 12),
+          hasLength(
+            _backendEntrypoints.length -
+                1 - // Shared host is not a plugin installation.
+                (missing == PreparedPluginComponent.backend ? 1 : 0),
+          ),
         );
         expect(
           catalog.installations.where(
@@ -3988,6 +4022,10 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
 
   for (final mutation in [
     (path: _gitEntrypoint, expected: [_gitEntrypoint]),
+    (
+      path: _modelConfigurationEntrypoint,
+      expected: [_modelConfigurationEntrypoint],
+    ),
     (
       path: _agentConfigurationEntrypoint,
       expected: [_agentConfigurationEntrypoint],

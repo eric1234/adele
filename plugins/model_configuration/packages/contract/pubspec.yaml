@@ -1,0 +1,17 @@
+name: model_configuration_contract
+description: Model Configuration's preset catalog and Session selection contracts.
+publish_to: none
+version: 0.1.0
+
+environment:
+  sdk: ">=3.10.9 <4.0.0"
+
+resolution: workspace
+
+dependencies:
+  adele_contract: ^0.1.0
+  adele_model_provider: ^0.1.0
+  adele_settings: ^0.1.0
+
+dev_dependencies:
+  test: ^1.26.3

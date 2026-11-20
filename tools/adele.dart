@@ -292,6 +292,18 @@ const List<TestTarget> testTargets = <TestTarget>[
     nativeToml: true,
   ),
   TestTarget(
+    name: 'model_configuration_contract',
+    path: 'plugins/model_configuration/packages/contract',
+    executable: 'dart',
+    arguments: <String>['test'],
+  ),
+  TestTarget(
+    name: 'model_configuration_backend',
+    path: 'plugins/model_configuration/packages/backend',
+    executable: 'dart',
+    arguments: <String>['test'],
+  ),
+  TestTarget(
     name: 'conservative_tool_policy_backend',
     path: 'plugins/conservative_tool_policy/packages/backend',
     executable: 'dart',
@@ -572,6 +584,16 @@ analysisTargets = <({String name, String path, bool flutter})>[
     name: 'agent_configuration_frontend',
     path: 'plugins/agent_configuration/packages/frontend',
     flutter: true,
+  ),
+  (
+    name: 'model_configuration_contract',
+    path: 'plugins/model_configuration/packages/contract',
+    flutter: false,
+  ),
+  (
+    name: 'model_configuration_backend',
+    path: 'plugins/model_configuration/packages/backend',
+    flutter: false,
   ),
   (
     name: 'conservative_tool_policy_backend',

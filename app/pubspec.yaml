@@ -53,6 +53,7 @@ dev_dependencies:
   file_selector_platform_interface: ^2.7.0
   filesystem_tools_plugin: ^0.1.0
   git_backend: ^0.1.0
+  model_configuration_contract: ^0.1.0
   openai_contract: ^0.1.0
   plugin_builder: ^0.1.0
   resource_inspector_contract: ^0.1.0

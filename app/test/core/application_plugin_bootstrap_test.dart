@@ -574,7 +574,7 @@ void main() {
         'declaration-only-',
       );
       addTearDown(() => directory.delete(recursive: true));
-      // Schema-only Agent fixture alongside the stock data-only installation.
+      // Publish only the schemas, omitting both plugins' optional components.
       await publishStockPluginInstallation(
         repositoryRoot: Directory.current.parent,
         installationDirectory: Directory(
