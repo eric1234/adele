@@ -70,14 +70,23 @@ void main() {
       expect(registration.owns(first), isTrue);
       expect(registration.owns(second), isTrue);
       expect(first.isSameRegistration(second), isTrue);
+      expect(first.registrationIdentity, same(second.registrationIdentity));
       expect(registration.owns(other), isFalse);
       expect(first.isSameRegistration(other), isFalse);
+      expect(
+        first.registrationIdentity,
+        isNot(same(other.registrationIdentity)),
+      );
       await registration.close();
       registry.register(point: point, id: id, value: value);
       final replacement = registry.discover(point).single;
       expect(registration.owns(first), isTrue);
       expect(registration.owns(replacement), isFalse);
       expect(first.isSameRegistration(replacement), isFalse);
+      expect(
+        first.registrationIdentity,
+        isNot(same(replacement.registrationIdentity)),
+      );
       expect(first.validate, throwsA(isA<StaleExtensionBinding>()));
     },
   );

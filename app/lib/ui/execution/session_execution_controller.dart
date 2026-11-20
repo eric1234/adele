@@ -430,13 +430,13 @@ final class SessionExecutionController extends ChangeNotifier {
           extensions: _runtime.extensions,
         );
         _applicationExitFence.throwIfInterrupted();
-        materializationAttempted = true;
         execution = await createSessionOrchestrationRun(
           lifecycle: _runtime.lifecycle,
           sessionId: session.id,
           runId: runId!,
           resolvedStrategy: _capturedStrategy,
           expectedFeedback: feedbackAdmission?.receipt,
+          onMaterializationAttempt: () => materializationAttempted = true,
           contextComposer: _runtime.contextComposer,
           model: adapter,
           toolCatalog: tools,

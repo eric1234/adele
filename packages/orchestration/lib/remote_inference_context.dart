@@ -28,3 +28,17 @@ abstract interface class RemoteInferenceContextSourceService {
     String hostInvocationContext,
   );
 }
+
+/// Opt-in source with a host-retained Run binding and no host operation grant.
+@AdeleService('runBoundInferenceContextSource')
+abstract interface class RemoteRunBoundInferenceContextSourceService {
+  @AdeleMethod('captureRun')
+  Future<String?> captureRun(String sessionId, String runId);
+
+  @AdeleMethod('snapshot')
+  Future<List<RemoteInferenceInstruction>> snapshot(
+    String sessionId,
+    String runId,
+    String? binding,
+  );
+}

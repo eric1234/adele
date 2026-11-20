@@ -1579,6 +1579,154 @@ void main() {
     expect(fixture.executable.executions, 1);
   });
 
+  test(
+    'Chat approval continuation uses its prepared binding and fresh text',
+    () async {
+      var selection = 'first';
+      var revision = 'initial';
+      final captures = <(Session, RunId)>[];
+      final snapshots = <String?>[];
+      final fixture = await _fixture(
+        ToolPolicyDecision.ask,
+        source: InferenceContextSourceContribution.runBound(
+          failureMode: InferenceContextFailureMode.required,
+          captureRun: (session, runId) async {
+            captures.add((session, runId));
+            return selection;
+          },
+          snapshot: (context, binding) async {
+            snapshots.add(binding);
+            return [
+              InferenceInstructionMaterial(
+                key: 'note',
+                text: '$binding:$revision',
+              ),
+            ];
+          },
+        ),
+      );
+      expect(captures.single.$1, same(fixture.session));
+      expect(captures.single.$2, fixture.run.id);
+      expect(snapshots, isEmpty);
+      selection = 'second';
+      await fixture.strategy.start();
+      expect(fixture.run.state, RunState.waiting);
+      expect(fixture.lifecycle.hasSessionExecution(fixture.session), isTrue);
+      final first = fixture.model.requests.single;
+      expect(first.instructions, endsWith('first:initial'));
+
+      revision = 'updated';
+      await fixture.strategy.resolveApproval(_approval(fixture.run));
+      expect(fixture.run.state, RunState.completed);
+      expect(fixture.lifecycle.hasSessionExecution(fixture.session), isFalse);
+      expect(fixture.model.sawCorrelatedContinuation, isTrue);
+      expect(fixture.executable.executions, 1);
+      expect(captures, hasLength(1));
+      expect(snapshots, ['first', 'first']);
+      expect(first.instructions, endsWith('first:initial'));
+      expect(
+        fixture.model.requests.last.instructions,
+        endsWith('first:updated'),
+      );
+    },
+  );
+
+  for (final failure in ['capture', 'materialization', 'exit during capture']) {
+    test('unpublished Run releases occupancy after $failure', () async {
+      final extensions = ExtensionRegistry();
+      final strategyId = OrchestrationStrategyId('dev.adele.test.capture');
+      final calls = <String>[];
+      OrchestrationExecutionHost? unpublishedHost;
+      final materializationError = StateError('Materialization failed.');
+      addTearDown(
+        extensions
+            .register(
+              point: orchestrationStrategyContributions,
+              id: ExtensionId('dev.adele.test.capture.strategy'),
+              value: OrchestrationStrategyContribution(
+                strategyId: strategyId,
+                materialize: (context) {
+                  calls.add('materialize');
+                  unpublishedHost = context.host;
+                  if (failure == 'materialization') throw materializationError;
+                  return _CompletingExecution(context.host, calls);
+                },
+              ),
+            )
+            .close,
+      );
+      final topology = await OrchestrationTestLifecycle.create(
+        extensions,
+        SessionId('capture-session'),
+      );
+      addTearDown(topology.lifecycle.close);
+      final session = topology.createSession(strategyId);
+      final entered = Completer<void>();
+      final release = Completer<String?>();
+      addTearDown(
+        extensions
+            .register(
+              point: inferenceContextSources,
+              id: ExtensionId('dev.adele.test.capture.source'),
+              value: InferenceContextSourceContribution.runBound(
+                failureMode: InferenceContextFailureMode.required,
+                captureRun: (_, _) {
+                  entered.complete();
+                  return release.future;
+                },
+                snapshot: (_, _) async {
+                  calls.add('snapshot');
+                  return [];
+                },
+              ),
+            )
+            .close,
+      );
+      final fence = ApplicationExitExecutionFence();
+      final runId = RunId('unpublished');
+      final model = _Model();
+      final pending = createSessionOrchestrationRun(
+        lifecycle: topology.lifecycle,
+        sessionId: session.id,
+        runId: runId,
+        contextComposer: InferenceContextComposer(extensions),
+        model: model,
+        toolCatalog: _catalog(_Executable()),
+        policy: const _Policy(ToolPolicyDecision.allow),
+        applicationExitFence: fence,
+        onMaterializationAttempt: () => calls.add('attempt'),
+      );
+      await entered.future;
+      expect(topology.lifecycle.hasSessionExecution(session), isTrue);
+      final failed = expectLater(
+        pending,
+        throwsA(switch (failure) {
+          'materialization' => same(materializationError),
+          'capture' => isA<InferenceContextSourceFailed>(),
+          _ => isA<Exception>(),
+        }),
+      );
+      if (failure == 'exit during capture') {
+        fence.interruptForApplicationExit();
+        release.complete('late');
+      } else if (failure == 'materialization') {
+        release.complete('captured');
+      } else {
+        release.completeError(StateError('Capture failed.'));
+      }
+      await failed;
+      if (failure == 'materialization') {
+        expect(calls, ['attempt', 'materialize']);
+        expect(unpublishedHost!.start, throwsA(isA<InvalidRunOperation>()));
+      } else {
+        expect(calls, isEmpty);
+      }
+      expect(model.requests, isEmpty);
+      expect(topology.lifecycle.hasSessionExecution(session), isFalse);
+      expect(topology.lifecycle.store.runRecord(runId), isNull);
+    });
+  }
+
   test('Chat inference material carries host instructions', () async {
     final _StrategyFixture fixture = await _fixture(
       ToolPolicyDecision.allow,
@@ -4163,8 +4311,20 @@ Future<_StrategyFixture> _fixture(
   int maxModelInvocations = 8,
   List<ToolProgress> progress = const <ToolProgress>[],
   ApplicationExitExecutionFence? applicationExitFence,
+  InferenceContextSourceContribution? source,
 }) async {
   final ExtensionRegistry extensions = ExtensionRegistry();
+  if (source != null) {
+    addTearDown(
+      extensions
+          .register(
+            point: inferenceContextSources,
+            id: ExtensionId('dev.adele.test.chat.context'),
+            value: source,
+          )
+          .close,
+    );
+  }
   final ChatStrategyPlugin chat = ChatStrategyPlugin(
     maxModelInvocations: maxModelInvocations,
   );

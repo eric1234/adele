@@ -150,6 +150,10 @@ final class ExtensionBinding<T extends Object> {
 
   ExtensionId get id => _active.id;
 
+  /// Opaque identity for comparisons without retaining the contribution. A match
+  /// is not a liveness check; validate the current binding before using it.
+  Object get registrationIdentity => _active.registrationIdentity;
+
   /// Compares registration identity, not discovery wrappers or contribution IDs.
   /// This does not establish liveness; use [validate] before using a binding.
   bool isSameRegistration(ExtensionBinding<Object> other) =>
@@ -270,6 +274,7 @@ final class _ActiveExtension<T extends Object> {
   });
 
   final String pointId;
+  final Object registrationIdentity = Object();
   final ExtensionId id;
   final T value;
   bool active = true;

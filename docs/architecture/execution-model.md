@@ -211,7 +211,17 @@ strategy material
     -> model invocation
 ```
 
-Source discovery occurs for each capture. Instruction capture finishes before
+Run preparation fixes the membership of **Run-bound sources only**.
+`createSessionOrchestrationRun` retains the canonical Session for execution, then
+captures one opaque value per opted-in registration before materializing the
+selected strategy. Each callback observes state at its own asynchronous read;
+this is not a transaction with Settings edits or with other source reads. No
+instruction snapshot runs at this point. Required capture failure stops Run
+creation; optional capture failure remains an attributable omission without retry.
+
+Inference preparation discovers unbound sources anew and asks each eligible
+source for current instructions. Run-bound sources receive their own original
+value, including across tool continuations and approval waits. Capture finishes before
 allocation of that model invocation's identity, its tool snapshot, model-start
 evidence, or provider work. Earlier Run setup may already have materialized tool
 contributions. Capture preserves strategy input and source provenance; deterministic
@@ -225,10 +235,13 @@ are valid.
 
 Capture validates the exact source binding through callback completion and
 copying/validation of its material. Safely captured immutable data can survive
-source retirement, including during the model call. A later capture can discover
-replacements; the current capture never silently retries through one. Freshness
-is source-owned, with no universal refresh API. Capture is not an atomic snapshot
-of all external state.
+source retirement, including during the model call. A later inference can discover
+new unbound sources. Retiring a prepared source instead fails or omits that
+exact source according to its policy. A newly registered Run-bound source first
+participates in a new Run; it cannot inherit a retired binding. Bindings are
+execution-local, discarded on preparation failure or close, and never restored
+from activity history. Freshness is source-owned, with no universal refresh API.
+Capture is not an atomic snapshot of all external state.
 
 Maintained composition is instruction-focused. Broader Reference/Observation
 material is not defined here. Exact contracts and rendering belong to the

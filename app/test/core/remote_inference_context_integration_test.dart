@@ -119,9 +119,175 @@ void main() {
     return activation;
   }
 
-  Future<InferenceContextSnapshot> compose() => InferenceContextComposer(
+  Future<InferenceContextSnapshot> compose([
+    InferenceContextRunBindings? bindings,
+  ]) => InferenceContextComposer(extensions)
+      .compose(
+        strategyMaterial: strategy,
+        sourceContext: context,
+        runBindings: bindings,
+      )
+      .timeout(_bound);
+
+  Future<InferenceContextRunBindings> capture() => InferenceContextComposer(
     extensions,
-  ).compose(strategyMaterial: strategy, sourceContext: context).timeout(_bound);
+  ).captureRun(context.session, context.runId).timeout(_bound);
+
+  Future<PluginBackendActivation> startBound([
+    Map<String, Object?> options = const {},
+  ]) => start(
+    probeArtifact,
+    _probeId,
+    sourceId: _probeSource,
+    probeOptions: {'runBound': true, ...options},
+  );
+
+  test('bound capture fixes identity, not instructions, and grants no host '
+      'services alongside the unchanged AGENTS source', () async {
+    final probe = (await startBound()).connection;
+    expect(
+      probe.extensionExposures.single.serviceId,
+      remoteRunBoundInferenceContextSourceServiceId,
+    );
+    await start(agentsArtifact, _agentsId);
+    final ids = {
+      'sessionId': context.session.id.value,
+      'runId': context.runId.value,
+    };
+    final bindings = await capture();
+    expect(await _control(probe, 'boundRequests'), [ids]);
+    for (final id in ids.values) {
+      _expectDenied(
+        await _control(probe, 'replay', {'hostInvocationContext': id}),
+        'host_invocation_unavailable',
+      );
+    }
+    expect(context.requested, isEmpty);
+    expect(files.paths, isEmpty);
+
+    final first = await compose(bindings);
+    await _control(probe, 'updateBound', {
+      'selection': 'selection-two',
+      'instructions': 'second guidance',
+    });
+    files.text = 'New AGENTS.md guidance.';
+    final second = await compose(bindings);
+    for (final snapshot in [first, second]) {
+      expect(snapshot.sourceResults.map((r) => r.sourceId.value), [
+        _agentsSource,
+        _probeSource,
+      ]);
+    }
+    expect(first.sourceResults.first.materials.last.text, 'Root guidance.\n');
+    expect(second.sourceResults.first.materials.last.text, files.text);
+    expect(
+      first.sourceResults.last.materials.single.text,
+      'selection-one: first guidance',
+    );
+    expect(
+      second.sourceResults.last.materials.single.text,
+      'selection-one: second guidance',
+    );
+    expect(files.paths, ['AGENTS.md', 'AGENTS.md']);
+    expect(context.requested, [
+      AuthorizedEnvironmentFileReadFacet,
+      AuthorizedEnvironmentFileReadFacet,
+    ]);
+    // The complete generated payloads contain only semantic IDs and the
+    // source's own binding: in particular there is no host invocation token.
+    expect(await _control(probe, 'boundRequests'), [
+      ids,
+      {...ids, 'binding': 'selection-one'},
+      {...ids, 'binding': 'selection-one'},
+    ]);
+
+    context = _Context(files, runId: RunId('later-run'));
+    final next = await compose(await capture());
+    expect(
+      next.sourceResults.last.materials.single.text,
+      'selection-two: second guidance',
+    );
+  });
+
+  for (final phase in ['captureRun', 'snapshot']) {
+    for (final mode in ['required', 'optional']) {
+      test('$mode bound $phase failure retains source attribution', () async {
+        final probe = (await startBound({
+          'metadata': {'failureMode': mode},
+          'fail': phase,
+        })).connection;
+        if (phase == 'captureRun' && mode == 'required') {
+          await expectLater(capture(), throwsA(_requiredFailure(_probeSource)));
+        } else {
+          final bindings = await capture();
+          if (mode == 'required') {
+            await expectLater(
+              compose(bindings),
+              throwsA(_requiredFailure(_probeSource)),
+            );
+          } else {
+            final result = (await compose(bindings)).sourceResults.single;
+            expect(result.status, InferenceContextSourceStatus.omitted);
+            expect(result.failureMode, InferenceContextFailureMode.optional);
+            expect(result.materials, isEmpty);
+            expect(result.failure, _requiredFailure(_probeSource));
+            if (phase == 'captureRun') {
+              expect(
+                (await compose(bindings)).sourceResults.single.status,
+                InferenceContextSourceStatus.omitted,
+              );
+            }
+          }
+        }
+        expect(
+          await _control(probe, 'boundRequests'),
+          hasLength(phase == 'captureRun' ? 1 : 2),
+        );
+        expect(context.requested, isEmpty);
+      });
+    }
+
+    test(
+      'retiring a bound registration rejects a late $phase response',
+      () async {
+        final probe = await startBound({'hold': phase});
+        final failure = throwsA(
+          isA<InferenceContextSourceFailed>().having(
+            (e) => e.sourceId.value,
+            'source',
+            _probeSource,
+          ),
+        );
+        final bindings = phase == 'snapshot' ? await capture() : null;
+        final rejected = expectLater(
+          bindings == null ? capture() : compose(bindings),
+          failure,
+        );
+        await _control(probe.connection, 'boundReady');
+        // Retire the registration but leave the process connected so that the
+        // generated dispatcher really sends its successful, now-stale reply.
+        await probe.retire().timeout(_bound);
+        await _control(probe.connection, 'releaseBound');
+        await rejected;
+        await probe.close();
+        final replacement = (await startBound()).connection;
+        if (bindings != null) {
+          await expectLater(compose(bindings), failure);
+          expect(await _control(replacement, 'boundRequests'), isEmpty);
+        }
+        await _control(replacement, 'updateBound', {
+          'selection': 'replacement',
+          'instructions': 'new generation',
+        });
+        context = _Context(files, runId: RunId('replacement-run'));
+        final fresh = await compose(await capture());
+        expect(
+          fresh.sourceResults.single.materials.single.text,
+          'replacement: new generation',
+        );
+      },
+    );
+  }
 
   test('real AGENTS advertisement composes exact text, semantics and revision; '
       'new snapshots reread only the captured read facet', () async {
@@ -877,7 +1043,8 @@ void _expectDenied(Object? response, String code) {
 }
 
 final class _Context implements InferenceContextSourceContext {
-  _Context(this.files);
+  _Context(this.files, {RunId? runId})
+    : runId = runId ?? RunId('authoritative-run');
 
   _Files files;
   bool available = true;
@@ -891,7 +1058,7 @@ final class _Context implements InferenceContextSourceContext {
     strategyId: OrchestrationStrategyId('dev.adele.test.strategy'),
   );
   @override
-  final runId = RunId('authoritative-run');
+  final RunId runId;
 
   @override
   Future<T> requireHostService<T extends Object>() async {
