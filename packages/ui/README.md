@@ -88,6 +88,42 @@ such services. See the
 native bindings. Focused checks are mapped in
 [Main Content validation](../../docs/development/testing.md#focused-main-content-checks).
 
+## Session Accessories
+
+Register a [`SessionAccessoryContribution`](lib/session_accessory.dart) at
+`sessionAccessoryContributions` under its own `ExtensionId`. Its factory receives
+`SessionAccessoryAccess` with the exact canonical `session` and `isActive`; its
+optional `detach` runs after revocation. The control supplies a widget, not a
+list of options or a selection callback.
+
+A native strategy pane places
+`access.buildSessionAccessoryLocation(SessionAccessoryLocation.executionConfiguration)`.
+In an interpreted strategy
+pane, import [`main_content_bridge.dart`](lib/main_content_bridge.dart) and place
+`buildSessionAccessoryLocation('execution-configuration')` in the widget tree.
+Only a mounted pane with validated `owningBackend` strategy affinity receives
+interpreted placement access; initialization and input actions do not.
+
+A contributor declares a `frontend.presentations` entry, for example:
+
+```json
+{
+  "role": "sessionAccessory",
+  "extensionId": "example.preferences.control",
+  "location": "execution-configuration",
+  "order": 10,
+  "library": "package:preferences_frontend/main.dart",
+  "entrypoint": "buildPreferences"
+}
+```
+
+The entrypoint builds the plugin's Flutter widget in its own presentation
+runtime. [`readSessionAccessorySessionId()`](lib/session_accessory_bridge.dart)
+returns the host-captured ID without granting Session navigation or execution.
+Optional `backendServices` is an explicit allowlist for the contributor's own
+backend; omission grants none. See [Session semantic locations](../../docs/architecture/plugin-system.md#session-semantic-locations)
+for placement, ordering, and lifetime rules.
+
 ## Source File Display
 
 [`display_source_file.dart`](lib/display_source_file.dart) defines

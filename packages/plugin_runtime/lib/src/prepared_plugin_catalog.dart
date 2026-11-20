@@ -529,6 +529,51 @@ sealed class PreparedPresentationDescriptor {
 
 enum PreparedStrategyAffinity { independent, owningBackend }
 
+/// A widget at one semantic Session location. It receives no Main Content or
+/// execution grants; the only optional channels are to its own installation.
+final class PreparedSessionAccessoryPresentation
+    extends PreparedPresentationDescriptor {
+  PreparedSessionAccessoryPresentation({
+    required this.extensionId,
+    required this.location,
+    required this.order,
+    required super.library,
+    required this.entrypoint,
+    Iterable<String> backendServices = const [],
+  }) : backendServices = List.unmodifiable(backendServices) {
+    if (location != 'execution-configuration') {
+      throw const FormatException('Unsupported Session accessory location.');
+    }
+    _library(library, 'library');
+    _entrypoint(entrypoint, 'entrypoint');
+    final seen = <String>{};
+    for (final service in this.backendServices) {
+      adeleValidateServiceId(service);
+      if (!seen.add(service)) {
+        throw const FormatException(
+          'backendServices must not contain duplicates.',
+        );
+      }
+    }
+  }
+
+  final ExtensionId extensionId;
+  final String location;
+  final int order;
+  final String entrypoint;
+  final List<String> backendServices;
+
+  Map<String, Object?> toJson() => {
+    'role': 'sessionAccessory',
+    'extensionId': extensionId.value,
+    'location': location,
+    'order': order,
+    'library': library,
+    'entrypoint': entrypoint,
+    'backendServices': [...backendServices],
+  };
+}
+
 final class PreparedMainContentAction {
   PreparedMainContentAction({
     required this.id,
@@ -2006,6 +2051,35 @@ PreparedPresentationDescriptor _presentation(Object? value, String label) {
   }
   String text(String field) => _text(value[field], '$label.$field');
   switch (text('role')) {
+    case 'sessionAccessory':
+      _object(value, label, {
+        'role',
+        'extensionId',
+        'location',
+        'order',
+        'library',
+        'entrypoint',
+        'backendServices',
+      });
+      final order = value['order'];
+      if (order is! int) {
+        throw FormatException('$label.order must be an integer.');
+      }
+      final services = value.containsKey('backendServices')
+          ? value['backendServices']
+          : const <String>[];
+      if (services is! List<Object?> ||
+          services.any((item) => item is! String)) {
+        throw FormatException('$label.backendServices must be a string array.');
+      }
+      return PreparedSessionAccessoryPresentation(
+        extensionId: ExtensionId(text('extensionId')),
+        location: text('location'),
+        order: order,
+        library: text('library'),
+        entrypoint: text('entrypoint'),
+        backendServices: services.cast<String>(),
+      );
     case 'mainContent':
       _object(value, label, {
         'role',

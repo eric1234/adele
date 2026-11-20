@@ -370,6 +370,8 @@ final class PreparedMainContentHost {
                             view,
                             session: access.session,
                             isActive: () => collection.isActive,
+                            onOwningStrategyBound:
+                                collection.allowSessionAccessoryPlacement,
                           ),
                         );
                       } else if (descriptor

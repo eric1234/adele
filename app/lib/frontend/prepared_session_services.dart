@@ -57,6 +57,7 @@ final class PreparedSessionServices {
     ExtensionBinding<MainContentContribution> view, {
     required Session session,
     required bool Function() isActive,
+    void Function(void Function() validate)? onOwningStrategyBound,
   }) {
     void validateView() {
       view.validate();
@@ -172,6 +173,7 @@ final class PreparedSessionServices {
     }
 
     validate();
+    if (owning) onOwningStrategyBound?.call(validate);
     bool available() {
       validate();
       return true;

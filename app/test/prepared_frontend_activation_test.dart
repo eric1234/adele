@@ -14,6 +14,7 @@ import 'package:adele_desktop/frontend/model_native_activity_bridge.dart';
 import 'package:adele_desktop/frontend/owning_backend_bridge.dart';
 import 'package:adele_desktop/frontend/prepared_console_host.dart';
 import 'package:adele_desktop/frontend/prepared_session_services.dart';
+import 'package:adele_desktop/frontend/session_accessory_bridge.dart';
 import 'package:adele_desktop/frontend/tool_activity_inspection_bridge.dart';
 import 'package:adele_desktop/terminal/environment_terminal_owner.dart';
 import 'package:adele_desktop/ui/console/console_controller.dart';
@@ -26,6 +27,7 @@ import 'package:dart_eval/dart_eval.dart';
 import 'package:file_selector_platform_interface/file_selector_platform_interface.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_eval/flutter_eval.dart';
+import 'package:flutter_eval/widgets.dart' show $StatelessWidget$bridge;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
@@ -51,6 +53,7 @@ void main() {
       ..addPlugin(const ModelNativeActivityDeclarations())
       ..addPlugin(const DirectoryPickerDeclarations())
       ..addPlugin(const OwningBackendDeclarations())
+      ..addPlugin(const SessionAccessoryDeclarations())
       ..addPlugin(const MainContentDeclarations())
       ..entrypoints.add(_library);
     final program = compiler.compile({
@@ -62,8 +65,14 @@ import 'package:adele_ui/model_native_activity_bridge.dart';
 import 'package:adele_ui/directory_picker_bridge.dart';
 import 'package:adele_ui/owning_backend_bridge.dart';
 import 'package:adele_ui/main_content_bridge.dart';
+import 'package:adele_ui/session_accessory_bridge.dart';
 void initializePanes() { readMainContentContext(); }
 Widget customPane() => Text('Prepared pane');
+Widget buildAccessory() => AccessoryLabel();
+class AccessoryLabel extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) => Text('Accessory ' + readSessionAccessorySessionId());
+}
 Widget toolRich() => Text('rich ' + readToolActivitySnapshot().canonicalArguments['label']);
 Widget toolCompact() => Text('compact ' + readToolActivitySnapshot().canonicalArguments['label']);
 Widget nativeRich() => Text('rich ' + readModelNativeActivityData()['label']);
@@ -133,6 +142,7 @@ Future<void> delayedCommand() async {
           'directory_picker_bridge.dart',
           'owning_backend_bridge.dart',
           'main_content_bridge.dart',
+          'session_accessory_bridge.dart',
         ])
           file: File(
             '${Directory.current.parent.path}/packages/ui/lib/$file',
@@ -720,6 +730,77 @@ Future<void> delayedCommand() async {
     expect(extensions.discover(commandContributions), isEmpty);
     expect(extensions.discover(mainContentContributions), isEmpty);
   });
+
+  final accessory = {
+    'role': 'sessionAccessory',
+    'extensionId': 'dev.example.accessory',
+    'location': SessionAccessoryLocation.executionConfiguration.id,
+    'order': -2,
+    'library': _library,
+    'entrypoint': 'buildAccessory',
+  };
+
+  test(
+    'missing Session accessory entrypoint fails before publication',
+    () async {
+      await install('a-invalid', [
+        _sessionDescriptor('not-published'),
+        {...accessory, 'entrypoint': 'notInArtifact'},
+      ]);
+      await install('b-valid', [accessory]);
+      await owner.start(await discover());
+      final failed = owner.generations.first;
+      expect(failed.state, InstalledFrontendState.failed);
+      expect(failed.failure, isNotNull);
+      expect(failed.registrations, isEmpty);
+      expect(extensions.discover(mainContentContributions), isEmpty);
+      final binding = extensions.discover(sessionAccessoryContributions).single;
+      expect(
+        binding.value.location,
+        SessionAccessoryLocation.executionConfiguration,
+      );
+      expect(binding.value.order, -2);
+      expect(owner.generations.last.registrations.single.owns(binding), isTrue);
+    },
+  );
+
+  testWidgets(
+    'retained Session accessory keeps frozen ID but denies new factories',
+    (tester) async {
+      await tester.runAsync(() async {
+        await install('retained', [accessory]);
+        await owner.start(await discover());
+      });
+      final binding = extensions.discover(sessionAccessoryContributions).single;
+      final contribution = binding.value;
+      final access = _AccessoryAccess();
+      await tester.pumpWidget(
+        MaterialApp(home: contribution.createPresentation(access)),
+      );
+      final label = tester.element(
+        find.byWidgetPredicate((widget) => widget is $StatelessWidget$bridge),
+      );
+      expect(find.text('Accessory session'), findsOneWidget);
+      owner.retainPresentations();
+      expect(
+        () => contribution.createPresentation(_AccessoryAccess()),
+        throwsStateError,
+      );
+      access.isActive = false;
+      contribution.detach!(access);
+      await owner.generations.single.retire(
+        sessionAccessoryContributions,
+        binding.id,
+      );
+      label.markNeedsBuild();
+      await tester.pump();
+      expect(find.text('Accessory session'), findsOneWidget);
+      owner.releasePresentations();
+      await tester.pump();
+      expect(find.text('Accessory session'), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   for (final invalid in [
     'missing target',
@@ -1627,7 +1708,24 @@ Map<String, Object?> _sessionDescriptor(String name) => {
   'entrypoint': 'customPane',
 };
 
+final class _AccessoryAccess implements SessionAccessoryAccess {
+  @override
+  bool isActive = true;
+
+  @override
+  Session get session {
+    if (!isActive) throw StateError('Session access is retired.');
+    return _session;
+  }
+}
+
 final class _Access implements MainContentAccess {
+  @override
+  Widget buildSessionAccessoryLocation(
+    SessionAccessoryLocation location, {
+    bool Function()? isPresentationActive,
+  }) => throw StateError('No mounted pane.');
+
   @override
   Session get session => _session;
   @override

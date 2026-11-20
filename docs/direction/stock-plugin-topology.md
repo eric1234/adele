@@ -475,10 +475,13 @@ Expected Chat functionality includes:
 - child-Session activity/inspection when delegated work is created;
 - Chat-specific events such as `ChatTurnCompleted` where useful.
 
-Likely defines Chat-specific extension points such as:
+For execution-configuration controls the hypothetical `ChatPromptAccessory`
+is superseded by [Session semantic locations](../architecture/plugin-system.md#session-semantic-locations).
+Chat chooses where to mount the location; the same controls can appear in
+another strategy without a Chat dependency. Genuinely Chat-specific behavior
+could still justify extension points such as:
 
 ```text
-ChatPromptAccessory
 ChatSessionHeaderContribution
 ChatTurnAction
 ChatTimelineDecoration / ChatOperationPresentation
@@ -492,14 +495,14 @@ These are ownership expectations, not claims that the full integration exists.
 
 Expected stock integrations:
 
-- Agent Configuration contributes prompt/header UI plus inference instructions/constraints;
-- Model Routing contributes prompt controls plus model preferences;
+- Agent Configuration can contribute its own execution-configuration control; inference instructions/constraints are separate execution contributions;
+- Model Configuration can contribute a Model Preset control at that same location, independently of model resolution/routing;
 - Context Monitoring contributes status and compaction actions;
 - Accounting contributes usage/cost/quota displays;
 - Session Forking contributes Chat-specific fork behavior;
 - Diff/Review can send structured review feedback when Chat exposes a compatible target.
 
-Chat remains valid with no prompt accessories and even with no model tools, though the stock installation should not normally be configured that way.
+Chat remains valid with no Session accessories and even with no model tools.
 
 ## 5.3 Session Forking
 

@@ -4,6 +4,8 @@ import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:flutter/widgets.dart';
 
+import 'session_accessory.dart';
+
 /// Additive, independent collections of panes for the presented Session.
 /// Collections sort by [MainContentContribution.order], then ExtensionId text.
 final ExtensionPoint<MainContentContribution> mainContentContributions =
@@ -50,6 +52,14 @@ abstract interface class MainContentAccess {
 
   /// The only operation permitted after retirement; all others throw StateError.
   bool get isActive;
+
+  /// Places a semantic location inside this attachment's pane, not in the
+  /// window shell. A duplicate active mount is empty. An optional narrower
+  /// presentation lifetime can revoke a mount, never expand its authority.
+  Widget buildSessionAccessoryLocation(
+    SessionAccessoryLocation location, {
+    bool Function()? isPresentationActive,
+  });
 
   /// Immutable, ordered snapshots of this collection only.
   List<MainContentPaneInfo> get panes;

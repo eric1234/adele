@@ -1352,6 +1352,117 @@ void main() {
     });
   }
 
+  test(
+    'Session accessory is frontend-only, with an immutable allowlist',
+    () async {
+      final services = ['example.read', 'example.configure'];
+      final descriptor = PreparedSessionAccessoryPresentation(
+        extensionId: ExtensionId('org.example.accessory'),
+        location: 'execution-configuration',
+        order: -1,
+        library: 'package:example_frontend/accessory.dart',
+        entrypoint: 'buildAccessory',
+        backendServices: services,
+      );
+      services.clear();
+      final json = descriptor.toJson();
+      expect(json, {
+        ..._sessionAccessory,
+        'backendServices': ['example.read', 'example.configure'],
+      });
+      await install(
+        'accessory',
+        _manifest(
+          components: {
+            'frontend': _frontend(
+              presentations: [
+                _sessionAccessory,
+                {...json, 'extensionId': 'org.example.with-backend'},
+              ],
+            ),
+          },
+        ),
+      );
+      final catalog = await PreparedPluginCatalog.discover(root.path);
+      expect(catalog.issues, isEmpty);
+      final installation = catalog.installations.single;
+      expect(installation.backendArtifactUri, isNull);
+      final parsed = installation.frontend!.presentations
+          .cast<PreparedSessionAccessoryPresentation>();
+      expect(parsed.first.toJson(), {
+        ..._sessionAccessory,
+        'backendServices': <String>[],
+      });
+      expect(parsed.last.toJson(), {
+        ...json,
+        'extensionId': 'org.example.with-backend',
+      });
+      expect(parsed.last.backendServices.clear, throwsUnsupportedError);
+      expect(descriptor.backendServices.clear, throwsUnsupportedError);
+    },
+  );
+
+  for (final entry in <String, Map<String, Object?>>{
+    for (final field in _sessionAccessory.keys)
+      'missing $field': {..._sessionAccessory}..remove(field),
+    for (final (field, invalidValues) in <(String, List<Object?>)>[
+      ('extensionId', ['not-an-id', null]),
+      ('location', ['unknown', ' execution-configuration', null]),
+      ('order', [null, 1.0, '1', false]),
+      ('library', ['accessory.dart', 'package:example/../accessory.dart']),
+      ('entrypoint', ['Accessory.build', 'build()', '']),
+      (
+        'backendServices',
+        [
+          null,
+          'example.read',
+          [false],
+          [''],
+          ['example/read'],
+          ['a', 'a'],
+        ],
+      ),
+    ])
+      for (final value in invalidValues)
+        '$field = ${jsonEncode(value)}': {..._sessionAccessory, field: value},
+    for (final field in [
+      'sessionId',
+      'configurationContext',
+      'strategyId',
+      'strategyAffinity',
+      'sessionExecution',
+      'sessionFeedback',
+      'optionalBackendServices',
+      'operations',
+      'actions',
+      'retainedData',
+      'unknown',
+    ])
+      'unsupported $field': {..._sessionAccessory, field: true},
+  }.entries) {
+    test(
+      'Session accessory rejects ${entry.key} without losing backend',
+      () async {
+        await install(
+          'invalid',
+          _manifest(
+            components: {
+              'backend': {'artifact': 'backend.aot'},
+              'frontend': _frontend(presentations: [_session, entry.value]),
+            },
+          ),
+        );
+        final catalog = await PreparedPluginCatalog.discover(root.path);
+        expect(catalog.installations.single.frontend, isNull);
+        expect(catalog.installations.single.backendArtifactUri, isNotNull);
+        expect(
+          catalog.issues.single.component,
+          PreparedPluginComponent.frontend,
+        );
+      },
+    );
+  }
+
   PreparedSessionContentInspection sessionContentInspection({
     String contentKind = 'org.example.review-comments',
     String library = 'package:example_frontend/inspection.dart',
@@ -3047,6 +3158,7 @@ void main() {
   for (final descriptor in [
     _console,
     browser,
+    _sessionAccessory,
     _toolActivity,
     _modelNativeActivity,
     _sessionContentInspection,
@@ -5504,6 +5616,15 @@ const _mainContentActionCommand = {
   'commandId': 'org.example.open',
   'mainContentExtensionId': 'org.example.main-content',
   'actionId': 'open',
+};
+
+const _sessionAccessory = <String, Object?>{
+  'role': 'sessionAccessory',
+  'extensionId': 'org.example.accessory',
+  'location': 'execution-configuration',
+  'order': -1,
+  'library': 'package:example_frontend/accessory.dart',
+  'entrypoint': 'buildAccessory',
 };
 
 const _sessionContentInspection = {

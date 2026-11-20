@@ -3,11 +3,24 @@ import 'package:adele_ui/capability_bridge.dart';
 import 'package:adele_ui/environment_capability_bridge.dart';
 import 'package:adele_ui/main_content_bridge.dart';
 import 'package:adele_ui/owning_backend_bridge.dart';
+import 'package:adele_ui/session_accessory_bridge.dart';
 import 'package:adele_ui/session_execution_bridge.dart';
 import 'package:adele_ui/session_presentation_lifecycle_bridge.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('native imports grant no captured Session accessory context', () {
+    final String Function() read = readSessionAccessorySessionId;
+    expect(read, throwsUnsupportedError);
+  });
+
+  test('native imports grant no strategy accessory placement', () {
+    expect(
+      () => buildSessionAccessoryLocation('execution-configuration'),
+      throwsUnsupportedError,
+    );
+  });
+
   test('native imports grant no semantic Session Inspection opening', () {
     final bool Function(String, String) inspect = inspectSessionContent;
     expect(

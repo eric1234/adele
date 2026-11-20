@@ -4,13 +4,13 @@ import 'dart:isolate';
 
 import 'package:adele_contract/adele_contract.dart';
 
-// Retrieval-only fixture, not a strategy or persistence implementation. The
-// separate control route is native test synchronization, never a renderer grant.
+// Retrieval-only fixture. A caller may advertise a strategy to exercise its
+// presentation affinity without starting a Run. Control is never a UI grant.
 Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
   final bootstrap = bootstrapMessage! as Map<Object?, Object?>;
   final responses = bootstrap['responsePort'] as SendPort;
   final commands = ReceivePort();
-  final identity = arguments.single;
+  final identity = arguments.first;
   final requests = <Map<String, Object?>>[];
   final entered = <String, Completer<void>>{};
   final releases = <String, Completer<void>>{};
@@ -97,6 +97,7 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
     'kind': 'ready',
     'commandPort': commands.sendPort,
     'pluginBackendProtocolVersion': adelePluginBackendProtocolVersion,
+    if (arguments.length == 2) 'extensionExposures': [jsonDecode(arguments[1])],
   });
   await for (final Object? message in commands) {
     if (message is! Map<Object?, Object?> || message['kind'] != 'request') {

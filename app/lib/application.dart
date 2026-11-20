@@ -1354,6 +1354,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
                     child: ExcludeFocus(
                       excluding: _navigating,
                       child: MainContentHost(
+                        key: ObjectKey(workbench),
                         session: session,
                         extensions: _runtime.extensions,
                         actionCoordinator: _mainContentHost.actionCoordinator,

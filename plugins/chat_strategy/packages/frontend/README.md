@@ -74,6 +74,11 @@ departure flushes through the existing deactivation protocol; a later presentati
 hydrates a fresh owner from persisted Markdown. No AppFlowy types or JSON cross
 the production plugin boundary, and core never reads Chat state to build a document.
 
+Chat explicitly places the `execution-configuration` Session accessory location
+between history and the composer. The pane asks for the location, not a Session
+or a particular control. With no contributors the composer gains no extra row;
+accessory placement neither configures Chat nor starts a Run.
+
 Document invalidations carry no content. Chat takes explicit Markdown snapshots
 when saving or finalizing; while a backend write is in flight it coalesces native
 changes until that write settles. Native revision is distinct from Chat's local

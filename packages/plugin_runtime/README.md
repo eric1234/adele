@@ -123,7 +123,8 @@ processes, compiling source, loading EVC, or watching for changes.
 artifact URI and separate immutable presentation and behavioral extension
 descriptor lists. The sealed, data-only
 `PreparedPresentationDescriptor` variants are `PreparedMainContentPresentation`,
-`PreparedConsolePresentation`, `PreparedTaskBrowserPresentation`,
+`PreparedSessionAccessoryPresentation`, `PreparedConsolePresentation`,
+`PreparedTaskBrowserPresentation`, `PreparedSessionContentInspection`,
 `PreparedToolActivityPresentation`, and `PreparedModelNativeActivityPresentation`.
 The separate sealed `PreparedFrontendExtension` includes
 `PreparedProjectSelectorExtension`, with `kind: 'projectSelector'` and required
@@ -599,6 +600,19 @@ existing input presentation rather than executing a separate operation. Input
 context, admission, and lifetime remain with the
 [Main Content host](../../app/README.md#grouped-main-content); declaration creates
 no authority and captured targets never migrate to replacement registrations.
+
+Session accessories declare `role: 'sessionAccessory'`, an `extensionId`,
+`location: 'execution-configuration'`, integer `order`, canonical `package:` Dart
+`library`, and top-level widget `entrypoint`. The only optional field is
+`backendServices`, a duplicate-free service-ID allowlist that defaults to empty.
+The entrypoint is checked before frontend registration without executing it.
+Registration alone does not display the accessory or bind a backend. A mounted
+accessory can read its captured Session ID through the
+[interpreted context bridge](../ui/lib/session_accessory_bridge.dart). Declared
+channels capture only its exact sibling installation's live backend and default
+configuration context, never the presenting strategy's backend. Missing backend
+access stays unavailable for that presentation. No Main Content, execution,
+Environment, or configuration-context selection grant is part of this descriptor.
 
 Main Content descriptors use `role: 'mainContent'` with required `extensionId`,
 integer `order`, `library`, `initialize`, and `entrypoint`. Optional

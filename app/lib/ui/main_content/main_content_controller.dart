@@ -5,6 +5,8 @@ import 'package:adele_product/adele_product.dart';
 import 'package:adele_ui/adele_ui.dart';
 import 'package:flutter/widgets.dart';
 
+import 'session_accessory_host.dart';
+
 /// Current-Session ownership. The widget host reconciles before rendering, so
 /// registry notification cannot detach views during exit retention.
 final class MainContentController extends ChangeNotifier {
@@ -21,6 +23,7 @@ final class MainContentController extends ChangeNotifier {
   final bool Function()? isCurrent;
   late final StreamSubscription<void> _changes;
   final List<_MainContentAccess> _groups = [];
+  final _accessoryMounts = SessionAccessoryMounts();
   bool _closed = false;
   bool _retaining = false;
   bool _reconciling = false;
@@ -219,7 +222,13 @@ final class MainContentEntry {
       if (!isActive) throw StateError('Main Content pane is retired.');
       final created = _pane.createPresentation();
       if (!isActive) throw StateError('Main Content pane is retired.');
-      return _presentation = created;
+      return _presentation = SessionAccessoryPaneScope(
+        mounts: _controller._accessoryMounts,
+        extensions: _controller.extensions,
+        owner: _owner,
+        isActive: () => isActive,
+        child: created,
+      );
     } on Object {
       return _presentation = const Center(
         child: Text('Main Content presentation is unavailable.'),
@@ -309,6 +318,19 @@ final class _MainContentAccess implements MainContentAccess {
   List<MainContentPaneInfo> get panes {
     _validate();
     return List.unmodifiable(_entries.map((entry) => entry.info));
+  }
+
+  @override
+  Widget buildSessionAccessoryLocation(
+    SessionAccessoryLocation location, {
+    bool Function()? isPresentationActive,
+  }) {
+    _validate();
+    return SessionAccessoryPlacement(
+      owner: this,
+      location: location,
+      isPresentationActive: isPresentationActive,
+    );
   }
 
   @override

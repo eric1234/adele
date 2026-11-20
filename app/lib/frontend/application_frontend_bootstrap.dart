@@ -23,6 +23,7 @@ import 'prepared_main_content_host.dart';
 import 'prepared_session_command.dart';
 import 'prepared_session_services.dart';
 import 'prepared_task_browser_host.dart';
+import 'session_accessory_bridge.dart';
 import 'session_content_inspection_bridge.dart';
 import 'terminal_projection_bridge.dart';
 import 'tool_activity_inspection_bridge.dart';
@@ -283,6 +284,14 @@ final class InstalledFrontendActivation {
       );
       if (_closed) return;
       if (generation.failure case final failure?) throw failure;
+      for (final accessory
+          in component.presentations
+              .whereType<PreparedSessionAccessoryPresentation>()) {
+        generation.validateOperation(
+          library: accessory.library,
+          entrypoint: accessory.entrypoint,
+        );
+      }
       final consoleTargets =
           <
             PreparedConsoleActionCommandExtension,
@@ -360,6 +369,8 @@ final class InstalledFrontendActivation {
       for (final descriptor in component.presentations) {
         if (_closed) return;
         switch (descriptor) {
+          case PreparedSessionAccessoryPresentation():
+            _registerSessionAccessory(generation, descriptor);
           case PreparedMainContentPresentation():
             for (final entrypoint in [
               descriptor.initialize,
@@ -819,6 +830,87 @@ final class InstalledFrontendActivation {
         // Keep the activation failure primary. close reports cleanup failure.
       }
     }
+  }
+
+  void _registerSessionAccessory(
+    PreparedFrontend generation,
+    PreparedSessionAccessoryPresentation descriptor,
+  ) {
+    final location = SessionAccessoryLocation.values.singleWhere(
+      (location) => location.id == descriptor.location,
+    );
+    final mounted = <SessionAccessoryBridge, SessionAccessoryAccess>{};
+    void revoke([SessionAccessoryAccess? access]) {
+      for (final view in mounted.entries.toList()) {
+        if (access == null || identical(access, view.value)) {
+          view.key.invalidate();
+        }
+      }
+    }
+
+    final registration = _register(
+      point: sessionAccessoryContributions,
+      id: descriptor.extensionId,
+      contribution: (isActive) => SessionAccessoryContribution(
+        location: location,
+        order: descriptor.order,
+        detach: revoke,
+        createPresentation: (access) {
+          void validate() {
+            if (!generation.acceptsPresentations ||
+                !isActive() ||
+                !access.isActive) {
+              throw StateError('Session accessory is unavailable.');
+            }
+          }
+
+          validate();
+          final sessionId = access.session.id.value;
+          // Capture absence too. A later backend or remount cannot substitute a
+          // different installation, configuration context, or generation.
+          final channel = descriptor.backendServices.isEmpty
+              ? null
+              : _backends
+                    ?.backendForInstallation(installation)
+                    ?.openPresentationChannel(
+                      backendServices: descriptor.backendServices,
+                      validatePresentation: validate,
+                    );
+          return generation.createPresentation(
+            library: descriptor.library,
+            entrypoint: descriptor.entrypoint,
+            key: ObjectKey(access),
+            createBridge: () {
+              validate();
+              final owning = channel == null
+                  ? OwningBackendBridge(
+                      channels: const {},
+                      validateBinding: validate,
+                    )
+                  : OwningBackendBridge.channel(
+                      channel,
+                      validateBinding: validate,
+                    );
+              late final SessionAccessoryBridge context;
+              context = SessionAccessoryBridge(
+                sessionId: sessionId,
+                validateAccess: validate,
+                onEnd: () {
+                  mounted.remove(context);
+                  owning.invalidate();
+                },
+              );
+              mounted[context] = access;
+              return PreparedFrontendBridges([context, owning]);
+            },
+          );
+        },
+      ),
+    );
+    _extensions
+        .discover(sessionAccessoryContributions)
+        .singleWhere(registration.owns)
+        .onRetire(revoke);
   }
 
   ExtensionRegistration _register<T extends Object>({

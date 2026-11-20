@@ -142,6 +142,9 @@ final class PreparedFrontend {
   bool _active = true;
   bool _retaining = false;
 
+  /// A role must not capture new native access for a retained or retired view.
+  bool get acceptsPresentations => _active && !_retaining && _bytes != null;
+
   /// Retains a private immutable copy. Missing artifacts remain explicitly
   /// unavailable; owners choose role-specific decode and entrypoint validation.
   static Future<PreparedFrontend> load(File artifact) async {
