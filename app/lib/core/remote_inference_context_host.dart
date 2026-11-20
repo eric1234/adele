@@ -44,6 +44,33 @@ final class RemoteInferenceContextSourceAdapter
         'Inference source failureMode must be required or optional.',
       ),
     };
+    if (remote.exposure.serviceId ==
+        remoteRunBoundInferenceContextSourceServiceId) {
+      // Acquiring the channel fences admission to this exact registration.
+      // Reject late results too, without opening a host-service invocation.
+      RemoteRunBoundInferenceContextSourceServiceClient client() =>
+          RemoteRunBoundInferenceContextSourceServiceClient(remote.channel);
+      return InferenceContextSourceContribution.runBound(
+        failureMode: failureMode,
+        captureRun: (session, runId) async {
+          final binding = await client().captureRun(
+            session.id.value,
+            runId.value,
+          );
+          remote.validate();
+          return binding;
+        },
+        snapshot: (context, binding) async {
+          final instructions = await client().snapshot(
+            context.session.id.value,
+            context.runId.value,
+            binding,
+          );
+          remote.validate();
+          return _material(instructions);
+        },
+      );
+    }
     if (remote.exposure.serviceId != remoteInferenceContextSourceServiceId) {
       throw const ExtensionContractException(
         'Unsupported inference source service.',
@@ -75,19 +102,23 @@ final class RemoteInferenceContextSourceAdapter
               opened.id,
             );
             read.validateResolvedBinding();
-            return [
-              for (final instruction in instructions)
-                InferenceInstructionMaterial(
-                  key: instruction.key,
-                  text: instruction.text,
-                  revision: instruction.revision,
-                ),
-            ];
+            return _material(instructions);
           },
         );
       },
     );
   }
+
+  static List<InferenceInstructionMaterial> _material(
+    List<RemoteInferenceInstruction> instructions,
+  ) => [
+    for (final instruction in instructions)
+      InferenceInstructionMaterial(
+        key: instruction.key,
+        text: instruction.text,
+        revision: instruction.revision,
+      ),
+  ];
 }
 
 /// Captures authority, never resolves it from transported semantic identifiers.

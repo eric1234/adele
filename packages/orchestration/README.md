@@ -493,7 +493,7 @@ package. See the canonical
 `SemanticModelInputItem` values before host inference preparation. Stock Chat
 projects its own canonical history and adds Run-local replay into this value.
 `InferenceContextComposer(registry).compose(strategyMaterial: ...,
-sourceContext: ...)` discovers current instruction sources over the **same existing
+sourceContext: ..., runBindings: ...)` composes instruction sources over the **same existing
 `ExtensionRegistry`**, not a second registry or source runtime. The host composes
 before allocating model invocation identity, taking its tool snapshot, recording
 model-start evidence, or calling the provider. It then constructs internal
@@ -507,6 +507,13 @@ the typed point with ID `dev.adele.extension.inference-context-sources`. Each
 contribution requires explicit `failureMode` (`InferenceContextFailureMode.required`
 or `.optional`) and a `snapshot` callback returning
 `Future<Iterable<InferenceContextMaterial>>`.
+
+The ordinary constructor takes `snapshot(context)` and needs no Run preparation.
+Use `InferenceContextSourceContribution.runBound` for `captureRun(session, runId)`
+and `snapshot(context, binding)`. Capture returns a nullable opaque string (at
+most 1024 UTF-16 code units, without normalization). A captured null is a valid
+value, not a request to capture again. The host passes only the source's own
+value to its snapshot; it never caches instruction text on the source's behalf.
 
 `InferenceContextSourceContext` exposes canonical product `Session`, `RunId runId`,
 and `Future<T> requireHostService<T extends Object>()`. The app's fresh-per-inference
@@ -558,7 +565,15 @@ point metadata is `failureMode: 'required'` or `'optional'`; there is no priorit
 stock identity switch. Unsupported fields and values fail activation. The
 composer retains all capture, ordering, duplicate-key, and required/optional rules.
 
-For each snapshot the host captures the canonical `InferenceContextSourceContext`,
+`RemoteRunBoundInferenceContextSourceService` is an additive service on the same
+point. Its generated service ID selects the Run-bound variant; the failure-mode
+metadata is unchanged. Its two unary calls are `captureRun(sessionId, runId)`
+and `snapshot(sessionId, runId, binding)`. The host sends the captured value back
+over the exact registration's connection/configuration context. The backend needs
+no Run lookup table. Neither call opens a host invocation or grants Environment
+access; any generation-scoped infrastructure grants are independent.
+
+For each **unbound** remote snapshot the host captures the canonical `InferenceContextSourceContext`,
 then grants a secure opaque invocation context with only generated Environment
 `AuthorizedEnvironmentReadService` allowlisted. It offers no-argument `authority()`
 for the already-bound Session/Environment identity, `readFile(relativePath)`, and
@@ -615,8 +630,14 @@ optional failure. `InferenceContextSourceFailed` preserves the source ID, origin
 
 ### Capture And Lifetime
 
+`InferenceContextComposer.captureRun(session, runId)` captures only opted-in
+sources. The host keeps the result on the live execution, not in a lookup table
+keyed by Run ID. Required failure aborts Run preparation; optional failure is
+reported on subsequent snapshots, never retried. An unprepared composition
+cannot lazily initialize a Run-bound source.
+
 Each genuinely new inference, including Chat continuation, discovers current
-sources anew. Each `snapshot` callback returns current material according to that
+unbound sources anew. Each eligible `snapshot` returns current material according to that
 source's freshness semantics. Rereads, watches, caches, and version tracking are
 internal source choices. There is no generic refresh API or host cache plan; a
 revision is opaque metadata, not a refresh command.
@@ -631,8 +652,12 @@ replacement registration within the same capture.
 
 After safe capture, the immutable data has no executable-binding dependency.
 Source retirement during the provider call does not invalidate that request; the
-next inference discovers any replacement. Executable strategy/tool exact-binding
-rules are unchanged: already-resolved executable work cannot migrate.
+next inference discovers current unbound sources. An ID reserved at preparation
+still belongs to the original registration for that Run: retirement follows its
+failure policy even if a different contribution now advertises the same ID.
+Replacements for a prepared source and late Run-bound registrations are eligible
+only for a new Run. Executable strategy/tool exact-binding rules are unchanged:
+already-resolved executable work cannot migrate.
 
 ## Boundaries
 

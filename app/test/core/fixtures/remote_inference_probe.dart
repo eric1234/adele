@@ -22,10 +22,16 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
     detachedReads: options['detachedReads'] == true,
     inspectReadAuthority: options['inspectReadAuthority'] == true,
   );
+  final bound = options['runBound'] == true ? _BoundProbe(options) : null;
+  final serviceId = bound == null
+      ? remoteInferenceContextSourceServiceId
+      : remoteRunBoundInferenceContextSourceServiceId;
   final router = AdeleConfigurationContextRouter.single(
     configurationContext: configuration,
-    serviceId: remoteInferenceContextSourceServiceId,
-    dispatcher: RemoteInferenceContextSourceServiceDispatcher(probe),
+    serviceId: serviceId,
+    dispatcher: bound == null
+        ? RemoteInferenceContextSourceServiceDispatcher(probe)
+        : RemoteRunBoundInferenceContextSourceServiceDispatcher(bound),
   );
   final commands = ReceivePort();
   (bootstrap['bootstrapPort'] as SendPort).send({
@@ -36,9 +42,7 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
       AdeleExtensionExposure(
         extensionPointId: 'dev.adele.extension.inference-context-sources',
         extensionId: arguments.first,
-        serviceId:
-            options['serviceId'] as String? ??
-            remoteInferenceContextSourceServiceId,
+        serviceId: options['serviceId'] as String? ?? serviceId,
         configurationContext: configuration,
         metadata: options.containsKey('metadata')
             ? Map<String, Object?>.from(options['metadata'] as Map)
@@ -57,6 +61,7 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
       }
       if (message['kind'] == 'request' && message['method'] == 'shutdown') {
         probe.close();
+        bound?.release();
         await router.close();
         responses.send({
           'kind': 'response',
@@ -69,15 +74,75 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
       // A separate control route remains usable while snapshot awaits a read.
       if (message['kind'] == 'request' && message['serviceId'] == 'probe') {
         if (message['method'] == 'terminate') Isolate.exit();
-        unawaited(probe.control(message));
+        unawaited(probe.control(message, bound));
         continue;
+      }
+      if (bound != null && message['serviceId'] == serviceId) {
+        bound.requests.add(message['payload']);
       }
       unawaited(router.handle(message, responses.send));
     }
   } finally {
     probe.close();
+    bound?.release();
     commands.close();
     await router.close();
+  }
+}
+
+// No lookup by Run ID: the only identity used to construct instructions is
+// the binding supplied to the generated snapshot dispatcher by the host.
+final class _BoundProbe implements RemoteRunBoundInferenceContextSourceService {
+  _BoundProbe(this.options);
+
+  final Map<String, Object?> options;
+  final requests = <Object?>[];
+  final ready = Completer<void>();
+  final _release = Completer<void>();
+  String? selection = 'selection-one';
+  String instructions = 'first guidance';
+
+  bool update(Map<String, Object?> payload) {
+    selection = payload['selection'] as String?;
+    instructions = payload['instructions']! as String;
+    return true;
+  }
+
+  bool release() {
+    if (!_release.isCompleted) _release.complete();
+    return true;
+  }
+
+  Future<void> _enter(String operation) async {
+    if (options['hold'] == operation) {
+      if (!ready.isCompleted) ready.complete();
+      await _release.future;
+    }
+    if (options['fail'] == operation) {
+      throw StateError('Probe $operation failed.');
+    }
+  }
+
+  @override
+  Future<String?> captureRun(String sessionId, String runId) async {
+    await _enter('captureRun');
+    return selection;
+  }
+
+  @override
+  Future<List<RemoteInferenceInstruction>> snapshot(
+    String sessionId,
+    String runId,
+    String? binding,
+  ) async {
+    await _enter('snapshot');
+    return [
+      RemoteInferenceInstruction(
+        key: 'guidance',
+        text: '$binding: $instructions',
+        revision: null,
+      ),
+    ];
   }
 }
 
@@ -125,9 +190,16 @@ final class _Probe implements RemoteInferenceContextSourceService {
     return result.future;
   }
 
-  Future<void> control(Map<Object?, Object?> request) async {
+  Future<void> control(
+    Map<Object?, Object?> request,
+    _BoundProbe? bound,
+  ) async {
     final payload = Map<String, Object?>.from(request['payload'] as Map);
     final Object? result = switch (request['method']) {
+      'boundRequests' => bound!.requests,
+      'boundReady' => await bound!.ready.future.then((_) => true),
+      'releaseBound' => bound!.release(),
+      'updateBound' => bound!.update(payload),
       'savedContext' => savedContext,
       'snapshotReady' => await snapshotReady.future.then((_) => true),
       'finishSnapshot' => (() {

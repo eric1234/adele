@@ -1187,13 +1187,16 @@ example the [Filesystem Tools](../../plugins/filesystem_tools/README.md) and
 Remote inference sources register through the extension model, not Capability
 provider selection. Snapshot execution receives only the host services authorized
 by that point. The current AGENTS.md source receives read-only Session/Environment
-authority; transported Session/Run IDs cannot reconstruct or redirect it.
+authority; transported Session/Run IDs cannot reconstruct or redirect it. The
+separate Run-bound source service captures a value and snapshots instructions
+through ordinary generation-bound requests. Neither operation receives an
+invocation token or an Environment grant.
 
 Executable bindings are validated through capture. Safely captured immutable
 material may outlive source registration according to the owning extension
 contract; that does not keep the executable binding or invocation authority alive.
-The next capture can discover a replacement without retrying the current capture
-through it. See [`orchestration`](../../packages/orchestration/README.md#inference-context)
+The next inference can discover a replacement unbound source. A Run-bound
+replacement must wait for a new Run. See [`orchestration`](../../packages/orchestration/README.md#inference-context)
 and the [AGENTS.md plugin](../../plugins/agents_md/README.md) for source semantics,
 transport contracts, and their tests.
 
