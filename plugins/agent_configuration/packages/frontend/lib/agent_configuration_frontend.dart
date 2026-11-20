@@ -121,8 +121,9 @@ class _AgentSelectorState extends State<_AgentSelector> {
         reading ||
         saving ||
         needsReconciliation ||
-        selection == null)
+        selection == null) {
       return;
+    }
     setState(() {
       expanded = !expanded;
     });
@@ -136,8 +137,9 @@ class _AgentSelectorState extends State<_AgentSelector> {
         saving ||
         !expanded ||
         needsReconciliation ||
-        current == null)
+        current == null) {
       return;
+    }
     // A callback from the previous frame cannot borrow a newer baseline.
     if (current.revision != offeredRevision) return;
     if (id != null && !labels.containsKey(id)) return;
