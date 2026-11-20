@@ -1026,7 +1026,8 @@ Project reopen; explicitly volatile selection uses host-owned temporary backing
 for the live Project lifetime. Clearing retains revision history. Deleted global
 definitions leave unresolved IDs rather than triggering implicit replacement or
 deletion. Core restoration does not depend on Agent availability or resolution.
-Selection is data only, not effective-Agent Run binding or context injection.
+The plugin's separate [Run-bound inference source](execution-model.md#inference-preparation)
+captures that preference; the selection store itself does not retain Run bindings.
 The [Agent Configuration map](../../plugins/agent_configuration/README.md)
 owns the service and local failure semantics.
 

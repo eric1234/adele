@@ -48,6 +48,8 @@ import 'package:adele_product/adele_product.dart';
 import 'package:adele_settings/adele_settings.dart';
 import 'package:adele_ui/adele_ui.dart';
 import 'package:appflowy_editor/appflowy_editor.dart' as rich;
+import 'package:chat_strategy_backend/chat_strategy_backend.dart'
+    show chatDefaultInstructions, chatToolNarrationGuidance;
 import 'package:chat_strategy_contract/chat_strategy_contract.dart';
 import 'package:code_forge/code_forge.dart';
 import 'package:command_tools_contract/command_tools_contract.dart';
@@ -6132,6 +6134,219 @@ printf '%s\n' 'S2B_SHELL_DONE'
   );
 
   testWidgets(
+    'normal Chat binds the selected Agent across tool continuation and later Runs',
+    (tester) => tester.runAsync(() async {
+      await tester.binding.setSurfaceSize(const Size(1800, 1400));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final fixture = await _ProductFixture.create();
+      final root = await prepared.copyInstallations(
+        fixture.directory,
+        withAgent: true,
+      );
+      const original =
+          '\n# reviewer-v1\r\n\r\n```dart\r\n  check();\r\n```\r\n  ';
+      const edited = '  ## reviewer-v2\n\n- Check `git diff`.  \n';
+      const writer = '\t# writer-v1\n\nKeep **both** alternatives.\n';
+      const chatInstructions =
+          '$chatToolNarrationGuidance\n\n$chatDefaultInstructions';
+      const firstPrompt = 'Propose git diff --check and report the result.';
+      final call = _call('check', 'run_command', _commandArguments);
+      final outbound = <Map<String, Object?>>[];
+      final failures = <(Object, StackTrace)>[];
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final subscription = server.listen((request) async {
+        try {
+          expect(request.method, 'POST');
+          expect(request.uri.path, '/backend-api/codex/responses');
+          outbound.add(
+            jsonDecode(await utf8.decoder.bind(request).join())
+                as Map<String, Object?>,
+          );
+          final n = outbound.length;
+          request.response.headers.contentType = ContentType(
+            'text',
+            'event-stream',
+            charset: 'utf-8',
+          );
+          _output(
+            request.response,
+            n == 1 ? call : _message('final-$n', 'Answer $n.'),
+          );
+          _sse(request.response, {
+            'type': 'response.completed',
+            'response': {'id': 'agent-response-$n', 'model': 'gpt-6-astra'},
+          });
+        } on Object catch (error, stack) {
+          failures.add((error, stack));
+        } finally {
+          await request.response.close();
+        }
+      });
+      addTearDown(() async {
+        await server.close(force: true);
+        await subscription.cancel();
+      });
+
+      final runtime = fixture.runtime;
+      try {
+        await fixture.launch(tester, prepared, root: root, endpoint: server);
+        final settings = await _globalSettings(tester);
+        final type = RecordTypeId('$agentConfigurationPluginId.agent');
+        final a = await settings.createRecord(
+          type,
+          ConfigurationRecordId('reviewer'),
+          {'name': 'Review Agent', 'instructions': original},
+        );
+        final b = await settings.createRecord(
+          type,
+          ConfigurationRecordId('writer'),
+          {'name': 'Writing Agent', 'instructions': writer},
+        );
+        await fixture.openTask(tester);
+        await _tap(tester, 'New Chat Session');
+        await _pumpUntil(tester, () => _composer().evaluate().isNotEmpty);
+        final session = _session(tester);
+        Future<void> choose(String previous, String next) async {
+          await _tap(tester, 'Agent: $previous');
+          await _tap(tester, next);
+          await _pumpUntil(
+            tester,
+            () => find.text('Agent: $next').evaluate().isNotEmpty,
+          );
+        }
+
+        Future<void> expectAnswer(int n) async {
+          await _terminalUntil(tester, () {
+            _rethrowEndpointFailure(failures);
+            return find.text('Answer $n.').evaluate().isNotEmpty &&
+                _composerState(tester).editable;
+          }, 'completed Chat response $n');
+          expect(outbound, hasLength(n));
+          expect(
+            runtime.store.runRecord(fixture.runIds.values.last)!.state,
+            RunTerminalState.completed,
+          );
+        }
+
+        await choose('No Agent', 'Review Agent');
+        expect(fixture.runIds.values, isEmpty);
+        expect(runtime.lifecycle.runActivitiesForSession(session.id), isEmpty);
+        expect(outbound, isEmpty);
+        await _send(tester, firstPrompt);
+        await _terminalUntil(
+          tester,
+          () => fixture.status(tester).pendingApproval != null,
+          'first Run waiting for the check',
+        );
+        expect(
+          fixture.status(tester).pendingApproval!.toolAlias,
+          'run_command',
+        );
+        final firstRun = fixture.runIds.values.single;
+        final first = outbound.single;
+        final firstWire = jsonEncode(first);
+        expect(first['input'], [_userInput(firstPrompt)]);
+        expect(
+          first['instructions'],
+          startsWith('$chatInstructions\n\n$original\n\n'),
+        );
+
+        // The first request has settled. Approval gates the next inference until
+        // both the Project-backed selection and the Settings edit are acknowledged.
+        await choose('Review Agent', 'Writing Agent');
+        await settings.updateRecord(a, {
+          'name': 'Review Agent',
+          'instructions': edited,
+        });
+        expect(outbound, hasLength(1));
+        expect(fixture.runIds.values, [firstRun]);
+        await _tap(tester, 'Allow once');
+        await expectAnswer(2);
+        final result = _toolOutput(outbound[1], 'check');
+        expect(result, contains('Exit code: 0'));
+        expect(outbound[1]['input'], [
+          _userInput(firstPrompt),
+          call,
+          {
+            'type': 'function_call_output',
+            'call_id': 'check',
+            'output': result,
+          },
+        ]);
+        expect(jsonEncode(outbound.first), firstWire);
+        expect(fixture.runIds.values, [firstRun]);
+        final activity = runtime.lifecycle.runActivity(firstRun)!;
+        expect(activity.models, hasLength(2));
+        expect(activity.tools.single.providerCallId, 'check');
+
+        await _send(tester, 'Start a new Run with the current selection.');
+        await expectAnswer(3);
+        await choose('Writing Agent', 'No Agent');
+        await _send(tester, 'Continue without an Agent.');
+        await expectAnswer(4);
+        expect(fixture.runIds.values, hasLength(3));
+        expect(_session(tester), same(session));
+
+        // The no-Agent control includes the normal Chat and AGENTS.md groups.
+        // All other wire instructions must differ by exactly one intact group.
+        final control = outbound.last['instructions']! as String;
+        const prefix = '$chatInstructions\n\n';
+        expect(control, startsWith(prefix));
+        expect(control, endsWith('\n\n$_agentsText'));
+        final environment = control.substring(prefix.length);
+        for (final (i, text) in [original, edited, writer, null].indexed) {
+          final body = outbound[i];
+          expect(
+            body['instructions'],
+            text == null ? control : '$prefix$text\n\n$environment',
+          );
+          // Also catch an injection into replayed history, user input or tools.
+          for (final (version, marker) in [
+            (original, 'reviewer-v1'),
+            (edited, 'reviewer-v2'),
+            (writer, 'writer-v1'),
+          ]) {
+            expect(
+              marker.allMatches(jsonEncode(body)),
+              hasLength(text == version ? 1 : 0),
+              reason: 'request ${i + 1}: $marker',
+            );
+          }
+        }
+
+        await choose('No Agent', 'Writing Agent');
+        await settings.deleteRecord(b);
+        await _send(tester, 'This missing Agent must fail before inference.');
+        await _terminalUntil(
+          tester,
+          () =>
+              fixture.runIds.values.length == 4 &&
+              runtime.store.runRecord(fixture.runIds.values.last)?.state ==
+                  RunTerminalState.failed &&
+              fixture.status(tester).failureMessage != null,
+          'explicit failure for the deleted selected Agent',
+        );
+        final failed = runtime.lifecycle.runActivity(
+          fixture.runIds.values.last,
+        )!;
+        expect(failed.models, isEmpty);
+        expect(failed.tools, isEmpty);
+        _rethrowEndpointFailure(failures);
+        expect(outbound, hasLength(4));
+        expect(tester.takeException(), isNull);
+        expect(
+          await tester.binding.handleRequestAppExit(),
+          AppExitResponse.exit,
+        );
+      } finally {
+        // On failure at the approval boundary, do not wait on an exit dialog.
+        await tester.pumpWidget(const SizedBox.shrink());
+        await runtime.close();
+      }
+    }),
+  );
+
+  testWidgets(
     'normal Chat restores rich Markdown, saves native edits, departs, restores and submits one Run',
     (tester) => tester.runAsync(() async {
       await tester.binding.setSurfaceSize(const Size(1400, 1100));
@@ -6147,7 +6362,7 @@ printf '%s\n' 'S2B_SHELL_DONE'
           '```dart\n  final count = 2;\n  print(count);  \n```';
       const answer = 'The exact rich request reached the local provider.';
       const agentInstructions =
-          'These instructions must not enter the model request.';
+          'Review the submitted Markdown exactly as written.';
       final release = Completer<void>();
       final outbound = <Map<String, Object?>>[];
       final failures = <(Object, StackTrace)>[];
@@ -6160,7 +6375,10 @@ printf '%s\n' 'S2B_SHELL_DONE'
               jsonDecode(await utf8.decoder.bind(request).join())
                   as Map<String, Object?>;
           outbound.add(body);
-          expect(jsonEncode(body), isNot(contains(agentInstructions)));
+          expect(
+            agentInstructions.allMatches(body['instructions']! as String),
+            hasLength(1),
+          );
           expect(body['input'], [
             {
               'type': 'message',
@@ -6192,24 +6410,13 @@ printf '%s\n' 'S2B_SHELL_DONE'
         await subscription.cancel();
       });
       try {
-        final root = await prepared.copyInstallations(fixture.directory);
+        final root = await prepared.copyInstallations(
+          fixture.directory,
+          withAgent: true,
+        );
         final plugin = await Directory(
           '${root.path}/test.frontend-only',
         ).create();
-        // Install the stock Agent components alongside the independent accessory
-        // only in this fixture, not as a prerequisite for starting normal Chat.
-        final agent = await Directory(
-          '${root.path}/$agentConfigurationPluginId',
-        ).create();
-        await compileAotSnapshot(
-          dartExecutable: prepared.dart,
-          workingDirectory: Directory.current.parent,
-          entrypoint:
-              'plugins/agent_configuration/packages/backend/bin/agent_configuration_backend.dart',
-          artifact: File('${agent.path}/backend.aot'),
-          stage: 'chat-agent-selection',
-        );
-        await publishAgentSelector(agent);
         final artifact = await compileAccessoryProbe(plugin);
         await File(
           '${plugin.path}/adele_plugin.installation.json',
@@ -6239,19 +6446,12 @@ printf '%s\n' 'S2B_SHELL_DONE'
           }),
         );
         await fixture.launch(tester, prepared, root: root, endpoint: server);
-        await _terminalTap(
-          tester,
-          find.byKey(const ValueKey('settings-button')),
-        );
-        final settings = await tester
-            .widget<GlobalSettingsDialog>(find.byType(GlobalSettingsDialog))
-            .service();
+        final settings = await _globalSettings(tester);
         await settings.createRecord(
           RecordTypeId('$agentConfigurationPluginId.agent'),
           ConfigurationRecordId('reviewer'),
           {'name': 'Reviewer', 'instructions': agentInstructions},
         );
-        await _terminalTap(tester, find.byTooltip('Close Settings'));
         await fixture.openTask(tester);
         await _tap(tester, 'New Chat Session');
         await _pumpUntil(tester, () => _composer().evaluate().isNotEmpty);
@@ -8091,6 +8291,7 @@ final class _PreparedProduct {
   File get gatedChat => File('${directory.path}/gated-chat.aot');
   File get commandProcess => File('${directory.path}/command-process.aot');
   File backend(String id) => File('${root.path}/$id/backend.aot');
+  Future<Directory>? _agentInstallation;
   Future<File>? _mainContentFixture;
   Future<List<int>>? _reviewFixture;
 
@@ -8331,13 +8532,35 @@ final class _PreparedProduct {
     startupArguments: startupArguments,
   );
 
-  Future<Directory> copyInstallations(Directory parent) async {
+  Future<Directory> _prepareAgent() async {
+    final agent = await Directory(
+      '${directory.path}/$agentConfigurationPluginId',
+    ).create();
+    await compileAotSnapshot(
+      dartExecutable: dart,
+      workingDirectory: Directory.current.parent,
+      entrypoint:
+          'plugins/agent_configuration/packages/backend/bin/agent_configuration_backend.dart',
+      artifact: File('${agent.path}/backend.aot'),
+      stage: 'chat-agent-selection',
+    );
+    await publishAgentSelector(agent);
+    return agent;
+  }
+
+  Future<Directory> copyInstallations(
+    Directory parent, {
+    bool withAgent = false,
+  }) async {
     final copy = await Directory('${parent.path}/installed').create();
-    await for (final directory in root.list()) {
+    for (final directory in [
+      ...await root.list().cast<Directory>().toList(),
+      if (withAgent) await (_agentInstallation ??= _prepareAgent()),
+    ]) {
       final installed = await Directory(
         '${copy.path}/${directory.uri.pathSegments.where((s) => s.isNotEmpty).last}',
       ).create();
-      await for (final file in (directory as Directory).list()) {
+      await for (final file in directory.list()) {
         await (file as File).copy(
           '${installed.path}/${file.uri.pathSegments.last}',
         );
@@ -8842,6 +9065,15 @@ Future<AppExitResponse> _requestExitWithStalledCheck(WidgetTester tester) =>
         },
       ),
     );
+
+Future<GlobalSettingsService> _globalSettings(WidgetTester tester) async {
+  await _terminalTap(tester, find.byKey(const ValueKey('settings-button')));
+  final settings = await tester
+      .widget<GlobalSettingsDialog>(find.byType(GlobalSettingsDialog))
+      .service();
+  await _terminalTap(tester, find.byTooltip('Close Settings'));
+  return settings;
+}
 
 Future<void> _settingsSection(WidgetTester tester, String label) async {
   await _terminalTap(tester, find.byKey(const ValueKey('settings-section')));

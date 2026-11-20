@@ -1,6 +1,7 @@
 import 'package:adele_plugin_backend_support/adele_plugin_backend_support.dart';
 import 'package:agent_configuration_contract/agent_configuration_contract.dart';
 
+export 'src/agent_inference_context_backend.dart';
 export 'src/agent_selection_backend.dart';
 
 /// Projects each current, host-authorized observation; retains no Agent data.

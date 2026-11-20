@@ -233,6 +233,11 @@ diagnostics. Successful empty material is not failure. Required status governs a
 discovered source, not a promise that a named plugin is installed; zero sources
 are valid.
 
+For example, [Agent Configuration](../../plugins/agent_configuration/README.md#instructions-during-a-run)
+captures a selected record ID for the Run and resolves its current instructions
+per inference. Neither the strategy nor core reads Agent settings. The root
+`AGENTS.md` source remains independent.
+
 Capture validates the exact source binding through callback completion and
 copying/validation of its material. Safely captured immutable data can survive
 source retirement, including during the model call. A later inference can discover

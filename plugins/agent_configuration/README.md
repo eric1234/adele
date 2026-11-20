@@ -94,13 +94,26 @@ A fresh read shows the current state; it neither acknowledges the old request
 nor retries it. Leaving the Session retires the control, not a transaction
 already admitted by its backend.
 
-## Execution boundary
+## Instructions during a Run
 
-Global definitions and stored Session selection are implemented. Effective-Agent
-binding for a Run and Agent context injection are separate future integrations.
-Selection currently affects neither an executing Run nor future inference; it
-does not change the Session's permanent orchestration strategy, model routing,
-provider requests, or tool authorization.
+Selecting an Agent does not start a Run and is not a model-callable operation.
+When you submit a request, the active Agent backend captures the Session's
+selected record ID for that Run. Changing or clearing the selection while the
+Run is working or awaiting approval affects the **next Run**, not this one.
+If it started with **No Agent**, it contributes no Agent instructions throughout.
+
+For each model inference the backend resolves the captured ID in the current
+catalog. Only its `instructions` enter the context, alongside the strategy's
+instructions and other sources such as root `AGENTS.md`. Nonblank Markdown is
+passed verbatim; empty or whitespace-only instructions contribute nothing.
+Editing the effective Agent in Settings changes what the **next inference**
+receives, even within the same Run. Already prepared requests do not change.
+
+A partial catalog can supply a valid definition. If the captured ID is absent
+from a complete or partial catalog, or the catalog cannot be read, inference
+fails before calling the model. Nothing clears the Session preference or uses a
+different Agent. A record re-created under the captured ID supplies its current
+instructions. Agent selection changes neither model routing nor tool authority.
 
 Stock default records and their one-time provisioning and Model Preset references
 remain deferred. Collections may remain empty; no records are provisioned,
