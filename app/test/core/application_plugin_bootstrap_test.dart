@@ -14,6 +14,7 @@ import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:adele_model_tool/adele_model_tool.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_orchestration/remote_orchestration.dart';
+import 'package:adele_orchestration/remote_run_model_preference.dart';
 import 'package:adele_orchestration/remote_tool_authorization.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
@@ -24,7 +25,7 @@ import 'package:plugin_runtime/plugin_runtime.dart';
 import '../../../tools/backend_artifacts.dart';
 
 void main() {
-  group('expected tool authorization policies', () {
+  group('expected backend participation', () {
     const ownerId = 'dev.adele.test.policy-owner';
     const independentId = 'dev.adele.test.independent';
     const policyId = 'dev.adele.test.authorization';
@@ -138,6 +139,145 @@ void main() {
       startupArguments: {
         for (final id in installedIds)
           id: [jsonEncode(advertisements[id] ?? const <String, Object?>{})],
+      },
+    );
+
+    final preferenceExposure = <String, Object?>{
+      'extensionPointId': runModelPreferencesExtensionPoint.value,
+      'extensionId': 'dev.adele.test.model-preference',
+      'serviceId': remoteRunModelPreferenceServiceId,
+      'configurationContext': 'preference-configuration',
+      'metadata': <String, Object?>{},
+    };
+    final unavailablePreference = throwsA(
+      isA<RunModelPreferenceFailure>().having(
+        (error) => error.kind,
+        'failure kind',
+        RunModelPreferenceFailureKind.unavailable,
+      ),
+    );
+
+    for (final invalid in [
+      {'serviceId': 'otherService'},
+      {
+        'metadata': {'routeId': 'not-permitted'},
+      },
+    ]) {
+      test(
+        'a rejected preference ${invalid.keys.single} remains expected',
+        () async {
+          await install(ownerId);
+          await start(
+            advertisements: {
+              ownerId: {
+                'extensionExposures': [
+                  {...preferenceExposure, ...invalid},
+                ],
+              },
+            },
+          );
+          final owner = bootstrap.backends.single;
+          expect(owner.failure, isA<ExtensionContractException>());
+          expect(owner.state, InstalledBackendState.failed);
+          final bindings = extensions.discover(
+            runModelPreferencesExtensionPoint,
+          );
+          expect(bindings, isEmpty);
+          expect(
+            () => bootstrap.captureExpectedRunModelPreferences(bindings),
+            unavailablePreference,
+          );
+        },
+      );
+    }
+
+    test(
+      'known preference requires its exact origin; retirement is not absence',
+      () async {
+        await install(ownerId);
+        await start(
+          advertisements: {
+            ownerId: {
+              'extensionExposures': [preferenceExposure],
+            },
+          },
+        );
+        final owner = bootstrap.backends.single;
+        final bindings = extensions.discover(runModelPreferencesExtensionPoint);
+        final binding = bindings.single;
+        final validate = bootstrap.captureExpectedRunModelPreferences(bindings);
+        expect(validate, returnsNormally);
+        expect(
+          () => bootstrap.captureExpectedRunModelPreferences([]),
+          unavailablePreference,
+        );
+
+        // Same stable ID (even same value) is not the owner's registration.
+        final otherRegistry = ExtensionRegistry();
+        final other = otherRegistry.register(
+          point: runModelPreferencesExtensionPoint,
+          id: binding.id,
+          value: binding.value,
+        );
+        addTearDown(other.close);
+        final foreign = otherRegistry.discover(
+          runModelPreferencesExtensionPoint,
+        );
+        expect(
+          () => bootstrap.captureExpectedRunModelPreferences(foreign),
+          unavailablePreference,
+        );
+
+        // This host fixture returns a structurally invalid response for every
+        // service method. Malformed data cannot become a null preference.
+        await expectLater(
+          binding.value.captureRun(
+            Session(
+              id: SessionId('session'),
+              taskId: TaskId('task'),
+              strategyId: OrchestrationStrategyId('dev.adele.test.strategy'),
+            ),
+            RunId('run'),
+          ),
+          throwsA(
+            isA<RunModelPreferenceFailure>().having(
+              (error) => error.kind,
+              'failure kind',
+              RunModelPreferenceFailureKind.malformed,
+            ),
+          ),
+        );
+        final retired = Completer<void>();
+        owner.onRetire(retired.complete);
+        await owner.connection!.close();
+        await retired.future;
+        expect(extensions.discover(runModelPreferencesExtensionPoint), isEmpty);
+        expect(validate, throwsStateError);
+        expect(
+          () => bootstrap.captureExpectedRunModelPreferences([]),
+          unavailablePreference,
+        );
+        expect(
+          () => bootstrap.captureExpectedRunModelPreferences(foreign),
+          unavailablePreference,
+        );
+      },
+    );
+
+    test(
+      'no preference expectation is inferred from a failure before ready',
+      () async {
+        await install(ownerId);
+        await start(
+          advertisements: {
+            ownerId: {'startupFailure': true},
+          },
+        );
+        expect(bootstrap.backends.single.state, InstalledBackendState.failed);
+        expect(
+          bootstrap.captureExpectedRunModelPreferences([]),
+          returnsNormally,
+        );
       },
     );
 

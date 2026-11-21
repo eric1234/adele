@@ -589,13 +589,42 @@ Later valid lifecycle boundaries may discover replacements. Generic binding
 mechanics belong to the [plugin system](plugin-system.md#live-discovery-and-exact-captured-bindings)
 and [contracts and capabilities](contracts-and-capabilities.md#live-discovery-and-exact-binding).
 
+### Run model preferences
+
+A plugin can request a model configuration, not supply an executable provider
+or authorize an inference. `dev.adele.extension.run-model-preferences` accepts
+at most one contributor. Its `captureRun` receives the canonical Session and
+fresh Run ID. The immutable result names one configured `ProviderId`, an exact
+provider-local model ID, and an optional `ModelReasoningEffort`. Unspecified
+effort is distinct from an explicit `none`.
+
+Admission pins the strategy and preference registration and reserves the Run ID
+and Session execution ownership synchronously. Only then does preparation call
+the contributor. Zero registrations or an explicit null answer use the existing
+direct configuration. With no contributor the direct provider binding is still
+captured at admission; a contributor does not need a working direct configuration
+to supply its own. Ambiguity, a missing expected registration, a failed read,
+malformed identifiers, a missing provider, or an unavailable endpoint are failures,
+not permission to select a different model. Preference failure precedes strategy
+materialization, including for feedback-associated Runs.
+
+The host resolves a non-null answer against the Capability Registry and constructs
+one adapter with that exact registration, model and effort. It does not query a
+Model Catalog, test credentials, or infer model support from registration. The
+provider can still reject an unsupported request. Model/tool continuations and
+approval resume use the same adapter; no preference polling or provider lookup
+occurs on their behalf. A later Run can capture a different preference. This
+does not change how Agent instructions are captured for an inference.
+
 ### Session routing affinity and Run-local state
 
-Each live `SessionExecutionController` owns one securely generated opaque routing
+Each live `SessionExecutionController` owns a securely generated opaque routing
 identity, independent of product IDs, configuration identities, and prompt
 contents. `SessionExecutionOwners` retains that controller for its canonical
-Session independently of presentation. Successive Runs in the same live Session
-reuse the routing identity; different Sessions receive different identities.
+Session independently of presentation. Successive Runs reuse that identity only
+for the same provider registration and exact model. Changing model, account or
+registration (even under the same provider ID) starts a fresh route. Different
+Sessions receive different identities.
 This identity is ephemeral and may reset on execution-owner/window teardown.
 It is never the raw product `SessionId` and is not persisted across restarts.
 

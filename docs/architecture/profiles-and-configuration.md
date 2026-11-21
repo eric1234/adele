@@ -296,8 +296,8 @@ backend generation or a Global Settings editing session.
 An Agent definition, a Session's selected preset, and a Run's resolved provider
 and model are separate concerns. A preset stores no generation, binding,
 `configurationContext`, credential reference or route. Editing a definition does
-not change an already-resolved invocation. Selecting a preset does not yet
-contribute model preferences to a Run or alter direct model execution.
+not change an already-resolved Run. Stock Model Configuration does not yet
+connect its Session selection to the generic [Run model preference extension](execution-model.md#run-model-preferences).
 
 ### Applying confirmed record changes
 
@@ -793,8 +793,8 @@ strings. Existing cancellation/retirement mechanisms remain distinct from that l
 Advertisement therefore means an invocable route for a valid record, not a successful
 credential check or externally authenticated account. The independent experimental
 ChatGPT credential-file path and explicit legacy API-key development mode remain
-separate. Normal Chat still explicitly selects ChatGPT; Session selection UI and
-provider preference are not established by these new registrations.
+separate. The direct configuration still explicitly selects ChatGPT; registration
+alone neither selects a provider nor establishes a Session selector UI.
 
 ## Credentials and secrets
 

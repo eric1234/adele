@@ -694,6 +694,20 @@ void main() {
       expect(registration.isClosed, isFalse);
       expect(retirements, 0);
       expect(
+        () => registry.resolveExact(capability, provider.id),
+        throwsA(isA<ProviderEndpointUnavailable>()),
+      );
+      expect(
+        () => registry.resolveExact(capability, ProviderId('dev.adele.absent')),
+        throwsA(isA<ProviderUnavailable>()),
+      );
+      expect(
+        registry
+            .resolveExact(capability, siblingBinding.provider.id)
+            .isSameRegistration(siblingBinding),
+        isTrue,
+      );
+      expect(
         () => binding.endpointAs<CapabilityEndpoint>(),
         throwsA(isA<ProviderEndpointUnavailable>()),
       );

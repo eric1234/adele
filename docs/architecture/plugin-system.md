@@ -170,6 +170,7 @@ Examples illustrate different contracts, not a universal rule:
 | Extension family | Composition owner and rule |
 | --- | --- |
 | Orchestration strategy | [Orchestration](../../packages/orchestration/README.md) requires exact unique resolution for an explicit strategy ID; missing and ambiguous are distinct failures. |
+| Run model preferences | One registration can name one configuration for a new Run. Competing registrations fail even if one might return null; there is no ranking. See [Run model preferences](execution-model.md#run-model-preferences). |
 | Inference-context sources | [Inference context](../../packages/orchestration/README.md#inference-context) composes zero or many sources under its own capture, ordering, and required/optional failure rules. |
 | Tool authorization policies | [Authorization composition](execution-model.md#authorization-composition) checks expected participation, then composes the exact registered evaluators for each request. The host supplies no additional policy opinion. |
 | Model tools | [Model-tool API](../../packages/model_tool/) defines contextual contributions; its composition has distinct tool-identity and model-alias collision semantics. |
@@ -184,6 +185,18 @@ Prefer structured typed contributions when an extension influences an operation,
 not opaque mutation of host objects through universal `beforeX`/`afterX` hooks.
 Numeric priority may suit a particular domain, but it is not a universal
 extension-system concept. Deterministic ordering does not confer authority.
+
+An AOT model-preference backend advertises `dev.adele.extension.run-model-preferences`
+with the generated `runModelPreference` service and empty metadata. `captureRun`
+receives only Session and Run identifiers. The adapter checks the exact registration
+and backend generation before and after the request; it grants no host services.
+The desktop bootstrap retains ready advertisements as evidence of expected
+participation even if registration fails or the backend retires. Another plugin
+registering the same ID cannot satisfy that expectation. Unlike tool authorization,
+this point has no pre-start manifest declaration: if a backend never reached
+valid readiness, installation alone cannot establish that it intended to participate.
+The stock [Model Configuration plugin](../../plugins/model_configuration/README.md)
+does not yet advertise this extension or supply a Session selector frontend.
 
 ## Live discovery and exact captured bindings
 

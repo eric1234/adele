@@ -424,6 +424,361 @@ void main() {
     },
   );
 
+  group('Run model preference', () {
+    final alternateId = ProviderId('dev.adele.test.alternate-model');
+
+    RunModelPreference choice(
+      ProviderId provider,
+      String model, [
+      ModelReasoningEffort? effort,
+    ]) => RunModelPreference(
+      providerId: provider,
+      modelId: model,
+      reasoningEffort: effort,
+    );
+
+    ExtensionRegistration registerSource(
+      Future<RunModelPreference?> Function(Session, RunId) capture, {
+      String name = 'source',
+    }) {
+      final source = fixture.runtime.extensions.register(
+        point: runModelPreferencesExtensionPoint,
+        id: ExtensionId('dev.adele.test.preference.$name'),
+        value: RunModelPreferenceContribution(captureRun: capture),
+      );
+      addTearDown(source.close);
+      return source;
+    }
+
+    ({
+      ExtensionRegistration source,
+      Future<void> entered,
+      Completer<RunModelPreference?> result,
+    })
+    pendingCapture() {
+      final entered = Completer<void>();
+      final result = Completer<RunModelPreference?>();
+      final source = registerSource((_, _) {
+        entered.complete();
+        return result.future;
+      });
+      addTearDown(() {
+        if (!result.isCompleted) result.complete(null);
+      });
+      return (source: source, entered: entered.future, result: result);
+    }
+
+    void expectFailedPreparation(SessionExecutionController controller) {
+      final admission = controller.feedbackRunFor(receipt())!;
+      expect(
+        admission.state,
+        SessionFeedbackRunAdmissionState.failedBeforeAssociation,
+      );
+      expect(admission.failure, isNotNull);
+      expect(controller.stateForRun(admission.runId), RunState.failed);
+      expect(fixture.materializing.isCompleted, isFalse);
+      expect(fixture.tool.materializing.isCompleted, isFalse);
+      expect(fixture.models.expand((model) => model.calls), isEmpty);
+      expect(fixture.runtime.store.runRecord(admission.runId), isNull);
+      expect(
+        fixture.runtime.lifecycle.hasSessionExecution(fixture.session),
+        isFalse,
+      );
+    }
+
+    for (final unopinionated in [true, false]) {
+      test(
+        '${unopinionated ? 'null' : 'contributed'} capture with usable direct configuration',
+        () async {
+          final alternate = _ModelChannel();
+          addTearDown(
+            fixture.registerModel(alternate, providerId: alternateId).close,
+          );
+          registerSource(
+            (_, _) async =>
+                unopinionated ? null : choice(alternateId, 'chosen'),
+          );
+          final controller = fixture.controller();
+          await controller.startRun();
+          final advancing = controller.activeRunFuture!;
+          final call = await (unopinionated ? fixture.model : alternate).callAt(
+            0,
+          );
+          expect(
+            call.request['model'],
+            unopinionated ? 'fixture-model' : 'chosen',
+          );
+          expect(call.request['reasoningEffort'], isNull);
+          call.settle();
+          await advancing;
+          expect((unopinionated ? alternate : fixture.model).calls, isEmpty);
+          expect(controller.currentRun!.run.state, RunState.completed);
+        },
+      );
+    }
+
+    for (final (problem, diagnostic) in [
+      ('invalid', 'malformed'),
+      ('conflict', 'conflicting'),
+      ('failed', 'could not read'),
+      ('missing provider', 'not registered'),
+      ('unavailable endpoint', 'endpoint is unavailable'),
+      ('null without direct model', 'direct model configuration'),
+    ]) {
+      test(
+        '$problem fails preparation without substituting a provider',
+        () async {
+          if (problem == 'unavailable endpoint') {
+            var available = true;
+            addTearDown(
+              fixture
+                  .registerModel(
+                    _ModelChannel(),
+                    providerId: alternateId,
+                    isAvailable: () => available,
+                  )
+                  .close,
+            );
+            available = false;
+          }
+          var captures = 0;
+          Future<RunModelPreference?> capture(Session _, RunId _) async {
+            captures++;
+            return switch (problem) {
+              'failed' => throw StateError('private source diagnostic'),
+              'invalid' => choice(_providerId, ' '),
+              'null without direct model' => null,
+              _ => choice(alternateId, 'alternate'),
+            };
+          }
+
+          registerSource(capture);
+          if (problem == 'conflict') registerSource(capture, name: 'another');
+          final controller = fixture.controller(
+            model: problem == 'null without direct model'
+                ? null
+                : 'fixture-model',
+          );
+          final id = await controller.startRun(expectedFeedback: receipt());
+          await controller.feedbackRunFor(receipt())!.preparationSettled;
+          expectFailedPreparation(controller);
+          expect(controller.failureMessage, contains(diagnostic));
+          expect(
+            controller.failureMessage,
+            isNot(contains('private source diagnostic')),
+          );
+          expect(captures, problem == 'conflict' ? 0 : 1);
+          if (problem == 'missing provider') {
+            addTearDown(
+              fixture
+                  .registerModel(_ModelChannel(), providerId: alternateId)
+                  .close,
+            );
+          }
+          expect(await controller.startRun(expectedFeedback: receipt()), id);
+          expect(fixture.ids.values, [id]);
+          expectFailedPreparation(controller);
+        },
+      );
+    }
+
+    for (final duringCapture in [false, true]) {
+      test(
+        '${duringCapture ? 'source replacement during capture' : 'source loss after admission'} does not retarget',
+        () async {
+          final pending = pendingCapture();
+          final controller = fixture.controller();
+          final accepted = controller.startRun(expectedFeedback: receipt());
+          final admission = controller.feedbackRunFor(receipt())!;
+          if (duringCapture) await pending.entered;
+          final retirement = pending.source.close();
+          var replacementCalls = 0;
+          void replace() => registerSource((_, _) async {
+            replacementCalls++;
+            return choice(_providerId, 'replacement');
+          });
+          if (duringCapture) replace();
+          await retirement;
+          // Even stale "no opinion" cannot authorize direct use.
+          pending.result.complete(null);
+          expect(await accepted, admission.runId);
+          await admission.preparationSettled;
+          expectFailedPreparation(controller);
+          expect(replacementCalls, 0);
+
+          if (!duringCapture) replace();
+          final retry = await controller.retryFeedbackRun(
+            receipt: receipt(),
+            expectedStrategy: controller.strategy!,
+          );
+          final advancing = controller.activeRunFuture!;
+          final call = await fixture.model.callAt(0);
+          expect(call.request['model'], 'replacement');
+          call.settle();
+          await advancing;
+          expect(replacementCalls, 1);
+          expect(fixture.ids.values, [admission.runId, retry]);
+        },
+      );
+    }
+
+    for (final hardExit in [false, true]) {
+      test(
+        'pending capture owns the Session until ${hardExit ? 'exit fencing' : 'graceful settlement'}',
+        () async {
+          final pending = pendingCapture();
+          final owners = fixture.owners();
+          final controller = owners.getOrCreate(fixture.session);
+          final rival = fixture.controller();
+          final accepted = controller.startRun(expectedFeedback: receipt());
+          final admission = controller.feedbackRunFor(receipt())!;
+          // No await yet: both the local owner and independent callers see occupancy.
+          expect(owners.statusFor(fixture.session), 'preparing');
+          expect(owners.hasActiveWork, isTrue);
+          expect(admission.state, SessionFeedbackRunAdmissionState.preparing);
+          expect(
+            fixture.runtime.lifecycle.hasSessionExecution(fixture.session),
+            isTrue,
+          );
+          await expectLater(rival.startRun(), throwsStateError);
+          await pending.entered;
+          final id = await accepted;
+          expect(id, admission.runId);
+          expect(fixture.ids.values, [id]);
+          expect(fixture.tool.materializing.isCompleted, isFalse);
+          var closed = false;
+          final closing = owners.close().then((_) => closed = true);
+          if (hardExit) {
+            owners.interruptForApplicationExit();
+            await fixture.runtime
+                .close(); // Runtime may retire while capture is pending.
+          }
+          expect(controller.isClosed, isTrue);
+          if (!hardExit) {
+            await Future<void>.delayed(Duration.zero);
+            expect(closed, isFalse);
+          }
+          pending.result.complete(choice(_providerId, 'captured'));
+          await closing;
+          expect(owners.hasActiveWork, isFalse);
+          expect(controller.currentRun, isNull);
+          expect(controller.activitySnapshots, isEmpty);
+          expect(
+            admission.state,
+            SessionFeedbackRunAdmissionState.failedBeforeAssociation,
+          );
+          expect(fixture.tool.materializing.isCompleted, isFalse);
+          expect(fixture.materializing.isCompleted, isFalse);
+          expect(fixture.model.calls, isEmpty);
+          expect(fixture.runtime.store.runRecord(id), isNull);
+          if (!hardExit) {
+            expect(
+              fixture.runtime.lifecycle.hasSessionExecution(fixture.session),
+              isFalse,
+            );
+          }
+        },
+      );
+    }
+
+    test(
+      'chosen requests survive approval; later Runs isolate model and provider generations',
+      () async {
+        await requireApprovalFor(_effectToolId);
+        final alternate = _ModelChannel();
+        final provider = fixture.registerModel(
+          alternate,
+          providerId: alternateId,
+        );
+        addTearDown(provider.close);
+        final captures = <(Session, RunId)>[];
+        var preference = choice(alternateId, 'one', ModelReasoningEffort.high);
+        Future<RunModelPreference?> capture(
+          Session session,
+          RunId runId,
+        ) async {
+          captures.add((session, runId));
+          return preference;
+        }
+
+        final source = registerSource(capture);
+        final controller = fixture.controller(
+          model: null,
+          configurationUnavailableReason: 'No direct configuration.',
+        );
+        expect(controller.canStart, isTrue);
+        expect(captures, isEmpty); // Availability reads do not call the source.
+        final firstRun = await controller.startRun();
+        final starting = controller.activeRunFuture!;
+        final first = await alternate.callAt(0);
+        final affinity = first.request['affinity']! as Map;
+        final route = affinity['id']! as String;
+        expect(affinity['state'], isNull);
+        expect(first.request['model'], 'one');
+        expect(first.request['reasoningEffort'], 'high');
+        const state = {
+          'kind': 'test.route',
+          'compatibility': <String, Object?>{},
+          'data': {'token': 'first'},
+        };
+        first.propose('approval');
+        first.settle(affinityState: state);
+        await starting;
+        // Both the contribution generation and its answer can change during a wait.
+        await source.close();
+        preference = choice(_providerId, 'next', ModelReasoningEffort.none);
+        registerSource(capture);
+        expect(
+          controller.resolveApproval(
+            controller.pendingApproval!,
+            approved: true,
+          ),
+          isTrue,
+        );
+        final resuming = controller.activeRunFuture!;
+        final continuation = await alternate.callAt(1);
+        expect(continuation.request['model'], 'one');
+        expect(continuation.request['reasoningEffort'], 'high');
+        expect(continuation.request['affinity'], {'id': route, 'state': state});
+        expect(continuation.outcomes.single['status'], 'success');
+        continuation.settle(affinityState: state);
+        await resuming;
+        expect(captures, [(fixture.session, firstRun)]);
+        expect(fixture.model.calls, isEmpty);
+
+        Future<String> laterRoute(_ModelChannel channel, int index) async {
+          final run = await controller.startRun();
+          final advancing = controller.activeRunFuture!;
+          final call = await channel.callAt(index);
+          expect(call.request['model'], preference.modelId);
+          expect(
+            call.request['reasoningEffort'],
+            preference.reasoningEffort?.name,
+          );
+          final next = call.request['affinity']! as Map;
+          expect(next['state'], isNull);
+          call.settle(affinityState: state);
+          await advancing;
+          expect(captures.last, (fixture.session, run));
+          expect(controller.currentRun!.run.state, RunState.completed);
+          return next['id']! as String;
+        }
+
+        final newProvider = await laterRoute(fixture.model, 0);
+        expect(newProvider, isNot(route));
+        preference = choice(_providerId, 'two', ModelReasoningEffort.none);
+        final newModel = await laterRoute(fixture.model, 1);
+        expect(newModel, isNot(newProvider));
+        await fixture.modelRegistration.close();
+        final replacement = _ModelChannel();
+        fixture.modelRegistration = fixture.registerModel(replacement);
+        final newGeneration = await laterRoute(replacement, 0);
+        expect(newGeneration, isNot(newModel));
+        expect(captures.map((entry) => entry.$2), fixture.ids.values);
+      },
+    );
+  });
+
   testWidgets(
     'public EVC bridge emits exact view-local activity and revokes queued listeners',
     (tester) => tester.runAsync(() async {
@@ -1413,32 +1768,47 @@ Future<Object?> snapshot() => requestOwningBackend('probe', 'snapshot', <String,
     }
   });
 
-  test(
-    'accepted preparation retains the retired model; only a fresh Run binds replacement',
-    () async {
-      fixture.tool.materializeGate = Completer<void>();
-      final controller = fixture.controller();
-      await controller.startRun();
-      final preparing = controller.activeRunFuture!;
-      await fixture.tool.materializing.future;
-      await fixture.modelRegistration.close();
-      final replacement = _ModelChannel();
-      fixture.modelRegistration = fixture.registerModel(replacement);
-      fixture.tool.materializeGate!.complete();
-      await preparing;
-      expect(controller.failure, isNotNull);
-      expect(controller.isRunning, isFalse);
-      expect(fixture.model.calls, isEmpty);
-      expect(replacement.calls, isEmpty);
-      await controller.startRun();
-      final retry = controller.activeRunFuture!;
-      (await replacement.callAt(0)).settle();
-      await retry;
-      expect(controller.failure, isNull);
-      expect(controller.currentRun!.run.state, RunState.completed);
-      expect(fixture.ids.values, hasLength(2));
-    },
-  );
+  for (final contributed in [false, true]) {
+    test(
+      'accepted preparation retains the retired model; only a fresh Run binds replacement (contributed=$contributed)',
+      () async {
+        if (contributed) {
+          final source = fixture.runtime.extensions.register(
+            point: runModelPreferencesExtensionPoint,
+            id: ExtensionId('dev.adele.test.preference.source'),
+            value: RunModelPreferenceContribution(
+              captureRun: (_, _) async => RunModelPreference(
+                providerId: _providerId,
+                modelId: 'selected',
+              ),
+            ),
+          );
+          addTearDown(source.close);
+        }
+        fixture.tool.materializeGate = Completer<void>();
+        final controller = fixture.controller();
+        await controller.startRun();
+        final preparing = controller.activeRunFuture!;
+        await fixture.tool.materializing.future;
+        await fixture.modelRegistration.close();
+        final replacement = _ModelChannel();
+        fixture.modelRegistration = fixture.registerModel(replacement);
+        fixture.tool.materializeGate!.complete();
+        await preparing;
+        expect(controller.failure, isNotNull);
+        expect(controller.isRunning, isFalse);
+        expect(fixture.model.calls, isEmpty);
+        expect(replacement.calls, isEmpty);
+        await controller.startRun();
+        final retry = controller.activeRunFuture!;
+        (await replacement.callAt(0)).settle();
+        await retry;
+        expect(controller.failure, isNull);
+        expect(controller.currentRun!.run.state, RunState.completed);
+        expect(fixture.ids.values, hasLength(2));
+      },
+    );
+  }
 
   test(
     'selected model retirement does not fall back to another provider',
@@ -3402,6 +3772,7 @@ final class _Fixture {
   CapabilityRegistration registerModel(
     _ModelChannel channel, {
     ProviderId? providerId,
+    bool Function()? isAvailable,
   }) {
     models.add(channel);
     return runtime.registry.register(
@@ -3415,7 +3786,7 @@ final class _Fixture {
       endpoint: AdeleRequestChannelEndpoint(
         channel: channel,
         serviceId: modelProviderServiceId,
-        isAvailable: () => true,
+        isAvailable: isAvailable ?? () => true,
       ),
     );
   }
@@ -3471,6 +3842,7 @@ final class _Fixture {
     Session? session,
     bool pinStrategy = true,
     String? model = 'fixture-model',
+    String? configurationUnavailableReason,
     RunIdSource? runIds,
     VoidCallback? onChanged,
   }) {
@@ -3483,6 +3855,7 @@ final class _Fixture {
           : null,
       providerId: _providerId,
       model: model,
+      configurationUnavailableReason: configurationUnavailableReason,
       runIds: runIds,
       onChanged: onChanged,
     );

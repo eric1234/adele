@@ -75,9 +75,8 @@ final class SessionExecutionController extends ChangeNotifier {
   final String? model;
   final ResolvedOrchestrationStrategy? strategy;
   final RunIdSource _runIds;
-  // Session routing survives Runs; provider state belongs to each fresh adapter.
-  final ModelProviderRoutingAffinity _routingAffinity =
-      ModelProviderRoutingAffinity();
+  // Reuse only an opaque routing ID, and only across compatible Run routes.
+  (ProviderBinding, String, ModelProviderRoutingAffinity)? _lastRoute;
   final ApplicationExitExecutionFence _applicationExitFence =
       ApplicationExitExecutionFence();
   final String? configurationUnavailableReason;
@@ -212,19 +211,35 @@ final class SessionExecutionController extends ChangeNotifier {
   PendingToolApproval? get pendingApproval => _pendingApproval;
   Object? get failure => _failure;
 
-  String? get unavailableReason {
+  String? get unavailableReason => _unavailableReason(
+    checkDirect:
+        !_closed &&
+        !_running &&
+        !_advancing &&
+        _runtime.runModelPreferences.resolve() == null,
+  );
+
+  String? get _directConfigurationIssue =>
+      configurationUnavailableReason ??
+      (model == null || model!.trim().isEmpty
+          ? 'Model execution is unavailable: no model is configured.'
+          : null);
+
+  String? _unavailableReason({required bool checkDirect}) {
     if (_closed) return 'Model execution is unavailable: window is closing.';
     if (_releaseFailure != null) {
       return 'Session execution is unavailable: its previous execution could '
           'not be released.';
     }
-    if (configurationUnavailableReason != null) {
-      return configurationUnavailableReason;
-    }
-    if (model == null || model!.trim().isEmpty) {
-      return 'Model execution is unavailable: no model is configured.';
+    if (checkDirect && _directConfigurationIssue != null) {
+      return _directConfigurationIssue;
     }
     try {
+      if (!_running &&
+          !_advancing &&
+          _runtime.lifecycle.hasSessionExecution(session)) {
+        return 'A Run is already active.';
+      }
       _runtime.lifecycle.validateResolvedStrategy(
         session.strategyId,
         (_running || _advancing ? _capturedStrategy : strategy) ??
@@ -234,12 +249,13 @@ final class SessionExecutionController extends ChangeNotifier {
       return 'Session execution is unavailable: its strategy is not available.';
     }
     try {
-      ((_running || _advancing ? _capturedProvider : null) ??
-              _runtime.registry.resolve(
-                modelProviderCapability,
-                providerId: providerId,
-              ))
-          .streamChannel;
+      if (checkDirect) {
+        _runtime.registry
+            .resolveExact(modelProviderCapability, providerId)
+            .streamChannel;
+      } else if (_running || _advancing) {
+        _capturedProvider?.streamChannel;
+      }
     } on Object {
       return 'Model execution is unavailable: the selected provider is not '
           'available. Check its configuration and backend activation.';
@@ -252,8 +268,22 @@ final class SessionExecutionController extends ChangeNotifier {
       null => null,
       ModelFailure(:final kind) => 'Run failed: model ${kind.name}.',
       InvalidRunOperation(:final message) => 'Run failed: $message',
-      ProviderUnavailable() || ProviderEndpointUnavailable() =>
-        'Run failed: the selected model provider is unavailable.',
+      RunModelPreferenceFailure(:final kind) => switch (kind) {
+        RunModelPreferenceFailureKind.malformed =>
+          'Run failed: malformed model preference.',
+        RunModelPreferenceFailureKind.unavailable =>
+          'Run failed: model preference contribution unavailable.',
+        RunModelPreferenceFailureKind.failed =>
+          'Run failed: could not read the model preference.',
+        RunModelPreferenceFailureKind.ambiguous =>
+          'Run failed: conflicting model preference contributions.',
+      },
+      ProviderUnavailable(stale: false) =>
+        'Run failed: the configured model provider is not registered.',
+      ProviderUnavailable() =>
+        'Run failed: the selected model provider was retired.',
+      ProviderEndpointUnavailable() =>
+        'Run failed: the selected model provider endpoint is unavailable.',
       _ =>
         'Run failed. Check strategy, model and Task Environment availability.',
     };
@@ -324,13 +354,14 @@ final class SessionExecutionController extends ChangeNotifier {
     ResolvedOrchestrationStrategy? expectedStrategy,
     SessionFeedbackReceipt? expectedFeedback,
   }) {
-    if (!canStart) {
+    if (_closed || _running || _advancing) {
       throw StateError(unavailableReason ?? 'A Run is already active.');
     }
-    if (expectedFeedback != null &&
-        _runtime.lifecycle.hasSessionExecution(session)) {
-      throw StateError('A Run is already active.');
-    }
+    // Snapshot registrations, not plugin data. Nothing calls a contributor
+    // until this Run has its ID, feedback admission and execution occupancy.
+    final preference = _runtime.runModelPreferences.resolve();
+    final unavailable = _unavailableReason(checkDirect: preference == null);
+    if (unavailable != null) throw StateError(unavailable);
     final selectedStrategy =
         strategy ?? _runtime.lifecycle.resolveSessionStrategy(session.id);
     if (expectedStrategy != null) {
@@ -353,9 +384,11 @@ final class SessionExecutionController extends ChangeNotifier {
       throw StateError('A fresh Run identity is required.');
     }
     _capturedStrategy = selectedStrategy;
-    _capturedProvider = _runtime.registry.resolve(
-      modelProviderCapability,
-      providerId: providerId,
+    _capturedProvider = preference == null
+        ? _runtime.registry.resolveExact(modelProviderCapability, providerId)
+        : null;
+    final releasePreparation = _runtime.lifecycle.retainSessionExecution(
+      session,
     );
     final admission = expectedFeedback == null
         ? null
@@ -374,7 +407,12 @@ final class SessionExecutionController extends ChangeNotifier {
     _running = true;
     _advancing = true;
     _activeRunFuture = Future<void>.microtask(
-      () => _advance(runId: runId, feedbackAdmission: admission),
+      () => _advance(
+        runId: runId,
+        feedbackAdmission: admission,
+        preference: preference,
+        releasePreparation: releasePreparation,
+      ),
     );
     refresh();
     return runId;
@@ -404,10 +442,52 @@ final class SessionExecutionController extends ChangeNotifier {
     return true;
   }
 
+  ProviderBinding _resolvePreferredProvider(RunModelPreference? selection) {
+    if (selection == null && _directConfigurationIssue != null) {
+      throw const InvalidRunOperation('No usable direct model configuration.');
+    }
+    final binding = _runtime.registry.resolveExact(
+      modelProviderCapability,
+      selection?.providerId ?? providerId,
+    );
+    if (binding.provider.serviceId != modelProviderServiceId) {
+      throw ProviderEndpointUnavailable(binding.provider.id);
+    }
+    try {
+      binding.streamChannel;
+    } on InvalidProviderRegistration {
+      throw ProviderEndpointUnavailable(binding.provider.id);
+    } on StateError {
+      throw ProviderEndpointUnavailable(binding.provider.id);
+    }
+    return binding;
+  }
+
+  ModelProviderCapabilityAdapter _runAdapter(RunModelPreference? selection) {
+    final binding = _capturedProvider!;
+    final selectedModel = selection?.modelId ?? model!;
+    final previous = _lastRoute;
+    final affinity =
+        previous != null &&
+            previous.$1.isSameRegistration(binding) &&
+            previous.$2 == selectedModel
+        ? previous.$3
+        : ModelProviderRoutingAffinity();
+    _lastRoute = (binding, selectedModel, affinity);
+    return ModelProviderCapabilityAdapter(
+      binding,
+      selectedModel: selectedModel,
+      reasoningEffort: selection?.reasoningEffort,
+      routingAffinity: affinity,
+    );
+  }
+
   Future<void> _advance({
     RunId? runId,
     ToolApprovalResolution? resolution,
     SessionFeedbackRunAdmission? feedbackAdmission,
+    ResolvedRunModelPreference? preference,
+    void Function()? releasePreparation,
   }) async {
     SessionOrchestrationRun? execution;
     var materializationAttempted = false;
@@ -418,12 +498,15 @@ final class SessionExecutionController extends ChangeNotifier {
         await _ownedExecution?.close();
         _ownedExecution = null;
         _applicationExitFence.throwIfInterrupted();
-        final binding = _capturedProvider!;
-        final adapter = ModelProviderCapabilityAdapter(
-          binding,
-          selectedModel: model!,
-          routingAffinity: _routingAffinity,
-        );
+        RunModelPreference? selection;
+        if (preference != null) {
+          if (_closed) throw StateError('Session execution owner is closed.');
+          selection = await preference.captureRun(session, runId!);
+          _applicationExitFence.throwIfInterrupted();
+          if (_closed) throw StateError('Session execution owner is closed.');
+          _capturedProvider = _resolvePreferredProvider(selection);
+        }
+        final adapter = _runAdapter(selection);
         final tools = await buildModelToolCatalogForSession(
           sessionId: session.id,
           environmentRuntime: _runtime.lifecycle.environmentRuntime,
@@ -496,6 +579,9 @@ final class SessionExecutionController extends ChangeNotifier {
         _running = false;
       }
     } finally {
+      // A materialized execution holds its own lease through drained close.
+      // A failed preparation has no such owner to release its reservation.
+      releasePreparation?.call();
       if (!_running || _closed) {
         try {
           await execution?.close();

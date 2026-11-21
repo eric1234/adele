@@ -15,6 +15,7 @@ coverage/
 /packages/model_tool/lib/remote_model_tool.g.dart
 /packages/orchestration/lib/remote_inference_context.g.dart
 /packages/orchestration/lib/remote_orchestration.g.dart
+/packages/orchestration/lib/remote_run_model_preference.g.dart
 /packages/orchestration/lib/remote_tool_authorization.g.dart
 /packages/orchestration/lib/session_feedback.g.dart
 /packages/plugin_backend_support/lib/backend_local_state.g.dart

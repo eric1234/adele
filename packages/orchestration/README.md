@@ -1,11 +1,10 @@
 # ADELE Orchestration
 
-`adele_orchestration` is the experimental public provider-neutral registration,
-binding, execution, tool authorization, read-only activity, and inference-context boundary for
-orchestration. It is pure Dart and depends only on public `adele_contract`,
-`adele_product`, `adele_plugin_api`, and
-`adele_model_tool`. Its API is not stable. Neither this package nor its stock
-Chat consumer depends on `agent_kernel` or the application.
+`adele_orchestration` defines provider-neutral contracts for strategy registration
+and execution, tool authorization, read-only activity, inference context, and
+Run model preferences. It is pure Dart and uses only public ADELE packages. Its
+API is experimental. Neither this package nor its stock Chat consumer depends on
+`agent_kernel` or the application.
 
 ## Identity And Registration
 
@@ -486,6 +485,33 @@ facts contribute to future inference. Stock Chat selects earlier canonical user-
 Run associations and owns its bounded model-facing historical projection, not this
 package. See the canonical
 [historical access boundary](../../docs/architecture/execution-model.md#strategy-access-to-historical-evidence).
+
+## Run Model Preferences
+
+Register a `RunModelPreferenceContribution` at `runModelPreferencesExtensionPoint`
+(`dev.adele.extension.run-model-preferences`). Its `captureRun` callback receives
+the canonical `Session` and new `RunId`. Return `null` for no opinion, or a
+`RunModelPreference` containing a configured `ProviderId`, an exact model ID,
+and an optional `ModelReasoningEffort`. Both identifiers are limited to 1024
+UTF-16 code units; model IDs must be nonblank and free of ASCII controls but
+are never trimmed or normalized. A null effort leaves the choice unspecified;
+`none` is an explicit request. These values neither resolve a live provider nor
+authorize inference.
+
+`RunModelPreferenceResolver.resolve()` snapshots participation synchronously.
+Its `captureExpected` hook lets hosts check known backend origins even when
+discovery returns no registration. Only absence or an explicit null opinion
+permits the host's direct-model path. An ambiguous or unavailable snapshot fails
+during Run preparation without running a contributor. A single registration
+is checked before and after its asynchronous capture, never replaced. A
+successful capture is immutable data; continuations do not consult the source.
+
+`remote_run_model_preference.dart` defines the generated `runModelPreference`
+service. The sole method sends only Session and Run IDs and returns the same
+three semantic fields, using a nullable canonical effort name. It grants no host
+services. See the [execution model](../../docs/architecture/execution-model.md)
+for how the application turns a preference into an exact Run-scoped provider
+binding.
 
 ## Inference Context
 

@@ -536,8 +536,8 @@ provider/context routes in that single backend generation. The plugin owns the
 the app neither derives OpenAI IDs nor inspects endpoints. Record IDs remain
 configuration identities, not credentials or host authorization. These advertisements
 do not prove local key availability or successful authentication. The separately
-configured ChatGPT route remains independent, and normal Session execution still
-selects it explicitly. See the [configuration lifecycle](../docs/architecture/profiles-and-configuration.md#configured-openai-providers)
+configured ChatGPT route remains the explicit source-checkout direct selection.
+See the [configuration lifecycle](../docs/architecture/profiles-and-configuration.md#configured-openai-providers)
 for revision and no-fallback rules.
 
 ### Live record observations
@@ -1327,13 +1327,13 @@ are mapped in [console validation](../docs/development/testing.md#focused-consol
 
 ### ChatGPT source-checkout configuration
 
-Normal application composition currently selects
+The source-checkout direct configuration selects
 `dev.adele.openai.chatgpt-experimental`; it has no API-key provider selector.
 Configured API-key records are independently advertised and can be resolved explicitly
 through the ordinary capability registry, without changing the selected ChatGPT path.
 `SessionExecutionOwners` passes that explicit provider ID to every
-`SessionExecutionController`; both availability and Run capture resolve that ID, not
-the registry's first provider. Adding configured records therefore does not prefer
+`SessionExecutionController`. Without a contributed [Run model preference](../docs/architecture/execution-model.md#run-model-preferences),
+execution uses that ID, not the registry's first provider. Adding configured records therefore does not prefer
 Work or Personal, and missing ChatGPT remains unavailable even when an API-key route
 exists. Default resolution elsewhere retains the registry's provisional rank/ID
 ordering, not an account preference policy. This launcher/backend-startup seam and app
