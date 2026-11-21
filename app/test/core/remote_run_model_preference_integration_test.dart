@@ -6,6 +6,7 @@ import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_desktop/core/adele_runtime.dart';
+import 'package:adele_desktop/core/prepared_settings.dart';
 import 'package:adele_desktop/core/remote_inference_context_host.dart';
 import 'package:adele_desktop/ui/execution/session_execution_controller.dart';
 import 'package:adele_desktop/ui/execution/session_execution_owners.dart';
@@ -104,6 +105,50 @@ void main() {
   }) => activate(pluginId, 'probe', [
     jsonEncode({'extensionId': _extensionId, 'hold': hold}),
   ]);
+
+  Future<PluginBackendConnection> installedSource({
+    String advertisedId = _extensionId,
+    bool hold = false,
+  }) async {
+    final root = await Directory.systemTemp.createTemp('installed-preference-');
+    addTearDown(() => root.delete(recursive: true));
+    final plugin = await Directory.fromUri(
+      root.uri.resolve('source/'),
+    ).create();
+    await File.fromUri(
+      artifacts.uri.resolve('probe.aot'),
+    ).copy(plugin.uri.resolve('backend.aot').toFilePath());
+    await File.fromUri(
+      plugin.uri.resolve('adele_plugin.installation.json'),
+    ).writeAsString(
+      jsonEncode({
+        'manifestVersion': 1,
+        'metadata': {
+          'id': _sourcePlugin,
+          'version': '1',
+          'displayName': 'Test',
+        },
+        'runModelPreferenceSource': {'extensionId': _extensionId},
+        'components': {
+          'backend': {'artifact': 'backend.aot'},
+        },
+      }),
+    );
+    runtime.plugins.configureSettingsLoader(
+      (catalog) async => PreparedSettingsSnapshot.resolve(catalog),
+    );
+    await runtime.plugins.start(
+      installationRoot: root.path,
+      dartaotruntimeExecutable: aotRuntime,
+      hostArtifactPath: artifacts.uri.resolve('host.aot').toFilePath(),
+      startupArguments: {
+        _sourcePlugin: [
+          jsonEncode({'extensionId': advertisedId, 'hold': hold}),
+        ],
+      },
+    );
+    return runtime.plugins.backends.single.connection!;
+  }
 
   Future<PluginBackendActivation> strategy({bool holdTurn = false}) =>
       activate('test.preference.orchestration', 'strategy', [
@@ -205,6 +250,62 @@ void main() {
     },
   );
 
+  test(
+    'a declared source advertising a different ID cannot start inference',
+    () async {
+      await strategy();
+      final connection = await installedSource(
+        advertisedId: 'test.preference.other',
+      );
+      final rejected = await owner.startRun();
+      await owner.activeRunFuture?.timeout(_bound);
+      expect(owner.stateForRun(rejected), RunState.failed);
+      expect(owner.failure, isA<RunModelPreferenceFailure>());
+      expect(await _probe(connection, 'requests'), isEmpty);
+      expect(await _control(providers, 'requests'), isEmpty);
+    },
+  );
+
+  for (final pending in [true, false]) {
+    test(
+      'retiring a declared source ${pending ? 'during' : 'after'} capture',
+      () async {
+        final orchestration = await strategy(holdTurn: !pending);
+        final connection = await installedSource(hold: pending);
+        await _probe(connection, 'setPreference', _first);
+        final run = await owner.startRun();
+        final settled = owner.activeRunFuture!;
+        if (pending) {
+          await _probe(connection, 'entered');
+        } else {
+          await _control(orchestration, 'ready', {'operation': 'turn'});
+        }
+        await connection.close().timeout(_bound);
+        if (!pending) {
+          await _control(orchestration, 'release', {'operation': 'turn'});
+        }
+        await settled.timeout(_bound);
+        expect(
+          owner.stateForRun(run),
+          pending ? RunState.failed : RunState.completed,
+        );
+
+        // An unmanaged replacement advertising the same ID, even under the same
+        // Plugin ID, is not a new prepared activation of this installation.
+        final foreign = await source();
+        final next = await owner.startRun();
+        await owner.activeRunFuture?.timeout(_bound);
+        expect(owner.stateForRun(next), RunState.failed);
+        expect(owner.failure, isA<RunModelPreferenceFailure>());
+        expect(await _control(foreign, 'requests'), isEmpty);
+        expect(
+          await _control(providers, 'requests'),
+          pending ? isEmpty : [_first, _first],
+        );
+      },
+    );
+  }
+
   for (final terminate in [false, true]) {
     test(
       'a pending capture cannot migrate or fall back on ${terminate ? 'backend loss' : 'registration retirement and late success'}',
@@ -281,7 +382,13 @@ Future<Object?> _control(
   PluginBackendActivation activation,
   String method, [
   Map<String, Object?> payload = const {},
-]) => activation.connection
-    .channelFor(activation.connection.defaultConfigurationContext, 'probe')
+]) => _probe(activation.connection, method, payload);
+
+Future<Object?> _probe(
+  PluginBackendConnection connection,
+  String method, [
+  Map<String, Object?> payload = const {},
+]) => connection
+    .channelFor(connection.defaultConfigurationContext, 'probe')
     .request(method, payload)
     .timeout(_bound);

@@ -28,7 +28,7 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
         for (final id in providers)
           id: {
             modelProviderServiceId: ModelProviderServiceDispatcher(
-              _ScriptedProvider(id, requests),
+              _ScriptedProvider(id, requests, options['toolProvider'] == id),
             ),
           },
     },
@@ -153,17 +153,42 @@ final class _Source implements RemoteRunModelPreferenceService {
 }
 
 final class _ScriptedProvider implements ModelProviderService {
-  _ScriptedProvider(this.id, this.requests);
+  _ScriptedProvider(this.id, this.requests, this.proposeTool);
   final String id;
   final List<Map<String, Object?>> requests;
+  final bool proposeTool;
 
   @override
   Stream<ModelProviderEvent> invoke(ModelProviderRequest request) async* {
+    final outcomes = [
+      for (final item in request.input)
+        if (item.toolOutcome case final outcome?) outcome.status.name,
+    ];
     requests.add({
       'providerId': id,
       'modelId': request.model,
       'reasoningEffort': request.reasoningEffort?.name,
+      if (proposeTool) 'toolOutcomes': outcomes,
     });
+    if (proposeTool && outcomes.isEmpty) {
+      yield ModelProviderEvent(
+        kind: ModelProviderEventKind.output,
+        observation: null,
+        terminal: null,
+        output: ModelProviderOutput(
+          kind: ModelProviderOutputKind.toolProposal,
+          text: null,
+          toolProposal: ModelProviderToolProposal(
+            callId: 'scripted-call',
+            name: request.tools.single.name,
+            arguments: const {},
+          ),
+          itemId: null,
+          nativeMetadata: null,
+          nativePresentation: null,
+        ),
+      );
+    }
     yield ModelProviderEvent(
       kind: ModelProviderEventKind.terminal,
       observation: null,

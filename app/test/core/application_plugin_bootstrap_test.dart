@@ -142,9 +142,13 @@ void main() {
       },
     );
 
+    const preferenceId = 'dev.adele.test.model-preference';
+    const preferenceDeclaration = {
+      'runModelPreferenceSource': {'extensionId': preferenceId},
+    };
     final preferenceExposure = <String, Object?>{
       'extensionPointId': runModelPreferencesExtensionPoint.value,
-      'extensionId': 'dev.adele.test.model-preference',
+      'extensionId': preferenceId,
       'serviceId': remoteRunModelPreferenceServiceId,
       'configurationContext': 'preference-configuration',
       'metadata': <String, Object?>{},
@@ -192,9 +196,9 @@ void main() {
     }
 
     test(
-      'known preference requires its exact origin; retirement is not absence',
+      'declared preference requires its exact origin; retirement is not absence',
       () async {
-        await install(ownerId);
+        await install(ownerId, declarations: preferenceDeclaration);
         await start(
           advertisements: {
             ownerId: {
@@ -265,7 +269,7 @@ void main() {
     );
 
     test(
-      'no preference expectation is inferred from a failure before ready',
+      'unrelated backend failure creates no preference expectation',
       () async {
         await install(ownerId);
         await start(
@@ -280,6 +284,56 @@ void main() {
         );
       },
     );
+
+    for (final fault in [
+      'failed startup',
+      'missing artifact',
+      'missing advertisement',
+      'wrong ID',
+      'foreign owner',
+      'malformed declaration',
+      'duplicate declaration',
+    ]) {
+      test('declared preference fails closed on $fault', () async {
+        await install(
+          ownerId,
+          declarations: fault == 'malformed declaration'
+              ? const {'runModelPreferenceSource': null}
+              : preferenceDeclaration,
+          artifactExists: fault != 'missing artifact',
+        );
+        await install(
+          independentId,
+          declarations: fault == 'duplicate declaration'
+              ? preferenceDeclaration
+              : const {},
+        );
+        await start(
+          advertisements: {
+            if (fault == 'failed startup') ownerId: {'startupFailure': true},
+            if (fault == 'wrong ID')
+              ownerId: {
+                'extensionExposures': [
+                  {...preferenceExposure, 'extensionId': '$preferenceId.other'},
+                ],
+              },
+            if (fault == 'foreign owner' || fault == 'duplicate declaration')
+              independentId: {
+                'extensionExposures': [preferenceExposure],
+              },
+          },
+        );
+        final bindings = extensions.discover(runModelPreferencesExtensionPoint);
+        if (fault == 'foreign owner') {
+          expect(bindings.single.id.value, preferenceId);
+        }
+        expect(
+          () => bootstrap.captureExpectedRunModelPreferences(bindings),
+          unavailablePreference,
+        );
+        expect(bootstrap.state, ApplicationPluginState.ready);
+      });
+    }
 
     for (final failure in ['shared host', 'backend startup']) {
       test('are captured immutably before $failure failure', () async {
@@ -750,7 +804,11 @@ void main() {
       expect(bootstrap.failure, isNull);
       expect(bootstrap.backends, isEmpty);
       final catalog = bootstrap.catalog!;
-      expect(catalog.issues, isEmpty);
+      expect(catalog.issues.single.isRunModelPreferenceSourceIssue, isTrue);
+      expect(
+        () => bootstrap.captureExpectedRunModelPreferences([]),
+        throwsA(isA<RunModelPreferenceFailure>()),
+      );
       for (final installation in catalog.installations) {
         expect(installation.backendArtifactUri, isNull);
         expect(installation.frontend, isNull);

@@ -600,7 +600,7 @@ effort is distinct from an explicit `none`.
 
 Admission pins the strategy and preference registration and reserves the Run ID
 and Session execution ownership synchronously. Only then does preparation call
-the contributor. Zero registrations or an explicit null answer use the existing
+the contributor. No expected or live registrations, or an explicit null answer, use the existing
 direct configuration. With no contributor the direct provider binding is still
 captured at admission; a contributor does not need a working direct configuration
 to supply its own. Ambiguity, a missing expected registration, a failed read,
@@ -613,7 +613,9 @@ one adapter with that exact registration, model and effort. It does not query a
 Model Catalog, test credentials, or infer model support from registration. The
 provider can still reject an unsupported request. Model/tool continuations and
 approval resume use the same adapter; no preference polling or provider lookup
-occurs on their behalf. A later Run can capture a different preference. This
+occurs on their behalf. The source may retire after successful capture, but a
+retired provider binding cannot be replaced to continue the Run. A later Run
+can capture a different preference and a new live provider binding. This
 does not change how Agent instructions are captured for an inference.
 
 ### Session routing affinity and Run-local state

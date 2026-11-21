@@ -601,7 +601,7 @@ void main() {
       final prepared = await PreparedPluginCatalog.discover(
         installation.parent.path,
       );
-      expect(prepared.issues, isEmpty);
+      expect(prepared.issues.single.isRunModelPreferenceSourceIssue, isTrue);
       final presets = createOwner(
         settings: prepared.settings,
         records: prepared.records,

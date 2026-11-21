@@ -190,13 +190,16 @@ An AOT model-preference backend advertises `dev.adele.extension.run-model-prefer
 with the generated `runModelPreference` service and empty metadata. `captureRun`
 receives only Session and Run identifiers. The adapter checks the exact registration
 and backend generation before and after the request; it grants no host services.
-The desktop bootstrap retains ready advertisements as evidence of expected
-participation even if registration fails or the backend retires. Another plugin
-registering the same ID cannot satisfy that expectation. Unlike tool authorization,
-this point has no pre-start manifest declaration: if a backend never reached
-valid readiness, installation alone cannot establish that it intended to participate.
-The stock [Model Configuration plugin](../../plugins/model_configuration/README.md)
-does not yet advertise this extension or supply a Session selector frontend.
+An installation can declare its expected Extension ID before startup using
+[`runModelPreferenceSource`](../../packages/plugin_runtime/README.md#run-model-preference-expectation).
+Run admission requires a live registration from that exact installation. A
+missing artifact, failed startup, or malformed expectation cannot be mistaken
+for no contributor. The desktop also retains ready advertisements as evidence
+of participation, even without a declaration. Neither another installation nor
+a replacement registration with the same IDs can satisfy a captured request.
+Unrelated backend failures do not create expectations. Stock
+[Model Configuration](../../plugins/model_configuration/README.md) declares and
+advertises its source independently of any Session selector frontend.
 
 ## Live discovery and exact captured bindings
 

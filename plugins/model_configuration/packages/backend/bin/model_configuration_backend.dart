@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:isolate';
 
 import 'package:adele_contract/adele_contract.dart';
+import 'package:adele_orchestration/adele_orchestration.dart';
+import 'package:adele_orchestration/remote_run_model_preference.dart';
 import 'package:adele_plugin_backend_support/adele_plugin_backend_support.dart';
 import 'package:adele_project_storage/adele_project_storage.dart';
 import 'package:model_configuration_backend/model_configuration_backend.dart';
@@ -50,6 +52,10 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
         modelPresetSelectionServiceId: ModelPresetSelectionServiceDispatcher(
           selection,
         ),
+        remoteRunModelPreferenceServiceId:
+            RemoteRunModelPreferenceServiceDispatcher(
+              ModelPresetRunPreferenceBackend(selection, catalog),
+            ),
       },
     },
   );
@@ -59,6 +65,16 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
       'kind': 'ready',
       'commandPort': requests.sendPort,
       'pluginBackendProtocolVersion': adelePluginBackendProtocolVersion,
+      'extensionExposures': [
+        AdeleExtensionExposure(
+          extensionPointId: runModelPreferencesExtensionPoint.value,
+          extensionId:
+              'dev.adele.plugin.model-configuration.run-model-preference',
+          serviceId: remoteRunModelPreferenceServiceId,
+          configurationContext: defaultContext,
+          metadata: const {},
+        ).toMap(),
+      ],
     });
     await for (final Object? request in requests) {
       if (hostRequests.handleResponse(request)) continue;

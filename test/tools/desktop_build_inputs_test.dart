@@ -334,9 +334,12 @@ part 'public.g.dart';
             '$modelPackages/backend/pubspec.yaml',
             '$modelPackages/backend/bin/model_configuration_backend.dart',
             '$modelPackages/backend/lib/model_configuration_backend.dart',
+            '$modelPackages/backend/lib/src/model_preset_run_preference_backend.dart',
             '$modelPackages/contract/pubspec.yaml',
             '$modelPackages/contract/lib/model_configuration_contract.dart',
             '$modelPackages/contract/lib/model_configuration_contract.g.dart',
+            'packages/orchestration/lib/remote_run_model_preference.dart',
+            'packages/orchestration/lib/remote_run_model_preference.g.dart',
           ])
             File(path).absolute.path,
         ]),
