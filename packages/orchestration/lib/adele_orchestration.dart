@@ -34,6 +34,7 @@ export 'src/context.dart';
 export 'src/historical_run.dart';
 export 'src/model.dart';
 export 'src/run.dart';
+export 'src/run_model_preference.dart';
 export 'src/tool.dart';
 
 final ExtensionPoint<OrchestrationStrategyContribution>

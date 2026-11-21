@@ -58,6 +58,10 @@ base class AdeleRuntime {
   late final ProductLifecycleCoordinator lifecycle;
   late final InferenceContextComposer contextComposer;
   late final ApplicationPluginBootstrap plugins;
+  late final runModelPreferences = RunModelPreferenceResolver(
+    extensions,
+    captureExpected: plugins.captureExpectedRunModelPreferences,
+  );
   Future<void>? _closing;
 
   /// Stops admission and joins database cleanup with backend shutdown so normal

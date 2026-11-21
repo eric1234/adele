@@ -7,6 +7,7 @@ import 'package:plugin_runtime/plugin_runtime.dart';
 import 'remote_command_host.dart';
 import 'remote_model_tool_host.dart';
 import 'remote_orchestration_host.dart';
+import 'remote_run_model_preference_host.dart';
 import 'remote_tool_authorization_host.dart';
 
 RemoteExtensionAdapterRegistry createRemoteExtensionAdapters() =>
@@ -15,6 +16,7 @@ RemoteExtensionAdapterRegistry createRemoteExtensionAdapters() =>
       const RemoteInferenceContextSourceAdapter(),
       const RemoteModelToolAdapter(),
       const RemoteOrchestrationStrategyAdapter(),
+      const RemoteRunModelPreferenceAdapter(),
       const RemoteToolAuthorizationPolicyAdapter(),
     ]);
 

@@ -312,6 +312,25 @@ final class CapabilityRegistry {
     return List<ProviderDescriptor>.unmodifiable(providers);
   }
 
+  /// Resolve a configured identity, distinguishing a missing registration from
+  /// an unhealthy endpoint. Never rank or substitute an available sibling.
+  ProviderBinding resolveExact(
+    CapabilityKey capability,
+    ProviderId providerId,
+  ) {
+    final registration = _providers[capability]?[providerId];
+    if (registration == null) {
+      throw ProviderUnavailable(
+        capability: capability,
+        providerId: providerId,
+        availableProviderIds: providersFor(capability).map((p) => p.id),
+      );
+    }
+    final binding = ProviderBinding._(registration);
+    binding.endpointAs<CapabilityEndpoint>();
+    return binding;
+  }
+
   ProviderBinding resolve(CapabilityKey capability, {ProviderId? providerId}) {
     final Map<ProviderId, _ActiveRegistration>? capabilityProviders =
         _providers[capability];

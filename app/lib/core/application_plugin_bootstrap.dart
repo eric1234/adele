@@ -303,6 +303,56 @@ final class ApplicationPluginBootstrap {
   List<InstalledBackendActivation> get backends => List.unmodifiable(_backends);
   Stream<ApplicationPluginState> get changes => _changes.stream;
 
+  /// Captures known startup advertisements, not an inventory of installed code.
+  /// There is no prepared declaration of Run model preferences: an installation
+  /// that fails before valid readiness has not established participation. Once
+  /// advertised, a failed activation or retirement is not a no-opinion result.
+  void Function() captureExpectedRunModelPreferences(
+    List<ExtensionBinding<RunModelPreferenceContribution>> bindings,
+  ) {
+    const unavailable = RunModelPreferenceFailure(
+      RunModelPreferenceFailureKind.unavailable,
+    );
+    if (_state == ApplicationPluginState.starting ||
+        _state == ApplicationPluginState.closing ||
+        _state == ApplicationPluginState.closed ||
+        (_state == ApplicationPluginState.failed && _catalog == null)) {
+      throw unavailable;
+    }
+    final captured = <(InstalledBackendActivation, RemoteExtensionContext)>[];
+    for (final backend in _backends) {
+      // The attempt retains its original connection, even if registration was
+      // rolled back. Never accept a native or replacement binding by ID alone.
+      final connection = backend.connection;
+      if (connection == null) continue;
+      for (final exposure in connection.extensionExposures) {
+        if (exposure.extensionPointId !=
+            runModelPreferencesExtensionPoint.value) {
+          continue;
+        }
+        final binding = bindings
+            .where((item) => item.id.value == exposure.extensionId)
+            .singleOrNull;
+        if (binding == null ||
+            connection.isClosed ||
+            backend.state != InstalledBackendState.active) {
+          throw unavailable;
+        }
+        final origin = backend.extensionOrigin(binding);
+        if (origin == null || !identical(origin.exposure, exposure)) {
+          throw unavailable;
+        }
+        captured.add((backend, origin));
+      }
+    }
+    return () {
+      for (final (backend, origin) in captured) {
+        backend.validate();
+        origin.validate();
+      }
+    };
+  }
+
   /// Immutable startup/global participation, independent of live registrations.
   /// Contextual enablement must resolve against the canonical execution context
   /// before narrowing this snapshot; it is not implemented by startup discovery.
