@@ -281,8 +281,9 @@ void main() {
           await _control(orchestration, 'ready', {'operation': 'turn'});
         }
         await connection.close().timeout(_bound);
-        if (!pending)
+        if (!pending) {
           await _control(orchestration, 'release', {'operation': 'turn'});
+        }
         await settled.timeout(_bound);
         expect(
           owner.stateForRun(run),
@@ -299,7 +300,7 @@ void main() {
         expect(await _control(foreign, 'requests'), isEmpty);
         expect(
           await _control(providers, 'requests'),
-          pending ? [] : [_first, _first],
+          pending ? isEmpty : [_first, _first],
         );
       },
     );

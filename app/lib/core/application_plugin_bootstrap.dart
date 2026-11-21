@@ -323,8 +323,7 @@ final class ApplicationPluginBootstrap {
     final outstanding = {
       for (final installation
           in catalog?.installations ?? const <PreparedPluginInstallation>[])
-        if (installation.runModelPreferenceSource case final id?)
-          installation: id,
+        installation: ?installation.runModelPreferenceSource,
     };
     final captured = <(InstalledBackendActivation, RemoteExtensionContext)>[];
     for (final backend in _backends) {

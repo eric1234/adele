@@ -324,8 +324,9 @@ void main() {
           },
         );
         final bindings = extensions.discover(runModelPreferencesExtensionPoint);
-        if (fault == 'foreign owner')
+        if (fault == 'foreign owner') {
           expect(bindings.single.id.value, preferenceId);
+        }
         expect(
           () => bootstrap.captureExpectedRunModelPreferences(bindings),
           unavailablePreference,
