@@ -101,14 +101,30 @@ const _secondRequest = {
 };
 
 void _registerRunCases(
-  Future<_StockRuns> Function({_StockArtifact stock, SessionId? restore}) start,
+  Future<_StockRuns> Function({
+    _StockArtifact stock,
+    SessionId? restore,
+    bool selector,
+  })
+  start,
 ) {
-  test(
-    'stock selection fixes the actual model route across tool approval; later Runs recapture or use direct on clear',
-    () async {
-      final runs = await start();
+  testWidgets(
+    'interpreted stock selection fixes the actual model route across tool approval; later Runs recapture or use direct on clear',
+    (tester) => tester.runAsync(() async {
+      final runs = await start(selector: true);
       final f = runs.fixture;
       final id = runs.owner.session.id.value;
+      final frontends = await _startFrontends(f);
+      expect(
+        frontends.generations.single.installation.metadata.id.value,
+        _plugin,
+      );
+      final pane = _SelectorPane(f);
+      await pane.present(tester, runs.owner.session);
+      await _waitForText(tester, _noPreset);
+      const emptyMessage =
+          'No Model Presets configured. Create Model Presets in Global Settings.';
+      expect(find.text(emptyMessage), findsOneWidget);
       final empty = await f.catalog.readPresets();
       expect(empty.isComplete, isTrue);
       expect(empty.presets, isEmpty);
@@ -133,7 +149,27 @@ void _registerRunCases(
         'model-id': 'Before-edit',
         'reasoning-effort': 'high',
       });
-      await runs.select('review', 0);
+      // The same mounted selector must observe the newly authored records.
+      await _tapText(tester, 'Refresh');
+      await _until(
+        tester,
+        () =>
+            find.text(emptyMessage).evaluate().isEmpty &&
+            find.text('Refresh').evaluate().isNotEmpty,
+        'refreshed Model Preset catalog',
+      );
+      expect(find.text(_noPreset), findsOneWidget);
+      await _choose(
+        tester,
+        _noPreset,
+        'Review (review)',
+        'Model Preset: Review (review)',
+      );
+      expect(_selection(await f.selections.readSessionSelection(id)), (
+        id,
+        'review',
+        1,
+      ));
       final beforeA = f.reads;
       final runA = await runs.advance(RunState.waiting);
       expect(await runs.requests(), [
@@ -144,7 +180,17 @@ void _registerRunCases(
       expect(f.reads, beforeA + 1);
       expect(runs.tool.executedSessions, isEmpty);
 
-      await runs.select('later', 1);
+      await _choose(
+        tester,
+        'Model Preset: Review (review)',
+        'Review (later)',
+        'Model Preset: Review (later)',
+      );
+      expect(_selection(await f.selections.readSessionSelection(id)), (
+        id,
+        'later',
+        2,
+      ));
       // Capturing values at selection time would use Before-edit/high for B.
       await f.settings.updateRecord(later, _secondValues);
       final afterChanges = f.reads;
@@ -167,9 +213,23 @@ void _registerRunCases(
       final runB = await runs.advance(RunState.completed);
       expect(runB, isNot(runA));
       expect(f.reads, afterChanges + 1);
-      await runs.select(null, 2);
+      await _tapText(tester, 'Model Preset: Review (later)');
+      await _waitForText(tester, 'No Model Preset');
+      final beforeClear = f.reads;
+      await _tapText(tester, 'No Model Preset');
+      await _waitForText(tester, _noPreset);
+      expect(_selection(await f.selections.readSessionSelection(id)), (
+        id,
+        null,
+        3,
+      ));
       await runs.advance(RunState.completed);
-      expect(f.reads, afterChanges + 1);
+      expect(
+        f.reads,
+        beforeClear,
+        reason:
+            'Neither clear nor the next direct Run needs another catalog read.',
+      );
       expect(await runs.requests(), [
         _directRequest,
         _directRequest,
@@ -180,7 +240,7 @@ void _registerRunCases(
         _directRequest,
         _directRequest,
       ]);
-    },
+    }),
   );
 
   test(

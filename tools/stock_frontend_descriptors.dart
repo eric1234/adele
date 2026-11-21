@@ -13,6 +13,18 @@ const Map<String, List<Map<String, Object?>>> stockFrontendDescriptors = {
       'backendServices': ['agentCatalog', 'agentSelection'],
     },
   ],
+  'dev.adele.plugin.model-configuration': [
+    {
+      'role': 'sessionAccessory',
+      'extensionId': 'dev.adele.plugin.model-configuration.selector',
+      'location': 'execution-configuration',
+      'order': 200,
+      'library':
+          'package:model_configuration_frontend/model_configuration_frontend.dart',
+      'entrypoint': 'buildModelPresetSelector',
+      'backendServices': ['modelPresetCatalog', 'modelPresetSelection'],
+    },
+  ],
   'dev.adele.diff-viewer': [
     {
       'role': 'mainContent',

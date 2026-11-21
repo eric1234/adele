@@ -573,6 +573,12 @@ omitting a location does not disable an inference-context source, grant or deny
 tools, choose a provider, or change Run binding. Those decisions belong to
 their execution contracts, independently of UI.
 
+For example, Agent Configuration and Model Configuration contribute independent
+selectors to `execution-configuration`. Chat mounts the location; it neither
+supplies choices nor interprets either selector's state. The Model Preset
+selector can read definitions and change a Session preference, but cannot call
+the backend's separate Run preference source or affect a captured Run binding.
+
 ### Grouped Main Content
 
 Main Content composes independent pane groups for the presented canonical Session.

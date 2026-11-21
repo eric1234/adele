@@ -618,6 +618,10 @@ retired provider binding cannot be replaced to continue the Run. A later Run
 can capture a different preference and a new live provider binding. This
 does not change how Agent instructions are captured for an inference.
 
+The [Session Model Preset selector](../../plugins/model_configuration/README.md#choosing-a-model-preset)
+edits the input to a future capture. It has no execution authority and does not
+need to observe an active Run to change the Session's choice.
+
 ### Session routing affinity and Run-local state
 
 Each live `SessionExecutionController` owns a securely generated opaque routing

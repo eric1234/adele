@@ -582,20 +582,19 @@ a `backendServices` allowlist containing generated `chatSessionServiceId`, and
 of `hostAdapter`, still under manifest version 1. Rebuild prepared artifacts and
 descriptors together. No deployment define is added.
 
-Agent Configuration's [selector](../../plugins/agent_configuration/README.md#choosing-an-agent)
-is compiled by `app/tool/agent_configuration_frontend_compiler.dart` with the
-generated eval catalog and selection clients. Its `agent-configuration/frontend.evc`
-is a separate cache component from `agent-configuration/backend.aot`; editing
-the selector does not require rebuilding the backend. The Session accessory
-descriptor grants the two services of that installation, not the strategy's
-backend or access to Settings files.
+The [Agent](../../plugins/agent_configuration/README.md#choosing-an-agent) and
+[Model Preset](../../plugins/model_configuration/packages/frontend/README.md)
+selectors each compile with their own generated eval catalog and selection
+clients. Each installation's `frontend.evc` is a separate cache component from
+its `backend.aot`; editing the selector does not require rebuilding the backend.
+Each Session accessory descriptor grants the two services of that installation,
+not the strategy's backend or access to Settings files.
 
 `tools/backend_artifacts.dart` still owns stock source entrypoints and writes
 `adele_plugin.installation.json` beside each installation's independently optional
 `backend.aot` and `frontend.evc`. The same stock publication helper copies
-Chat's and Source Editor's authoritative `settings.schema.json` files and OpenAI's
-and [Agent Configuration's](../../plugins/agent_configuration/README.md)
-authoritative `records.schema.json` files byte-for-byte, referencing them through the
+Chat's and Source Editor's `settings.schema.json` files and the `records.schema.json`
+files for OpenAI, Agent Configuration, and Model Configuration byte-for-byte, referencing them through the
 independent installation-level `settingsSchema` and `recordsSchema` fields. Schema
 metadata is available without backend/frontend activation or authentication; the
 OpenAI record declares an API-key credential slot, not secret values, and does not

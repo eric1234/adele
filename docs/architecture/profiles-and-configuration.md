@@ -294,6 +294,12 @@ exist: deletion leaves an unresolved reference rather than silently changing
 the Session. The stored choice follows Project storage lifetime, not the
 backend generation or a Global Settings editing session.
 
+In a Session that mounts execution configuration, the plugin's [selector](../../plugins/model_configuration/README.md#choosing-a-model-preset)
+reads both the selection and the catalog. An unreadable selection means unknown,
+not null. Clearing needs an authoritative revision but does not depend on catalog
+completeness. A fresh read reconciles an unconfirmed update; it neither retries
+the write nor confirms that the earlier request caused the observed state.
+
 During [Run model preference capture](execution-model.md#run-model-preferences),
 Model Configuration reads that Session's selection once. A confirmed null
 leaves the direct configuration in effect. For a stored ID, the plugin must

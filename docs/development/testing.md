@@ -573,11 +573,16 @@ publication to verify conservative error reporting and mandatory Reload.
 
 The `model_configuration_contract` and `model_configuration_backend` targets
 exercise Model Preset wire validation, live record projection and conditional
-Session selection. From `app/`, run
+Session selection. Run `dart tools/adele.dart test --target model_configuration_frontend`
+for the compiled selector: stable choices, incomplete observations, failed
+reads, unacknowledged changes, revision checks, and retired presentations.
+From `app/`, run
 `flutter test --no-pub test/core/model_preset_integration_test.dart` to cross
-the independently compiled backend boundary with real Settings and Project
-storage. Its scripted ModelProvider checks the actual route, model and effort
-through Run continuations and subsequent Session edits. Select
+the prepared frontend/backend boundary with real Settings and Project storage.
+Its instrumented ModelProvider checks the route, model and effort after a
+Session selection, through an approval wait, and after changing or clearing the
+choice for a later Run. For the generic mount and service allowlist, select
+`test/session_accessory_host_test.dart` and `test/prepared_session_accessory_test.dart`. Select
 `test/core/remote_run_model_preference_integration_test.dart` and
 `test/core/application_plugin_bootstrap_test.dart` for generic expected-source
 ownership and retirement. A preset should be selectable with no matching

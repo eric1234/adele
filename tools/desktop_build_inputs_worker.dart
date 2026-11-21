@@ -155,6 +155,17 @@ const _frontends =
         ],
         contract: 'agent_configuration',
       ),
+      'model-configuration': (
+        plugin: 'model_configuration',
+        harness: 'compile_model_configuration_frontend.dart',
+        sources: ['model_configuration_frontend.dart'],
+        ui: [
+          'session_accessory_bridge.dart',
+          'owning_backend_bridge.dart',
+          'inspection_display.dart',
+        ],
+        contract: 'model_configuration',
+      ),
       'terminal': (
         plugin: 'terminal',
         harness: 'compile_terminal_frontend.dart',
