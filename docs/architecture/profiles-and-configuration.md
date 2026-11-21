@@ -279,11 +279,25 @@ outlive that instance's availability. Saving it needs no credentials, live
 Capability binding, or Model Catalog observation. A catalog observation may
 guide a later edit but is not the authoritative contents of a preset.
 
+Model Configuration owns both the live definition reader and the Session's
+choice. Its catalog RPC is a boundary for its own frontend, not the provider
+Model Catalog Capability or a cross-plugin lookup. Selection uses the same
+reader in process. Visible records in an incomplete observation are positive
+evidence for selection; absence is definitive only in a complete observation.
+Unavailable authority cannot establish either presence or absence.
+
+The plugin stores the stable preset ID or an explicit null, guarded by a
+revision, in host-mediated Project storage for the canonical Session. No row
+means no preference and revision zero. Reads do not require the definition to
+exist: deletion leaves an unresolved reference rather than silently changing
+the Session. The stored choice follows Project storage lifetime, not the
+backend generation or a Global Settings editing session.
+
 An Agent definition, a Session's selected preset, and a Run's resolved provider
 and model are separate concerns. A preset stores no generation, binding,
 `configurationContext`, credential reference or route. Editing a definition does
-not change an already-resolved invocation. Preset projection, Session model
-selection and execution integration are not part of record editing.
+not change an already-resolved invocation. Selecting a preset does not yet
+contribute model preferences to a Run or alter direct model execution.
 
 ### Applying confirmed record changes
 

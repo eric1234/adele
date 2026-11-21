@@ -571,6 +571,15 @@ Keyboard traversal excludes filtered editors while retaining their drafts. A
 test-only service subclass injects a lost acknowledgement after actual native
 publication to verify conservative error reporting and mandatory Reload.
 
+The `model_configuration_contract` and `model_configuration_backend` targets
+exercise Model Preset wire validation, live record projection and conditional
+Session selection. From `app/`, run
+`flutter test --no-pub test/core/model_preset_integration_test.dart` to cross
+the independently compiled backend boundary with real Settings and Project
+storage. A preset should be selectable with no matching provider installed;
+do not use a live account or substitute a provider catalog for the Settings
+worker in this fixture.
+
 The `agent_configuration_contract` and `agent_configuration_backend` targets cover
 the generated catalog, record projection, and bounded Session-selection contract
 and failure semantics. From `app/`, run

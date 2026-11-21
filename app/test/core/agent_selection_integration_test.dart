@@ -35,6 +35,7 @@ import 'package:sqlite3/sqlite3.dart' hide Session;
 import '../../../tools/backend_artifacts.dart';
 import '../support/agent_selector_installation.dart';
 import '../support/gated_project_storage.dart';
+import '../support/selection_sessions.dart';
 
 const _plugin = agentConfigurationPluginId;
 const _instructionsSource = '$_plugin.instructions';
@@ -42,7 +43,6 @@ const _projectPlugin = 'dev.adele.plugin.local-directory-project';
 const _bound = Duration(seconds: 15);
 final _type = RecordTypeId('$_plugin.agent');
 final _projectProvider = ProviderId('dev.adele.project.local-directory');
-final _environmentProvider = ProviderId('test.agent-selection.environment');
 final _strategy = OrchestrationStrategyId('test.agent-selection.strategy');
 
 void main() {
@@ -975,7 +975,7 @@ void main() {
     const location = SessionAccessoryLocation.executionConfiguration;
     late Directory withSelector;
     late _Fixture fixture;
-    late _Graph graph;
+    late SelectionGraph graph;
     late ApplicationFrontendBootstrap frontends;
     late Session current;
 
@@ -1306,60 +1306,16 @@ final class _Fixture {
         provider: runtime.lifecycle.resolveProjectProvider(_projectProvider),
       );
 
-  Future<_Graph> createGraph(Directory source, {bool volatile = false}) async {
-    final channel = _EstablishmentOnlyChannel();
-    final environment = runtime.registry.register(
-      provider: ProviderDescriptor(
-        id: _environmentProvider,
-        capability: environmentProviderCapability,
-        pluginId: 'test.agent-selection.environment',
-        displayName: 'Establishment only',
-        serviceId: environmentProviderServiceId,
-      ),
-      endpoint: AdeleRequestChannelEndpoint(
-        channel: channel,
-        serviceId: environmentProviderServiceId,
-        isAvailable: () => true,
-      ),
-    );
-    final strategy = runtime.extensions.register(
-      point: orchestrationStrategyContributions,
-      id: ExtensionId(_strategy.value),
-      value: OrchestrationStrategyContribution(
-        strategyId: _strategy,
-        materialize: (_) =>
-            throw StateError('Selecting an Agent must not start execution.'),
-      ),
-    );
-    try {
-      final project = volatile
-          ? runtime.lifecycle.createProject(source.uri)
-          : await openProject(source);
-      final task = await runtime.lifecycle.createTask(
-        projectId: project.id,
-        title: 'Agent selections',
-        providerId: _environmentProvider,
-      );
-      final session = runtime.lifecycle.createSession(
-        taskId: task.task.id,
-        strategyId: _strategy,
-      );
-      final other = runtime.lifecycle.createSession(
-        taskId: task.task.id,
-        strategyId: _strategy,
-      );
-      expect(channel.calls, 1);
-      return (
-        project: project,
-        environment: task.environment,
-        session: session,
-        otherSession: other,
-      );
-    } finally {
-      await environment.close();
-      await strategy.close();
-    }
-  }
+  Future<SelectionGraph> createGraph(
+    Directory source, {
+    bool volatile = false,
+  }) async => createSelectionSessions(
+    runtime,
+    volatile
+        ? runtime.lifecycle.createProject(source.uri)
+        : await openProject(source),
+    _strategy,
+  );
 
   Future<void> close() => _closing ??= _close();
   Future<void> _close() async {
@@ -1378,28 +1334,6 @@ final class _Fixture {
         await _settings?.close();
       }
     }
-  }
-}
-
-typedef _Graph = ({
-  Project project,
-  Environment environment,
-  Session session,
-  Session otherSession,
-});
-
-final class _EstablishmentOnlyChannel implements AdeleRequestChannel {
-  int calls = 0;
-  @override
-  Future<Object?> request(String method, Map<String, Object?> payload) async {
-    expect(
-      method,
-      environmentProviderServiceEstablishId,
-      reason:
-          'Selecting an Agent must not restore or execute in an Environment.',
-    );
-    calls++;
-    return {'providerState': <String, Object?>{}, 'initialState': null};
   }
 }
 
@@ -1439,7 +1373,7 @@ Matcher _failure(String code) => throwsA(
       .having((failure) => failure.details, 'details', isEmpty),
 );
 
-void _expectNoExecution(AdeleRuntime runtime, _Graph graph) {
+void _expectNoExecution(AdeleRuntime runtime, SelectionGraph graph) {
   for (final original in [graph.session, graph.otherSession]) {
     final session = runtime.store.session(original.id)!;
     expect(session.strategyId, _strategy);

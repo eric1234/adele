@@ -17,6 +17,8 @@ const _backends = {
   'agents-md': 'plugins/agents_md/packages/backend/bin/agents_md_backend.dart',
   'agent-configuration':
       'plugins/agent_configuration/packages/backend/bin/agent_configuration_backend.dart',
+  'model-configuration':
+      'plugins/model_configuration/packages/backend/bin/model_configuration_backend.dart',
   'conservative-tool-policy':
       'plugins/conservative_tool_policy/packages/backend/bin/conservative_tool_policy_backend.dart',
   'search-tools':
@@ -323,6 +325,28 @@ part 'public.g.dart';
         ]),
       );
       expect(agent.any((file) => file.contains('/app/')), isFalse);
+      final model = inputs['model-configuration-compilation']!;
+      const modelPackages = 'plugins/model_configuration/packages';
+      expect(
+        model,
+        containsAll([
+          for (final path in [
+            '$modelPackages/backend/pubspec.yaml',
+            '$modelPackages/backend/bin/model_configuration_backend.dart',
+            '$modelPackages/backend/lib/model_configuration_backend.dart',
+            '$modelPackages/contract/pubspec.yaml',
+            '$modelPackages/contract/lib/model_configuration_contract.dart',
+            '$modelPackages/contract/lib/model_configuration_contract.g.dart',
+          ])
+            File(path).absolute.path,
+        ]),
+      );
+      expect(
+        model.any(
+          (file) => file.contains('/app/') || file.contains('/$agentPackages/'),
+        ),
+        isFalse,
+      );
       final agentFrontend = inputs['agent-configuration-frontend-compilation']!;
       expect(
         agentFrontend,
@@ -345,6 +369,13 @@ part 'public.g.dart';
         ]),
       );
       for (final entry in inputs.entries) {
+        if (entry.key != 'model-configuration-compilation') {
+          expect(
+            entry.value.any((file) => file.contains('/$modelPackages/')),
+            isFalse,
+            reason: entry.key,
+          );
+        }
         if (entry.key != 'agent-configuration-frontend-compilation') {
           expect(
             entry.value.any(

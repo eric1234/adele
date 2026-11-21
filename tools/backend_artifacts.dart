@@ -33,13 +33,6 @@ const _stockSchemaSources = {
   },
 };
 
-const _stockMetadataOnlyInstallations = {
-  'dev.adele.plugin.model-configuration': (
-    directory: 'model-configuration',
-    displayName: 'Model Configuration',
-  ),
-};
-
 const _stockAuthorizationPolicies = {
   'dev.adele.plugin.conservative-tool-policy': [
     {
@@ -53,6 +46,9 @@ const _stockBackendConsumedRecordTypes = {
   'dev.adele.openai': ['dev.adele.openai.api-key'],
   'dev.adele.plugin.agent-configuration': [
     'dev.adele.plugin.agent-configuration.agent',
+  ],
+  'dev.adele.plugin.model-configuration': [
+    'dev.adele.plugin.model-configuration.preset',
   ],
 };
 
@@ -296,6 +292,9 @@ Future<List<String>> _prepareDesktopPlugins({
   final File agentConfiguration = File.fromUri(
     installations.uri.resolve('agent-configuration/backend.aot'),
   );
+  final File modelConfiguration = File.fromUri(
+    installations.uri.resolve('model-configuration/backend.aot'),
+  );
   final File conservativeToolPolicy = File.fromUri(
     installations.uri.resolve('conservative-tool-policy/backend.aot'),
   );
@@ -350,6 +349,12 @@ Future<List<String>> _prepareDesktopPlugins({
               'plugins/agent_configuration/packages/backend/bin/agent_configuration_backend.dart',
           artifact: agentConfiguration,
           stage: 'agent-configuration-compilation',
+        ),
+        (
+          entrypoint:
+              'plugins/model_configuration/packages/backend/bin/model_configuration_backend.dart',
+          artifact: modelConfiguration,
+          stage: 'model-configuration-compilation',
         ),
         (
           entrypoint:
@@ -456,8 +461,11 @@ Future<List<String>> _prepareDesktopPlugins({
   final assemblyTimer = Stopwatch()..start();
   // Publish each installation once, only after all components are prepared.
   for (final plugin in <({File? backend, String id, String displayName})>[
-    for (final entry in _stockMetadataOnlyInstallations.entries)
-      (backend: null, id: entry.key, displayName: entry.value.displayName),
+    (
+      backend: modelConfiguration,
+      id: 'dev.adele.plugin.model-configuration',
+      displayName: 'Model Configuration',
+    ),
     (backend: diffViewer, id: 'dev.adele.diff-viewer', displayName: 'Diff'),
     (backend: null, id: 'dev.adele.source-editor', displayName: 'Source'),
     (backend: null, id: 'dev.adele.plugin.terminal', displayName: 'Terminal'),
@@ -511,13 +519,7 @@ Future<List<String>> _prepareDesktopPlugins({
     ),
   ]) {
     final frontend = frontends[plugin.id];
-    final directory =
-        (plugin.backend ?? frontend)?.parent ??
-        Directory.fromUri(
-          installations.uri.resolve(
-            '${_stockMetadataOnlyInstallations[plugin.id]!.directory}/',
-          ),
-        );
+    final directory = (plugin.backend ?? frontend!).parent;
     await publishStockPluginInstallation(
       repositoryRoot: repositoryRoot,
       installationDirectory: directory,
