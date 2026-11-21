@@ -4,7 +4,8 @@
 to Global Settings. The host discovers its version-1 [record schema](records.schema.json)
 independently of backend activation, so editing does not require a running
 backend. The [AOT backend](packages/backend/README.md) reads the definitions
-and manages Session selections. There is no frontend or runtime apply handler.
+and resolves each new Run's preference from its Session selection. There is no
+frontend or runtime apply handler.
 
 Each `dev.adele.plugin.model-configuration.preset` record in `model-presets`
 has a user-chosen, immutable record ID. Use that ID, not the editable name, to
@@ -39,7 +40,13 @@ Deleting a definition leaves the stored ID intact; recreating that ID makes
 it resolvable again. Durable Project storage survives reopen; volatile storage
 has only its Project lifetime.
 
-The [generated services](packages/contract/README.md) are for this plugin's
-own frontend/backend boundary, not a provider Capability or a core model
-catalog. Selection does not change a Run. See [Model Presets](../../docs/architecture/profiles-and-configuration.md#model-presets)
-for the boundary between authored preferences and executable bindings.
+The plugin's [catalog and selection services](packages/contract/README.md) are
+not provider Capabilities. Its separate Run preference service returns null only
+after reading an unselected Session. Otherwise it reads the current catalog
+once and returns the visible preset's exact provider/model/effort. Invalid
+data, an unresolved reference, or unavailable storage fails capture. Installing
+Model Configuration declares an expected source: an unavailable backend blocks
+Run preparation, not Global Settings. The host binds the provider and reuses the
+captured configuration across model/tool turns and approval waits. Editing or
+clearing a preset cannot switch the active Run to another model. See
+[Model Presets](../../docs/architecture/profiles-and-configuration.md#model-presets).

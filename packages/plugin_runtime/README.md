@@ -132,6 +132,16 @@ The separate sealed `PreparedFrontendExtension` includes
 Its optional `frontend.extensions` list defaults to empty and can coexist with the
 required, possibly empty `presentations` list. Manifest version remains 1.
 
+### Run Model Preference Expectation
+
+An installation may declare `"runModelPreferenceSource": {"extensionId": "org.example.model.preference"}`
+at the manifest root. This single unconditional expectation names a registration,
+not a service route or a Capability. It remains discoverable if the backend
+artifact is missing. Consumers check both the exact installation's expected ID
+and `PreparedPluginCatalogIssue.isRunModelPreferenceSourceIssue`; a known invalid
+declaration is not an opt-out. See [extension composition](../../docs/architecture/plugin-system.md)
+for live ownership and capture. Record schemas remain independently available.
+
 ### Authorization Policy Expectations
 
 The optional installation-level `authorizationPolicies` array declares expected

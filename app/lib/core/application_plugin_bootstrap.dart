@@ -303,22 +303,29 @@ final class ApplicationPluginBootstrap {
   List<InstalledBackendActivation> get backends => List.unmodifiable(_backends);
   Stream<ApplicationPluginState> get changes => _changes.stream;
 
-  /// Captures known startup advertisements, not an inventory of installed code.
-  /// There is no prepared declaration of Run model preferences: an installation
-  /// that fails before valid readiness has not established participation. Once
-  /// advertised, a failed activation or retirement is not a no-opinion result.
+  /// Checks both installed expectations and known advertisements. The returned
+  /// validator pins their exact live origins only through preference capture.
   void Function() captureExpectedRunModelPreferences(
     List<ExtensionBinding<RunModelPreferenceContribution>> bindings,
   ) {
     const unavailable = RunModelPreferenceFailure(
       RunModelPreferenceFailureKind.unavailable,
     );
+    final catalog = _catalog;
     if (_state == ApplicationPluginState.starting ||
         _state == ApplicationPluginState.closing ||
         _state == ApplicationPluginState.closed ||
-        (_state == ApplicationPluginState.failed && _catalog == null)) {
+        (_state == ApplicationPluginState.failed && catalog == null) ||
+        (catalog?.issues.any((i) => i.isRunModelPreferenceSourceIssue) ??
+            false)) {
       throw unavailable;
     }
+    final outstanding = {
+      for (final installation
+          in catalog?.installations ?? const <PreparedPluginInstallation>[])
+        if (installation.runModelPreferenceSource case final id?)
+          installation: id,
+    };
     final captured = <(InstalledBackendActivation, RemoteExtensionContext)>[];
     for (final backend in _backends) {
       // The attempt retains its original connection, even if registration was
@@ -343,8 +350,14 @@ final class ApplicationPluginBootstrap {
           throw unavailable;
         }
         captured.add((backend, origin));
+        if (outstanding[backend.installation] == binding.id) {
+          outstanding.remove(backend.installation);
+        }
       }
     }
+    // A missing artifact, failed start, or another installation's successful
+    // advertisement cannot discharge this installation's declaration.
+    if (outstanding.isNotEmpty) throw unavailable;
     return () {
       for (final (backend, origin) in captured) {
         backend.validate();

@@ -42,6 +42,12 @@ const _stockAuthorizationPolicies = {
   ],
 };
 
+const _stockRunModelPreferenceSources = {
+  'dev.adele.plugin.model-configuration': {
+    'extensionId': 'dev.adele.plugin.model-configuration.run-model-preference',
+  },
+};
+
 const _stockBackendConsumedRecordTypes = {
   'dev.adele.openai': ['dev.adele.openai.api-key'],
   'dev.adele.plugin.agent-configuration': [
@@ -652,6 +658,7 @@ Future<void> publishStockPluginInstallation({
       for (final schema in schemaSources.keys)
         '${schema}Schema': '$schema.schema.json',
       'authorizationPolicies': ?_stockAuthorizationPolicies[pluginId],
+      'runModelPreferenceSource': ?_stockRunModelPreferenceSources[pluginId],
       'components': <String, Object?>{
         if (backend)
           'backend': <String, Object?>{

@@ -161,6 +161,7 @@ void main() {
         expect(installation.backendConsumedRecordTypes, isEmpty);
         expect(installation.authorizationPolicies, isEmpty);
         expect(installation.authorizationPolicyEnabledSettings, isEmpty);
+        expect(installation.runModelPreferenceSource, isNull);
         expect(
           () => installation.authorizationPolicies.clear(),
           throwsUnsupportedError,
@@ -188,6 +189,7 @@ void main() {
   PreparedPluginInstallation backendConsumer({
     Iterable<CapabilityKey> capabilities = const [],
     Iterable<ExtensionId> authorizationPolicies = const [],
+    ExtensionId? runModelPreferenceSource,
     bool backend = true,
   }) => PreparedPluginInstallation(
     metadata: PluginMetadata(
@@ -199,7 +201,212 @@ void main() {
     backendArtifactUri: backend ? root.uri.resolve('backend.aot') : null,
     backendConsumedCapabilities: capabilities,
     authorizationPolicies: authorizationPolicies,
+    runModelPreferenceSource: runModelPreferenceSource,
   );
+
+  group('Run model preference source', () {
+    const field = 'runModelPreferenceSource';
+    const declaration = {'extensionId': 'org.other.run-preference'};
+    final expected = ExtensionId(declaration['extensionId']!);
+
+    test('programmatic expectation requires a backend', () {
+      expect(
+        backendConsumer(
+          runModelPreferenceSource: expected,
+        ).runModelPreferenceSource,
+        expected,
+      );
+      expect(
+        () =>
+            backendConsumer(backend: false, runModelPreferenceSource: expected),
+        throwsFormatException,
+      );
+    });
+
+    test(
+      'valid singleton belongs to its installation, not a service or namespace',
+      () async {
+        final owner = await install('a', {
+          ..._manifest(
+            components: {
+              'backend': {'artifact': 'backend.aot'},
+              'frontend': _frontend(
+                presentations: [
+                  {
+                    ..._session,
+                    'operations': {field: 'runOperation'},
+                  },
+                ],
+              ),
+            },
+          ),
+          field: declaration,
+        });
+        await install(
+          'b',
+          _manifest(id: 'org.example.other', artifact: 'missing.aot'),
+        );
+        final catalog = await PreparedPluginCatalog.discover(root.path);
+        final source = catalog.installations.first;
+        expect(source.installationDirectory.uri, owner.uri);
+        expect(source.runModelPreferenceSource, expected);
+        expect(source.frontend, isNotNull);
+        expect(catalog.installations.last.runModelPreferenceSource, isNull);
+        expect(
+          catalog.issues.single.component,
+          PreparedPluginComponent.backend,
+        );
+        expect(catalog.issues.single.isRunModelPreferenceSourceIssue, isFalse);
+      },
+    );
+
+    for (final invalid in <Object?>[
+      null,
+      [],
+      [declaration, declaration],
+      {},
+      {'extensionId': false},
+      {'extensionId': ' Not.An.Id '},
+      {...declaration, 'serviceId': 'wrong'},
+    ]) {
+      test(
+        'rejects ${jsonEncode(invalid)} without discarding healthy siblings',
+        () async {
+          final owner = await install('a', {
+            ..._manifest(
+              components: {
+                'backend': {'artifact': 'backend.aot'},
+                'frontend': _frontend(),
+              },
+            ),
+            'recordsSchema': 'records.json',
+            field: invalid,
+          });
+          await File.fromUri(owner.uri.resolve('records.json')).writeAsString(
+            jsonEncode({'schemaVersion': 1, 'recordTypes': <Object?>[]}),
+          );
+          await install('b', {
+            ..._manifest(id: 'org.example.other'),
+            field: declaration,
+          });
+          final catalog = await PreparedPluginCatalog.discover(root.path);
+          final issue = catalog.issues.single;
+          expect(issue.installationDirectory.uri, owner.uri);
+          expect(issue.isRunModelPreferenceSourceIssue, isTrue);
+          expect(issue.message, contains(field));
+          expect(issue.component, isNull);
+          expect(issue.isAuthorizationPolicyIssue, isFalse);
+          final source = catalog.installations.first;
+          expect(source.runModelPreferenceSource, isNull);
+          expect(source.recordsSchema, isNotNull);
+          expect(source.frontend, isNotNull);
+          expect(source.backendArtifactUri, isNotNull);
+          expect(catalog.installations.last.runModelPreferenceSource, expected);
+        },
+      );
+    }
+
+    for (final members in [
+      '"$field":null,"$field":${jsonEncode(declaration)}',
+      r'"runModelPreferenceSource":{"extensionId":"org.other.one","extensi\u006fnId":"org.other.two"}',
+    ]) {
+      test(
+        'duplicate JSON members cannot select a last writer: $members',
+        () async {
+          final directory = await install('plugin', _manifest());
+          await File.fromUri(
+            directory.uri.resolve('adele_plugin.installation.json'),
+          ).writeAsString('{$members,${jsonEncode(_manifest()).substring(1)}');
+          final catalog = await PreparedPluginCatalog.discover(root.path);
+          expect(catalog.installations.single.runModelPreferenceSource, isNull);
+          expect(catalog.installations.single.backendArtifactUri, isNotNull);
+          expect(catalog.issues.single.isRunModelPreferenceSourceIssue, isTrue);
+          expect(catalog.issues.single.message, contains('Duplicate'));
+        },
+      );
+    }
+
+    for (final backend in [
+      null,
+      {'artifact': 'missing.aot'},
+      {'unknown': true},
+    ]) {
+      test(
+        'retains expectation despite unavailable backend $backend',
+        () async {
+          final directory = await install('plugin', {
+            ..._manifest(
+              components: {'frontend': _frontend(), 'backend': ?backend},
+            ),
+            field: declaration,
+          });
+          final catalog = await PreparedPluginCatalog.discover(root.path);
+          final source = catalog.installations.single;
+          expect(source.installationDirectory.uri, directory.uri);
+          expect(source.runModelPreferenceSource, expected);
+          expect(source.backendArtifactUri, isNull);
+          expect(source.frontend, isNotNull);
+          expect(
+            catalog.issues.single.component,
+            backend == null ? null : PreparedPluginComponent.backend,
+          );
+          expect(catalog.issues.single.isRunModelPreferenceSourceIssue, isTrue);
+        },
+      );
+    }
+
+    test(
+      'excluded envelopes and duplicate PluginIds leave expectation diagnostics',
+      () async {
+        final excluded = await install('a', {
+          ..._manifest(),
+          'manifestVersion': 2,
+          field: null,
+        });
+        await install('b', _manifest());
+        await install('c', _manifest(id: 'org.example.healthy'));
+        final catalog = await PreparedPluginCatalog.discover(root.path);
+        expect(
+          catalog.installations.single.metadata.id.value,
+          'org.example.healthy',
+        );
+        final issues = catalog.issues.where(
+          (issue) => issue.isRunModelPreferenceSourceIssue,
+        );
+        expect(issues.map((issue) => issue.installationDirectory.uri), [
+          excluded.uri,
+          excluded.uri,
+        ]);
+        expect(issues.last.message, contains('Duplicate PluginId'));
+        expect(catalog.issues, hasLength(3));
+      },
+    );
+
+    test(
+      'different owners declaring the same ID cannot hide each other',
+      () async {
+        for (final name in ['one', 'two']) {
+          await install(name, {
+            ..._manifest(id: 'org.example.$name'),
+            field: declaration,
+          });
+        }
+        final catalog = await PreparedPluginCatalog.discover(root.path);
+        expect(catalog.installations.map((i) => i.runModelPreferenceSource), [
+          expected,
+          expected,
+        ]);
+        expect(
+          catalog.issues.map((i) => i.pluginId),
+          catalog.installations.map((i) => i.metadata.id),
+        );
+        expect(
+          catalog.issues.map((i) => i.isRunModelPreferenceSourceIssue),
+          everyElement(isTrue),
+        );
+      },
+    );
+  });
 
   const authorizationPolicy = {'extensionId': 'org.other.safety-policy'};
   final policyId = ExtensionId(authorizationPolicy['extensionId']!);

@@ -20,6 +20,8 @@ absence from an incomplete observation cannot establish that a preset is missing
 Deletion leaves the stored ID unresolved until replacement, clearing, or recreation.
 An `outcome_uncertain` write needs a fresh read, not an automatic retry.
 
-Neither service supplies a default or changes a Run. See the [plugin](../../README.md)
+Neither service supplies a default or changes an active Run. Run capture uses
+the separate [orchestration contract](../../../../packages/orchestration/README.md#run-model-preferences),
+not a new method on the selector API. See the [plugin](../../README.md)
 for storage ownership and the [generator](../../../../packages/contract_codegen/README.md)
 for native and interpreted client generation.

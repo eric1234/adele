@@ -839,7 +839,8 @@ void main() {
       addTearDown(plugins.close);
       await plugins.start(installationRoot: installed.path);
       final prepared = plugins.catalog!;
-      expect(prepared.issues, isEmpty);
+      // The absent expected backend blocks Run preparation, not record CRUD.
+      expect(prepared.issues.single.isRunModelPreferenceSourceIssue, isTrue);
       final settings = GlobalSettingsService(
         catalog: prepared.settings,
         records: prepared.records,
