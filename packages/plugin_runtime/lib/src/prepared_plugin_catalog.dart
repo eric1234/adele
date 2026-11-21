@@ -24,6 +24,7 @@ final class PreparedPluginInstallation {
         const [],
     Iterable<ExtensionId> authorizationPolicies = const [],
     Map<ExtensionId, SettingId> authorizationPolicyEnabledSettings = const {},
+    ExtensionId? runModelPreferenceSource,
     PreparedFrontendComponent? frontend,
     PreparedSettingsSchema? settingsSchema,
     PreparedRecordsSchema? recordsSchema,
@@ -37,6 +38,7 @@ final class PreparedPluginInstallation {
          backendConsumedCredentialSlots: backendConsumedCredentialSlots,
          authorizationPolicies: authorizationPolicies,
          authorizationPolicyEnabledSettings: authorizationPolicyEnabledSettings,
+         runModelPreferenceSource: runModelPreferenceSource,
          frontend: frontend,
          settingsSchema: settingsSchema,
          recordsSchema: recordsSchema,
@@ -54,7 +56,8 @@ final class PreparedPluginInstallation {
         const [],
     Iterable<ExtensionId> authorizationPolicies = const [],
     Map<ExtensionId, SettingId> authorizationPolicyEnabledSettings = const {},
-    bool allowUnavailableAuthorizationPolicies = false,
+    this.runModelPreferenceSource,
+    bool allowUnavailableExpectations = false,
     this.frontend,
     this.settingsSchema,
     this.recordsSchema,
@@ -78,12 +81,17 @@ final class PreparedPluginInstallation {
            maxBackendConsumedCredentialSlotTypes + 1,
          ),
        ) {
-    if (!allowUnavailableAuthorizationPolicies &&
-        backendArtifactUri == null &&
-        this.authorizationPolicies.isNotEmpty) {
-      throw const FormatException(
-        'authorizationPolicies requires a backend component.',
-      );
+    if (!allowUnavailableExpectations && backendArtifactUri == null) {
+      if (this.authorizationPolicies.isNotEmpty) {
+        throw const FormatException(
+          'authorizationPolicies requires a backend component.',
+        );
+      }
+      if (runModelPreferenceSource != null) {
+        throw const FormatException(
+          'runModelPreferenceSource requires a backend component.',
+        );
+      }
     }
     if (this.authorizationPolicyEnabledSettings.isNotEmpty) {
       if (!this.authorizationPolicies.toSet().containsAll(
@@ -159,6 +167,12 @@ final class PreparedPluginInstallation {
   /// Valid optional conditions on those installed identities, not effective values.
   /// Invalid references leave policy-specific catalog issues, never opt-outs.
   final Map<ExtensionId, SettingId> authorizationPolicyEnabledSettings;
+
+  /// Expected Run model-preference registration from this exact installation,
+  /// not a live registration. Discovery retains it if the backend is rejected.
+  /// Check [PreparedPluginCatalogIssue.isRunModelPreferenceSourceIssue] as well:
+  /// a malformed or excluded declaration cannot establish absence.
+  final ExtensionId? runModelPreferenceSource;
 
   /// Backend-only consumption declarations, not provider advertisements,
   /// activation dependencies, or authority grants.
@@ -998,6 +1012,7 @@ final class PreparedPluginCatalogIssue {
     this.isSettingsSchemaIssue = false,
     this.isRecordsSchemaIssue = false,
     this.isAuthorizationPolicyIssue = false,
+    this.isRunModelPreferenceSourceIssue = false,
   });
 
   final Directory installationDirectory;
@@ -1018,6 +1033,10 @@ final class PreparedPluginCatalogIssue {
   /// A policy declaration is malformed, its backend is unavailable, or its
   /// installation was excluded. Consumers must not treat this as zero policies.
   final bool isAuthorizationPolicyIssue;
+
+  /// A Run model-preference declaration is malformed, its backend is
+  /// unavailable, or its installation was excluded.
+  final bool isRunModelPreferenceSourceIssue;
 
   @override
   String toString() => '${installationDirectory.path}: $message';
@@ -1057,6 +1076,7 @@ final class PreparedPluginCatalog {
     final issues = <PreparedPluginCatalogIssue>[];
     final identities = <PluginId, List<Directory>>{};
     final authorizationPolicyDirectories = <String>{};
+    final runModelPreferenceDirectories = <String>{};
     final root = Directory(rootPath).absolute;
     List<FileSystemEntity> children = [];
     if (rootPath.isNotEmpty) {
@@ -1089,11 +1109,15 @@ final class PreparedPluginCatalog {
           resolvedDirectory.uri.resolve('adele_plugin.installation.json'),
         );
         final manifestUri = await _confinedFile(manifest, resolvedDirectory);
-        final Object? decoded = jsonDecode(
+        final decoded = _decodeInstallation(
           await File.fromUri(manifestUri).readAsString(),
         );
         // Preserve fail-closed evidence even if identity/envelope validation or
         // duplicate exclusion prevents this installation from being retained.
+        if (decoded is Map<String, Object?> &&
+            decoded.containsKey('runModelPreferenceSource')) {
+          runModelPreferenceDirectories.add(directory.path);
+        }
         if (decoded is Map<String, Object?> &&
             decoded.containsKey('authorizationPolicies')) {
           final declarations = decoded['authorizationPolicies'];
@@ -1114,6 +1138,7 @@ final class PreparedPluginCatalog {
           'settingsSchema',
           'recordsSchema',
           'authorizationPolicies',
+          'runModelPreferenceSource',
         });
         if (document['manifestVersion'] is! int ||
             document['manifestVersion'] != 1) {
@@ -1150,6 +1175,28 @@ final class PreparedPluginCatalog {
         PreparedFrontendComponent? frontend;
         PreparedSettingsSchema? settingsSchema;
         PreparedRecordsSchema? recordsSchema;
+        ExtensionId? runModelPreferenceSource;
+        if (document.containsKey('runModelPreferenceSource')) {
+          try {
+            runModelPreferenceSource = _runModelPreferenceSource(
+              document['runModelPreferenceSource'],
+            );
+            if (!components.containsKey('backend')) {
+              throw const FormatException(
+                'runModelPreferenceSource requires a backend component.',
+              );
+            }
+          } on FormatException catch (error) {
+            issues.add(
+              PreparedPluginCatalogIssue(
+                installationDirectory: directory,
+                pluginId: id,
+                isRunModelPreferenceSourceIssue: true,
+                message: error.message,
+              ),
+            );
+          }
+        }
         List<ExtensionId> authorizationPolicies = const [];
         Map<int, Object?> policySettingReferences = const {};
         if (document.containsKey('authorizationPolicies')) {
@@ -1374,6 +1421,9 @@ final class PreparedPluginCatalog {
                 isAuthorizationPolicyIssue:
                     component == PreparedPluginComponent.backend &&
                     requiresPolicyBackend,
+                isRunModelPreferenceSourceIssue:
+                    component == PreparedPluginComponent.backend &&
+                    runModelPreferenceSource != null,
                 message: error.message,
               ),
             );
@@ -1386,6 +1436,9 @@ final class PreparedPluginCatalog {
                 isAuthorizationPolicyIssue:
                     component == PreparedPluginComponent.backend &&
                     requiresPolicyBackend,
+                isRunModelPreferenceSourceIssue:
+                    component == PreparedPluginComponent.backend &&
+                    runModelPreferenceSource != null,
                 message: 'Unable to read ${component.name} component: $error',
               ),
             );
@@ -1402,7 +1455,8 @@ final class PreparedPluginCatalog {
             backendConsumedCredentialSlots: backendConsumedCredentialSlots,
             authorizationPolicies: authorizationPolicies,
             authorizationPolicyEnabledSettings: policyEnabledSettings,
-            allowUnavailableAuthorizationPolicies: true,
+            runModelPreferenceSource: runModelPreferenceSource,
+            allowUnavailableExpectations: true,
             frontend: frontend,
             settingsSchema: settingsSchema,
             recordsSchema: recordsSchema,
@@ -1416,6 +1470,8 @@ final class PreparedPluginCatalog {
             isAuthorizationPolicyIssue: authorizationPolicyDirectories.contains(
               directory.path,
             ),
+            isRunModelPreferenceSourceIssue: runModelPreferenceDirectories
+                .contains(directory.path),
             message: error.message,
           ),
         );
@@ -1427,6 +1483,8 @@ final class PreparedPluginCatalog {
             isAuthorizationPolicyIssue: authorizationPolicyDirectories.contains(
               directory.path,
             ),
+            isRunModelPreferenceSourceIssue: runModelPreferenceDirectories
+                .contains(directory.path),
             message: 'Unable to read installation: $error',
           ),
         );
@@ -1443,6 +1501,8 @@ final class PreparedPluginCatalog {
             isAuthorizationPolicyIssue: authorizationPolicyDirectories.contains(
               directory.path,
             ),
+            isRunModelPreferenceSourceIssue: runModelPreferenceDirectories
+                .contains(directory.path),
             message:
                 'Duplicate PluginId ${entry.key}: '
                 '${entry.value.map((item) => item.path).join(', ')}. '
@@ -1451,10 +1511,77 @@ final class PreparedPluginCatalog {
         );
       }
     }
+    // Do not deduplicate by extension ID or discard either owner's records.
+    final preferenceOwners = <ExtensionId, List<PreparedPluginInstallation>>{};
+    for (final installation in installations) {
+      if (installation.runModelPreferenceSource case final source?) {
+        preferenceOwners.putIfAbsent(source, () => []).add(installation);
+      }
+    }
+    for (final entry in preferenceOwners.entries) {
+      if (entry.value.length < 2) continue;
+      for (final owner in entry.value) {
+        issues.add(
+          PreparedPluginCatalogIssue(
+            installationDirectory: owner.installationDirectory,
+            pluginId: owner.metadata.id,
+            isRunModelPreferenceSourceIssue: true,
+            message:
+                'Duplicate runModelPreferenceSource.extensionId: ${entry.key}.',
+          ),
+        );
+      }
+    }
     return PreparedPluginCatalog._(
       installations: installations,
       issues: issues,
     );
+  }
+}
+
+enum _InvalidPreferenceSource { duplicateMember }
+
+Object? _decodeInstallation(String text) {
+  // jsonDecode revives properties before their containing map collapses repeated
+  // names. Detect a repeated singleton declaration, discounting visible nested
+  // names (e.g. frontend operation keys). Within the strict one-field source
+  // object a repeated ID before a final string ID gives adjacent ID callbacks.
+  // A sibling descriptor's ID is followed by its own container's callback.
+  var sourceMembers = 0;
+  var consecutiveIds = 0;
+  const field = 'runModelPreferenceSource';
+  return jsonDecode(
+    text,
+    reviver: (key, value) {
+      if (value is Map<String, Object?> && value.containsKey(field)) {
+        sourceMembers--;
+        if (key == null && sourceMembers != 0) {
+          value[field] = _InvalidPreferenceSource.duplicateMember;
+        }
+      }
+      if (key == field) {
+        sourceMembers++;
+        if (consecutiveIds > 1 && value is Map<String, Object?>) {
+          value = _InvalidPreferenceSource.duplicateMember;
+        }
+      }
+      consecutiveIds = key == 'extensionId' ? consecutiveIds + 1 : 0;
+      return value;
+    },
+  );
+}
+
+ExtensionId _runModelPreferenceSource(Object? value) {
+  const field = 'runModelPreferenceSource';
+  if (value == _InvalidPreferenceSource.duplicateMember) {
+    throw const FormatException('Duplicate $field declaration or extensionId.');
+  }
+  final source = _object(value, field, {'extensionId'});
+  final id = _text(source['extensionId'], '$field.extensionId');
+  try {
+    return ExtensionId(id);
+  } on FormatException {
+    throw const FormatException('Invalid $field.extensionId.');
   }
 }
 

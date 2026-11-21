@@ -273,7 +273,8 @@ a separate mapping for every installed provider.
 The [Model Configuration plugin](../../plugins/model_configuration/README.md)
 contributes the declaration, not preset instances. Installation makes the empty
 collection editable in Global Settings; nothing is seeded, selected or reserved.
-Stock definitions await general configuration defaults. A preset neither
+Stock definitions await a configuration-defaults policy: discovery and startup
+must not seed or recreate records that users chose to delete. A preset neither
 installs a provider plugin nor creates the provider instance it names. It can
 outlive that instance's availability. Saving it needs no credentials, live
 Capability binding, or Model Catalog observation. A catalog observation may
@@ -293,11 +294,19 @@ exist: deletion leaves an unresolved reference rather than silently changing
 the Session. The stored choice follows Project storage lifetime, not the
 backend generation or a Global Settings editing session.
 
-An Agent definition, a Session's selected preset, and a Run's resolved provider
-and model are separate concerns. A preset stores no generation, binding,
-`configurationContext`, credential reference or route. Editing a definition does
-not change an already-resolved Run. Stock Model Configuration does not yet
-connect its Session selection to the generic [Run model preference extension](execution-model.md#run-model-preferences).
+During [Run model preference capture](execution-model.md#run-model-preferences),
+Model Configuration reads that Session's selection once. A confirmed null
+leaves the direct configuration in effect. For a stored ID, the plugin must
+observe the exact preset in a fresh authorized catalog. A missing preset in a
+complete observation and an unobserved preset in an incomplete one both fail
+preparation, as do unreadable storage and unusable identifiers. None clear the
+stored ID or permit fallback. A visible preset yields its authored provider,
+model and optional effort, whether or not that provider is currently available.
+
+An Agent definition, the Session's stored ID, and the Run's effective binding
+are separate concerns. The host alone resolves the executable provider. Editing,
+deleting or selecting a preset affects later captures, never the active Run.
+There is no persisted Run selection or runtime record-apply operation.
 
 ### Applying confirmed record changes
 

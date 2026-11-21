@@ -4,14 +4,20 @@ library;
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_desktop/core/adele_runtime.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/global_settings_service.dart';
 import 'package:adele_desktop/core/prepared_settings.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/project_storage_host.dart';
+import 'package:adele_desktop/ui/execution/session_execution_controller.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
+import 'package:adele_model_tool/adele_model_tool.dart';
+import 'package:adele_orchestration/adele_orchestration.dart';
+import 'package:adele_orchestration/remote_run_model_preference.dart';
 import 'package:adele_platform_storage/adele_platform_storage.dart';
+import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:adele_project_storage/adele_project_storage.dart';
 import 'package:adele_settings/adele_settings.dart';
@@ -23,9 +29,13 @@ import 'package:plugin_runtime/plugin_runtime.dart';
 import '../../../tools/backend_artifacts.dart';
 import '../support/gated_project_storage.dart';
 import '../support/project_provider.dart';
+import '../support/review_execution_fixture.dart';
 import '../support/selection_sessions.dart';
 
+part 'model_preset_run_cases.dart';
+
 const _plugin = 'dev.adele.plugin.model-configuration';
+const _extensionId = '$_plugin.run-model-preference';
 const _peer = '$_plugin.peer';
 final _type = RecordTypeId('$_plugin.preset');
 final _strategy = OrchestrationStrategyId('test.preset.strategy');
@@ -36,6 +46,7 @@ const _values = {
 };
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
   late Directory installations;
   late File host;
   late String aotRuntime;
@@ -54,6 +65,14 @@ void main() {
       (
         'plugins/model_configuration/packages/backend/bin/model_configuration_backend.dart',
         File('${directory.path}/backend.aot'),
+      ),
+      (
+        'app/test/core/fixtures/remote_run_model_preference_probe.dart',
+        File('${artifacts.path}/models.aot'),
+      ),
+      (
+        'app/test/core/fixtures/remote_orchestration_probe.dart',
+        File('${artifacts.path}/strategy.aot'),
       ),
     ]) {
       await compileAotSnapshot(
@@ -103,18 +122,21 @@ void main() {
     );
   });
 
-  Future<_Fixture> start({Directory? root, bool failedBackend = false}) async {
+  Future<_Fixture> start({bool gateStorage = false}) async {
     final f = _Fixture(roots);
     addTearDown(f.close);
-    await f.start((root ?? installations).path, aotRuntime, host.path);
+    await f.start(
+      installations.path,
+      aotRuntime,
+      host.path,
+      gateStorage: gateStorage,
+    );
     expect(f.bootstrap.state, ApplicationPluginState.ready);
     expect(f.bootstrap.catalog!.issues, isEmpty);
     final backend = f.bootstrap.backends.single;
     expect(
       backend.state,
-      failedBackend
-          ? InstalledBackendState.failed
-          : InstalledBackendState.active,
+      InstalledBackendState.active,
       reason: '${backend.failure}',
     );
     expect(backend.installation.frontend, isNull);
@@ -122,10 +144,15 @@ void main() {
     expect(backend.installation.backendConsumedCredentialSlots, isEmpty);
     expect(backend.installation.backendConsumedCapabilities, isEmpty);
     expect(backend.installation.backendRecordApplyHandlers, isEmpty);
-    if (!failedBackend) {
-      expect(f.connection.capabilityExposures, isEmpty);
-      expect(f.connection.extensionExposures, isEmpty);
-    }
+    expect(backend.installation.runModelPreferenceSource?.value, _extensionId);
+    expect(f.connection.capabilityExposures, isEmpty);
+    expect(f.connection.extensionExposures.single.toMap(), {
+      'extensionPointId': runModelPreferencesExtensionPoint.value,
+      'extensionId': _extensionId,
+      'serviceId': remoteRunModelPreferenceServiceId,
+      'configurationContext': 'default',
+      'metadata': <String, Object?>{},
+    });
     expect(f.reads, 0);
     return f;
   }
@@ -335,7 +362,7 @@ void main() {
   test(
     'retirement fences an admitted write and both retained clients',
     () async {
-      final f = await start();
+      final f = await start(gateStorage: true);
       final graph = await f.sessions(temporary, volatile: true);
       final id = graph.session.id.value;
       final other = await f.sessions(
@@ -372,7 +399,12 @@ void main() {
         catalog.readPresets(),
         throwsA(isA<PluginConnectionClosed>()),
       );
-      await f.start(installations.path, aotRuntime, host.path);
+      await f.start(
+        installations.path,
+        aotRuntime,
+        host.path,
+        gateStorage: true,
+      );
       expect(_selection(await f.selections.readSessionSelection(id)), (
         id,
         'known',
@@ -402,39 +434,26 @@ void main() {
     },
   );
 
-  test('failed backend startup does not disable Settings editing', () async {
-    final root = await _temporary('model-preset-broken-');
-    final directory = await Directory(
-      '${root.path}/model-configuration',
-    ).create();
-    for (final name in [
-      'records.schema.json',
-      'adele_plugin.installation.json',
-    ]) {
-      await File(
-        '${installations.path}/model-configuration/$name',
-      ).copy('${directory.path}/$name');
+  _registerRunCases(({stock = _StockArtifact.healthy, restore}) async {
+    final root = await _temporary('model-preset-run-installations-');
+    await _prepareRunInstallations(root, installations, stock);
+    final f = _Fixture(roots);
+    addTearDown(f.close);
+    // Establish the canonical graph before installing the executable strategy.
+    final Session session;
+    if (restore == null) {
+      session = (await f.sessions(temporary)).session;
+    } else {
+      await f.open(temporary);
+      session = f.runtime.store.session(restore)!;
     }
-    await File(
-      '${directory.path}/backend.aot',
-    ).writeAsString('not an AOT artifact');
-    final f = await start(root: root, failedBackend: true);
-    final created = await f.create('editable');
-    final edited = await f.settings.updateRecord(created, {
-      ..._values,
-      'name': 'Edited offline',
-    });
-    final reloaded = (await f.settings.loadRecords(
-      RecordCollectionId('model-presets'),
-    )).records.single;
-    expect(reloaded.id, edited.id);
-    await f.settings.deleteRecord(reloaded);
-    expect(
-      (await f.settings.loadRecords(
-        RecordCollectionId('model-presets'),
-      )).records,
-      isEmpty,
+    await f.start(
+      root.path,
+      aotRuntime,
+      host.path,
+      startupArguments: _runArguments,
     );
+    return _StockRuns(f, session);
   });
 }
 
@@ -443,53 +462,64 @@ final class _Fixture {
   final PlatformStorageRoots roots;
   final runtime = AdeleRuntime(ids: MonotonicProductIdSource(seed: 'preset'));
   late final projectProvider = TestProjectProvider(runtime.registry);
-  late ApplicationPluginBootstrap bootstrap;
+  late ApplicationPluginBootstrap bootstrap = runtime.plugins;
   late GatedProjectStorage storage;
   GlobalSettingsService? _settings;
-  GlobalSettingsService get settings => _settings!;
+  GlobalSettingsService get settings => _settings ??= GlobalSettingsService(
+    catalog: bootstrap.catalog!.settings,
+    records: bootstrap.catalog!.records,
+    roots: roots,
+  );
   int reads = 0;
   Future<void>? _closing;
 
   Future<void> start(
     String installations,
     String executable,
-    String host,
-  ) async {
+    String host, {
+    bool gateStorage = false,
+    Map<String, List<String>> startupArguments = const {},
+  }) async {
     await _settings?.close();
     _settings = null;
-    bootstrap = ApplicationPluginBootstrap(
-      runtime.registry,
-      runtime.extensions,
-      createInfrastructureServices: (connection) {
-        final services = projectStorageServices(runtime.lifecycle, connection);
-        storage = GatedProjectStorage(services[projectStorageServiceId]!);
-        return {projectStorageServiceId: storage};
-      },
-      loadSettings: (catalog) async =>
-          PreparedSettingsSnapshot.resolve(catalog),
-      loadRecords: (catalog, installation) {
-        _settings ??= GlobalSettingsService(
-          catalog: catalog.settings,
-          records: catalog.records,
-          roots: roots,
-        );
-        return settings.loadStartupRecords(catalog, installation);
-      },
-      loadCurrentRecords: (catalog, installation) {
-        reads++;
-        return settings.loadCurrentRecords(catalog, installation);
-      },
+    // Only the storage retirement test needs its own restartable, gated host.
+    // Runs must use the production bootstrap captured by runtime.runModelPreferences.
+    bootstrap = gateStorage
+        ? ApplicationPluginBootstrap(
+            runtime.registry,
+            runtime.extensions,
+            createInfrastructureServices: (connection) {
+              final services = projectStorageServices(
+                runtime.lifecycle,
+                connection,
+              );
+              storage = GatedProjectStorage(services[projectStorageServiceId]!);
+              return {projectStorageServiceId: storage};
+            },
+          )
+        : runtime.plugins;
+    bootstrap.configureSettingsLoader(
+      (catalog) async => PreparedSettingsSnapshot.resolve(catalog),
     );
+    bootstrap.configureRecordsLoader(
+      (catalog, installation) =>
+          settings.loadStartupRecords(catalog, installation),
+    );
+    bootstrap.configureCurrentRecordsLoader((catalog, installation) {
+      reads++;
+      return settings.loadCurrentRecords(catalog, installation);
+    });
     await bootstrap.start(
       installationRoot: installations,
       dartaotruntimeExecutable: executable,
       hostArtifactPath: host,
-      startupArguments: const {},
+      startupArguments: startupArguments,
     );
   }
 
-  PluginBackendConnection get connection =>
-      bootstrap.backends.single.connection!;
+  PluginBackendConnection get connection => bootstrap.backends
+      .singleWhere((b) => b.installation.metadata.id.value == _plugin)
+      .connection!;
   ModelPresetSelectionServiceClient get selections =>
       ModelPresetSelectionServiceClient(
         connection.channelFor(

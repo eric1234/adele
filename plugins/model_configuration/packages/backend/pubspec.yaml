@@ -1,5 +1,5 @@
 name: model_configuration_backend
-description: Live Model Preset definitions and persistent per-Session selection.
+description: Live Model Preset definitions, persistent Session selection, and Run model preferences.
 publish_to: none
 version: 0.1.0
 
@@ -10,9 +10,11 @@ resolution: workspace
 
 dependencies:
   adele_contract: ^0.1.0
+  adele_orchestration: ^0.1.0
   adele_plugin_backend_support: ^0.1.0
   adele_project_storage: ^0.1.0
   model_configuration_contract: ^0.1.0
 
 dev_dependencies:
+  adele_model_provider: ^0.1.0
   test: ^1.26.3

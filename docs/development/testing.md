@@ -576,9 +576,13 @@ exercise Model Preset wire validation, live record projection and conditional
 Session selection. From `app/`, run
 `flutter test --no-pub test/core/model_preset_integration_test.dart` to cross
 the independently compiled backend boundary with real Settings and Project
-storage. A preset should be selectable with no matching provider installed;
-do not use a live account or substitute a provider catalog for the Settings
-worker in this fixture.
+storage. Its scripted ModelProvider checks the actual route, model and effort
+through Run continuations and subsequent Session edits. Select
+`test/core/remote_run_model_preference_integration_test.dart` and
+`test/core/application_plugin_bootstrap_test.dart` for generic expected-source
+ownership and retirement. A preset should be selectable with no matching
+provider installed; do not use a live account or substitute a provider catalog
+for the Settings worker in these fixtures.
 
 The `agent_configuration_contract` and `agent_configuration_backend` targets cover
 the generated catalog, record projection, and bounded Session-selection contract

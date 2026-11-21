@@ -1,6 +1,7 @@
 import 'package:adele_plugin_backend_support/adele_plugin_backend_support.dart';
 import 'package:model_configuration_contract/model_configuration_contract.dart';
 
+export 'src/model_preset_run_preference_backend.dart';
 export 'src/model_preset_selection_backend.dart';
 
 /// Projects one fresh observation from the captured infrastructure grant.

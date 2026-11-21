@@ -50,6 +50,7 @@ const _openaiApplyHandler = {
   'method': 'refreshConfiguredProvider',
 };
 const _modelConfigurationId = 'dev.adele.plugin.model-configuration';
+const _modelPreferenceExtension = '$_modelConfigurationId.run-model-preference';
 const _modelPresetSchema = 'plugins/model_configuration/records.schema.json';
 const _stockInstallationDirectories = [
   'agent-configuration',
@@ -2153,11 +2154,16 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
       final installation = catalog.installations.single;
       expect(installation.metadata.id.value, _modelConfigurationId);
       expect(installation.backendArtifactUri, artifact.uri);
+      expect(
+        installation.runModelPreferenceSource?.value,
+        _modelPreferenceExtension,
+      );
       expect(installation.backendConsumedRecordTypesToJson(), [
         '$_modelConfigurationId.preset',
       ]);
       expect(installation.backendConsumedCredentialSlots, isEmpty);
       expect(installation.backendConsumedCapabilities, isEmpty);
+      expect(installation.backendRecordApplyHandlers, isEmpty);
       expect(installation.frontend, isNull);
       expect(installation.settingsSchema, isNull);
       final schema = installation.recordsSchema!;
@@ -2240,6 +2246,11 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
       await artifact.delete();
       final missing = await PreparedPluginCatalog.discover(installations.path);
       expect(missing.issues.single.component, PreparedPluginComponent.backend);
+      expect(missing.issues.single.isRunModelPreferenceSourceIssue, isTrue);
+      expect(
+        missing.installations.single.runModelPreferenceSource?.value,
+        _modelPreferenceExtension,
+      );
       expect(missing.installations.single.backendArtifactUri, isNull);
       expect(missing.installations.single.backendConsumedRecordTypes, isEmpty);
       expect(missing.records.definitions.single.id, preset.id);
@@ -2274,9 +2285,15 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
       ).writeAsStringSync('{invalid');
 
       final catalog = await PreparedPluginCatalog.discover(installations.path);
-      final issue = catalog.issues.single;
-      expect(issue.pluginId?.value, _modelConfigurationId);
-      expect(issue.isRecordsSchemaIssue, isTrue);
+      expect(catalog.issues.map((i) => i.pluginId?.value), [
+        _modelConfigurationId,
+        _modelConfigurationId,
+      ]);
+      expect(catalog.issues.where((i) => i.isRecordsSchemaIssue), hasLength(1));
+      expect(
+        catalog.issues.where((i) => i.isRunModelPreferenceSourceIssue),
+        hasLength(1),
+      );
       expect(
         catalog.records.definitions.map(
           (type) => (type.collection.value, type.id.value),
@@ -2961,6 +2978,10 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
                 plugin.directory == 'conservative-tool-policy')
               'settingsSchema': 'settings.schema.json',
             if (hasRecordsSchema) 'recordsSchema': 'records.schema.json',
+            if (plugin.directory == 'model-configuration')
+              'runModelPreferenceSource': {
+                'extensionId': _modelPreferenceExtension,
+              },
             if (plugin.directory == 'conservative-tool-policy')
               'authorizationPolicies': [
                 {
