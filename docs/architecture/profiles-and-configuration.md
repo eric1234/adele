@@ -190,8 +190,10 @@ persisted data remains untouched, including when an owner is unavailable.
 
 A string field may request a native Settings control through its `editor` hint.
 `markdown` edits the string as a document; `model-provider` offers configured
-ModelProvider IDs beside the editable text. Neither hint changes field presence,
-validation or storage. Without a hint, Settings uses the ordinary scalar control.
+ModelProvider IDs beside the editable text. A `model-catalog` field names a
+`model-provider` sibling through `providerField`; its unsaved value determines
+where to ask for model suggestions. These hints do not change field presence,
+value validation or storage. Without a hint, Settings uses the ordinary scalar control.
 
 A type may declare one `displayField` referencing a required string field. Discovery
 validates that reference; omission preserves existing declarations. Presentation uses
@@ -286,8 +288,13 @@ Refreshing the choices does not reload the record, invalidate its revision or
 replace its draft. An absent registration may return, and a failed observation
 says nothing about a saved reference. Neither prevents manual entry or Save.
 An advertised route does not establish authentication or model compatibility.
-The model ID remains a separate, manually entered string; a future Model
-Catalog observation could guide that edit, not define the preset.
+The model ID remains a separate editable string. Only opening model choices or
+refreshing them asks the configured provider's [associated Model Catalog](contracts-and-capabilities.md#model-catalog)
+for suggestions. Changing the provider discards its choices, not the model
+text, and does not query the new provider. Selecting an entry copies its exact
+ID into the draft; no selection, compatibility check or catalog call is part
+of Save. An empty list, a failed request, or an unlisted model does not
+invalidate a manually authored value.
 
 Model Configuration owns both the live definition reader and the Session's
 choice. Its catalog RPC is a boundary for its own frontend, not the provider

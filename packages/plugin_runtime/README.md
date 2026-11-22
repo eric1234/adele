@@ -306,10 +306,13 @@ display `label` per option. No unknown fields, nulls, coercion, defaults, secret
 values, validators, or executable hooks are accepted at any schema level.
 
 Only a `string` record field may include `editor`. Its value must be exactly
-`"markdown"` or `"model-provider"`; the latter requests suggestions for a
-configured ModelProvider ID. Discovery needs no provider registrations. Omission
+`"markdown"`, `"model-provider"`, or `"model-catalog"`. The last two request
+suggestions for a configured ModelProvider ID and a model ID respectively. Only
+`"model-catalog"` requires (and accepts) `providerField`, a local field ID naming
+a different string field with the `"model-provider"` editor in the same type.
+Schema discovery needs no provider registrations. Omitting `editor`
 leaves `field.editor` null; explicit null, an unknown value, or the key on any
-other field type rejects the whole record schema. Neither hint is a scalar
+other field type rejects the whole record schema. No editor hint is a scalar
 setting option or a new stored type. The schema version remains 1; strict readers
 that do not recognize an editor key or value reject schemas that use it.
 

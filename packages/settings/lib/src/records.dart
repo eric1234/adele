@@ -112,7 +112,7 @@ void _validateRecordLocalId(
 }
 
 /// Presentation hint for a record field, not a scalar value type.
-enum RecordFieldEditor { markdown, modelProvider }
+enum RecordFieldEditor { markdown, modelProvider, modelCatalog }
 
 /// Ordered record field metadata with no default, coercion, or executable hooks.
 final class RecordFieldDefinition<T extends Object> {
@@ -123,6 +123,7 @@ final class RecordFieldDefinition<T extends Object> {
     required this.type,
     required this.required,
     this.editor,
+    this.providerField,
   }) {
     _validatePresentation(label, 'label');
     if (editor != null && type is! StringSettingType) {
@@ -130,6 +131,13 @@ final class RecordFieldDefinition<T extends Object> {
         editor,
         'editor',
         'Record field editors require a StringSettingType field.',
+      );
+    }
+    if ((editor == RecordFieldEditor.modelCatalog) != (providerField != null)) {
+      throw ArgumentError.value(
+        providerField,
+        'providerField',
+        'Field $id must declare providerField exactly when using modelCatalog.',
       );
     }
   }
@@ -140,6 +148,9 @@ final class RecordFieldDefinition<T extends Object> {
   final SettingType<T> type;
   final bool required;
   final RecordFieldEditor? editor;
+
+  /// For [RecordFieldEditor.modelCatalog], the sibling model-provider field ID.
+  final RecordFieldId? providerField;
 }
 
 /// Credential shape metadata, not an ordinary setting value type.
@@ -188,13 +199,25 @@ final class RecordTypeDefinition {
     }
     _validatePresentation(collectionLabel, 'collectionLabel');
     _validatePresentation(label, 'label');
-    final ids = <RecordFieldId>{};
+    final byId = <RecordFieldId, RecordFieldDefinition<Object>>{};
     for (final field in this.fields) {
-      if (!ids.add(field.id)) {
+      if (byId.containsKey(field.id)) {
         throw ArgumentError.value(
           field.id,
           'fields',
           'Duplicate record field.',
+        );
+      }
+      byId[field.id] = field;
+    }
+    for (final field in this.fields) {
+      final providerField = field.providerField;
+      if (providerField != null &&
+          byId[providerField]?.editor != RecordFieldEditor.modelProvider) {
+        throw ArgumentError.value(
+          providerField,
+          'providerField',
+          'Field ${field.id} must reference a modelProvider field on $id.',
         );
       }
     }
@@ -208,13 +231,11 @@ final class RecordTypeDefinition {
         );
       }
     }
+    final display = byId[displayField];
     if (displayField != null &&
-        !this.fields.any(
-          (field) =>
-              field.id == displayField &&
-              field.required &&
-              field.type is StringSettingType,
-        )) {
+        (display == null ||
+            !display.required ||
+            display.type is! StringSettingType)) {
       throw ArgumentError.value(
         displayField,
         'displayField',

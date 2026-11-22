@@ -4,10 +4,12 @@ import 'dart:io';
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/global_settings_service.dart';
+import 'package:adele_desktop/core/model_catalog_choices.dart';
 import 'package:adele_desktop/core/model_provider_choices.dart';
 import 'package:adele_desktop/core/record_apply_coordinator.dart';
 import 'package:adele_desktop/editor/native_rich_document_editor.dart';
 import 'package:adele_desktop/ui/settings/global_settings_dialog.dart';
+import 'package:adele_model_provider/adele_model_catalog.dart';
 import 'package:adele_model_provider/adele_model_provider.dart'
     show ModelReasoningEffort;
 import 'package:adele_platform_storage/adele_platform_storage.dart';
@@ -89,6 +91,7 @@ void main() {
     GlobalSettingsService? settingsService,
     RecordApplication? application,
     DiscoverModelProviders? modelProviders,
+    DiscoverModels? discoverModels,
   }) async {
     await tester.binding.setSurfaceSize(const Size(1000, 1100));
     addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -103,6 +106,7 @@ void main() {
                   service: () async => settingsService ?? service,
                   recordApplication: () => application,
                   modelProviders: modelProviders,
+                  discoverModels: discoverModels,
                   recordDeclarationIssues: () => recordIssues,
                 ),
               ),
@@ -1211,6 +1215,378 @@ void main() {
     }),
     skip: !Platform.isLinux,
   );
+
+  group('linked model catalog', () {
+    final choose = find.widgetWithText(TextButton, 'Choose model...');
+    final refresh = find.ancestor(
+      of: find.text('Refresh models'),
+      matching: find.bySubtype<TextButton>(),
+    );
+    final row = _key('model-choice-Second/EXACT');
+    const stored = '  Unlisted / model\nID  ';
+    final snapshot = ModelCatalogSnapshot(
+      models: [
+        ModelCatalogEntry(
+          modelId: 'z-last',
+          displayName: 'Shared name',
+          description: null,
+        ),
+        ModelCatalogEntry(
+          modelId: 'Second/EXACT',
+          displayName: 'Shared name',
+          description: 'D' * 4000,
+        ),
+        ModelCatalogEntry(
+          modelId: 'Shared name',
+          displayName: 'N' * 250,
+          description: null,
+        ),
+      ],
+    );
+    ModelDiscoveryResult success({
+      bool Function()? current,
+      Stream<void>? changes,
+    }) => ModelDiscoveryResult.success(
+      snapshot,
+      isCurrent: current ?? () => true,
+      changes: changes,
+    );
+
+    Future<void> seedNote(String id) async {
+      await service.createRecord(_note, ConfigurationRecordId(id), {
+        'destination': _firstProvider.id,
+        'engine': stored,
+      });
+    }
+
+    testWidgets(
+      'query is explicit; choosing an exact ID only edits this draft until Save',
+      (tester) => tester.runAsync(() async {
+        await seedNote('edit-me');
+        await seedNote('sibling');
+        final before = file('edit-me').readAsBytesSync();
+        final sibling = file('sibling').readAsBytesSync();
+        final requests = <String>[];
+        final pending = Completer<ModelDiscoveryResult>();
+        await mount(
+          tester,
+          discoverModels: (id) {
+            requests.add(id);
+            return pending.future;
+          },
+        );
+        await openRecords(tester);
+        await _edit(tester, 'edit-me');
+        final model = _editInput('edit-me', 'engine');
+        final provider = _editInput('edit-me', 'destination');
+        // Discovery uses the linked *unsaved* string, not the stored route.
+        await _enter(tester, provider, _secondProvider.id);
+        expect(requests, isEmpty);
+        expect(_text(tester, model), stored);
+        await _tap(tester, choose);
+        expect(requests, [_secondProvider.id]);
+        expect(find.text('Loading models...'), findsOneWidget);
+        await _enter(tester, model, ' typed while waiting ');
+        expect(_enabled(tester, _key('record-save-jobs-edit-me')), isTrue);
+        pending.complete(success());
+        await _until(tester, () => row.evaluate().isNotEmpty);
+        expect(_text(tester, model), ' typed while waiting ');
+        expect(
+          tester.getTopLeft(_key('model-choice-z-last')).dy,
+          lessThan(tester.getTopLeft(row).dy),
+        );
+        for (final id in ['z-last', 'Second/EXACT']) {
+          final tile = _key('model-choice-$id');
+          expect(
+            find.descendant(of: tile, matching: find.text('Shared name')),
+            findsOneWidget,
+          );
+          expect(
+            find.descendant(of: tile, matching: find.text(id)),
+            findsOneWidget,
+          );
+          expect(tester.widget<ListTile>(tile).selected, isFalse);
+        }
+        expect(tester.widget<Text>(find.text('D' * 4000)).maxLines, 2);
+        expect(tester.widget<Text>(find.text('N' * 250)).maxLines, 1);
+        await _tap(tester, row);
+        expect(_text(tester, model), 'Second/EXACT');
+        expect(_text(tester, provider), _secondProvider.id);
+        expect(file('edit-me').readAsBytesSync(), before);
+        expect(service.updates, 0);
+        expect(service.recordLoads, 1);
+        await save(tester, 'edit-me');
+        expect(service.updates, 1);
+        expect(requests, [_secondProvider.id]);
+        expect(file('sibling').readAsBytesSync(), sibling);
+        final saved = await service.loadRecords(_collection);
+        expect(
+          saved.records.firstWhere((r) => r.id.value == 'edit-me').values,
+          {'destination': _secondProvider.id, 'engine': 'Second/EXACT'},
+        );
+        await unmount(tester);
+      }),
+    );
+
+    testWidgets(
+      'optional fields and safe catalog outcomes never constrain manual creation',
+      (tester) => tester.runAsync(() async {
+        const diagnostic = 'private-backend-diagnostic-42';
+        final responses = <ModelDiscoveryResult>[
+          const ModelDiscoveryResult.unavailable(),
+          const ModelDiscoveryResult.unsupported(),
+          const ModelDiscoveryResult.ambiguous(),
+          ModelDiscoveryResult.success(
+            ModelCatalogSnapshot(models: []),
+            isCurrent: () => true,
+          ),
+        ];
+        final requests = <String>[];
+        await mount(
+          tester,
+          discoverModels: (id) async {
+            requests.add(id);
+            if (responses.isEmpty) throw StateError(diagnostic);
+            return responses.removeAt(0);
+          },
+        );
+        await openRecords(tester);
+        await add(tester, 'manual-model');
+        await _choose(tester, _key('record-type-jobs'), 'Note');
+        await _enter(tester, _key('record-id-jobs'), 'manual-model');
+        expect(choose, findsNothing); // An excluded model is not edited.
+        await _include(tester, 'engine');
+        await _enter(tester, _input('engine'), stored);
+        expect(_enabled(tester, choose), isFalse);
+        await _include(tester, 'destination');
+        expect(
+          _enabled(tester, choose),
+          isFalse,
+        ); // Present but empty provider.
+        const provider = '  Mixed/Case Provider  ';
+        await _enter(tester, _input('destination'), provider);
+        await _include(tester, 'destination');
+        expect(
+          _enabled(tester, choose),
+          isFalse,
+        ); // No retained controller authority.
+        await _include(tester, 'destination');
+        expect(requests, isEmpty);
+        for (final message in [
+          'Model discovery is unavailable for this provider.',
+          'This provider does not support model discovery.',
+          'More than one model catalog is associated with this provider.',
+          'This provider reported no models.',
+          'Could not load models. Refresh to try again or enter a model ID manually.',
+        ]) {
+          await _tap(tester, requests.isEmpty ? choose : refresh);
+          await _until(tester, () => find.text(message).evaluate().isNotEmpty);
+          expect(_text(tester, _input('engine')), stored);
+          expect(_enabled(tester, _key('record-create-jobs')), isTrue);
+          expect(find.textContaining(diagnostic), findsNothing);
+        }
+        expect(service.creates, 0);
+        await create(tester);
+        expect(requests, List.filled(5, provider));
+        expect((await service.loadRecords(_collection)).records.single.values, {
+          'destination': provider,
+          'engine': stored,
+        });
+        await unmount(tester);
+      }),
+    );
+
+    testWidgets(
+      'provider edits, refreshes and registration retirement fence late results and stale taps',
+      (tester) => tester.runAsync(() async {
+        await seedNote('routed');
+        final requests = <String>[];
+        final pending = <Completer<ModelDiscoveryResult>>[];
+        await mount(
+          tester,
+          modelProviders: () => [_firstProvider, _secondProvider],
+          discoverModels: (id) {
+            requests.add(id);
+            final request = Completer<ModelDiscoveryResult>();
+            pending.add(request);
+            return request.future;
+          },
+        );
+        await openRecords(tester);
+        await _edit(tester, 'routed');
+        final model = _editInput('routed', 'engine');
+        final provider = tester
+            .widget<TextField>(_editInput('routed', 'destination'))
+            .controller!;
+        final open = tester.widget<TextButton>(choose).onPressed!;
+        open();
+        open(); // A captured button does not admit a second request.
+        provider.text = _secondProvider.id;
+        provider.text = _firstProvider.id;
+        open(); // Changed back, but this control still belongs to the old scope.
+        pending.single.complete(success());
+        await tester.pump();
+        expect(choose, findsOneWidget);
+        expect(row, findsNothing);
+        expect(requests, [_firstProvider.id]);
+        await _tap(tester, choose);
+        final first = pending.last;
+        await _tap(tester, find.text(_chooseProvider));
+        await _tap(tester, _key('provider-choice-${_secondProvider.id}'));
+        expect(choose, findsOneWidget);
+        await _tap(tester, choose);
+        final second = pending.last;
+        await _tap(
+          tester,
+          refresh,
+        ); // This newer request supersedes both others.
+        final changes = StreamController<void>.broadcast(sync: true);
+        addTearDown(changes.close);
+        var current = true;
+        final live = success(current: () => current, changes: changes.stream);
+        pending.last.complete(live);
+        await _until(tester, () => row.evaluate().isNotEmpty);
+        first.complete(const ModelDiscoveryResult.failed());
+        second.complete(const ModelDiscoveryResult.unsupported());
+        await tester.pump();
+        expect(requests, [
+          _firstProvider.id,
+          _firstProvider.id,
+          _secondProvider.id,
+          _secondProvider.id,
+        ]);
+        expect(changes.hasListener, isTrue);
+        final tap = tester.widget<ListTile>(row).onTap!;
+        // Retirement need not have delivered its change notification yet.
+        current = false;
+        tap();
+        expect(_text(tester, model), stored);
+        await tester.pump();
+        expect(row, findsNothing);
+        expect(changes.hasListener, isFalse);
+        await _tap(tester, refresh);
+        pending.last.complete(live); // Retired before successful delivery.
+        await _until(
+          tester,
+          () => find
+              .text('Model discovery is unavailable for this provider.')
+              .evaluate()
+              .isNotEmpty,
+        );
+        expect(row, findsNothing);
+        await _tap(tester, refresh);
+        current = true;
+        pending.last.complete(live);
+        await _until(tester, () => row.evaluate().isNotEmpty);
+        changes.add(
+          null,
+        ); // An unrelated change does not discard current choices.
+        await tester.pump();
+        expect(row, findsOneWidget);
+        current = false;
+        changes.add(null);
+        await tester.pump();
+        expect(row, findsNothing);
+        expect(changes.hasListener, isFalse);
+        expect(_text(tester, model), stored);
+        expect(service.updates, 0);
+        await unmount(tester);
+      }),
+    );
+
+    testWidgets(
+      'hidden, replaced, reloaded and closed forms reject earlier controls before the next frame',
+      (tester) => tester.runAsync(() async {
+        await seedNote('edit-me');
+        final initial = file('edit-me').readAsBytesSync();
+        var queries = 0;
+        await mount(
+          tester,
+          discoverModels: (_) async {
+            queries++;
+            return success();
+          },
+        );
+        await openRecords(tester);
+        await _edit(tester, 'edit-me');
+        final model = _editInput('edit-me', 'engine');
+        for (final action in [
+          'provider',
+          'provider presence',
+          'model presence',
+          'section',
+          'collapse',
+          'cancel',
+          'reload',
+          'close',
+        ]) {
+          await _tap(tester, choose);
+          await _until(tester, () => row.evaluate().isNotEmpty);
+          final oldRefresh = tester.widget<TextButton>(refresh).onPressed!;
+          final oldSelection = tester.widget<ListTile>(row).onTap!;
+          final controller = tester.widget<TextField>(model).controller!;
+          final count = queries;
+          switch (action) {
+            case 'provider':
+              final provider = tester
+                  .widget<TextField>(_editInput('edit-me', 'destination'))
+                  .controller!;
+              provider.text = _secondProvider.id;
+              provider.text = _firstProvider.id;
+            case 'provider presence' || 'model presence':
+              final field = action == 'provider presence'
+                  ? 'destination'
+                  : 'engine';
+              final toggle = tester
+                  .widget<CheckboxListTile>(_editPresence('edit-me', field))
+                  .onChanged!;
+              toggle(false);
+              toggle(true);
+            case 'section':
+              final select = tester
+                  .widget<DropdownButtonFormField<String>>(
+                    _key('settings-section'),
+                  )
+                  .onChanged!;
+              select('');
+              select('jobs');
+            case 'collapse':
+              final expand = tester
+                  .widget<ExpansionTile>(find.byType(ExpansionTile))
+                  .onExpansionChanged!;
+              expand(false);
+              expand(true);
+            case 'cancel':
+              tester
+                  .widget<TextButton>(_key('record-cancel-jobs-edit-me'))
+                  .onPressed!();
+            case 'reload':
+              tester
+                  .widget<ButtonStyleButton>(_key('records-reload-jobs'))
+                  .onPressed!();
+            case 'close':
+              Navigator.of(
+                tester.element(find.byType(GlobalSettingsDialog)),
+              ).pop();
+          }
+          oldRefresh();
+          oldSelection();
+          expect(controller.text, stored, reason: action);
+          expect(queries, count, reason: action);
+          await tester.pump();
+          if (action == 'close') await tester.pumpAndSettle();
+          expect(row, findsNothing, reason: action);
+          if (action == 'cancel' || action == 'reload') {
+            await _loaded(tester);
+            await _tap(tester, _key('record-edit-jobs-edit-me'));
+          }
+        }
+        expect(service.updates, 0);
+        expect(file('edit-me').readAsBytesSync(), initial);
+        await unmount(tester);
+      }),
+    );
+  }, skip: !Platform.isLinux);
 
   testWidgets(
     'existing scalar edits validate presence and preserve immutable identity and unknown data',
@@ -2877,6 +3253,14 @@ RecordCatalog _catalog() {
       label: 'Note',
       fields: [
         field('display-name', 'Display Name', const StringSettingType()),
+        RecordFieldDefinition(
+          id: RecordFieldId('engine'),
+          label: 'Engine',
+          type: const StringSettingType(),
+          required: false,
+          editor: RecordFieldEditor.modelCatalog,
+          providerField: RecordFieldId('destination'),
+        ),
         RecordFieldDefinition(
           id: RecordFieldId('destination'),
           label: 'Destination',

@@ -1841,7 +1841,7 @@ RecordFieldDefinition<Object> _recordFieldDefinition(
     'description',
     'type',
     'required',
-    if (kind == 'string') 'editor',
+    if (kind == 'string') ...['editor', 'providerField'],
     if (kind == 'integer') ...['minimum', 'maximum'],
     if (kind == 'enum') 'options',
   });
@@ -1874,10 +1874,14 @@ RecordFieldDefinition<Object> _recordFieldDefinition(
         ? switch (value['editor']) {
             'markdown' => RecordFieldEditor.markdown,
             'model-provider' => RecordFieldEditor.modelProvider,
+            'model-catalog' => RecordFieldEditor.modelCatalog,
             _ => throw FormatException(
-              '$label.editor must be "markdown" or "model-provider".',
+              '$label.editor must be "markdown", "model-provider" or "model-catalog".',
             ),
           }
+        : null,
+    providerField: value.containsKey('providerField')
+        ? RecordFieldId(_text(value['providerField'], '$label.providerField'))
         : null,
   );
 }

@@ -109,9 +109,13 @@ consistency, not activation or proof of trust.
 or optional `StringSettingType` field, not a string-valued enum. Omission leaves
 `editor` null. `RecordFieldEditor.markdown` requests Markdown editing;
 `RecordFieldEditor.modelProvider` lets the host suggest configured ModelProvider
-IDs without restricting the field to currently available providers. Both hints
-preserve the exact string and ordinary presence rules. Validation does not parse
-Markdown, validate a provider ID, or look up a provider.
+IDs without restricting the field to currently available providers.
+`RecordFieldEditor.modelCatalog` requires `providerField`, the `RecordFieldId`
+of a different `modelProvider` string field in the same type. The reference
+names a field, not an account or a default. Only this editor accepts it. The host
+can suggest model IDs for the provider currently named in that sibling's draft.
+All hints preserve the exact string and ordinary presence rules. Record value
+validation does not parse Markdown, resolve providers, or require a listed model.
 
 Optional `displayField: RecordFieldId?` identifies a declared required
 `StringSettingType` field for record display names. Construction rejects missing,

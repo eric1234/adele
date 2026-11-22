@@ -14,9 +14,11 @@ choice when a new Run is prepared.
    Type the Provider ID or use **Choose configured provider...**. If several rows
    have the same display name, compare their full IDs and owning plugins. Picking
    a row copies its stable Provider ID, not its name, into the unsaved field.
-   Enter the model ID manually and check it for the chosen provider: the picker
-   does not look up models or change the model ID or reasoning effort. **Create**
-   or **Save** stores the definition; it does not select it for any Session.
+   Type the model ID or use **Choose model...** to query the catalog associated
+   with that exact provider registration. Select a model by its ID; its display
+   name is only a label. Switching providers clears old suggestions but leaves
+   the model ID and reasoning effort alone. **Create** or **Save** stores the
+   draft; neither selects it for a Session.
 2. In a Session that shows execution configuration, open **Model Preset** and
    choose the saved preset. Opening the choices reads the current catalog.
    **Refresh** rereads both the definitions and this Session's selection, for
@@ -30,6 +32,13 @@ choice when a new Run is prepared.
 A provider can be offline or registered later; you can keep or save its exact ID
 even if the list is empty or discovery fails. Appearing in the list does not
 mean the provider has authenticated or supports the model you enter.
+
+**Refresh models** asks the provider for a fresh model list. Unlike refreshing
+provider names, this can use the configured account's credentials and network
+endpoint inside the owning backend. No other account is tried. The list is
+advisory: even if discovery is unavailable, fails, or returns no entries, you
+can enter and save any exact model ID. Editing a selected preset affects newly
+prepared Runs only, because an active Run retains its captured configuration.
 
 **Missing Model Preset** means a complete catalog did not contain the selected
 ID. **Unresolved Model Preset** means the catalog was incomplete or unavailable

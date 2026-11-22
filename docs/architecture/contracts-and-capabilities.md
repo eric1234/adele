@@ -153,6 +153,17 @@ configuration-context strings do not establish an association or account identit
 `listModels()` accepts no routing or authority parameters: the resolved binding
 retains its connection, configured context, and generated service.
 
+For guided model entry in native Settings, the application resolves the draft's
+exact inference Provider ID and uses the activation's validated association to
+find its catalog. Exactly one live catalog with the generated service must point
+to that inference registration; neither rank nor an ID naming convention breaks
+a tie. An explicit discovery request may cause the provider to authenticate and
+contact its endpoint. Settings receives the observation, not the channel or
+credentials. The original registrations, owning generation and unique association
+must still be current after the request and when a choice is used. A same-ID
+replacement requires a fresh request. This host lookup grants no peer access to
+the plugin declaring the record.
+
 Successful empty catalogs, declared semantic discovery failures, malformed transport,
 and unavailable resolution remain distinct. Explicit selection never falls back.
 Catalog access grants no inference, credential, or host execution authority.

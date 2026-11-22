@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../core/global_settings_service.dart';
+import '../../core/model_catalog_choices.dart';
 import '../../core/model_provider_choices.dart';
 import '../../core/record_apply_coordinator.dart';
 import 'record_collection_panel.dart';
@@ -14,6 +15,7 @@ final class GlobalSettingsDialog extends StatefulWidget {
     super.key,
     required this.service,
     this.modelProviders,
+    this.discoverModels,
     this.credentialAssociations,
     this.recordApplication,
     this.declarationIssues,
@@ -22,6 +24,7 @@ final class GlobalSettingsDialog extends StatefulWidget {
 
   final Future<GlobalSettingsService> Function() service;
   final DiscoverModelProviders? modelProviders;
+  final DiscoverModels? discoverModels;
   final RecordCredentialService Function()? credentialAssociations;
   final RecordApplication? Function()? recordApplication;
   final List<String> Function()? declarationIssues;
@@ -35,6 +38,7 @@ final class _GlobalSettingsDialogState extends State<GlobalSettingsDialog> {
   static const _recordDiagnostics = '@record-diagnostics';
   GlobalSettingsService? _service;
   String _section = '';
+  int _sectionRevision = 0;
   final _panels = <String, Widget Function(bool active)>{};
 
   @override
@@ -116,8 +120,9 @@ final class _GlobalSettingsDialogState extends State<GlobalSettingsDialog> {
                     ),
                 ],
                 onChanged: (value) {
-                  if (value == null) return;
+                  if (value == null || value == _section) return;
                   setState(() {
+                    _sectionRevision++;
                     _section = value;
                     _panels.putIfAbsent(
                       value,
@@ -128,6 +133,8 @@ final class _GlobalSettingsDialogState extends State<GlobalSettingsDialog> {
                           : (active) => RecordCollectionPanel(
                               service: _service!,
                               modelProviders: widget.modelProviders,
+                              discoverModels: widget.discoverModels,
+                              sectionRevision: () => _sectionRevision,
                               credentialAssociations: widget
                                   .credentialAssociations
                                   ?.call(),
