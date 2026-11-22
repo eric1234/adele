@@ -415,9 +415,12 @@ Other failures also require Reload to confirm disk state; a cleanup or lost-resp
 failure can follow publication and is not reported as proof that nothing was saved.
 
 Collection views list valid records in stable ID order, show declared display titles
-(or ID fallback), and offer generic Edit and Delete actions. Collection, record ID,
-and record type remain visible and immutable; changing a display name never renames
-the file. Creation and editing share declaration-generated field controls, explicit
+(or ID fallback), and offer generic Edit and Delete actions. In **Add**, fill in the
+declared fields; the panel generates the record ID. Expand **Advanced details** to
+copy it, or expand a saved record's details to copy its immutable ID. See
+[creating and editing records](../docs/architecture/profiles-and-configuration.md#creating-and-editing-records)
+for per-type draft retention and recovery after an unconfirmed Create.
+Creation and editing share declaration-generated field controls, explicit
 presence handling, and `RecordTypeDefinition.validate`; the worker and host adapter
 validate again before persistence. Absent fields remain distinct from false, zero,
 and empty strings, with no inferred defaults. Edits preserve unknown data and comments

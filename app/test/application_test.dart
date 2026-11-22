@@ -123,7 +123,7 @@ void main() {
         await _settingsSection(tester, 'Providers');
       }
 
-      Finder action(String action, [String id = 'work-openai']) =>
+      Finder action(String action, String id) =>
           find.byKey(ValueKey('credential-$action-providers-$id-api-key'));
 
       bool enabled(String name, String id) =>
@@ -135,7 +135,7 @@ void main() {
         matching: find.text(label),
       );
 
-      Future<void> press(String name, [String id = 'work-openai']) =>
+      Future<void> press(String name, String id) =>
           _settingsAction(tester, 'credential-$name-providers-$id-api-key');
 
       Future<void> store(String name, String secret, String id) async {
@@ -152,12 +152,6 @@ void main() {
         expect(status('Credential stored locally', id), findsOneWidget);
       }
 
-      final work = File(
-        '${roots.configurationRoot}/providers/work-openai.toml',
-      );
-      final personal = File(
-        '${roots.configurationRoot}/providers/personal-openai.toml',
-      );
       final settingsFile = File('${roots.configurationRoot}/settings.toml');
       CredentialReference reference(String id) => CredentialReference.parse(
         ConfigurationStore(roots)
@@ -201,13 +195,21 @@ void main() {
       try {
         await mount();
         await openProviders();
-        await _createProviderRecord(tester, 'work-openai', 'Work OpenAI');
-        await _createProviderRecord(
+        final workId = await _createProviderRecord(
           tester,
-          'personal-openai',
+          roots,
+          'Work OpenAI',
+        );
+        final personalId = await _createProviderRecord(
+          tester,
+          roots,
           'Personal OpenAI',
         );
-        for (final id in ['work-openai', 'personal-openai']) {
+        final work = File('${roots.configurationRoot}/providers/$workId.toml');
+        final personal = File(
+          '${roots.configurationRoot}/providers/$personalId.toml',
+        );
+        for (final id in [workId, personalId]) {
           await _expandProviderRecord(tester, id);
           expect(
             find.byKey(ValueKey('credential-slot-providers-$id-api-key')),
@@ -226,8 +228,8 @@ void main() {
               'Startup, record creation and expansion must not read storage.',
         );
         for (final (id, secret) in [
-          ('work-openai', workSecret),
-          ('personal-openai', personalSecret),
+          (workId, workSecret),
+          (personalId, personalSecret),
         ]) {
           final callsBeforeCheck = storage.calls.length;
           await press('check', id);
@@ -236,11 +238,11 @@ void main() {
           expect(storage.calls, hasLength(callsBeforeCheck));
           await store('set', secret, id);
         }
-        final workReference = reference('work-openai');
-        final personalReference = reference('personal-openai');
+        final workReference = reference(workId);
+        final personalReference = reference(personalId);
         expect(workReference, isNot(personalReference));
-        expectEnvelope(workReference, 'work-openai', workSecret);
-        expectEnvelope(personalReference, 'personal-openai', personalSecret);
+        expectEnvelope(workReference, workId, workSecret);
+        expectEnvelope(personalReference, personalId, personalSecret);
         for (final file in [work, personal]) {
           final contents = await file.readAsString();
           expect(contents, contains('[credentials]'));
@@ -253,36 +255,34 @@ void main() {
         final personalEnvelope = storage.values[personalReference];
         final workBeforeReplace = await work.readAsBytes();
 
-        await store('replace', replacement, 'work-openai');
-        expect(reference('work-openai'), workReference);
+        await store('replace', replacement, workId);
+        expect(reference(workId), workReference);
         expect(await work.readAsBytes(), workBeforeReplace);
-        expectEnvelope(workReference, 'work-openai', replacement);
+        expectEnvelope(workReference, workId, replacement);
         expect(storage.values, hasLength(2));
 
         // Replace retires the old record handle even though TOML bytes do not
         // change. The ordinary editor must use the acknowledged fresh handle.
-        await _editProviderRecord(tester, 'work-openai');
+        await _editProviderRecord(tester, workId);
         final name = find.byKey(
-          const ValueKey('record-input-providers-work-openai-display-name'),
+          ValueKey('record-input-providers-$workId-display-name'),
         );
         await tester.enterText(name, 'Work renamed after replacement');
         await _settingsAction(
           tester,
-          'record-presence-providers-work-openai-endpoint',
+          'record-presence-providers-$workId-endpoint',
         );
         await tester.enterText(
-          find.byKey(
-            const ValueKey('record-input-providers-work-openai-endpoint'),
-          ),
+          find.byKey(ValueKey('record-input-providers-$workId-endpoint')),
           'https://example.invalid/work/v1',
         );
-        await _settingsAction(tester, 'record-save-providers-work-openai');
+        await _settingsAction(tester, 'record-save-providers-$workId');
         await _settingsUntil(tester, () => name.evaluate().isEmpty);
         expect(
           await work.readAsString(),
           contains('display-name = "Work renamed after replacement"'),
         );
-        expect(reference('work-openai'), workReference);
+        expect(reference(workId), workReference);
         expect(
           await work.readAsString(),
           contains('endpoint = "https://example.invalid/work/v1"'),
@@ -300,8 +300,8 @@ void main() {
         runtime = NativeAdeleRuntime();
         await mount();
         await openProviders();
-        await _expandProviderRecord(tester, 'work-openai');
-        await _expandProviderRecord(tester, 'personal-openai');
+        await _expandProviderRecord(tester, workId);
+        await _expandProviderRecord(tester, personalId);
         expect(find.text('Work renamed after replacement'), findsOneWidget);
         expect(find.text('Personal OpenAI'), findsOneWidget);
         expect(
@@ -310,9 +310,9 @@ void main() {
           reason:
               'Reconstruction and reopening must not inspect saved references.',
         );
-        expect(reference('work-openai'), workReference);
-        expect(reference('personal-openai'), personalReference);
-        for (final id in ['work-openai', 'personal-openai']) {
+        expect(reference(workId), workReference);
+        expect(reference(personalId), personalReference);
+        for (final id in [workId, personalId]) {
           expect(status('Credential status not checked', id), findsOneWidget);
           await press('check', id);
           await _settingsUntil(tester, () => enabled('forget', id));
@@ -325,22 +325,25 @@ void main() {
 
         final beforeForget = await work.readAsBytes();
         final callsBeforeForget = storage.calls.length;
-        await press('forget');
+        await press('forget', workId);
         expect(find.byType(AlertDialog), findsOneWidget);
-        expect(find.textContaining('work-openai'), findsWidgets);
+        expect(
+          find.descendant(
+            of: find.byType(AlertDialog),
+            matching: find.textContaining('Record ID: $workId'),
+          ),
+          findsOneWidget,
+        );
         expect(find.textContaining('API key'), findsWidgets);
-        await press('forget-cancel');
+        await press('forget-cancel', workId);
         expect(find.byType(AlertDialog), findsNothing);
         expect(storage.calls, hasLength(callsBeforeForget));
         expect(await work.readAsBytes(), beforeForget);
-        expectEnvelope(workReference, 'work-openai', replacement);
-        await press('forget');
-        await press('forget-confirm');
-        await _settingsUntil(tester, () => enabled('set', 'work-openai'));
-        expect(
-          status('No credential configured', 'work-openai'),
-          findsOneWidget,
-        );
+        expectEnvelope(workReference, workId, replacement);
+        await press('forget', workId);
+        await press('forget-confirm', workId);
+        await _settingsUntil(tester, () => enabled('set', workId));
+        expect(status('No credential configured', workId), findsOneWidget);
         expect(storage.values.containsKey(workReference), isFalse);
         expect(await work.readAsString(), isNot(contains(workReference.value)));
         expect(
@@ -356,15 +359,15 @@ void main() {
 
         // Forget also replaces the revision. Delete must use that fresh handle,
         // not require a Reload that could discard independent record drafts.
-        await _settingsAction(tester, 'record-delete-providers-work-openai');
+        await _settingsAction(tester, 'record-delete-providers-$workId');
         await _settingsAction(
           tester,
-          'record-delete-confirm-providers-work-openai',
+          'record-delete-confirm-providers-$workId',
         );
         await _settingsUntil(
           tester,
           () => find
-              .byKey(const ValueKey('record-providers-work-openai'))
+              .byKey(ValueKey('record-providers-$workId'))
               .evaluate()
               .isEmpty,
         );
@@ -505,11 +508,8 @@ void main() {
           await Directory('${roots.configurationRoot}/providers').exists(),
           isFalse,
         );
-        for (final (id, name) in [
-          ('work-openai', 'Work OpenAI'),
-          ('personal-openai', 'Personal OpenAI'),
-        ]) {
-          await _createProviderRecord(tester, id, name);
+        Future<String> create(String name) async {
+          final id = await _createProviderRecord(tester, roots, name);
           final contents = await File(
             '${roots.configurationRoot}/providers/$id.toml',
           ).readAsString();
@@ -520,26 +520,28 @@ void main() {
           expect(contents, isNot(contains('endpoint')));
           expect(contents, isNot(contains('credential')));
           expect(await settingsFile.readAsString(), originalSettings);
+          return id;
         }
+
+        final workId = await create('Work OpenAI');
+        final personalId = await create('Personal OpenAI');
         expect(
-          find.byKey(const ValueKey('record-providers-work-openai')),
+          find.byKey(ValueKey('record-providers-$workId')),
           findsOneWidget,
         );
         expect(
-          find.byKey(const ValueKey('record-providers-personal-openai')),
+          find.byKey(ValueKey('record-providers-$personalId')),
           findsOneWidget,
         );
-        final work = File(
-          '${roots.configurationRoot}/providers/work-openai.toml',
-        );
+        final work = File('${roots.configurationRoot}/providers/$workId.toml');
         final personal = File(
-          '${roots.configurationRoot}/providers/personal-openai.toml',
+          '${roots.configurationRoot}/providers/$personalId.toml',
         );
         final personalBytes = await personal.readAsBytes();
         final providers = await work.parent.list().toList();
         expect(
           providers.map((file) => file.uri.pathSegments.last),
-          unorderedEquals(['work-openai.toml', 'personal-openai.toml']),
+          unorderedEquals(['$workId.toml', '$personalId.toml']),
         );
         // Retain unrecognized content instead of adopting it into the form.
         const unknown =
@@ -547,21 +549,22 @@ void main() {
         await work.writeAsString('${await work.readAsString()}$unknown');
         await _settingsAction(tester, 'records-reload-providers');
         await _settingsUntil(tester, () => true);
-        await _editProviderRecord(tester, 'work-openai');
-        expect(find.text('Record ID: work-openai'), findsOneWidget);
+        await _editProviderRecord(tester, workId);
+        expect(find.text('Record ID: $workId'), findsOneWidget);
         expect(find.text('Record type: $openai.api-key'), findsOneWidget);
         expect(find.text('Collection: providers'), findsOneWidget);
         final workName = find.byKey(
-          const ValueKey('record-input-providers-work-openai-display-name'),
+          ValueKey('record-input-providers-$workId-display-name'),
         );
         expect(
           tester.widget<TextField>(workName).controller!.text,
           'Work OpenAI',
         );
         await tester.enterText(workName, 'Work OpenAI renamed');
-        await _settingsAction(tester, 'record-save-providers-work-openai');
+        await _settingsAction(tester, 'record-save-providers-$workId');
         await _settingsUntil(tester, () => workName.evaluate().isEmpty);
         expect(find.text('Work OpenAI renamed'), findsOneWidget);
+        expect(find.text('Saved Work OpenAI renamed.'), findsOneWidget);
         expect(
           await work.readAsString(),
           contains('display-name = "Work OpenAI renamed"'),
@@ -572,33 +575,29 @@ void main() {
           (await work.parent.list().toList()).map(
             (file) => file.uri.pathSegments.last,
           ),
-          unorderedEquals(['work-openai.toml', 'personal-openai.toml']),
+          unorderedEquals(['$workId.toml', '$personalId.toml']),
         );
 
-        await _editProviderRecord(tester, 'work-openai');
+        await _editProviderRecord(tester, workId);
         await _settingsAction(
           tester,
-          'record-presence-providers-work-openai-endpoint',
+          'record-presence-providers-$workId-endpoint',
         );
         await tester.enterText(
-          find.byKey(
-            const ValueKey('record-input-providers-work-openai-endpoint'),
-          ),
+          find.byKey(ValueKey('record-input-providers-$workId-endpoint')),
           'https://example.invalid/v1',
         );
-        await _settingsAction(tester, 'record-save-providers-work-openai');
+        await _settingsAction(tester, 'record-save-providers-$workId');
         await _settingsUntil(tester, () => workName.evaluate().isEmpty);
         expect(
           await work.readAsString(),
           contains('endpoint = "https://example.invalid/v1"'),
         );
-        await _editProviderRecord(tester, 'work-openai');
+        await _editProviderRecord(tester, workId);
         expect(
           tester
               .widget<TextField>(
-                find.byKey(
-                  const ValueKey('record-input-providers-work-openai-endpoint'),
-                ),
+                find.byKey(ValueKey('record-input-providers-$workId-endpoint')),
               )
               .controller!
               .text,
@@ -606,9 +605,9 @@ void main() {
         );
         await _settingsAction(
           tester,
-          'record-presence-providers-work-openai-endpoint',
+          'record-presence-providers-$workId-endpoint',
         );
-        await _settingsAction(tester, 'record-save-providers-work-openai');
+        await _settingsAction(tester, 'record-save-providers-$workId');
         await _settingsUntil(tester, () => workName.evaluate().isEmpty);
         expect(await work.readAsString(), isNot(contains('endpoint')));
         expect(await work.readAsString(), contains(unknown));
@@ -624,20 +623,18 @@ void main() {
           tester,
           () => find.text('Work OpenAI renamed').evaluate().isNotEmpty,
         );
-        await _editProviderRecord(tester, 'work-openai');
+        await _editProviderRecord(tester, workId);
         expect(
           tester
               .widget<CheckboxListTile>(
                 find.byKey(
-                  const ValueKey(
-                    'record-presence-providers-work-openai-endpoint',
-                  ),
+                  ValueKey('record-presence-providers-$workId-endpoint'),
                 ),
               )
               .value,
           isFalse,
         );
-        await _settingsAction(tester, 'record-cancel-providers-work-openai');
+        await _settingsAction(tester, 'record-cancel-providers-$workId');
 
         // A manual edit distinguishes deliberate Reload from a cached UI list.
         final edited = (await work.readAsString()).replaceFirst(
@@ -672,46 +669,44 @@ void main() {
         expect(await work.readAsString(), reloaded);
         expect(await personal.readAsBytes(), personalBytes);
 
-        await _expandProviderRecord(tester, 'personal-openai');
-        await _settingsAction(
-          tester,
-          'record-delete-providers-personal-openai',
-        );
+        await _expandProviderRecord(tester, personalId);
+        await _settingsAction(tester, 'record-delete-providers-$personalId');
         expect(find.byType(AlertDialog), findsOneWidget);
         expect(find.textContaining('Personal OpenAI'), findsWidgets);
-        expect(find.textContaining('personal-openai'), findsWidgets);
+        expect(
+          find.descendant(
+            of: find.byType(AlertDialog),
+            matching: find.textContaining('Record ID: $personalId'),
+          ),
+          findsOneWidget,
+        );
         expect(find.textContaining('$openai.api-key'), findsWidgets);
         await _settingsAction(
           tester,
-          'record-delete-cancel-providers-personal-openai',
+          'record-delete-cancel-providers-$personalId',
         );
         expect(find.byType(GlobalSettingsDialog), findsOneWidget);
         expect(await personal.readAsBytes(), personalBytes);
-        await _settingsAction(
-          tester,
-          'record-delete-providers-personal-openai',
-        );
+        await _settingsAction(tester, 'record-delete-providers-$personalId');
         await tester.sendKeyEvent(LogicalKeyboardKey.escape);
         await tester.pumpAndSettle();
         expect(find.byType(AlertDialog), findsNothing);
         expect(find.byType(GlobalSettingsDialog), findsOneWidget);
         expect(await personal.readAsBytes(), personalBytes);
+        await _settingsAction(tester, 'record-delete-providers-$personalId');
         await _settingsAction(
           tester,
-          'record-delete-providers-personal-openai',
-        );
-        await _settingsAction(
-          tester,
-          'record-delete-confirm-providers-personal-openai',
+          'record-delete-confirm-providers-$personalId',
         );
         await _settingsUntil(
           tester,
           () => find
-              .byKey(const ValueKey('record-providers-personal-openai'))
+              .byKey(ValueKey('record-providers-$personalId'))
               .evaluate()
               .isEmpty,
         );
         expect(await personal.exists(), isFalse);
+        expect(find.text('Deleted Personal OpenAI.'), findsOneWidget);
         expect(await work.readAsString(), reloaded);
         await tester.tap(find.byTooltip('Close Settings'));
         await tester.pumpAndSettle();
@@ -721,7 +716,7 @@ void main() {
           () => find.text('Work OpenAI reloaded').evaluate().isNotEmpty,
         );
         expect(
-          find.byKey(const ValueKey('record-providers-personal-openai')),
+          find.byKey(ValueKey('record-providers-$personalId')),
           findsNothing,
         );
         await _settingsSection(tester, 'Preferences');
@@ -1371,10 +1366,14 @@ void main() {
                   .isNotEmpty,
             );
             if (Platform.isLinux) {
-              await _createProviderRecord(tester, 'work-openai', 'Work OpenAI');
+              final workId = await _createProviderRecord(
+                tester,
+                roots,
+                'Work OpenAI',
+              );
               expect(
                 await File(
-                  '${roots.configurationRoot}/providers/work-openai.toml',
+                  '${roots.configurationRoot}/providers/$workId.toml',
                 ).readAsString(),
                 contains('display-name = "Work OpenAI"'),
               );
@@ -1570,14 +1569,18 @@ void main() {
                   .evaluate()
                   .isNotEmpty,
             );
-            await _createProviderRecord(tester, 'work-openai', 'Work OpenAI');
+            final workId = await _createProviderRecord(
+              tester,
+              roots,
+              'Work OpenAI',
+            );
             expect(
               await File('${roots.configurationRoot}/settings.toml').exists(),
               isFalse,
             );
             expect(
               await File(
-                '${roots.configurationRoot}/providers/work-openai.toml',
+                '${roots.configurationRoot}/providers/$workId.toml',
               ).readAsString(),
               contains('display-name = "Work OpenAI"'),
             );
@@ -2433,11 +2436,17 @@ Future<void> _editProviderRecord(WidgetTester tester, String id) async {
   await _settingsAction(tester, 'record-edit-providers-$id');
 }
 
-Future<void> _createProviderRecord(
+Future<String> _createProviderRecord(
   WidgetTester tester,
-  String id,
+  PlatformStorageRoots roots,
   String name,
 ) async {
+  Future<Set<String>> filenames() async {
+    final entries = await ConfigurationStore(roots).listCollection('providers');
+    return entries.map((entry) => entry.name).toSet();
+  }
+
+  final before = await filenames();
   final add = find.byKey(const ValueKey('records-add-providers'));
   await _settingsUntil(
     tester,
@@ -2446,7 +2455,6 @@ Future<void> _createProviderRecord(
   await tester.ensureVisible(add);
   await tester.tap(add);
   await tester.pumpAndSettle();
-  await tester.enterText(find.byKey(const ValueKey('record-id-providers')), id);
   final presence = find.byKey(
     const ValueKey('record-presence-providers-display-name'),
   );
@@ -2461,11 +2469,19 @@ Future<void> _createProviderRecord(
   final create = find.byKey(const ValueKey('record-create-providers'));
   await tester.ensureVisible(create);
   await tester.tap(create);
-  await _settingsUntil(
-    tester,
-    () => find.byKey(ValueKey('record-providers-$id')).evaluate().isNotEmpty,
+  await _settingsUntil(tester, () => create.evaluate().isEmpty);
+  expect(find.text('Created $name.'), findsOneWidget);
+  // Observe the published filename without reloading the UI's live handles.
+  final filename = (await filenames()).difference(before).single;
+  expect(filename, endsWith('.toml'));
+  final id = filename.substring(0, filename.length - '.toml'.length);
+  final row = find.byKey(ValueKey('record-providers-$id'));
+  expect(find.descendant(of: row, matching: find.text(name)), findsOneWidget);
+  expect(
+    find.descendant(of: row, matching: find.text('OpenAI API')),
+    findsOneWidget,
   );
-  expect(find.text(name), findsOneWidget);
+  return id;
 }
 
 final class _CredentialStorage implements CredentialStorageAdapter {

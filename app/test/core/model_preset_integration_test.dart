@@ -17,6 +17,7 @@ import 'package:adele_desktop/core/remote_inference_context_host.dart';
 import 'package:adele_desktop/frontend/application_frontend_bootstrap.dart';
 import 'package:adele_desktop/ui/execution/session_execution_controller.dart';
 import 'package:adele_desktop/ui/main_content/main_content_host.dart';
+import 'package:adele_desktop/ui/settings/record_collection_panel.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:adele_model_tool/adele_model_tool.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
@@ -452,15 +453,107 @@ void main() {
     },
   );
 
+  Future<void> prepareModelSelector(Directory root) async {
+    final model = await Directory('${root.path}/model-configuration').create();
+    await File(
+      '${installations.path}/model-configuration/backend.aot',
+    ).copy('${model.path}/backend.aot');
+    await _publishModelSelector(model, selectorEvc);
+  }
+
+  Future<(_Fixture, SelectionGraph)> startSelectors(Directory root) async {
+    final f = _Fixture(roots);
+    addTearDown(f.close);
+    await f.start(root.path, aotRuntime, host.path, gateStorage: true);
+    return (f, await f.sessions(temporary));
+  }
+
+  testWidgets(
+    'a Session selects a Settings-created Model Preset by name with no provider installed',
+    (tester) => tester.runAsync(() async {
+      final root = await _temporary('generated-preset-selector-');
+      await prepareModelSelector(root);
+      final (f, graph) = await startSelectors(root);
+      _expectNoInference(f, graph);
+      final collection = RecordCollectionId('model-presets');
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: RecordCollectionPanel(
+              service: f.settings,
+              collection: collection,
+            ),
+          ),
+        ),
+      );
+      Finder key(String value) => find.byKey(ValueKey(value));
+      Future<void> press(Finder control) async {
+        await tester.ensureVisible(control);
+        await tester.pump();
+        await tester.tap(control);
+        await tester.pump();
+      }
+
+      final add = key('records-add-$collection');
+      await _until(
+        tester,
+        () => tester.widget<FilledButton>(add).onPressed != null,
+        'empty Model Presets collection',
+      );
+      await press(add);
+      const name = 'Offline review';
+      final values = {..._values, 'name': name};
+      for (final field in values.entries) {
+        await press(key('record-presence-$collection-${field.key}'));
+        final input = key('record-input-$collection-${field.key}');
+        await tester.ensureVisible(input);
+        await tester.enterText(input, field.value);
+        await tester.pump();
+      }
+      await press(key('record-create-$collection'));
+      await _until(
+        tester,
+        () => find.widgetWithText(ExpansionTile, name).evaluate().isNotEmpty,
+        'acknowledged preset row',
+      );
+      final saved = (await f.settings.loadRecords(collection)).records.single;
+      expect(saved.values, values);
+      final catalog = await f.catalog.readPresets();
+      expect(catalog.isComplete, isTrue);
+      final preset = catalog.presets.single;
+      expect(
+        (
+          preset.presetId,
+          preset.name,
+          preset.providerId,
+          preset.modelId,
+          preset.reasoningEffort,
+        ),
+        (saved.id.value, name, values['provider-id'], values['model-id'], null),
+      );
+
+      final session = graph.session.id.value;
+      expect(_selection(await f.selections.readSessionSelection(session)), (
+        session,
+        null,
+        0,
+      ));
+      await _startFrontends(f);
+      await _SelectorPane(f).present(tester, graph.session);
+      await _choose(tester, _noPreset, name, 'Model Preset: $name');
+      expect(_selection(await f.selections.readSessionSelection(session)), (
+        session,
+        saved.id.value,
+        1,
+      ));
+      _expectNoInference(f, graph);
+      expect(tester.takeException(), isNull);
+    }),
+  );
+
   _registerSelectorCases(
     prepare: (root) async {
-      final model = await Directory(
-        '${root.path}/model-configuration',
-      ).create();
-      await File(
-        '${installations.path}/model-configuration/backend.aot',
-      ).copy('${model.path}/backend.aot');
-      await _publishModelSelector(model, selectorEvc);
+      await prepareModelSelector(root);
       final agent = Directory('${root.path}/agent-configuration');
       await compileAotSnapshot(
         dartExecutable: File(
@@ -474,12 +567,7 @@ void main() {
       );
       await publishAgentSelector(agent);
     },
-    start: (root) async {
-      final f = _Fixture(roots);
-      addTearDown(f.close);
-      await f.start(root.path, aotRuntime, host.path, gateStorage: true);
-      return (f, await f.sessions(temporary));
-    },
+    start: startSelectors,
   );
 
   _registerRunCases(({

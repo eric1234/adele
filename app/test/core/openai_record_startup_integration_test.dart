@@ -32,6 +32,7 @@ import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
 import '../../../tools/backend_artifacts.dart';
+import '../support/record_draft_id.dart';
 
 const _openai = 'dev.adele.openai';
 const _recordType = 'dev.adele.openai.api-key';
@@ -397,13 +398,15 @@ void main() {
       final host = fixture.bootstrap.host!;
       final personal = fixture.capture('personal');
       final work = fixture.capture('work');
-      final file = fixture.recordFile('third');
-      const id = 'third-openai';
-      expect(file.existsSync(), isFalse);
-      expect(
-        () => fixture.client('third'),
-        throwsA(isA<ProviderUnavailable>()),
+      final id = await ui.draftAccount(
+        'Third account',
+        '${fixture.origin}/third/responses',
       );
+      final file = File(
+        '${fixture.roots.configurationRoot}/providers/$id.toml',
+      );
+      expect(file.existsSync(), isFalse);
+      expect(() => fixture.client(id), throwsA(isA<ProviderUnavailable>()));
 
       Future<_ConfiguredBinding> current() async {
         await ui.status(id, 'Applied');
@@ -415,19 +418,23 @@ void main() {
         _expectCatalogAssociations(
           fixture.bootstrap,
           fixture.registry,
-          ids: ['third'],
+          recordIds: [id],
         );
-        return fixture.capture('third');
+        return fixture.captureRecord(id);
       }
 
-      await ui.create(id, 'Third account', '${fixture.origin}/third/responses');
+      await ui.press('record-create-providers');
+      await ui.until(
+        () => ui.key('record-providers-$id').evaluate().isNotEmpty,
+        'create acknowledgement',
+      );
       final created = await current();
       expect(created.catalog.provider.displayName, 'Third account');
       expect(
         file.readAsStringSync(),
         contains('${fixture.origin}/third/responses'),
       );
-      await fixture.expectFailure('not_configured', id: 'third');
+      await fixture.expectFailure('not_configured', recordId: id);
       expect(fixture.requests, isEmpty);
       expect(fixture.storage.calls, isEmpty);
 
@@ -486,7 +493,7 @@ void main() {
       final reads = fixture.storage.readReferences.length;
       final requests = fixture.requests.length;
       expect(fixture.storage.values.containsKey(reference), isFalse);
-      await fixture.expectFailure('not_configured', id: 'third');
+      await fixture.expectFailure('not_configured', recordId: id);
       await expectLater(
         forgotten.catalogClient.listModels(),
         throwsA(
@@ -507,7 +514,7 @@ void main() {
         'delete acknowledgement',
       );
       await ui.status(id, 'Applied');
-      expect(find.text('Deleted record: $id'), findsOneWidget);
+      expect(find.text('Deleted record: OpenAI API'), findsOneWidget);
       expect(file.existsSync(), isFalse);
       await forgotten.expectRetired(fixture);
       for (final (capability, providerId) in [
@@ -533,7 +540,7 @@ void main() {
       expect(fixture.connection, same(connection));
       await ui.section('Preferences');
       await ui.section('Providers');
-      expect(find.text('Deleted record: $id'), findsOneWidget);
+      expect(find.text('Deleted record: OpenAI API'), findsOneWidget);
       await ui.status(id, 'Applied');
     },
   );
@@ -1171,7 +1178,7 @@ void main() {
         final fixture = await prepareProviders();
         await fixture.start();
         final oldConnection = fixture.connection;
-        final oldClient = fixture.client('work');
+        final oldClient = fixture.client('work-openai');
         _expectCompleted(
           await fixture.invoke('work').toList(),
           '/work/responses',
@@ -1291,7 +1298,7 @@ void main() {
           )
           .key;
       expect(
-        () => fixture.client('third'),
+        () => fixture.client('third-openai'),
         throwsA(isA<ProviderUnavailable>()),
       );
       expect(await fixture.catalogCall('discover', _catalogQuery), {
@@ -1315,7 +1322,7 @@ void main() {
       _expectCatalogAssociations(
         fixture.bootstrap,
         fixture.registry,
-        ids: ['personal', 'third', 'work'],
+        recordIds: ['personal-openai', 'third-openai', 'work-openai'],
       );
       expect(await fixture.catalogCall('discover', _catalogQuery), {
         'ok': true,
@@ -1549,7 +1556,10 @@ void main() {
     old.expectSame(fixture.capture('work'));
     expect(await fixture.refresh(), _refreshResult('applied', 'retired'));
     await old.expectRetired(fixture);
-    expect(() => fixture.client('work'), throwsA(isA<ProviderUnavailable>()));
+    expect(
+      () => fixture.client('work-openai'),
+      throwsA(isA<ProviderUnavailable>()),
+    );
     expect((await fixture.listModels('work'))['ok'], isFalse);
     expect(
       await fixture.catalogCall('resolve', {
@@ -1576,7 +1586,7 @@ void main() {
     _expectCatalogAssociations(
       fixture.bootstrap,
       fixture.registry,
-      ids: ['personal'],
+      recordIds: ['personal-openai'],
     );
     expect(fixture.storage.calls, isEmpty);
     expect(fixture.requests, isEmpty);
@@ -1928,7 +1938,10 @@ void main() {
           _chatGpt,
         ]),
       );
-      expect(() => fixture.client('work'), throwsA(isA<ProviderUnavailable>()));
+      expect(
+        () => fixture.client('work-openai'),
+        throwsA(isA<ProviderUnavailable>()),
+      );
       expect(fixture.storage.calls, isEmpty);
       _expectCompleted(
         await fixture.invoke('personal').toList(),
@@ -1952,11 +1965,14 @@ void main() {
         ConfigurationRecordId('new-openai'),
         {'display-name': 'New OpenAI'},
       );
-      expect(() => fixture.client('new'), throwsA(isA<ProviderUnavailable>()));
+      expect(
+        () => fixture.client('new-openai'),
+        throwsA(isA<ProviderUnavailable>()),
+      );
       expect(fixture.connection.capabilityExposures, hasLength(4));
       await fixture.restart();
       expect(fixture.connection.capabilityExposures, hasLength(6));
-      await fixture.expectFailure('not_configured', id: 'new');
+      await fixture.expectFailure('not_configured', recordId: 'new-openai');
       expect(fixture.requests, isEmpty);
     },
   );
@@ -2691,9 +2707,8 @@ final class _ProviderSettings {
         .first,
   );
 
-  Future<void> create(String id, String name, String endpoint) async {
+  Future<String> draftAccount(String name, String endpoint) async {
     await press('records-add-providers');
-    await _enter('record-id-providers', id);
     for (final (field, value) in [
       ('display-name', name),
       ('endpoint', endpoint),
@@ -2701,11 +2716,7 @@ final class _ProviderSettings {
       await press('record-presence-providers-$field');
       await _enter('record-input-providers-$field', value);
     }
-    await press('record-create-providers');
-    await until(
-      () => key('record-providers-$id').evaluate().isNotEmpty,
-      'create acknowledgement',
-    );
+    return inspectDraftId(tester);
   }
 
   Future<void> update(String id, String name, String endpoint) async {
@@ -3183,32 +3194,36 @@ final class _ProviderFixture {
     return result;
   }
 
-  _ConfiguredBinding capture(String id) => _ConfiguredBinding(
+  _ConfiguredBinding capture(String account) =>
+      captureRecord('$account-openai');
+
+  _ConfiguredBinding captureRecord(String recordId) => _ConfiguredBinding(
     registry.resolve(
       modelProviderCapability,
-      providerId: ProviderId('$_recordType.$id-openai'),
+      providerId: ProviderId('$_recordType.$recordId'),
     ),
     registry.resolve(
       modelCatalogCapability,
-      providerId: ProviderId('$_catalogProviderId.$id-openai'),
+      providerId: ProviderId('$_catalogProviderId.$recordId'),
     ),
   );
 
-  ModelProviderServiceClient client(String id) => ModelProviderServiceClient(
-    registry
-        .resolve(
-          modelProviderCapability,
-          providerId: ProviderId('$_recordType.$id-openai'),
-        )
-        .streamChannel,
-  );
+  ModelProviderServiceClient client(String recordId) =>
+      ModelProviderServiceClient(
+        registry
+            .resolve(
+              modelProviderCapability,
+              providerId: ProviderId('$_recordType.$recordId'),
+            )
+            .streamChannel,
+      );
 
   Stream<ModelProviderEvent> invoke(
     String id, {
     String model = 'same-model',
     ModelReasoningEffort? reasoningEffort,
   }) => client(
-    id,
+    '$id-openai',
   ).invoke(_providerRequest(model, reasoningEffort: reasoningEffort));
 
   Stream<ModelProviderEvent> invokeChatGpt() => ModelProviderServiceClient(
@@ -3254,8 +3269,13 @@ final class _ProviderFixture {
     expect(storage.readReferences.skip(reads), [reference, reference]);
   }
 
-  Future<void> expectFailure(String code, {String id = 'work'}) async {
-    final events = await invoke(id).toList();
+  Future<void> expectFailure(
+    String code, {
+    String recordId = 'work-openai',
+  }) async {
+    final events = await client(
+      recordId,
+    ).invoke(_providerRequest('same-model')).toList();
     expect(events, hasLength(1));
     final terminal = events.single.terminal!;
     expect(terminal.settlement, ModelProviderSettlement.failed);
@@ -3339,16 +3359,16 @@ void _expectCatalogFailure(Map<String, Object?> result, String code) {
 void _expectCatalogAssociations(
   ApplicationPluginBootstrap bootstrap,
   CapabilityRegistry registry, {
-  List<String> ids = const ['personal', 'work'],
+  List<String> recordIds = const ['personal-openai', 'work-openai'],
 }) {
-  for (final id in ids) {
+  for (final id in recordIds) {
     final catalog = registry.resolve(
       modelCatalogCapability,
-      providerId: ProviderId('$_catalogProviderId.$id-openai'),
+      providerId: ProviderId('$_catalogProviderId.$id'),
     );
     final inference = registry.resolve(
       modelProviderCapability,
-      providerId: ProviderId('$_recordType.$id-openai'),
+      providerId: ProviderId('$_recordType.$id'),
     );
     final owner = bootstrap.backendForProvider(catalog)!;
     expect(owner.installation.metadata.id, PluginId(_openai));

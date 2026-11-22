@@ -9,8 +9,8 @@ choice when a new Run is prepared.
 
 ## Choosing a Model Preset
 
-1. Open **Global Settings → Model Presets**. Add a record with a stable record
-   ID, or edit an existing preset. Include **Name**, **Provider ID**, and **Model ID**.
+1. Open **Global Settings → Model Presets**. Choose **Add** or edit an existing
+   preset. Include **Name**, **Provider ID**, and **Model ID**.
    Type the Provider ID or use **Choose configured provider...**. If several rows
    have the same display name, compare their full IDs and owning plugins. Picking
    a row copies its stable Provider ID, not its name, into the unsaved field.
@@ -51,8 +51,11 @@ Refresh to see what was actually saved; the selector will not retry the write.
 ## Records and persistence
 
 Each `dev.adele.plugin.model-configuration.preset` record in `model-presets`
-has a user-chosen, immutable record ID. Use that ID, not the editable name, to
-identify the preset. Names need not be unique.
+has an immutable record ID, distinct from its editable provider and model IDs.
+Settings generates the preset ID. Copy it from **Advanced details** in Add or
+from the saved preset's details; the display name need not be unique. See the
+[record editing guide](../../docs/architecture/profiles-and-configuration.md#creating-and-editing-records)
+for draft retention and recovery.
 
 | Field | Presence | Meaning |
 | --- | --- | --- |

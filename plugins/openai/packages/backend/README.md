@@ -57,13 +57,12 @@ The entrypoint reports only the validated record ID and fixed rejection code
 (`openai_record_invalid_values` or `openai_record_invalid_configuration`), never the
 supplied endpoint, ordinary values or raw exception.
 
-The plugin owns this deterministic identity mapping, independent of display name,
-endpoint, key, credential reference and backend generation:
-
-| Record ID | Stable Inference `ProviderId` |
-| --- | --- |
-| `work-openai` | `dev.adele.openai.api-key.work-openai` |
-| `personal-openai` | `dev.adele.openai.api-key.personal-openai` |
+In **Global Settings > Providers**, use **Add** to create an OpenAI API record.
+Enter a display name; Settings generates the record ID. To copy the ID, open
+**Advanced details** in Add or expand the saved record's details. See the
+[record editing guide](../../../../docs/architecture/profiles-and-configuration.md#creating-and-editing-records).
+The plugin derives the inference `ProviderId` as `dev.adele.openai.api-key.<record-id>`,
+independent of the display name, endpoint, key, credential reference or backend generation.
 
 Provider IDs use the existing public validators. Startup records retain stable
 record-ID advertisement order. `OpenAiConfiguredProviders` allocates a fresh opaque,
@@ -198,7 +197,7 @@ Every valid record-backed API-key instance additionally advertises the optional
 environment-key and experimental ChatGPT routes remain inference-only. A missing
 or failed catalog does not remove or select an inference provider.
 
-| Record ID | Catalog `ProviderId` | Associated Inference `ProviderId` |
+| Example record ID | Catalog `ProviderId` | Associated Inference `ProviderId` |
 | --- | --- | --- |
 | `work-openai` | `dev.adele.openai.model-catalog.work-openai` | `dev.adele.openai.api-key.work-openai` |
 | `personal-openai` | `dev.adele.openai.model-catalog.personal-openai` | `dev.adele.openai.api-key.personal-openai` |

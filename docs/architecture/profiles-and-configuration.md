@@ -227,14 +227,33 @@ Stale update/delete and no-op writes fail explicitly and require deliberate relo
 Enumeration retains healthy records alongside attributable bad-file diagnostics;
 directory-wide failures remain errors. Aliased identities never select a winner.
 
-Global Settings discovers these collections from the captured prepared catalog,
-lists valid records and attributable diagnostics, and creates and edits records with
-shared declaration-generated forms. Collection, record ID and type are immutable
-when editing; display-name changes do not change filenames. New records have explicit
-stable IDs and no inferred defaults; controls preserve absence separately from false,
-zero and empty strings. Editing initializes only declared values and their presence,
-not controls for unknown persisted content. Duplicate IDs never overwrite an occupant,
-including an invalid or unknown-type record. Malformed entries have no mutation UI.
+### Creating and editing records
+
+Global Settings discovers collections from the captured prepared catalog and lists
+valid records alongside attributable diagnostics. The generic **Add** form keeps a
+separate draft for each record type and assigns each draft a secure random record ID,
+independent of the display name. Users enter the declared fields, not the ID. Open
+**Advanced details** to inspect or copy the read-only ID before creation; for a
+saved record, expand its details to copy the ID. Collection, type and ID are
+immutable when editing; renaming a record does not change its filename. Generation
+belongs to the panel: [headless callers](../../packages/settings_host/README.md#configuration-records)
+still supply an explicit, validated `ConfigurationRecordId` to `create`.
+
+**Back to records**, switching types and navigating between Settings sections keep
+the draft's original ID and field values. Only a confirmed **Create** automatically
+resets the successful type's draft; other types' drafts are untouched. A collision
+never overwrites the occupant, even if its record is malformed or its type unknown.
+On collision or an uncertain Create outcome, Settings keeps the draft and requires an
+explicit collection **Reload** before another creation attempt. Inspect the reloaded
+records using the original ID: an unconfirmed write may have succeeded. Reload does
+not change the ID in the retained draft. After a successful Reload, **Discard and
+start new draft** replaces only the affected draft with a blank one and a new ID.
+It does not write a record. Settings never retries Create automatically.
+
+Create and Edit use the same declaration-generated field controls. Neither infers
+defaults: absence stays distinct from false, zero and empty strings. Edit initializes
+only declared values and their presence, not controls for unknown persisted content.
+Malformed entries have no mutation UI.
 
 Each existing record has a separate draft retained through details collapse and
 ordinary Settings navigation; Cancel editing discards only that record's draft.
@@ -244,13 +263,12 @@ exact record's title, stable identity, and entire-file removal, including unknow
 Cancel or dismissal does not write. Confirmed deletion removes only that record and
 its draft. Conflicts or uncertain update/delete outcomes fence the affected record,
 retaining unsaved values for inspection without retry or automatic merging. Known
-pre-write validation failures remain correctable. Unconfirmed creation requires
-collection Reload before another creation attempt.
+pre-write validation failures remain correctable.
 
 Collection Reload is deliberate, confirms discarding dirty existing-record drafts,
 and keeps creation drafts and other sections intact. A successful read replaces the
-collection's edit baselines and clears stale drafts; a failed read retains the last
-displayed records and drafts with diagnostics, while fencing old handles. No failed
+collection's edit baselines and clears existing-record edits. A failed read retains
+the last displayed records and drafts with diagnostics, while fencing old handles. No failed
 read is presented as an empty collection. Closing the whole dialog discards drafts;
 canceled application exit preserves the original dialog and its drafts.
 
@@ -662,9 +680,9 @@ independent; genuine installation-wide diagnostics are represented in both areas
 Each setting has explicit Save and Reset actions. Save validates through its
 definition and creates an explicit Global override, even when equal to the default.
 Reset removes a supported scalar override instead of writing a default. The dialog
-loads current disk contents when opened; Reload deliberately replaces the editing
-snapshot and discards drafts. These snapshots are separate from startup consumer
-values. Opening or dismissing Settings does not navigate a Session or reconstruct
+loads current disk contents when opened; Preferences Reload replaces the scalar
+editing snapshot and discards scalar drafts. These snapshots are separate from
+startup consumer values. Opening or dismissing Settings does not navigate a Session or reconstruct
 its workbench. Applying scalar changes requires restarting ADELE, including for later
 Chat Runs and Source editors opened in the same application. Named records instead
 follow the [confirmed-write apply boundary](#applying-confirmed-record-changes).
