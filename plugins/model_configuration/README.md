@@ -3,9 +3,34 @@
 `dev.adele.plugin.model-configuration` contributes the **Model Presets** collection
 to Global Settings. The host discovers its version-1 [record schema](records.schema.json)
 independently of backend activation, so editing does not require a running
-backend. The [AOT backend](packages/backend/README.md) reads the definitions
-and resolves each new Run's preference from its Session selection. There is no
-frontend or runtime apply handler.
+backend. The [Session selector](packages/frontend/README.md) changes the
+Session's choice; the [AOT backend](packages/backend/README.md) resolves that
+choice when a new Run is prepared.
+
+## Choosing a Model Preset
+
+1. Open **Global Settings → Model Presets** and add a record. Give it a stable
+   record ID, include **Name**, **Provider ID**, and **Model ID**, and enter their
+   values. Optionally include a description or requested reasoning effort. Create
+   the record. This saves a definition; it does not select it for any Session.
+2. In a Session that shows execution configuration, open **Model Preset** and
+   choose the saved preset. Opening the choices reads the current catalog.
+   **Refresh** rereads both the definitions and this Session's selection, for
+   example after a change in another window. The displayed configuration is what
+   the record requests, not a check that the provider or model is available.
+3. To switch, choose a different preset. To clear, choose **No Model Preset**.
+   This allows a direct model configuration to be used **if one is configured**.
+   Changes apply to newly prepared Runs, not to an active Run awaiting approval.
+
+**Missing Model Preset** means a complete catalog did not contain the selected
+ID. **Unresolved Model Preset** means the catalog was incomplete or unavailable
+and could not establish whether the ID exists. Neither changes the stored choice.
+Refresh, select another visible preset, or clear the choice. Clearing needs a
+readable selection, but not a readable catalog. If the selection itself is
+unavailable, Refresh before making a change. If a change is **not confirmed**,
+Refresh to see what was actually saved; the selector will not retry the write.
+
+## Records and persistence
 
 Each `dev.adele.plugin.model-configuration.preset` record in `model-presets`
 has a user-chosen, immutable record ID. Use that ID, not the editable name, to

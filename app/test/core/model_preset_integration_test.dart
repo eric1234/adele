@@ -3,36 +3,47 @@ library;
 
 import 'dart:convert';
 import 'dart:io';
+import 'dart:isolate';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_desktop/core/adele_runtime.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
+import 'package:adele_desktop/core/backend_configuration_host.dart';
 import 'package:adele_desktop/core/global_settings_service.dart';
 import 'package:adele_desktop/core/prepared_settings.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/project_storage_host.dart';
+import 'package:adele_desktop/core/remote_inference_context_host.dart';
+import 'package:adele_desktop/frontend/application_frontend_bootstrap.dart';
 import 'package:adele_desktop/ui/execution/session_execution_controller.dart';
+import 'package:adele_desktop/ui/main_content/main_content_host.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:adele_model_tool/adele_model_tool.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_orchestration/remote_run_model_preference.dart';
 import 'package:adele_platform_storage/adele_platform_storage.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
+import 'package:adele_plugin_backend_support/adele_backend_configuration.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:adele_project_storage/adele_project_storage.dart';
 import 'package:adele_settings/adele_settings.dart';
+import 'package:adele_ui/adele_ui.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:model_configuration_contract/model_configuration_contract.dart';
 import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
 import '../../../tools/backend_artifacts.dart';
+import '../../tool/model_configuration_frontend_compiler.dart';
+import '../support/agent_selector_installation.dart';
 import '../support/gated_project_storage.dart';
 import '../support/project_provider.dart';
 import '../support/review_execution_fixture.dart';
 import '../support/selection_sessions.dart';
 
 part 'model_preset_run_cases.dart';
+part 'model_preset_selector_cases.dart';
 
 const _plugin = 'dev.adele.plugin.model-configuration';
 const _extensionId = '$_plugin.run-model-preference';
@@ -49,6 +60,7 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   late Directory installations;
   late File host;
+  late File selectorEvc;
   late String aotRuntime;
 
   setUpAll(() async {
@@ -89,6 +101,12 @@ void main() {
       pluginId: _plugin,
       displayName: 'Model Configuration',
       backend: true,
+    );
+    selectorEvc = File('${artifacts.path}/model-selector.evc');
+    await selectorEvc.writeAsBytes(
+      await Isolate.run(
+        () => compileModelConfigurationFrontend(repositoryRoot: repository),
+      ),
     );
 
     // A different owner can contribute the same shape to the same collection.
@@ -434,9 +452,49 @@ void main() {
     },
   );
 
-  _registerRunCases(({stock = _StockArtifact.healthy, restore}) async {
+  _registerSelectorCases(
+    prepare: (root) async {
+      final model = await Directory(
+        '${root.path}/model-configuration',
+      ).create();
+      await File(
+        '${installations.path}/model-configuration/backend.aot',
+      ).copy('${model.path}/backend.aot');
+      await _publishModelSelector(model, selectorEvc);
+      final agent = Directory('${root.path}/agent-configuration');
+      await compileAotSnapshot(
+        dartExecutable: File(
+          aotRuntime,
+        ).parent.uri.resolve('dart').toFilePath(),
+        workingDirectory: Directory.current.parent,
+        entrypoint:
+            'plugins/agent_configuration/packages/backend/bin/agent_configuration_backend.dart',
+        artifact: File('${agent.path}/backend.aot'),
+        stage: 'model-preset-mixed-selectors',
+      );
+      await publishAgentSelector(agent);
+    },
+    start: (root) async {
+      final f = _Fixture(roots);
+      addTearDown(f.close);
+      await f.start(root.path, aotRuntime, host.path, gateStorage: true);
+      return (f, await f.sessions(temporary));
+    },
+  );
+
+  _registerRunCases(({
+    stock = _StockArtifact.healthy,
+    restore,
+    selector = false,
+  }) async {
     final root = await _temporary('model-preset-run-installations-');
     await _prepareRunInstallations(root, installations, stock);
+    if (selector) {
+      await _publishModelSelector(
+        Directory('${root.path}/model-configuration'),
+        selectorEvc,
+      );
+    }
     final f = _Fixture(roots);
     addTearDown(f.close);
     // Establish the canonical graph before installing the executable strategy.
@@ -482,7 +540,7 @@ final class _Fixture {
   }) async {
     await _settings?.close();
     _settings = null;
-    // Only the storage retirement test needs its own restartable, gated host.
+    // Storage and selector lifetime tests can hold a committed Model write.
     // Runs must use the production bootstrap captured by runtime.runModelPreferences.
     bootstrap = gateStorage
         ? ApplicationPluginBootstrap(
@@ -493,6 +551,7 @@ final class _Fixture {
                 runtime.lifecycle,
                 connection,
               );
+              if (connection.pluginId != _plugin) return services;
               storage = GatedProjectStorage(services[projectStorageServiceId]!);
               return {projectStorageServiceId: storage};
             },
@@ -505,16 +564,21 @@ final class _Fixture {
       (catalog, installation) =>
           settings.loadStartupRecords(catalog, installation),
     );
-    bootstrap.configureCurrentRecordsLoader((catalog, installation) {
-      reads++;
-      return settings.loadCurrentRecords(catalog, installation);
-    });
+    bootstrap.configureCurrentRecordsLoader(loadCurrentRecords);
     await bootstrap.start(
       installationRoot: installations,
       dartaotruntimeExecutable: executable,
       hostArtifactPath: host,
       startupArguments: startupArguments,
     );
+  }
+
+  Future<StartupRecordsView> loadCurrentRecords(
+    PreparedPluginCatalog catalog,
+    PreparedPluginInstallation installation,
+  ) {
+    reads++;
+    return settings.loadCurrentRecords(catalog, installation);
   }
 
   PluginBackendConnection get connection => bootstrap.backends

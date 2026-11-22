@@ -115,6 +115,8 @@ const String _openaiFrontendHarness =
     'tool/compile_openai_activity_frontend.dart';
 const String _agentConfigurationFrontendHarness =
     'tool/compile_agent_configuration_frontend.dart';
+const String _modelConfigurationFrontendHarness =
+    'tool/compile_model_configuration_frontend.dart';
 const String _sessionEvaluatorFrontendHarness =
     'tool/compile_session_evaluator_frontend.dart';
 const String _localDirectoryProjectFrontendHarness =
@@ -148,6 +150,7 @@ const _frontendCompilations = {
   'command': '$_toolFrontendHarness|command',
   'openai': _openaiFrontendHarness,
   'agent-configuration': _agentConfigurationFrontendHarness,
+  'model-configuration': _modelConfigurationFrontendHarness,
   'session-evaluator': _sessionEvaluatorFrontendHarness,
   'local-directory-project': _localDirectoryProjectFrontendHarness,
   'task-browser': _taskBrowserFrontendHarness,
@@ -225,6 +228,9 @@ void main() {
     ).writeAsStringSync('void main() {}');
     File(
       '${root.path}/app/$_agentConfigurationFrontendHarness',
+    ).writeAsStringSync('void main() {}');
+    File(
+      '${root.path}/app/$_modelConfigurationFrontendHarness',
     ).writeAsStringSync('void main() {}');
     File(
       '${root.path}/app/$_sessionEvaluatorFrontendHarness',
@@ -521,6 +527,10 @@ elif [ "\$1" = test ]; then
     kind=agent-configuration
     output="\$ADELE_AGENT_CONFIGURATION_FRONTEND_OUTPUT"
     label='$_agentConfigurationFrontendHarness'
+  elif [ "\$5" = '$_modelConfigurationFrontendHarness' ]; then
+    kind=model-configuration
+    output="\$ADELE_MODEL_CONFIGURATION_FRONTEND_OUTPUT"
+    label='$_modelConfigurationFrontendHarness'
   elif [ "\$5" = '$_localDirectoryProjectFrontendHarness' ]; then
     kind=local-directory-project
     output="\$ADELE_LOCAL_DIRECTORY_PROJECT_FRONTEND_OUTPUT"
@@ -1443,6 +1453,7 @@ TZ=UTC touch -m -t 200001010000 '${override.parent.path}'
           'agent_configuration_frontend',
           'model_configuration_contract',
           'model_configuration_backend',
+          'model_configuration_frontend',
           'conservative_tool_policy_backend',
           'search_tools_backend',
           'filesystem_tools_backend',
@@ -2626,6 +2637,9 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         'plugins/agent_configuration/packages/frontend/lib/agent_configuration_frontend.dart',
         'app/$_agentConfigurationFrontendHarness',
         'app/tool/agent_configuration_frontend_compiler.dart',
+        'plugins/model_configuration/packages/frontend/lib/model_configuration_frontend.dart',
+        'app/$_modelConfigurationFrontendHarness',
+        'app/tool/model_configuration_frontend_compiler.dart',
         _sessionEvaluatorEntrypoint,
         'plugins/session_evaluator/packages/frontend/lib/session_evaluator_frontend.dart',
         'plugins/session_evaluator/packages/frontend/lib/src/read_prepared_handoff.dart',
@@ -2664,6 +2678,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
       environment['ADELE_REPOSITORY_ROOT'] = '/wrong-repository';
       environment['ADELE_CHAT_FRONTEND_OUTPUT'] = '/wrong-output';
       environment['ADELE_AGENT_CONFIGURATION_FRONTEND_OUTPUT'] = '/wrong-agent';
+      environment['ADELE_MODEL_CONFIGURATION_FRONTEND_OUTPUT'] = '/wrong-model';
       environment['ADELE_TASK_BROWSER_FRONTEND_OUTPUT'] = '/wrong-task-browser';
       environment['ADELE_TERMINAL_FRONTEND_OUTPUT'] = '/wrong-terminal';
       environment['ADELE_SOURCE_EDITOR_FRONTEND_OUTPUT'] =
@@ -2705,6 +2720,8 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
             'compiled|$_openaiFrontendHarness',
             'compile|$_agentConfigurationFrontendHarness',
             'compiled|$_agentConfigurationFrontendHarness',
+            'compile|$_modelConfigurationFrontendHarness',
+            'compiled|$_modelConfigurationFrontendHarness',
             'compile|$_sessionEvaluatorFrontendHarness',
             'compiled|$_sessionEvaluatorFrontendHarness',
             'compile|$_localDirectoryProjectFrontendHarness',
@@ -3195,7 +3212,29 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           File.fromUri(presets.backendArtifactUri!).readAsStringSync(),
           'snapshot $_modelConfigurationEntrypoint\n',
         );
-        expect(presets.frontend, isNull);
+        final presetFrontend = presets.frontend!;
+        expect(
+          presetFrontend.artifactUri,
+          installations.uri.resolve('model-configuration/frontend.evc'),
+        );
+        expect(presetFrontend.extensions, isEmpty);
+        final presetSelector =
+            presetFrontend.presentations.single
+                as PreparedSessionAccessoryPresentation;
+        expect(presetSelector.toJson(), {
+          'role': 'sessionAccessory',
+          'extensionId': '$_modelConfigurationId.selector',
+          'library':
+              'package:model_configuration_frontend/model_configuration_frontend.dart',
+          'entrypoint': 'buildModelPresetSelector',
+          'location': 'execution-configuration',
+          'order': 200,
+          'backendServices': ['modelPresetCatalog', 'modelPresetSelection'],
+        });
+        expect(
+          presets.runModelPreferenceSource?.value,
+          _modelPreferenceExtension,
+        );
         expect(catalog.records.definitions, [
           recordsSchema.definitions.single,
           agents.recordsSchema!.definitions.single,
@@ -4054,6 +4093,10 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
     (
       path: 'app/$_agentConfigurationFrontendHarness',
       expected: [_agentConfigurationFrontendHarness],
+    ),
+    (
+      path: 'plugins/model_configuration/packages/frontend/lib/fixture.dart',
+      expected: [_modelConfigurationFrontendHarness],
     ),
     (
       path: _conservativeToolPolicyEntrypoint,

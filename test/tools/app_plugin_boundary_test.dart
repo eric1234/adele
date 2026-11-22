@@ -64,6 +64,69 @@ Future<void> main() async {
   });
 
   test(
+    'Model Preset selector uses only its public presentation dependencies',
+    () {
+      final root = Directory('plugins/model_configuration/packages/frontend');
+      final manifest =
+          loadYaml(
+                File.fromUri(
+                  root.uri.resolve('pubspec.yaml'),
+                ).readAsStringSync(),
+              )
+              as YamlMap;
+      const allowedPackages = {
+        'adele_ui',
+        'flutter',
+        'model_configuration_contract',
+      };
+      expect(
+        (manifest['dependencies'] as YamlMap).keys,
+        unorderedEquals(allowedPackages),
+      );
+      final lib = Directory.fromUri(root.absolute.uri.resolve('lib/'));
+      final files = lib
+          .listSync(recursive: true)
+          .whereType<File>()
+          .where((file) => file.path.endsWith('.dart'));
+      expect(files, isNotEmpty);
+      for (final file in files) {
+        final unit = parseString(content: file.readAsStringSync()).unit;
+        for (final directive
+            in unit.directives.whereType<UriBasedDirective>()) {
+          for (final literal in [
+            directive.uri,
+            if (directive is NamespaceDirective)
+              ...directive.configurations.map(
+                (configuration) => configuration.uri,
+              ),
+          ]) {
+            final uri = Uri.parse(literal.stringValue!);
+            final allowed = switch (uri.scheme) {
+              'package' =>
+                allowedPackages.contains(uri.pathSegments.first) ||
+                    uri.pathSegments.first == manifest['name'],
+              'dart' => {
+                'core',
+                'async',
+                'collection',
+                'math',
+              }.contains(uri.path),
+              '' =>
+                file.uri.resolveUri(uri).isAbsolute &&
+                    file.uri
+                        .resolveUri(uri)
+                        .toString()
+                        .startsWith(lib.uri.toString()),
+              _ => false,
+            };
+            expect(allowed, isTrue, reason: '${file.path}: $uri');
+          }
+        }
+      }
+    },
+  );
+
+  test(
     'plugin production code cannot access the internal credential store',
     () {
       final credentialRoot = Directory(

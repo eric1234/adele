@@ -504,6 +504,7 @@ exit "$CLIPPY_EXIT"
           'filesystem_tools_frontend',
           'command_tools_frontend',
           'agent_configuration_frontend',
+          'model_configuration_frontend',
           'chat_strategy_frontend',
           'session_evaluator_frontend',
           'task_browser_frontend',
@@ -2049,6 +2050,10 @@ exit "$CLIPPY_EXIT"
             path: 'plugins/agent_configuration/packages/frontend',
           ),
           (
+            name: 'model_configuration_frontend',
+            path: 'plugins/model_configuration/packages/frontend',
+          ),
+          (
             name: 'chat_strategy_frontend',
             path: 'plugins/chat_strategy/packages/frontend',
           ),
@@ -2113,6 +2118,7 @@ exit "$CLIPPY_EXIT"
         stockFrontendDescriptors.keys,
         containsAll([
           'dev.adele.plugin.agent-configuration',
+          'dev.adele.plugin.model-configuration',
           'dev.adele.diff-viewer',
           'dev.adele.source-editor',
           'dev.adele.plugin.terminal',
@@ -2349,6 +2355,10 @@ exit "$CLIPPY_EXIT"
           (
             'session-accessories',
             'dev.adele.plugin.agent-configuration.selector',
+          ),
+          (
+            'session-accessories',
+            'dev.adele.plugin.model-configuration.selector',
           ),
           ('main-content', 'dev.adele.diff-viewer.main-content'),
           ('main-content', 'dev.adele.source-editor.main-content'),
@@ -2667,6 +2677,7 @@ exit "$CLIPPY_EXIT"
         'agent_configuration_frontend|flutter|plugins/agent_configuration/packages/frontend|test',
         'model_configuration_contract|dart|plugins/model_configuration/packages/contract|test',
         'model_configuration_backend|dart|plugins/model_configuration/packages/backend|test',
+        'model_configuration_frontend|flutter|plugins/model_configuration/packages/frontend|test',
         'conservative_tool_policy_backend|dart|plugins/conservative_tool_policy/packages/backend|test',
         'chat_strategy_contract|dart|plugins/chat_strategy/packages/contract|test',
         'chat_strategy_backend|dart|plugins/chat_strategy/packages/backend|test',

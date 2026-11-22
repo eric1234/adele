@@ -38,6 +38,11 @@ Future<Map<String, File>> prepareDesktopFrontendArtifacts({
       pluginId: 'dev.adele.plugin.agent-configuration',
     ),
     (
+      name: 'model-configuration',
+      directory: 'model-configuration',
+      pluginId: 'dev.adele.plugin.model-configuration',
+    ),
+    (
       name: 'session-evaluator',
       directory: 'session-evaluator',
       pluginId: 'dev.adele.plugin.session-evaluator',
@@ -78,6 +83,7 @@ Future<Map<String, File>> prepareDesktopFrontendArtifacts({
     final bool chat = frontend.name == 'chat';
     final bool openai = frontend.name == 'openai';
     final bool agentConfiguration = frontend.name == 'agent-configuration';
+    final bool modelConfiguration = frontend.name == 'model-configuration';
     final bool sessionEvaluator = frontend.name == 'session-evaluator';
     final bool taskBrowser = frontend.name == 'task-browser';
     final bool terminal = frontend.name == 'terminal';
@@ -96,6 +102,8 @@ Future<Map<String, File>> prepareDesktopFrontendArtifacts({
           ? 'tool/compile_openai_activity_frontend.dart'
           : agentConfiguration
           ? 'tool/compile_agent_configuration_frontend.dart'
+          : modelConfiguration
+          ? 'tool/compile_model_configuration_frontend.dart'
           : sessionEvaluator
           ? 'tool/compile_session_evaluator_frontend.dart'
           : localDirectoryProject
@@ -129,6 +137,8 @@ Future<Map<String, File>> prepareDesktopFrontendArtifacts({
               if (chat) 'ADELE_CHAT_FRONTEND_OUTPUT': artifact.path,
               if (agentConfiguration)
                 'ADELE_AGENT_CONFIGURATION_FRONTEND_OUTPUT': artifact.path,
+              if (modelConfiguration)
+                'ADELE_MODEL_CONFIGURATION_FRONTEND_OUTPUT': artifact.path,
               if (sessionEvaluator)
                 'ADELE_SESSION_EVALUATOR_FRONTEND_OUTPUT': artifact.path,
               if (openai)
@@ -144,6 +154,7 @@ Future<Map<String, File>> prepareDesktopFrontendArtifacts({
                 'ADELE_LOCAL_DIRECTORY_PROJECT_FRONTEND_OUTPUT': artifact.path,
               if (!chat &&
                   !agentConfiguration &&
+                  !modelConfiguration &&
                   !openai &&
                   !sessionEvaluator &&
                   !localDirectoryProject &&

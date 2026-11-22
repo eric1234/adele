@@ -43,6 +43,10 @@ const _frontends = {
     'agent_configuration',
     'compile_agent_configuration_frontend.dart',
   ),
+  'model-configuration': (
+    'model_configuration',
+    'compile_model_configuration_frontend.dart',
+  ),
   'filesystem': ('filesystem_tools', 'compile_tool_inspection_frontends.dart'),
   'command': ('command_tools', 'compile_tool_inspection_frontends.dart'),
   'openai': ('openai', 'compile_openai_activity_frontend.dart'),
@@ -157,6 +161,7 @@ dev_dependencies:
     write('plugins/source_editor/packages/frontend/lib/source_documents.dart');
     for (final plugin in [
       'agent_configuration',
+      'model_configuration',
       'chat_strategy',
       'command_tools',
       'diff_viewer',
@@ -350,29 +355,45 @@ part 'public.g.dart';
         ),
         isFalse,
       );
-      final agentFrontend = inputs['agent-configuration-frontend-compilation']!;
-      expect(
-        agentFrontend,
-        containsAll([
-          for (final path in [
-            'app/tool/compile_agent_configuration_frontend.dart',
-            'app/tool/agent_configuration_frontend_compiler.dart',
-            '$agentPackages/frontend/pubspec.yaml',
-            '$agentPackages/frontend/lib/agent_configuration_frontend.dart',
-            '$agentPackages/contract/lib/agent_configuration_contract.dart',
-            '$agentPackages/contract/lib/agent_configuration_contract.g.dart',
-            'packages/contract_codegen/lib/src/eval_client_emitter.dart',
-            for (final bridge in [
-              'session_accessory_bridge.dart',
-              'owning_backend_bridge.dart',
-            ]) ...['app/lib/frontend/$bridge', 'packages/ui/lib/$bridge'],
-            'packages/ui/lib/inspection_display.dart',
-          ])
-            File(path).absolute.path,
-        ]),
-      );
+      for (final (stage, plugin) in [
+        ('agent-configuration', 'agent_configuration'),
+        ('model-configuration', 'model_configuration'),
+      ]) {
+        final packages = 'plugins/$plugin/packages';
+        expect(
+          inputs['$stage-frontend-compilation'],
+          containsAll([
+            for (final path in [
+              'app/tool/compile_${plugin}_frontend.dart',
+              'app/tool/${plugin}_frontend_compiler.dart',
+              'app/tool/session_accessory_frontend_compiler.dart',
+              '$packages/frontend/pubspec.yaml',
+              '$packages/frontend/lib/${plugin}_frontend.dart',
+              '$packages/contract/lib/${plugin}_contract.dart',
+              '$packages/contract/lib/${plugin}_contract.g.dart',
+              'packages/contract_codegen/lib/src/eval_client_emitter.dart',
+              for (final bridge in [
+                'session_accessory_bridge.dart',
+                'owning_backend_bridge.dart',
+              ]) ...['app/lib/frontend/$bridge', 'packages/ui/lib/$bridge'],
+              'packages/ui/lib/inspection_display.dart',
+            ])
+              File(path).absolute.path,
+          ]),
+        );
+      }
       for (final entry in inputs.entries) {
-        if (entry.key != 'model-configuration-compilation') {
+        if (entry.key != 'model-configuration-frontend-compilation') {
+          expect(
+            entry.value.any(
+              (file) => file.contains('/$modelPackages/frontend/'),
+            ),
+            isFalse,
+            reason: entry.key,
+          );
+        }
+        if (entry.key != 'model-configuration-compilation' &&
+            entry.key != 'model-configuration-frontend-compilation') {
           expect(
             entry.value.any((file) => file.contains('/$modelPackages/')),
             isFalse,

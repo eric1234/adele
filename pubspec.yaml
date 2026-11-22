@@ -51,6 +51,7 @@ workspace:
   - plugins/agent_configuration/packages/frontend
   - plugins/model_configuration/packages/contract
   - plugins/model_configuration/packages/backend
+  - plugins/model_configuration/packages/frontend
   - plugins/conservative_tool_policy/packages/backend
   - plugins/chat_strategy/packages/contract
   - plugins/chat_strategy/packages/backend
