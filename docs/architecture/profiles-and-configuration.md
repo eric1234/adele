@@ -188,10 +188,10 @@ distinct from false, zero and empty strings. There are no field defaults, explic
 nulls, nested values, executable validators or cross-record validation. Unknown
 persisted data remains untouched, including when an owner is unavailable.
 
-A string field may request a Markdown editor for presentation. This selects a
-native Settings control; it does not validate Markdown as a record constraint,
-change field presence, or introduce a new stored type. Without the hint,
-Settings uses the ordinary scalar control.
+A string field may request a native Settings control through its `editor` hint.
+`markdown` edits the string as a document; `model-provider` offers configured
+ModelProvider IDs beside the editable text. Neither hint changes field presence,
+validation or storage. Without a hint, Settings uses the ordinary scalar control.
 
 A type may declare one `displayField` referencing a required string field. Discovery
 validates that reference; omission preserves existing declarations. Presentation uses
@@ -277,8 +277,17 @@ Stock definitions await a configuration-defaults policy: discovery and startup
 must not seed or recreate records that users chose to delete. A preset neither
 installs a provider plugin nor creates the provider instance it names. It can
 outlive that instance's availability. Saving it needs no credentials, live
-Capability binding, or Model Catalog observation. A catalog observation may
-guide a later edit but is not the authoritative contents of a preset.
+Capability binding, or Model Catalog observation.
+
+When editing the Provider ID, Settings can read the application registry's
+currently available ModelProvider registrations. Display names can coincide;
+each choice shows the owner and supplies the exact registered `ProviderId`.
+Refreshing the choices does not reload the record, invalidate its revision or
+replace its draft. An absent registration may return, and a failed observation
+says nothing about a saved reference. Neither prevents manual entry or Save.
+An advertised route does not establish authentication or model compatibility.
+The model ID remains a separate, manually entered string; a future Model
+Catalog observation could guide that edit, not define the preset.
 
 Model Configuration owns both the live definition reader and the Session's
 choice. Its catalog RPC is a boundary for its own frontend, not the provider
@@ -309,7 +318,7 @@ preparation, as do unreadable storage and unusable identifiers. None clear the
 stored ID or permit fallback. A visible preset yields its authored provider,
 model and optional effort, whether or not that provider is currently available.
 
-An Agent definition, the Session's stored ID, and the Run's effective binding
+A preset definition, the Session's stored ID, and the Run's effective binding
 are separate concerns. The host alone resolves the executable provider. Editing,
 deleting or selecting a preset affects later captures, never the active Run.
 There is no persisted Run selection or runtime record-apply operation.

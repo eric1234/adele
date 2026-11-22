@@ -1507,6 +1507,7 @@ void main() {
                 'maximum': 3,
               },
               _field(id: 'enabled', type: 'boolean'),
+              {..._field(id: 'route'), 'editor': 'model-provider'},
             ],
           },
         ]),
@@ -1532,6 +1533,7 @@ void main() {
         'mode',
         'count',
         'enabled',
+        'route',
       ]);
       expect(type.fields.first.description, 'Field\nprose');
       expect(type.fields.first.editor, RecordFieldEditor.markdown);
@@ -1549,6 +1551,8 @@ void main() {
       );
       expect((type.fields[2].type as IntegerSettingType).minimum, 1);
       expect((type.fields[2].type as IntegerSettingType).maximum, 3);
+      expect(type.fields.last.editor, RecordFieldEditor.modelProvider);
+      expect(type.fields.last.type, isA<StringSettingType>());
       expect(
         type.validate(ConfigurationRecordId('work'), {
           'text': '\n\u0000',
@@ -2116,6 +2120,7 @@ void main() {
       'String',
       'secret-text',
       'markdown',
+      'model-provider',
     ])
       'type $type': {..._field(), 'type': type},
     for (final required in <Object?>[null, 0, 'true', [], {}])
@@ -2133,17 +2138,20 @@ void main() {
       'plain',
       'Markdown',
       ' markdown',
+      'modelProvider',
+      'model-provider ',
     ])
       'editor ${jsonEncode(editor)}': {..._field(), 'editor': editor},
-    for (final type in ['boolean', 'integer', 'enum'])
-      'markdown editor on $type': {
-        ..._field(type: type),
-        if (type == 'enum')
-          'options': [
-            {'value': 'one'},
-          ],
-        'editor': 'markdown',
-      },
+    for (final editor in ['markdown', 'model-provider'])
+      for (final type in ['boolean', 'integer', 'enum'])
+        '$editor editor on $type': {
+          ..._field(type: type),
+          if (type == 'enum')
+            'options': [
+              {'value': 'one'},
+            ],
+          'editor': editor,
+        },
     for (final bound in ['minimum', 'maximum'])
       for (final value in <Object?>[null, false, '1', 1.0, [], {}])
         '$bound $value': {..._field(type: 'integer'), bound: value},

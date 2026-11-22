@@ -617,10 +617,11 @@ void main() {
       'maximum': 1,
     },
     'boolean bound': {..._definition(), 'minimum': 0},
-    'record editor on scalar setting': {
-      ..._definition(type: 'string', defaultValue: ''),
-      'editor': 'markdown',
-    },
+    for (final editor in ['markdown', 'model-provider'])
+      '$editor editor on scalar setting': {
+        ..._definition(type: 'string', defaultValue: ''),
+        'editor': editor,
+      },
     'string options': {
       ..._definition(type: 'string', defaultValue: ''),
       'options': <Object?>[],

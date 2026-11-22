@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/global_settings_service.dart';
+import 'package:adele_desktop/core/model_provider_choices.dart';
 import 'package:adele_desktop/core/record_apply_coordinator.dart';
 import 'package:adele_desktop/editor/native_rich_document_editor.dart';
 import 'package:adele_desktop/ui/settings/global_settings_dialog.dart';
@@ -27,6 +28,22 @@ final _collection = RecordCollectionId('jobs');
 final _job = RecordTypeId('dev.example.records.job');
 final _note = RecordTypeId('dev.example.records.note');
 const _preference = 'dev.example.records.message';
+const ModelProviderChoice _firstProvider = (
+  id: 'dev.example.inference.route-7',
+  displayName: 'Workspace provider',
+  pluginId: 'dev.example.local',
+);
+const ModelProviderChoice _secondProvider = (
+  id: 'dev.example.inference.account-42',
+  displayName: 'Workspace provider',
+  pluginId: 'dev.example.remote',
+);
+const _chooseProvider = 'Choose configured provider...';
+const _refreshProviders = 'Refresh providers';
+const _unknownProvider =
+    'This ID is not currently available for guided selection.';
+const _unavailableProviders = 'Provider discovery is temporarily unavailable.';
+const _emptyProviders = 'No configured providers are currently available.';
 
 void main() {
   late Directory temporary;
@@ -71,6 +88,7 @@ void main() {
     List<String> recordIssues = const [],
     GlobalSettingsService? settingsService,
     RecordApplication? application,
+    DiscoverModelProviders? modelProviders,
   }) async {
     await tester.binding.setSurfaceSize(const Size(1000, 1100));
     addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -84,6 +102,7 @@ void main() {
                 builder: (_) => GlobalSettingsDialog(
                   service: () async => settingsService ?? service,
                   recordApplication: () => application,
+                  modelProviders: modelProviders,
                   recordDeclarationIssues: () => recordIssues,
                 ),
               ),
@@ -841,7 +860,7 @@ void main() {
       final prepared = plugins.catalog!;
       // The absent expected backend blocks Run preparation, not record CRUD.
       expect(prepared.issues.single.isRunModelPreferenceSourceIssue, isTrue);
-      final settings = GlobalSettingsService(
+      final settings = _ControlledService(
         catalog: prepared.settings,
         records: prepared.records,
         roots: roots,
@@ -859,6 +878,8 @@ void main() {
         id: ConfigurationRecordId(id),
       );
       final row = '$collection-$id';
+      final creation = _key('record-creation-$collection');
+      final existing = _key('record-$row');
       final recordFile = File(
         '${roots.configurationRoot}/$collection/$id.toml',
       );
@@ -878,7 +899,12 @@ void main() {
         expect(application.recentDeletion(collection), isNull);
       }
 
-      await mount(tester, settingsService: settings, application: application);
+      await mount(
+        tester,
+        settingsService: settings,
+        application: application,
+        modelProviders: () => const [_firstProvider, _secondProvider],
+      );
       await _section(tester, 'Model Presets');
       await loaded();
       final empty = find.text('No readable records in this collection.');
@@ -892,7 +918,6 @@ void main() {
       final create = _key('record-create-$collection');
       for (final (field, label, value) in [
         ('name', 'Name', 'Code Review'),
-        ('provider-id', 'Provider ID', 'dev.adele.openai.api-key.work'),
         ('model-id', 'Model ID', 'review-model-v1'),
       ]) {
         expect(find.text('Include $label (required)'), findsOneWidget);
@@ -900,6 +925,22 @@ void main() {
         await _tap(tester, _key('record-presence-$collection-$field'));
         await _enter(tester, _key('record-input-$collection-$field'), value);
       }
+      expect(find.text('Include Provider ID (required)'), findsOneWidget);
+      expect(_enabled(tester, create), isFalse);
+      await _tap(tester, _key('record-presence-$collection-provider-id'));
+      final providerInput = _key('record-input-$collection-provider-id');
+      expect(_text(tester, providerInput), ''); // No default provider.
+      expect(_enabled(tester, create), isTrue); // Present empty is a string.
+      expect(_choiceRow(creation, _secondProvider), findsNothing);
+      await _tap(tester, find.text(_chooseProvider));
+      for (final choice in [_firstProvider, _secondProvider]) {
+        _expectChoice(tester, creation, choice, selected: false);
+      }
+      await _tap(tester, _choiceRow(creation, _secondProvider));
+      expect(_choiceRow(creation, _secondProvider), findsNothing);
+      expect(_text(tester, providerInput), _secondProvider.id);
+      expect(settings.creates, 0);
+      expect(Directory(roots.configurationRoot).existsSync(), isFalse);
       expect(find.text('Include Description (optional)'), findsOneWidget);
       expect(find.text('Include Reasoning Effort (optional)'), findsOneWidget);
       expect(_enabled(tester, create), isTrue);
@@ -907,18 +948,50 @@ void main() {
       await _tap(tester, find.text('Code Review'));
       await tester.pumpAndSettle();
       expect(find.text('Record type: $type'), findsOneWidget);
-      expect(
-        find.text('Provider ID: dev.adele.openai.api-key.work'),
-        findsOneWidget,
-      );
+      expect(find.text('Provider ID: ${_secondProvider.id}'), findsOneWidget);
       expect(find.text('Model ID: review-model-v1'), findsOneWidget);
       expect(find.text('Description: Not provided'), findsOneWidget);
       expect(find.text('Reasoning Effort: Not provided'), findsOneWidget);
       final original = recordFile.readAsStringSync();
+      expect(original, contains(_secondProvider.id));
+      expect(original, isNot(contains(_secondProvider.displayName)));
+      expect(original, isNot(contains(_secondProvider.pluginId)));
       expect(original, isNot(contains('reasoning-effort')));
       expectNoApplication();
 
+      await settings.createRecord(type, ConfigurationRecordId('sibling'), {
+        'name': 'Sibling',
+        'provider-id': _secondProvider.id,
+        'model-id': 'other-model',
+      });
+      final siblingFile = File('${recordFile.parent.path}/sibling.toml');
+      final siblingBytes = siblingFile.readAsBytesSync();
+      await submit(reload);
       await _tap(tester, edit);
+      final editingProvider = _key('record-input-$row-provider-id');
+      final known = find.text(
+        'Configured provider: ${_secondProvider.displayName}',
+      );
+      expect(known, findsOneWidget);
+      expect(_choiceRow(existing, _secondProvider), findsNothing);
+      await _tap(tester, find.text(_chooseProvider));
+      expect(
+        tester.widget<ListTile>(_choiceRow(existing, _secondProvider)).selected,
+        isTrue,
+      );
+      // A near match is still an opaque, unknown ID, even after a guided pick.
+      final manual = ' ${_secondProvider.id} ';
+      for (final nearMatch in [_secondProvider.id.toUpperCase(), manual]) {
+        await _enter(tester, editingProvider, nearMatch);
+        expect(find.text(_unknownProvider), findsOneWidget);
+        expect(known, findsNothing);
+        for (final choice in [_firstProvider, _secondProvider]) {
+          expect(
+            tester.widget<ListTile>(_choiceRow(existing, choice)).selected,
+            isFalse,
+          );
+        }
+      }
       final name = _key('record-input-$row-name');
       final effortPresence = _key('record-presence-$row-reasoning-effort');
       expect(tester.widget<CheckboxListTile>(effortPresence).value, isFalse);
@@ -933,10 +1006,10 @@ void main() {
       expect(name, findsNothing);
       expect(recordFile.readAsStringSync(), original);
       await _section(tester, 'Model Presets');
-      expect(
-        tester.widget<TextField>(name).controller!.text,
-        'Detailed Review',
-      );
+      expect(_text(tester, editingProvider), manual);
+      expect(find.text(_unknownProvider), findsOneWidget);
+      expect(_text(tester, name), 'Detailed Review');
+      expect(settings.updates, 0);
       await submit(save);
       expect(
         recordFile.readAsStringSync(),
@@ -945,11 +1018,14 @@ void main() {
       await submit(reload);
       expect(find.text('Detailed Review'), findsOneWidget);
       expect(find.text('Record ID: $id'), findsOneWidget);
+      expect(find.text('Provider ID: $manual'), findsOneWidget);
       expect(find.text('Description: Review pending changes.'), findsOneWidget);
       expect(find.text('Reasoning Effort: Not provided'), findsOneWidget);
-      expect(recordFile.parent.listSync().map((entry) => entry.path), [
-        recordFile.path,
-      ]);
+      expect(
+        recordFile.parent.listSync().map((entry) => entry.path),
+        unorderedEquals([recordFile.path, siblingFile.path]),
+      );
+      expect(siblingFile.readAsBytesSync(), siblingBytes);
       expectNoApplication();
 
       await _tap(tester, edit);
@@ -963,6 +1039,9 @@ void main() {
         ModelReasoningEffort.values.map((effort) => effort.name),
       );
       await _choose(tester, effort, 'None');
+      await _tap(tester, find.text(_chooseProvider));
+      await _tap(tester, _choiceRow(existing, _firstProvider));
+      expect(_text(tester, editingProvider), _firstProvider.id);
       await submit(save);
       expectNoApplication();
 
@@ -975,6 +1054,8 @@ void main() {
       );
       expect(find.text('Model ID: review-model-v1'), findsOneWidget);
       await submit(reload);
+      expect(find.text('Provider ID: ${_firstProvider.id}'), findsOneWidget);
+      expect(find.text('Description: Review pending changes.'), findsOneWidget);
       expect(find.text('Model ID: review-model-v2'), findsOneWidget);
       expect(find.text('Reasoning Effort: none'), findsOneWidget);
 
@@ -984,8 +1065,148 @@ void main() {
       expectNoApplication();
       await submit(reload);
       expect(_key('record-$row'), findsNothing);
-      expect(empty, findsOneWidget);
+      expect(find.text('Sibling'), findsOneWidget);
+      expect(siblingFile.readAsBytesSync(), siblingBytes);
       expect(File(settings.filePath).existsSync(), isFalse);
+      await unmount(tester);
+    }),
+    skip: !Platform.isLinux,
+  );
+
+  testWidgets(
+    'refresh observes new, replaced and retired choices without reloading or rewriting a hinted note',
+    (tester) => tester.runAsync(() async {
+      const id = 'routed';
+      await service.createRecord(_note, ConfigurationRecordId(id), {
+        'destination': _firstProvider.id,
+      });
+      final original = file(id).readAsBytesSync();
+      var choices = [_firstProvider];
+      await mount(tester, modelProviders: () => choices);
+      await openRecords(tester);
+      await _edit(tester, id);
+      final form = _key('record-jobs-$id');
+      final input = _editInput(id, 'destination');
+      final first = _choiceRow(form, _firstProvider);
+      final second = _choiceRow(form, _secondProvider);
+      expect(first, findsNothing);
+      expect(
+        find.text('Configured provider: ${_firstProvider.displayName}'),
+        findsOneWidget,
+      );
+      await _tap(tester, find.text(_chooseProvider));
+      expect(tester.widget<ListTile>(first).selected, isTrue);
+      expect(second, findsNothing);
+
+      final replacement = (
+        id: _firstProvider.id,
+        displayName: 'Replacement configuration',
+        pluginId: 'dev.example.replacement',
+      );
+      choices = [replacement, _secondProvider];
+      await _tap(tester, find.text(_refreshProviders));
+      _expectChoice(tester, form, replacement, selected: true);
+      expect(tester.widget<ListTile>(second).selected, isFalse);
+
+      choices = [_secondProvider];
+      await _tap(tester, find.text(_refreshProviders));
+      expect(first, findsNothing);
+      expect(tester.widget<ListTile>(second).selected, isFalse);
+      expect(find.text(_unknownProvider), findsOneWidget);
+      expect(_text(tester, input), _firstProvider.id);
+      await _tap(tester, second);
+      expect(_text(tester, input), _secondProvider.id);
+      // The newly selected provider can also retire before this draft is saved.
+      await _tap(tester, find.text(_chooseProvider));
+      choices = [];
+      await _tap(tester, find.text(_refreshProviders));
+      expect(second, findsNothing);
+      expect(find.text(_emptyProviders), findsOneWidget);
+      expect(_text(tester, input), _secondProvider.id);
+      expect(service.recordLoads, 1);
+      expect(service.updates, 0);
+      expect(file(id).readAsBytesSync(), original);
+
+      // Guided selection dirties the same draft that guards collection Reload.
+      final reload = _key('records-reload-jobs');
+      await _tap(tester, reload);
+      await _tap(tester, _key('records-reload-cancel-jobs'));
+      await _loaded(tester);
+      expect(_text(tester, input), _secondProvider.id);
+      await _tap(tester, reload);
+      await _tap(tester, _key('records-reload-confirm-jobs'));
+      await _loaded(tester);
+      expect(input, findsNothing);
+      await _tap(tester, _key('record-edit-jobs-$id'));
+      expect(_text(tester, input), _firstProvider.id);
+      expect(find.text(_emptyProviders), findsOneWidget);
+      expect(file(id).readAsBytesSync(), original);
+      await unmount(tester);
+    }),
+    skip: !Platform.isLinux,
+  );
+
+  testWidgets(
+    'empty and unavailable discovery allow exact manual values without exposing an error',
+    (tester) => tester.runAsync(() async {
+      const diagnostic = 'private-backend-diagnostic-42';
+      List<ModelProviderChoice>? choices;
+      var throwOnDiscovery = false;
+      await mount(
+        tester,
+        modelProviders: () {
+          if (throwOnDiscovery) throw StateError(diagnostic);
+          return choices;
+        },
+      );
+      await openRecords(tester);
+      await _tap(tester, _key('records-add-jobs'));
+      await _choose(tester, _key('record-type-jobs'), 'Note');
+      const id = 'manual';
+      await _enter(tester, _key('record-id-jobs'), id);
+      final input = _input('destination');
+      final createButton = _key('record-create-jobs');
+      expect(
+        tester.widget<CheckboxListTile>(_presence('destination')).value,
+        isFalse,
+      );
+      expect(_enabled(tester, createButton), isTrue);
+      expect(find.text(_chooseProvider), findsNothing);
+      await _include(tester, 'destination');
+      expect(_text(tester, input), '');
+      expect(find.text(_unavailableProviders), findsOneWidget);
+      await _tap(tester, find.text(_chooseProvider));
+
+      choices = [];
+      await _tap(tester, find.text(_refreshProviders));
+      expect(find.text(_emptyProviders), findsOneWidget);
+      expect(find.text(_unavailableProviders), findsNothing);
+      const manual = '  Mixed/Case\n Future ID  ';
+      await _enter(tester, input, manual);
+      expect(_enabled(tester, createButton), isTrue);
+      throwOnDiscovery = true;
+      await _tap(tester, find.text(_refreshProviders));
+      expect(find.text(_unavailableProviders), findsOneWidget);
+      expect(find.text(_emptyProviders), findsNothing);
+      expect(find.text(_unknownProvider), findsNothing);
+      expect(find.textContaining(diagnostic), findsNothing);
+      expect(tester.takeException(), isNull);
+      expect(_text(tester, input), manual);
+      expect(_enabled(tester, createButton), isTrue);
+      expect(service.creates, 0);
+      await create(tester);
+
+      final saved = file(id).readAsBytesSync();
+      await _edit(tester, id);
+      expect(_text(tester, _editInput(id, 'destination')), manual);
+      await _enter(tester, _editInput(id, 'destination'), 'Discard this');
+      await _tap(tester, _key('record-cancel-jobs-$id'));
+      expect(_editInput(id, 'destination'), findsNothing);
+      expect(file(id).readAsBytesSync(), saved);
+      expect(service.updates, 0);
+      expect((await service.loadRecords(_collection)).records.single.values, {
+        'destination': manual,
+      });
       await unmount(tester);
     }),
     skip: !Platform.isLinux,
@@ -2656,6 +2877,13 @@ RecordCatalog _catalog() {
       label: 'Note',
       fields: [
         field('display-name', 'Display Name', const StringSettingType()),
+        RecordFieldDefinition(
+          id: RecordFieldId('destination'),
+          label: 'Destination',
+          type: const StringSettingType(),
+          required: false,
+          editor: RecordFieldEditor.modelProvider,
+        ),
       ],
     ),
   ]);
@@ -2767,6 +2995,30 @@ final class _ControlledService extends GlobalSettingsService {
 }
 
 Finder _key(String value) => find.byKey(ValueKey(value));
+Finder _choiceRow(Finder form, ModelProviderChoice choice) =>
+    find.descendant(of: form, matching: _key('provider-choice-${choice.id}'));
+void _expectChoice(
+  WidgetTester tester,
+  Finder form,
+  ModelProviderChoice choice, {
+  required bool selected,
+}) {
+  final row = _choiceRow(form, choice);
+  expect(tester.widget<ListTile>(row).selected, selected);
+  expect(
+    find.descendant(of: row, matching: find.text(choice.displayName)),
+    findsOneWidget,
+  );
+  for (final detail in [choice.id, choice.pluginId]) {
+    expect(
+      find.descendant(of: row, matching: find.textContaining(detail)),
+      findsOneWidget,
+    );
+  }
+}
+
+String _text(WidgetTester tester, Finder input) =>
+    tester.widget<TextField>(input).controller!.text;
 Finder _input(String field) => _key('record-input-jobs-$field');
 Finder _presence(String field) => _key('record-presence-jobs-$field');
 Finder _editInput(String id, String field) =>

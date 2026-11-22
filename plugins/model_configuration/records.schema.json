@@ -26,6 +26,7 @@
           "label": "Provider ID",
           "description": "Stable ProviderId of one configured ModelProvider instance, not a vendor name or plugin ID.",
           "type": "string",
+          "editor": "model-provider",
           "required": true
         },
         {

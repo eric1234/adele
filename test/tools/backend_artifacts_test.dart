@@ -2196,6 +2196,13 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
       expect(preset.displayField?.value, 'name');
       expect(preset.credentialSlots, isEmpty);
       expect(
+        {
+          for (final field in preset.fields)
+            if (field.editor != null) field.id.value: field.editor,
+        },
+        {'provider-id': RecordFieldEditor.modelProvider},
+      );
+      expect(
         preset.fields.map(
           (field) => (field.id.value, field.label, field.required),
         ),

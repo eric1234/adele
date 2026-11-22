@@ -6,6 +6,7 @@ import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/credential_service.dart';
 import 'package:adele_desktop/core/global_settings_service.dart';
+import 'package:adele_desktop/core/model_provider_choices.dart';
 import 'package:adele_desktop/core/native_credential_storage_adapter.dart';
 import 'package:adele_desktop/core/prepared_settings.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
@@ -559,6 +560,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
       context: navigator.context,
       builder: (_) => GlobalSettingsDialog(
         service: _settingsService,
+        modelProviders: () => modelProviderChoices(_runtime.registry),
         recordApplication: () => _recordApplication,
         credentialAssociations: () => _credentialAssociations!,
         declarationIssues: () => [
