@@ -253,28 +253,35 @@ void main() {
     await mount(tester);
     await _tap(tester, _key('records-add-jobs'));
     await _choose(tester, _key('record-type-jobs'), 'Single credential');
-    await _enter(tester, _key('record-id-jobs'), 'created');
     await _tap(tester, _key('record-presence-jobs-caption'));
     await _enter(tester, _key('record-input-jobs-caption'), 'New account');
-    expect(_slot('created'), findsNothing);
+    expect(find.byType(RecordCredentialControls), findsNothing);
     await _tap(tester, _key('record-create-jobs'));
     await _loaded(tester);
-    await _expand(tester, 'created');
-    _expectStatus('created', _unchecked);
+    expect(find.text('Created New account.'), findsOneWidget);
+    await _tap(tester, find.text('New account'));
+    await tester.pumpAndSettle();
+    final id = tester
+        .widget<RecordCredentialControls>(find.byType(RecordCredentialControls))
+        .record
+        .id
+        .value;
+    _expectStatus(id, _unchecked);
     expect(storage.calls, isEmpty);
-    await check(tester, 'created');
-    await submit(tester, 'created', 'set');
-    _expectStatus('created', _stored);
-    final ref = reference('created')!;
+    await check(tester, id);
+    await submit(tester, id, 'set');
+    _expectStatus(id, _stored);
+    final ref = reference(id)!;
     _expectSecret(storage, ref, _firstSecret);
-    expect(file('created').readAsStringSync(), contains('New account'));
-    await _tap(tester, _key('record-edit-jobs-created'));
-    await _enter(tester, _editInput('created'), 'Renamed account');
-    await _tap(tester, _key('record-save-jobs-created'));
+    expect(file(id).readAsStringSync(), contains('New account'));
+    await _tap(tester, _key('record-edit-jobs-$id'));
+    await _enter(tester, _editInput(id), 'Renamed account');
+    await _tap(tester, _key('record-save-jobs-$id'));
     await _loaded(tester);
-    _expectStatus('created', _unchecked);
-    expect(reference('created'), ref);
-    expect(file('created').readAsStringSync(), contains('Renamed account'));
+    expect(find.text('Saved Renamed account.'), findsOneWidget);
+    _expectStatus(id, _unchecked);
+    expect(reference(id), ref);
+    expect(file(id).readAsStringSync(), contains('Renamed account'));
   });
 
   scenario(
@@ -1260,7 +1267,6 @@ void main() {
       final siblingCheck = _callback(tester, _action('check', 'sibling'));
       await _tap(tester, _key('records-add-jobs'));
       await _choose(tester, _key('record-type-jobs'), 'Single credential');
-      await _enter(tester, _key('record-id-jobs'), 'not-admitted');
       await _tap(tester, _key('record-presence-jobs-caption'));
       await _enter(tester, _key('record-input-jobs-caption'), 'Creation draft');
       final create = _callback(tester, _key('record-create-jobs'));
@@ -1301,7 +1307,10 @@ void main() {
           expect(_enabled(tester, finder), isFalse);
         }
         expect(file('sibling').readAsStringSync(), contains('Title sibling'));
-        expect(file('not-admitted').existsSync(), isFalse);
+        expect(
+          file('sibling').parent.listSync().map((entry) => entry.path),
+          unorderedEquals([file('sibling').path, file('pending').path]),
+        );
       } finally {
         gate.release();
       }

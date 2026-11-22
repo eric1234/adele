@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math';
 
 import 'package:adele_configuration_store/adele_configuration_store.dart';
 import 'package:adele_settings/adele_settings.dart';
@@ -72,7 +73,8 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
   bool _busy = false;
   bool _confirming = false;
   bool _requiresReload = false;
-  bool _creationRequiresReload = false;
+  _RecordDraft? _blockedCreation;
+  bool get _creationRequiresReload => _blockedCreation != null;
   bool _adding = false;
   int _formRevision = 0;
   String? _error;
@@ -166,7 +168,8 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
         _diagnostics = view.diagnostics;
         _loaded = true;
         _requiresReload = false;
-        _creationRequiresReload = false;
+        _blockedCreation?.reconciled = true;
+        _blockedCreation = null;
         _creationError = null;
         _message = null;
       });
@@ -188,25 +191,28 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
     }
   }
 
-  Future<void> _create(
-    _RecordDraft draft,
-    ConfigurationRecordId id,
-    Map<String, Object> values,
-  ) async {
+  bool _creationCurrent(_RecordDraft draft) =>
+      _enabled &&
+      widget.active &&
+      !_creationRequiresReload &&
+      _adding &&
+      identical(_creationDrafts[_type], draft);
+
+  bool _listed(ConfigurationRecordId id) =>
+      _records.any((r) => r.id == id) ||
+      _diagnostics.any((d) => d.recordId == id);
+
+  Future<void> _create(_RecordDraft draft, Map<String, Object> values) async {
     final definition = draft.definition;
-    if (!_enabled ||
-        _creationRequiresReload ||
-        !_adding ||
-        definition.id != _type ||
-        !identical(_creationDrafts[definition.id], draft)) {
-      return;
-    }
+    final id = draft.id;
+    if (!_creationCurrent(draft)) return;
     // Do not replace a displayed identity (and its draft) through Create even
     // when an external deletion has made the file available again.
-    if (_records.any((record) => record.id == id)) {
+    if (_listed(id)) {
+      if (draft.reconciled) return;
       setState(() {
         _formRevision++;
-        _creationRequiresReload = true;
+        _blockedCreation = draft;
         _creationError =
             'Not created: this record ID is already in the loaded collection. '
             'Reload to reconcile current records before creating again. '
@@ -230,7 +236,7 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
     } on ConfigurationConflictException catch (error) {
       if (!mounted) return;
       setState(() {
-        _creationRequiresReload = true;
+        _blockedCreation = draft;
         _creationError =
             'Not created: the record ID is already occupied or changed on disk. '
             'No existing file was overwritten. Reload before creating again.\n$error';
@@ -251,7 +257,7 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
       ));
       if (!mounted) return;
       setState(() {
-        _creationRequiresReload = true;
+        _blockedCreation = draft;
         _creationError =
             'Could not confirm creation. Your draft is retained. '
             'Reload to check persisted records before creating again.\n$error';
@@ -269,7 +275,8 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
       // The returned handle is usable; a collection read would revoke siblings.
       _records = [..._records, saved]
         ..sort((a, b) => a.id.value.compareTo(b.id.value));
-      _message = 'Created ${saved.id}.';
+      _message =
+          'Created ${_displayName(saved, definition) ?? definition.label}.';
       _adding = false;
       _creationDrafts[definition.id] = _RecordDraft(definition);
       draft.dispose();
@@ -409,7 +416,9 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
     setState(() {
       _replaceRecord(record, deleting ? null : acknowledged);
       _drafts.remove(record.id)?.dispose();
-      _message = '${deleting ? 'Deleted' : 'Saved'} ${record.id}.';
+      final definition = widget.service.records.definition(record.type);
+      final name = _displayName(acknowledged!, definition) ?? definition.label;
+      _message = '${deleting ? 'Deleted' : 'Saved'} $name.';
     });
   }
 
@@ -797,7 +806,9 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 if (record == null)
-                  Text('Deleted record: ${key.id}')
+                  Text(
+                    'Deleted record: ${widget.service.records.definition(key.type).label}',
+                  )
                 else if (outcome != null)
                   const Text('Saved configuration'),
                 Text(switch (status) {
@@ -849,15 +860,46 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
 
   Widget _creationForm(RecordTypeDefinition type, bool enabled) {
     final draft = _creationDrafts[type.id]!;
-    return _RecordForm(
-      draft: draft,
-      modelProviders: widget.modelProviders,
-      discoverModels: widget.discoverModels,
-      catalogScope: _catalogScope,
-      active: widget.active && _adding && type.id == _type,
-      enabled: enabled && _adding && type.id == _type,
-      onChanged: () => setState(() {}),
-      onSubmit: (id, values) => _create(draft, id, values),
+    final reconciled =
+        draft.reconciled && !_creationRequiresReload && !_requiresReload;
+    final occupied = reconciled && _listed(draft.id);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (reconciled) ...[
+          Text(
+            occupied
+                ? 'Reload found an entry with this Record ID. Inspect the collection before starting a new draft.'
+                : 'Reload finished. Inspect the collection before retrying this draft or starting another.',
+          ),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton(
+              onPressed: enabled
+                  ? () {
+                      if (!_creationCurrent(draft)) return;
+                      setState(() {
+                        _formRevision++;
+                        _creationDrafts[type.id] = _RecordDraft(type);
+                        draft.dispose();
+                      });
+                    }
+                  : null,
+              child: const Text('Discard and start new draft'),
+            ),
+          ),
+        ],
+        _RecordForm(
+          draft: draft,
+          modelProviders: widget.modelProviders,
+          discoverModels: widget.discoverModels,
+          catalogScope: _catalogScope,
+          active: widget.active && _adding && type.id == _type,
+          enabled: enabled && _adding && type.id == _type,
+          onChanged: () => setState(() {}),
+          onSubmit: occupied ? null : (values) => _create(draft, values),
+        ),
+      ],
     );
   }
 
@@ -902,7 +944,7 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
               active: widget.active && expanded,
               enabled: enabled,
               onChanged: () => setState(() {}),
-              onSubmit: (_, values) =>
+              onSubmit: (values) =>
                   _mutate(record, draft: draft, values: values),
               onCancel: _busy ? null : () => _cancel(record, draft),
             ),
@@ -911,7 +953,7 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
 }
 
 final class _RecordDraft {
-  _RecordDraft(this.definition, {this.record}) {
+  _RecordDraft(this.definition, {this.record}) : id = record?.id ?? _newId() {
     for (final field in definition.fields) {
       final value = record?.values[field.id.value];
       if (record?.values.containsKey(field.id.value) ?? false) {
@@ -930,7 +972,8 @@ final class _RecordDraft {
 
   final RecordTypeDefinition definition;
   final RecordView? record;
-  final id = TextEditingController();
+  final ConfigurationRecordId id;
+  bool reconciled = false;
   final present = <RecordFieldId>{};
   final presenceRevisions = <RecordFieldId, int>{};
   final values = <RecordFieldId, Object?>{};
@@ -959,32 +1002,40 @@ final class _RecordDraft {
     return values[field.id] != value;
   });
 
-  Map<String, Object> validate(ConfigurationRecordId recordId) =>
-      definition.validate(recordId, {
-        for (final field in definition.fields)
-          if (present.contains(field.id))
-            field.id.value: markdown.containsKey(field.id)
-                ? _snapshot(recordId, field.id)
-                : field.type is StringSettingType
-                ? text[field.id]!.text
-                : values[field.id],
-      });
+  static ConfigurationRecordId _newId() {
+    final random = Random.secure();
+    final hex = List.generate(
+      16,
+      (_) => random.nextInt(256).toRadixString(16).padLeft(2, '0'),
+    ).join();
+    return ConfigurationRecordId('r-$hex');
+  }
 
-  String _snapshot(ConfigurationRecordId recordId, RecordFieldId fieldId) {
+  Map<String, Object> validate() => definition.validate(id, {
+    for (final field in definition.fields)
+      if (present.contains(field.id))
+        field.id.value: markdown.containsKey(field.id)
+            ? _snapshot(field.id)
+            : field.type is StringSettingType
+            ? text[field.id]!.text
+            : values[field.id],
+  });
+
+  String _snapshot(RecordFieldId fieldId) {
     final editor = markdown[fieldId]!;
     try {
       final snapshot = editor.snapshot();
       if (snapshot['markdown'] case final String current) return current;
       throw InvalidRecordValue(
         definition.collection,
-        recordId,
+        id,
         fieldId,
         'Finish composing text before saving.',
       );
     } on FormatException catch (error) {
       throw InvalidRecordValue(
         definition.collection,
-        recordId,
+        id,
         fieldId,
         'Cannot save this Markdown: ${error.message} Edit it or use Undo.',
       );
@@ -993,7 +1044,6 @@ final class _RecordDraft {
 
   void dispose() {
     disposed = true;
-    id.dispose();
     for (final controller in text.values) {
       controller.dispose();
     }
@@ -1024,7 +1074,7 @@ final class _RecordForm extends StatelessWidget {
   final bool active;
   final bool enabled;
   final VoidCallback onChanged;
-  final void Function(ConfigurationRecordId, Map<String, Object>) onSubmit;
+  final ValueChanged<Map<String, Object>>? onSubmit;
   final VoidCallback? onCancel;
 
   @override
@@ -1047,15 +1097,10 @@ final class _RecordForm extends StatelessWidget {
     final record = draft.record;
     final suffix =
         '${definition.collection}${record == null ? '' : '-${record.id}'}';
-    ConfigurationRecordId? id;
     Map<String, Object>? validated;
-    String? idError;
     InvalidRecordValue? fieldError;
     try {
-      id = record?.id ?? ConfigurationRecordId(draft.id.text);
-      validated = draft.validate(id);
-    } on FormatException catch (error) {
-      if (draft.id.text.isNotEmpty) idError = error.message;
+      validated = draft.validate();
     } on InvalidRecordValue catch (error) {
       fieldError = error;
     }
@@ -1064,20 +1109,6 @@ final class _RecordForm extends StatelessWidget {
       children: [
         Text(definition.label),
         if (definition.description case final description?) Text(description),
-        if (record == null)
-          TextField(
-            key: ValueKey('record-id-$suffix'),
-            controller: draft.id,
-            enabled: enabled,
-            decoration: InputDecoration(
-              labelText: 'Record ID',
-              helperText:
-                  'Stable identity within this collection, not a display name.',
-              helperMaxLines: 3,
-              errorText: idError,
-            ),
-            onChanged: (_) => onChanged(),
-          ),
         const Padding(
           padding: EdgeInsets.symmetric(vertical: 8),
           child: Text(
@@ -1185,16 +1216,12 @@ final class _RecordForm extends StatelessWidget {
               key: ValueKey(
                 'record-${record == null ? 'create' : 'save'}-$suffix',
               ),
-              onPressed: enabled && validated != null
+              onPressed: enabled && validated != null && onSubmit != null
                   ? () {
                       if (draft.disposed) return;
                       // Revalidate current controls rather than stale build values.
                       try {
-                        final currentId =
-                            record?.id ?? ConfigurationRecordId(draft.id.text);
-                        onSubmit(currentId, draft.validate(currentId));
-                      } on FormatException catch (_) {
-                        onChanged();
+                        onSubmit!(draft.validate());
                       } on InvalidRecordValue catch (_) {
                         onChanged();
                       }
@@ -1210,6 +1237,11 @@ final class _RecordForm extends StatelessWidget {
               ),
           ],
         ),
+        if (record == null)
+          ExpansionTile(
+            title: const Text('Advanced details'),
+            children: [_RecordIdentity(draft.id)],
+          ),
       ],
     );
   }
@@ -1289,7 +1321,7 @@ final class _RecordDetailsState extends State<_RecordDetails> {
         widget.onExpansionChanged();
       },
       title: Text(_recordTitle(record, definition)),
-      subtitle: Text('${definition.label} | ${record.id}'),
+      subtitle: Text(definition.label),
       childrenPadding: const EdgeInsets.all(16),
       expandedCrossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -1299,7 +1331,7 @@ final class _RecordDetailsState extends State<_RecordDetails> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               SelectableText('Collection: ${record.collection}'),
-              SelectableText('Record ID: ${record.id}'),
+              _RecordIdentity(record.id),
               SelectableText('Record type: ${record.type}'),
               if (widget.error case final error?) _diagnostic(context, error),
               if (widget.editor case final editor?)
@@ -1375,11 +1407,30 @@ void _saved(
   }
 }
 
-String _recordTitle(RecordView record, RecordTypeDefinition definition) {
+final class _RecordIdentity extends StatelessWidget {
+  const _RecordIdentity(this.id);
+
+  final ConfigurationRecordId id;
+
+  @override
+  Widget build(BuildContext context) => Row(
+    children: [
+      Expanded(child: SelectableText('Record ID: $id')),
+      IconButton(
+        tooltip: 'Copy record ID',
+        icon: const Icon(Icons.copy),
+        onPressed: () => Clipboard.setData(ClipboardData(text: id.value)),
+      ),
+    ],
+  );
+}
+
+String _recordTitle(RecordView record, RecordTypeDefinition definition) =>
+    _displayName(record, definition) ?? record.id.value;
+
+String? _displayName(RecordView record, RecordTypeDefinition definition) {
   final display = record.values[definition.displayField?.value];
-  return display is String && display.trim().isNotEmpty
-      ? display
-      : record.id.value;
+  return display is String && display.trim().isNotEmpty ? display : null;
 }
 
 Future<bool> _confirm(

@@ -17,13 +17,14 @@ In Global Settings, edit instructions with the native rich Markdown editor;
 the other three fields use ordinary text controls. All fields are strings. The
 editor hint does not change how instructions are stored or returned by the
 catalog. Required means present, not nonblank. Optional
-absence remains distinct from an explicitly empty string. The immutable record
-ID is separate from the editable name; renaming does not change identity.
+absence remains distinct from an explicitly empty string. **Add** generates the
+Agent's immutable record ID; enter a name, not an ID. To copy the ID, open
+**Advanced details** in Add or expand the saved Agent's details.
 
 These are ordinary global configuration records managed by the existing generic
 Global Settings UI and host persistence. See the
-[configuration architecture](../../docs/architecture/profiles-and-configuration.md#declarative-configuration-records)
-for identity, persistence, validation, and editing semantics. No custom editor,
+[record editing guide](../../docs/architecture/profiles-and-configuration.md#creating-and-editing-records)
+for draft retention and recovery. No custom editor,
 configuration scope, or persistence format is supplied here.
 
 ## Reading definitions

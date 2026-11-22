@@ -84,6 +84,7 @@ import '../../tool/tool_inspection_frontend_compiler.dart';
 import '../support/agent_selector_installation.dart';
 import '../support/git_worktree_fixture.dart';
 import '../support/markdown_paste_fixture.dart';
+import '../support/record_draft_id.dart';
 import '../support/session_accessory_frontend_fixture.dart';
 
 const _gitPluginId = 'dev.adele.plugin.git';
@@ -574,7 +575,7 @@ void main() {
         }
         final savedRecord = await _seedProviderRecord(fixture);
         final savedRecordBytes = await savedRecord.readAsBytes();
-        await _providerRecordDraft(tester, 'work-openai', 'Work OpenAI draft');
+        final draftId = await _providerRecordDraft(tester, 'Work OpenAI draft');
         await _providerRecordEditDraft(tester);
         final recordInputs = [
           for (final key in [
@@ -625,9 +626,10 @@ void main() {
         expect(settingsRoute.isCurrent, isTrue);
         expect(await savedRecord.readAsBytes(), savedRecordBytes);
         expect(
-          await File('${savedRecord.parent.path}/work-openai.toml').exists(),
+          await File('${savedRecord.parent.path}/$draftId.toml').exists(),
           isFalse,
         );
+        expect(await inspectDraftId(tester), draftId);
         retainedAcrossSettings();
         await _terminalTap(tester, find.byTooltip('Close Settings'));
         expect(find.byType(GlobalSettingsDialog), findsNothing);
@@ -1079,11 +1081,11 @@ void main() {
         final foldingElement = tester.element(folding);
         final savedRecord = await _seedProviderRecord(fixture);
         final savedRecordBytes = await savedRecord.readAsBytes();
-        await _providerRecordDraft(tester, 'work-openai', 'Work OpenAI draft');
+        final draftId = await _providerRecordDraft(tester, 'Work OpenAI draft');
+        final unsavedIds = [draftId];
         await _providerRecordEditDraft(tester);
         final recordInputs = [
           for (final key in [
-            'record-id-providers',
             'record-input-providers-display-name',
             'record-input-providers-saved-openai-display-name',
           ])
@@ -1104,7 +1106,6 @@ void main() {
             ),
         ];
         expect(recordDrafts.map((draft) => draft.controller.text), [
-          'work-openai',
           'Work OpenAI draft',
           'Saved OpenAI draft',
         ]);
@@ -1117,10 +1118,12 @@ void main() {
         Future<void> expectUnchangedSettings() async {
           expect(await settingsFile.exists(), isFalse);
           expect(await savedRecord.readAsBytes(), savedRecordBytes);
-          expect(
-            await File('${savedRecord.parent.path}/work-openai.toml').exists(),
-            isFalse,
-          );
+          for (final id in unsavedIds) {
+            expect(
+              await File('${savedRecord.parent.path}/$id.toml').exists(),
+              isFalse,
+            );
+          }
         }
 
         await expectUnchangedSettings();
@@ -1141,10 +1144,7 @@ void main() {
           expect(searchController.value, searchValue);
           expect(tester.element(folding), same(foldingElement));
           expect(tester.widget<Switch>(folding).value, isTrue);
-          expect(
-            find.byKey(const ValueKey('record-id-providers')),
-            findsOneWidget,
-          );
+          expect(find.text('Advanced details'), findsOneWidget);
           for (final key in [
             'record-presence-providers-display-name',
             'record-presence-providers-saved-openai-display-name',
@@ -1250,14 +1250,12 @@ void main() {
 
         // Cancellation leaves the original Settings editors usable, not restored
         // from persisted values in a replacement dialog.
-        await tester.enterText(
-          find.byKey(const ValueKey('record-id-providers')),
-          'personal-openai',
+        expect(await inspectDraftId(tester), draftId);
+        final newName = find.byKey(
+          const ValueKey('record-input-providers-display-name'),
         );
-        await tester.enterText(
-          find.byKey(const ValueKey('record-id-providers')),
-          'work-openai',
-        );
+        await tester.enterText(newName, 'Still editable after exit Cancel');
+        await tester.enterText(newName, 'Work OpenAI draft');
         final existingName = find.byKey(
           const ValueKey('record-input-providers-saved-openai-display-name'),
         );
@@ -1348,7 +1346,12 @@ void main() {
         await openSettings();
         await tester.enterText(search, 'folding');
         await _terminalTap(tester, folding);
-        await _providerRecordDraft(tester, 'work-openai', 'Work OpenAI draft');
+        final freshDraftId = await _providerRecordDraft(
+          tester,
+          'Work OpenAI draft',
+        );
+        expect(freshDraftId, isNot(draftId));
+        unsavedIds.add(freshDraftId);
         await _providerRecordEditDraft(tester);
         final acceptedRecordController = tester
             .widget<TextField>(existingName)
@@ -9109,11 +9112,7 @@ Future<void> _providerRecordEditDraft(WidgetTester tester) async {
   await tester.pump();
 }
 
-Future<void> _providerRecordDraft(
-  WidgetTester tester,
-  String id,
-  String name,
-) async {
+Future<String> _providerRecordDraft(WidgetTester tester, String name) async {
   await _settingsSection(tester, 'Providers');
   final add = find.byKey(const ValueKey('records-add-providers'));
   await _terminalUntil(
@@ -9124,7 +9123,6 @@ Future<void> _providerRecordDraft(
     'record collection is ready for creation',
   );
   await _terminalTap(tester, add);
-  await tester.enterText(find.byKey(const ValueKey('record-id-providers')), id);
   await _terminalTap(
     tester,
     find.byKey(const ValueKey('record-presence-providers-display-name')),
@@ -9134,6 +9132,7 @@ Future<void> _providerRecordDraft(
     name,
   );
   await tester.pump();
+  return inspectDraftId(tester);
 }
 
 Future<void> _newTerminal(WidgetTester tester) async {
