@@ -57,9 +57,18 @@ The entrypoint reports only the validated record ID and fixed rejection code
 (`openai_record_invalid_values` or `openai_record_invalid_configuration`), never the
 supplied endpoint, ordinary values or raw exception.
 
-In **Global Settings > Providers**, use **Add** to create an OpenAI API record.
-Enter a display name; Settings generates the record ID. To copy the ID, open
-**Advanced details** in Add or expand the saved record's details. See the
+In **Global Settings > Providers**, choose **Add**. If a type choice appears,
+select **OpenAI API**. Enter a nonblank **Name** directly. Leave **Include API
+endpoint (optional)** unchecked for the default Responses endpoint; select it
+only to enter a custom Responses URL. An included empty URL is not the default.
+Choose **Create**, expand the saved record and select **Check credential status**
+for its **API key** slot.
+Use **Set credential** and then **Store credential** to attach the key. Check
+the runtime application result; storing the key does not authenticate the account
+or select it for a Session.
+
+Settings generates the record ID. To copy it, open **Advanced details** in Add
+or expand the saved record's details. See the
 [record editing guide](../../../../docs/architecture/profiles-and-configuration.md#creating-and-editing-records).
 The plugin derives the inference `ProviderId` as `dev.adele.openai.api-key.<record-id>`,
 independent of the display name, endpoint, key, credential reference or backend generation.

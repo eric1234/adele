@@ -151,6 +151,9 @@ final class RecordFieldDefinition<T extends Object> {
 
   /// For [RecordFieldEditor.modelCatalog], the sibling model-provider field ID.
   final RecordFieldId? providerField;
+
+  /// Validation feedback for a present value, independent of field inclusion.
+  String? valueError(Object? value) => type._violation(value);
 }
 
 /// Credential shape metadata, not an ordinary setting value type.
@@ -283,7 +286,7 @@ final class RecordTypeDefinition {
         continue;
       }
       final value = values[field.id.value];
-      final violation = field.type._violation(value);
+      final violation = field.valueError(value);
       if (violation != null) {
         throw InvalidRecordValue(collection, recordId, field.id, violation);
       }

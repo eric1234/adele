@@ -419,12 +419,10 @@ Collection views list valid records in stable ID order, show declared display ti
 declared fields; the panel generates the record ID. Expand **Advanced details** to
 copy it, or expand a saved record's details to copy its immutable ID. See
 [creating and editing records](../docs/architecture/profiles-and-configuration.md#creating-and-editing-records)
-for per-type draft retention and recovery after an unconfirmed Create.
-Creation and editing share declaration-generated field controls, explicit
-presence handling, and `RecordTypeDefinition.validate`; the worker and host adapter
-validate again before persistence. Absent fields remain distinct from false, zero,
-and empty strings, with no inferred defaults. Edits preserve unknown data and comments
-within the native document API's limits.
+for required inputs, optional field inclusion and recovery after an unconfirmed
+Create. Creation and editing share `RecordTypeDefinition.validate`; the worker
+and host adapter validate again before persistence. Edits preserve unknown data
+and comments within the native document API's limits.
 
 For a string field declared with `editor: "markdown"`, the draft owns a
 [native rich-document editor](#native-rich-document-editor). Hiding the form

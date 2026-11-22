@@ -253,7 +253,6 @@ void main() {
     await mount(tester);
     await _tap(tester, _key('records-add-jobs'));
     await _choose(tester, _key('record-type-jobs'), 'Single credential');
-    await _tap(tester, _key('record-presence-jobs-caption'));
     await _enter(tester, _key('record-input-jobs-caption'), 'New account');
     expect(find.byType(RecordCredentialControls), findsNothing);
     await _tap(tester, _key('record-create-jobs'));
@@ -1267,7 +1266,6 @@ void main() {
       final siblingCheck = _callback(tester, _action('check', 'sibling'));
       await _tap(tester, _key('records-add-jobs'));
       await _choose(tester, _key('record-type-jobs'), 'Single credential');
-      await _tap(tester, _key('record-presence-jobs-caption'));
       await _enter(tester, _key('record-input-jobs-caption'), 'Creation draft');
       final create = _callback(tester, _key('record-create-jobs'));
       await _tap(tester, _action('set', 'pending'));

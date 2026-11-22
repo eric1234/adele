@@ -504,8 +504,9 @@ void main() {
       const name = 'Offline review';
       final values = {..._values, 'name': name};
       for (final field in values.entries) {
-        await press(key('record-presence-$collection-${field.key}'));
+        expect(key('record-presence-$collection-${field.key}'), findsNothing);
         final input = key('record-input-$collection-${field.key}');
+        expect(tester.widget<TextField>(input).enabled, isTrue);
         await tester.ensureVisible(input);
         await tester.enterText(input, field.value);
         await tester.pump();

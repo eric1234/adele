@@ -99,8 +99,7 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
 
   // A hidden form may become visible again before Flutter rebuilds it. Fence
   // the old controls at navigation / operation admission, not at disposal.
-  (int?, int) _catalogScope() =>
-      (widget.sectionRevision?.call(), _formRevision);
+  (int?, int) _formScope() => (widget.sectionRevision?.call(), _formRevision);
 
   void _beginOperation() {
     _formRevision++;
@@ -893,7 +892,7 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
           draft: draft,
           modelProviders: widget.modelProviders,
           discoverModels: widget.discoverModels,
-          catalogScope: _catalogScope,
+          formScope: _formScope,
           active: widget.active && _adding && type.id == _type,
           enabled: enabled && _adding && type.id == _type,
           onChanged: () => setState(() {}),
@@ -940,7 +939,7 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
               draft: draft,
               modelProviders: widget.modelProviders,
               discoverModels: widget.discoverModels,
-              catalogScope: _catalogScope,
+              formScope: _formScope,
               active: widget.active && expanded,
               enabled: enabled,
               onChanged: () => setState(() {}),
@@ -956,15 +955,17 @@ final class _RecordDraft {
   _RecordDraft(this.definition, {this.record}) : id = record?.id ?? _newId() {
     for (final field in definition.fields) {
       final value = record?.values[field.id.value];
-      if (record?.values.containsKey(field.id.value) ?? false) {
-        present.add(field.id);
+      if (!field.required && value != null) {
+        _includedOptional.add(field.id);
       }
       if (field.editor == RecordFieldEditor.markdown) {
         markdown[field.id] = NativeRichDocumentEditor(
           markdown: value as String? ?? '',
         );
       } else {
-        if (field.type is! StringSettingType) values[field.id] = value;
+        if (field.type is BooleanSettingType || field.type is EnumSettingType) {
+          selections[field.id] = value;
+        }
         text[field.id] = TextEditingController(text: value?.toString() ?? '');
       }
     }
@@ -974,17 +975,29 @@ final class _RecordDraft {
   final RecordView? record;
   final ConfigurationRecordId id;
   bool reconciled = false;
-  final present = <RecordFieldId>{};
+  final _includedOptional = <RecordFieldId>{};
   final presenceRevisions = <RecordFieldId, int>{};
-  final values = <RecordFieldId, Object?>{};
+  final selections = <RecordFieldId, Object?>{};
   final text = <RecordFieldId, TextEditingController>{};
   final markdown = <RecordFieldId, NativeRichDocumentEditor>{};
   late final markdownChanges = Listenable.merge(markdown.values.toList());
   bool disposed = false;
 
+  bool isIncluded(RecordFieldDefinition<Object> field) =>
+      field.required || _includedOptional.contains(field.id);
+
+  void setOptionalIncluded(RecordFieldDefinition<Object> field, bool included) {
+    assert(!field.required);
+    if (included
+        ? _includedOptional.add(field.id)
+        : _includedOptional.remove(field.id)) {
+      presenceRevisions.update(field.id, (n) => n + 1, ifAbsent: () => 1);
+    }
+  }
+
   bool get dirty => definition.fields.any((field) {
     final before = record!.values;
-    if (present.contains(field.id) != before.containsKey(field.id.value)) {
+    if (isIncluded(field) != before.containsKey(field.id.value)) {
       return true;
     }
     final value = before[field.id.value];
@@ -999,7 +1012,7 @@ final class _RecordDraft {
     if (field.type is StringSettingType || field.type is IntegerSettingType) {
       return text[field.id]!.text != (value?.toString() ?? '');
     }
-    return values[field.id] != value;
+    return selections[field.id] != value;
   });
 
   static ConfigurationRecordId _newId() {
@@ -1011,14 +1024,26 @@ final class _RecordDraft {
     return ConfigurationRecordId('r-$hex');
   }
 
+  Object? _value(RecordFieldDefinition<Object> field) => switch (field.type) {
+    StringSettingType() when markdown.containsKey(field.id) => _snapshot(
+      field.id,
+    ),
+    StringSettingType() => text[field.id]!.text,
+    IntegerSettingType() => int.tryParse(text[field.id]!.text, radix: 10),
+    BooleanSettingType() || EnumSettingType() => selections[field.id],
+  };
+
+  String? _fieldError(RecordFieldDefinition<Object> field) {
+    try {
+      return field.valueError(_value(field));
+    } on InvalidRecordValue catch (error) {
+      return error.message;
+    }
+  }
+
   Map<String, Object> validate() => definition.validate(id, {
     for (final field in definition.fields)
-      if (present.contains(field.id))
-        field.id.value: markdown.containsKey(field.id)
-            ? _snapshot(field.id)
-            : field.type is StringSettingType
-            ? text[field.id]!.text
-            : values[field.id],
+      if (isIncluded(field)) field.id.value: _value(field),
   });
 
   String _snapshot(RecordFieldId fieldId) {
@@ -1059,7 +1084,7 @@ final class _RecordForm extends StatelessWidget {
     required this.draft,
     required this.modelProviders,
     required this.discoverModels,
-    required this.catalogScope,
+    required this.formScope,
     required this.active,
     required this.enabled,
     required this.onChanged,
@@ -1070,7 +1095,7 @@ final class _RecordForm extends StatelessWidget {
   final _RecordDraft draft;
   final DiscoverModelProviders? modelProviders;
   final DiscoverModels? discoverModels;
-  final (int?, int) Function() catalogScope;
+  final (int?, int) Function() formScope;
   final bool active;
   final bool enabled;
   final VoidCallback onChanged;
@@ -1080,9 +1105,9 @@ final class _RecordForm extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (draft.markdown.isEmpty) return _controls(context);
-    for (final entry in draft.markdown.entries) {
-      entry.value.setEditingEnabled(
-        active && enabled && draft.present.contains(entry.key),
+    for (final field in draft.definition.fields) {
+      draft.markdown[field.id]?.setEditingEnabled(
+        active && enabled && draft.isIncluded(field),
       );
     }
     // Composition completion can make Save safe without a document change.
@@ -1097,73 +1122,49 @@ final class _RecordForm extends StatelessWidget {
     final record = draft.record;
     final suffix =
         '${definition.collection}${record == null ? '' : '-${record.id}'}';
-    Map<String, Object>? validated;
-    InvalidRecordValue? fieldError;
-    try {
-      validated = draft.validate();
-    } on InvalidRecordValue catch (error) {
-      fieldError = error;
-    }
+    final errors = {
+      for (final field in definition.fields)
+        if (draft.isIncluded(field)) field.id: ?draft._fieldError(field),
+    };
+    final scope = formScope();
+    final route = ModalRoute.of(context);
+    bool current() =>
+        active &&
+        !draft.disposed &&
+        (route?.isActive ?? true) &&
+        formScope() == scope;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Text(definition.label),
         if (definition.description case final description?) Text(description),
-        const Padding(
-          padding: EdgeInsets.symmetric(vertical: 8),
-          child: Text(
-            'Include each value explicitly. Required fields must be included; '
-            'false, zero and empty strings are values, not absence.',
-          ),
-        ),
         for (final field in definition.fields) ...[
-          CheckboxListTile(
-            key: ValueKey('record-presence-$suffix-${field.id}'),
-            contentPadding: EdgeInsets.zero,
-            controlAffinity: ListTileControlAffinity.leading,
-            title: Text(
-              'Include ${field.label} (${field.required ? 'required' : 'optional'})',
+          if (!field.required)
+            CheckboxListTile(
+              key: ValueKey('record-presence-$suffix-${field.id}'),
+              contentPadding: EdgeInsets.zero,
+              controlAffinity: ListTileControlAffinity.leading,
+              title: Text('Include ${field.label} (optional)'),
+              subtitle: field.description == null
+                  ? null
+                  : Text(field.description!),
+              value: draft.isIncluded(field),
+              onChanged: active && enabled
+                  ? (present) {
+                      if (!current()) return;
+                      draft.setOptionalIncluded(field, present == true);
+                      onChanged();
+                    }
+                  : null,
             ),
-            subtitle: field.description == null
-                ? null
-                : Text(field.description!),
-            value: draft.present.contains(field.id),
-            onChanged: enabled
-                ? (present) {
-                    if (draft.disposed ||
-                        draft.present.contains(field.id) == (present == true)) {
-                      return;
-                    }
-                    draft.presenceRevisions.update(
-                      field.id,
-                      (n) => n + 1,
-                      ifAbsent: () => 1,
-                    );
-                    if (present == true) {
-                      draft.present.add(field.id);
-                      if (field.type is IntegerSettingType) {
-                        draft.values[field.id] = int.tryParse(
-                          draft.text[field.id]!.text,
-                          radix: 10,
-                        );
-                      }
-                    } else {
-                      draft.present.remove(field.id);
-                    }
-                    onChanged();
-                  }
-                : null,
-          ),
           if (draft.markdown[field.id] case final editor?)
             InputDecorator(
               key: ValueKey('record-input-$suffix-${field.id}'),
               decoration: InputDecoration(
-                labelText: field.label,
+                labelText: _label(field),
                 floatingLabelBehavior: FloatingLabelBehavior.always,
-                enabled: enabled && draft.present.contains(field.id),
-                errorText: fieldError?.fieldId == field.id
-                    ? fieldError!.message
-                    : null,
+                enabled: active && enabled && draft.isIncluded(field),
+                errorText: errors[field.id],
                 errorMaxLines: 4,
               ),
               child: SizedBox(
@@ -1175,37 +1176,34 @@ final class _RecordForm extends StatelessWidget {
             ScalarInput(
               inputKey: ValueKey('record-input-$suffix-${field.id}'),
               type: field.type,
-              label: field.label,
-              value: draft.values[field.id],
+              label: _label(field),
+              value: draft.selections[field.id],
               text: draft.text[field.id]!,
-              enabled: enabled && draft.present.contains(field.id),
+              enabled: active && enabled && draft.isIncluded(field),
               allowUnsetBoolean: true,
-              error: fieldError?.fieldId == field.id
-                  ? fieldError!.message
-                  : null,
+              error: errors[field.id],
               onChanged: (value) {
-                if (draft.disposed) return;
-                if (field.type is! StringSettingType) {
-                  draft.values[field.id] = value;
+                if (!current() || !draft.isIncluded(field)) return;
+                if (field.type is BooleanSettingType ||
+                    field.type is EnumSettingType) {
+                  draft.selections[field.id] = value;
                 }
                 onChanged();
               },
             ),
+          if (field.required && field.description != null)
+            Text(
+              field.description!,
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
           if (field.editor == RecordFieldEditor.modelProvider &&
               active &&
-              draft.present.contains(field.id))
-            ModelProviderPicker(
-              discover: modelProviders,
-              currentId: draft.text[field.id]!.text,
-              enabled: enabled,
-              onSelected: (id) {
-                _select(field.id, id);
-              },
-            ),
+              draft.isIncluded(field))
+            _providerPicker(field, current),
           if (field.editor == RecordFieldEditor.modelCatalog &&
               active &&
               enabled &&
-              draft.present.contains(field.id))
+              draft.isIncluded(field))
             _catalogPicker(context, field),
           const SizedBox(height: 8),
         ],
@@ -1216,9 +1214,9 @@ final class _RecordForm extends StatelessWidget {
               key: ValueKey(
                 'record-${record == null ? 'create' : 'save'}-$suffix',
               ),
-              onPressed: enabled && validated != null && onSubmit != null
+              onPressed: active && enabled && errors.isEmpty && onSubmit != null
                   ? () {
-                      if (draft.disposed) return;
+                      if (!current()) return;
                       // Revalidate current controls rather than stale build values.
                       try {
                         onSubmit!(draft.validate());
@@ -1232,7 +1230,11 @@ final class _RecordForm extends StatelessWidget {
             if (record != null)
               TextButton(
                 key: ValueKey('record-cancel-$suffix'),
-                onPressed: onCancel,
+                onPressed: active && onCancel != null
+                    ? () {
+                        if (current()) onCancel!();
+                      }
+                    : null,
                 child: const Text('Cancel'),
               ),
           ],
@@ -1246,32 +1248,51 @@ final class _RecordForm extends StatelessWidget {
     );
   }
 
+  String _label(RecordFieldDefinition<Object> field) =>
+      field.required ? '${field.label} (Required)' : field.label;
+
+  Widget _providerPicker(
+    RecordFieldDefinition<Object> field,
+    bool Function() current,
+  ) {
+    final presence = draft.presenceRevisions[field.id];
+    return ModelProviderPicker(
+      discover: modelProviders,
+      currentId: draft.text[field.id]!.text,
+      canEdit: () =>
+          enabled && current() && draft.presenceRevisions[field.id] == presence,
+      onSelected: (id) => _select(field, id),
+    );
+  }
+
   Widget _catalogPicker(
     BuildContext context,
     RecordFieldDefinition<Object> field,
   ) {
-    final provider = field.providerField!;
+    final provider = draft.definition.fields.firstWhere(
+      (f) => f.id == field.providerField,
+    );
     final route = ModalRoute.of(context);
     Object scope() => (
-      catalogScope(),
+      formScope(),
       draft.presenceRevisions[field.id],
-      draft.presenceRevisions[provider],
+      draft.presenceRevisions[provider.id],
     );
     final captured = scope();
     return ModelCatalogPicker(
       key: ValueKey((field.id, captured)),
       discover: discoverModels,
-      provider: draft.present.contains(provider) ? draft.text[provider] : null,
+      provider: draft.isIncluded(provider) ? draft.text[provider.id] : null,
       currentId: draft.text[field.id]!.text,
       isCurrent: () =>
           !draft.disposed && (route?.isActive ?? true) && scope() == captured,
-      onSelected: (id) => _select(field.id, id),
+      onSelected: (id) => _select(field, id),
     );
   }
 
-  void _select(RecordFieldId field, String id) {
-    if (draft.disposed || !draft.present.contains(field)) return;
-    draft.text[field]!.value = TextEditingValue(
+  void _select(RecordFieldDefinition<Object> field, String id) {
+    if (draft.disposed || !draft.isIncluded(field)) return;
+    draft.text[field.id]!.value = TextEditingValue(
       text: id,
       selection: TextSelection.collapsed(offset: id.length),
     );

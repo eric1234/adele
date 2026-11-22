@@ -2455,16 +2455,24 @@ Future<String> _createProviderRecord(
   await tester.ensureVisible(add);
   await tester.tap(add);
   await tester.pumpAndSettle();
-  final presence = find.byKey(
-    const ValueKey('record-presence-providers-display-name'),
+  expect(
+    find.byKey(const ValueKey('record-presence-providers-display-name')),
+    findsNothing,
   );
-  await tester.ensureVisible(presence);
-  await tester.tap(presence);
-  await tester.pumpAndSettle();
-  await tester.enterText(
-    find.byKey(const ValueKey('record-input-providers-display-name')),
-    name,
+  final input = find.byKey(
+    const ValueKey('record-input-providers-display-name'),
   );
+  expect(tester.widget<TextField>(input).enabled, isTrue);
+  expect(
+    tester
+        .widget<CheckboxListTile>(
+          find.byKey(const ValueKey('record-presence-providers-endpoint')),
+        )
+        .value,
+    isFalse,
+  );
+  await tester.ensureVisible(input);
+  await tester.enterText(input, name);
   await tester.pump();
   final create = find.byKey(const ValueKey('record-create-providers'));
   await tester.ensureVisible(create);

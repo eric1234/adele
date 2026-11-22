@@ -8,13 +8,13 @@ final class ModelProviderPicker extends StatefulWidget {
     super.key,
     required this.discover,
     required this.currentId,
-    required this.enabled,
+    required this.canEdit,
     required this.onSelected,
   });
 
   final DiscoverModelProviders? discover;
   final String currentId;
-  final bool enabled;
+  final bool Function() canEdit;
   final ValueChanged<String> onSelected;
 
   @override
@@ -36,6 +36,12 @@ final class _ModelProviderPickerState extends State<ModelProviderPicker> {
 
   @override
   Widget build(BuildContext context) {
+    final canEdit = widget.canEdit;
+    VoidCallback? guarded(VoidCallback action) => !canEdit()
+        ? null
+        : () {
+            if (mounted && canEdit()) action();
+          };
     final choices = _choices;
     final match = choices?.where((p) => p.id == widget.currentId).firstOrNull;
     return Column(
@@ -44,21 +50,19 @@ final class _ModelProviderPickerState extends State<ModelProviderPicker> {
         Wrap(
           children: [
             TextButton(
-              onPressed: !widget.enabled
-                  ? null
-                  : () => setState(() {
-                      _open = !_open;
-                      if (_open) _choices = _observe();
-                    }),
+              onPressed: guarded(
+                () => setState(() {
+                  _open = !_open;
+                  if (_open) _choices = _observe();
+                }),
+              ),
               child: Text(
                 _open ? 'Hide choices' : 'Choose configured provider...',
               ),
             ),
             if (_open)
               TextButton.icon(
-                onPressed: !widget.enabled
-                    ? null
-                    : () => setState(() => _choices = _observe()),
+                onPressed: guarded(() => setState(() => _choices = _observe())),
                 icon: const Icon(Icons.refresh),
                 label: const Text('Refresh providers'),
               ),
@@ -89,11 +93,11 @@ final class _ModelProviderPickerState extends State<ModelProviderPicker> {
                     title: Text(choice.displayName),
                     subtitle: Text('${choice.id}\nPlugin: ${choice.pluginId}'),
                     selected: choice.id == widget.currentId,
-                    enabled: widget.enabled,
-                    onTap: () {
+                    enabled: canEdit(),
+                    onTap: guarded(() {
                       setState(() => _open = false);
                       widget.onSelected(choice.id);
-                    },
+                    }),
                   );
                 },
               ),
