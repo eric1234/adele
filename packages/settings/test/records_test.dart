@@ -165,8 +165,16 @@ void main() {
     },
   );
 
-  for (final editor in [null, ...RecordFieldEditor.values]) {
-    test('${editor?.name ?? 'no editor'} preserves strings and presence', () {
+  const builtInEditors = [
+    RecordFieldEditor.markdown,
+    RecordFieldEditor.modelProvider,
+    RecordFieldEditor.modelCatalog,
+  ];
+  final contributed = ContributedRecordFieldEditor(
+    ExtensionId('org.example.editor'),
+  );
+  for (final editor in [null, ...builtInEditors, contributed]) {
+    test('${editor ?? 'no editor'} preserves strings and presence', () {
       final provider = _field(
         'account',
         const StringSettingType(),
@@ -210,7 +218,7 @@ void main() {
   }
 
   test('only a modelCatalog declaration takes a providerField', () {
-    for (final editor in [null, ...RecordFieldEditor.values]) {
+    for (final editor in [null, ...builtInEditors, contributed]) {
       expect(
         () => _field(
           'model',
@@ -264,14 +272,14 @@ void main() {
     }
   });
 
-  test('record editors reject boolean, integer and string-enum fields', () {
+  test('built-in editors reject boolean, integer and string-enum fields', () {
     for (final type in <SettingType<Object>>[
       const BooleanSettingType(),
       IntegerSettingType(),
       EnumSettingType([SettingEnumOption('markdown')]),
     ]) {
       expect(_field('value', type).editor, isNull);
-      for (final editor in RecordFieldEditor.values) {
+      for (final editor in builtInEditors) {
         expect(
           () => _field(
             'value',
@@ -284,6 +292,52 @@ void main() {
           throwsA(isA<ArgumentError>().having((e) => e.name, 'name', 'editor')),
         );
       }
+    }
+  });
+
+  test('a contributed editor does not change scalar validation', () {
+    for (final (type, valid, invalid)
+        in <(SettingType<Object>, Object, Object)>[
+          (const StringSettingType(), '', false),
+          (const BooleanSettingType(), false, 'false'),
+          (IntegerSettingType(minimum: 1), 1, 0),
+          (EnumSettingType([SettingEnumOption('one')]), 'one', 'two'),
+        ]) {
+      final field = _field('value', type, editor: contributed);
+      final definition = _type(fields: [field]);
+      expect(definition.validate(_record, {'value': valid}), {'value': valid});
+      expect(
+        () => definition.validate(_record, {'value': invalid}),
+        throwsA(isA<InvalidRecordValue>()),
+      );
+    }
+  });
+
+  test('a contributed editor must be in the record type owner namespace', () {
+    const owner = 'org.example.nested';
+    RecordTypeDefinition withEditor(String id) => _type(
+      id: '$owner.api',
+      owner: owner,
+      fields: [
+        _field(
+          'value',
+          const BooleanSettingType(),
+          editor: ContributedRecordFieldEditor(ExtensionId(id)),
+        ),
+      ],
+    );
+    expect(
+      withEditor('$owner.ui-editor').fields.single.editor,
+      ContributedRecordFieldEditor(ExtensionId('$owner.ui-editor')),
+    );
+    for (final id in [
+      owner,
+      '$owner.ui.editor',
+      '$owner-other.editor',
+      'org.example.editor',
+      'org.other.editor',
+    ]) {
+      expect(() => withEditor(id), throwsArgumentError, reason: id);
     }
   });
 

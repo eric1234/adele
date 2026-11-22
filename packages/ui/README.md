@@ -1,8 +1,8 @@
 # ADELE UI
 
 `adele_ui` is the experimental public Flutter package for semantic Task Browser,
-Session, grouped Main Content, source-file display, shared console, and read-only
-activity presentation.
+Session, grouped Main Content, source-file display, shared console, Settings
+field editors, and read-only activity presentation.
 It depends only on Flutter and public ADELE contracts, never application code,
 internal host implementations, or stock plugins.
 Product, orchestration, model tools, and the extension registry remain pure Dart.
@@ -251,6 +251,30 @@ invoking a revoked presenter. The record contains no view objects or transcript;
 new-view leases fence stale checkpoints and content removal clears it permanently.
 The current [application host](../../app/README.md#session-console)
 is Session-only; Task Browser exposes no console panel, toggle, or creation actions.
+
+## Settings Field Editors
+
+[`SettingsFieldEditorContribution`](lib/settings_field_editor.dart) registers at
+`settingsFieldEditorContributions` (`dev.adele.ui.settings-field-editor`). A
+record field names the exact `settingsFieldEditor` presentation in its owning
+installation. Matching the extension ID alone is not enough; a retired or
+unavailable editor is not replaced with another registration.
+
+`createPresentation(SettingsFieldDraft draft)` edits only the captured form
+field. Interpreted widgets import
+[`settings_field_editor_bridge.dart`](lib/settings_field_editor_bridge.dart) to
+read its `value`, revision, enabled state, and validation error. A widget should
+capture the revision it rendered and pass it to `proposeSettingsFieldValue` with
+the proposed scalar. Null means accepted; a non-null string explains rejection.
+Neither editing nor acceptance saves the record. Unmounting the view or retiring
+its registration revokes this access, including callbacks retained by the widget.
+No record lookup, sibling field, credential, or backend service is exposed.
+
+The preparation harness adds `flutterEvalPlugin` and
+[`SettingsFieldEditorDeclarations`](../../app/lib/frontend/settings_field_editor_bridge.dart)
+to the EVC compiler. The plugin widget itself imports only Flutter and the public
+bridge stub. See the [standalone EVC fixture](../../app/test/prepared_settings_field_editor_test.dart)
+for the compiler inputs, installation descriptor, record schema, and widget.
 
 ## Interpreted Bridges
 

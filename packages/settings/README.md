@@ -4,7 +4,7 @@
 setting declarations, default/global value resolution, and named configuration
 record declarations with separate deterministic catalogs.
 Import `package:adele_settings/adele_settings.dart`. Its only production dependency
-is `adele_plugin_api`, for the shared public-ID validator and record-type ownership.
+is `adele_plugin_api`, for public IDs, record-type ownership, and editor references.
 
 ## Declarations
 
@@ -105,9 +105,14 @@ descriptions are optional prose. Fields are copied, immutable, duplicate-free,
 and retain declaration order. Empty field lists are valid. Ownership is declaration
 consistency, not activation or proof of trust.
 
-`RecordFieldDefinition.editor` is optional presentation metadata for a required
-or optional `StringSettingType` field, not a string-valued enum. Omission leaves
-`editor` null. `RecordFieldEditor.markdown` requests Markdown editing;
+`RecordFieldDefinition.editor` is optional presentation metadata; omission leaves
+it null. `ContributedRecordFieldEditor(extensionId)` references an `ExtensionId`
+of the form `<record type owner's PluginId>.<single local segment>`. The reference is
+valid on any scalar field and does not require an installed or active frontend.
+It changes neither the scalar constraints nor the field's presence rules.
+
+The three built-in editors require `StringSettingType`, not a string-valued
+enum. `RecordFieldEditor.markdown` requests Markdown editing;
 `RecordFieldEditor.modelProvider` lets the host suggest configured ModelProvider
 IDs without restricting the field to currently available providers.
 `RecordFieldEditor.modelCatalog` requires `providerField`, the `RecordFieldId`

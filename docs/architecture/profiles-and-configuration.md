@@ -188,12 +188,34 @@ distinct from false, zero and empty strings. There are no field defaults, explic
 nulls, nested values, executable validators or cross-record validation. Unknown
 persisted data remains untouched, including when an owner is unavailable.
 
-A string field may request a native Settings control through its `editor` hint.
-`markdown` edits the string as a document; `model-provider` offers configured
+### Record Field Editors
+
+Without an editor declaration, Settings uses the ordinary scalar control. A
+field can instead name a prepared editor with `"editor": {"extensionId": "..."}`.
+The reference is data, not code or proof of availability. The public
+`dev.adele.ui.settings-field-editor` extension point belongs to `adele_ui`.
+An editor ID consists of the owning plugin ID and one local segment. Only the
+frontend from the installation that supplied the **actual field declaration**
+may supply its presentation. Resolution requires its exact live registration:
+there is no ranking, native substitute, or lookup of an editor by scalar type.
+A missing, failed or retired editor leaves the field unavailable, not the whole
+form. It does not invalidate a previously valid field value.
+
+One presentation reads its field in the unsaved draft and proposes scalar
+values against the revision it observed. The host checks the mount, editing
+state, revision, and field validator before accepting a proposal. A rejection
+leaves the value unchanged. The editor cannot select a different field or
+record, change inclusion, or submit the form. Navigation, dismissal, and
+retirement revoke old callbacks; returning can create a fresh presentation
+over the retained draft. Only the form's ordinary Create/Save transaction
+persists an accepted edit. See the [public UI contract](../../packages/ui/lib/settings_field_editor.dart).
+
+The existing string hints select **native** controls, not contributed editor
+registrations. `markdown` edits the string as a document; `model-provider` offers configured
 ModelProvider IDs beside the editable text. A `model-catalog` field names a
 `model-provider` sibling through `providerField`; its unsaved value determines
 where to ask for model suggestions. These hints do not change field presence,
-value validation or storage. Without a hint, Settings uses the ordinary scalar control.
+value validation or storage.
 
 A type may declare one `displayField` referencing a required string field. Discovery
 validates that reference; omission preserves existing declarations. Presentation uses

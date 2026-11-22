@@ -42,6 +42,16 @@ advisory: even if discovery is unavailable, fails, or returns no entries, you
 can enter and save any exact model ID. Editing a selected preset affects newly
 prepared Runs only, because an active Run retains its captured configuration.
 
+The two suggestion controls still run in desktop Settings. Moving them into
+this plugin's prepared frontend requires a bounded discovery API for configured
+providers and their **exact associated** catalogs, not an unrestricted service
+channel. The resulting control should use the [Settings editor contribution](../../packages/ui/lib/settings_field_editor.dart)
+and replace the `model-provider`, `model-catalog` and `providerField` hints.
+The current editor grant covers only one scalar. A combined picker would need
+explicit access to the declared provider/model pair in the same draft; it must
+not acquire arbitrary sibling or record access. A new composite storage type is
+not needed for the existing two independently editable IDs.
+
 **Missing Model Preset** means a complete catalog did not contain the selected
 ID. **Unresolved Model Preset** means the catalog was incomplete or unavailable
 and could not establish whether the ID exists. Neither changes the stored choice.

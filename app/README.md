@@ -396,8 +396,8 @@ The header Settings icon opens
 Project is open, in Task Browser, or over an active Session. It uses the existing
 application Navigator's dialog route without replacing Main Content or changing
 workbench ownership. Missing or failed plugin frontends do not remove Settings.
-The dialog uses the startup-discovered prepared catalog, not executable plugin UI
-or a second installation scan. Preferences is the default view; declared record
+The dialog discovers its structure from the startup-prepared catalog, without
+running plugin UI or scanning again. Preferences is the default view; declared record
 collections appear alongside it using their catalog labels. Switching views retains
 scalar controls and unsaved scalar/record drafts, with hidden controls excluded from
 keyboard focus. Declaration metadata supplies categories, sections, labels,
@@ -423,6 +423,12 @@ for required inputs, optional field inclusion and recovery after an unconfirmed
 Create. Creation and editing share `RecordTypeDefinition.validate`; the worker
 and host adapter validate again before persistence. Edits preserve unknown data
 and comments within the native document API's limits.
+
+[`RecordFieldEditorHost`](lib/ui/settings/record_field_editor_host.dart) mounts
+explicitly requested plugin controls through `ApplicationFrontendBootstrap` and
+`PreparedFrontend`, only for visible, included fields. Its bridge carries one
+field draft, not the Settings service. See [record editor authority](../docs/architecture/profiles-and-configuration.md#record-field-editors)
+and the [compiled form fixture](test/prepared_settings_field_editor_test.dart).
 
 For a string field declared with `editor: "markdown"`, the draft owns a
 [native rich-document editor](#native-rich-document-editor). Hiding the form

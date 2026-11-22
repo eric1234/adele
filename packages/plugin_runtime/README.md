@@ -123,7 +123,7 @@ processes, compiling source, loading EVC, or watching for changes.
 artifact URI and separate immutable presentation and behavioral extension
 descriptor lists. The sealed, data-only
 `PreparedPresentationDescriptor` variants are `PreparedMainContentPresentation`,
-`PreparedSessionAccessoryPresentation`, `PreparedConsolePresentation`,
+`PreparedSessionAccessoryPresentation`, `PreparedSettingsFieldEditorPresentation`, `PreparedConsolePresentation`,
 `PreparedTaskBrowserPresentation`, `PreparedSessionContentInspection`,
 `PreparedToolActivityPresentation`, and `PreparedModelNativeActivityPresentation`.
 The separate sealed `PreparedFrontendExtension` includes
@@ -305,14 +305,21 @@ Only enums require nonempty `options`, with required stable `value` and optional
 display `label` per option. No unknown fields, nulls, coercion, defaults, secret
 values, validators, or executable hooks are accepted at any schema level.
 
-Only a `string` record field may include `editor`. Its value must be exactly
+Any scalar record field may reference a contributed editor with
+`"editor": {"extensionId": "org.example.plugin.field-editor"}`. The object accepts
+only `extensionId`, a public ID of at most 256 UTF-16 code units consisting of the
+record type owner's plugin ID plus one dot-separated segment. Multiple fields may
+reference the same editor. Discovery
+does not require a matching frontend or live registration.
+
+Only a `string` record field may instead name a built-in editor:
 `"markdown"`, `"model-provider"`, or `"model-catalog"`. The last two request
 suggestions for a configured ModelProvider ID and a model ID respectively. Only
 `"model-catalog"` requires (and accepts) `providerField`, a local field ID naming
 a different string field with the `"model-provider"` editor in the same type.
 Schema discovery needs no provider registrations. Omitting `editor`
-leaves `field.editor` null; explicit null, an unknown value, or the key on any
-other field type rejects the whole record schema. No editor hint is a scalar
+leaves `field.editor` null; explicit null, an unknown value, or an invalid editor
+reference rejects the whole record schema. No editor hint is a scalar
 setting option or a new stored type. The schema version remains 1; strict readers
 that do not recognize an editor key or value reject schemas that use it.
 
@@ -615,6 +622,13 @@ existing input presentation rather than executing a separate operation. Input
 context, admission, and lifetime remain with the
 [Main Content host](../../app/README.md#grouped-main-content); declaration creates
 no authority and captured targets never migrate to replacement registrations.
+
+Settings field editors declare `role: 'settingsFieldEditor'` under
+`frontend.presentations`. The only other fields are the required `extensionId`,
+canonical `package:` Dart `library`, and top-level `entrypoint`. The ID must be
+exactly one segment beneath the installation's plugin ID and unique among
+its field editor presentations. An invalid descriptor rejects the frontend, not
+its independent record declarations. This role requests no backend service.
 
 Session accessories declare `role: 'sessionAccessory'`, an `extensionId`,
 `location: 'execution-configuration'`, integer `order`, canonical `package:` Dart

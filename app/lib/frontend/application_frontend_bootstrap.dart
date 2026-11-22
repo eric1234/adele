@@ -5,6 +5,7 @@ import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
+import 'package:adele_settings/adele_settings.dart';
 import 'package:adele_ui/adele_ui.dart';
 import 'package:dart_eval/stdlib/core.dart';
 import 'package:flutter/widgets.dart';
@@ -25,6 +26,7 @@ import 'prepared_session_services.dart';
 import 'prepared_task_browser_host.dart';
 import 'session_accessory_bridge.dart';
 import 'session_content_inspection_bridge.dart';
+import 'settings_field_editor_bridge.dart';
 import 'terminal_projection_bridge.dart';
 import 'tool_activity_inspection_bridge.dart';
 
@@ -100,6 +102,41 @@ final class ApplicationFrontendBootstrap {
   );
 
   Future<void> stopMainContentOperations() => _mainContentHost.stopOperations();
+
+  /// Both the field declaration and the live registration must belong to the
+  /// same installation. Matching IDs, a copied schema, or a replacement
+  /// registration cannot grant another frontend access to this draft.
+  ExtensionBinding<SettingsFieldEditorContribution>? resolveSettingsFieldEditor(
+    RecordTypeDefinition type,
+    RecordFieldDefinition<Object> field,
+  ) {
+    final editor = field.editor;
+    if (_state == ApplicationFrontendState.closing ||
+        editor is! ContributedRecordFieldEditor ||
+        !type.fields.any((entry) => identical(entry, field))) {
+      return null;
+    }
+    final point = settingsFieldEditorContributions;
+    for (final generation in _generations) {
+      final definitions = generation.installation.recordsSchema?.definitions;
+      if (generation.state != InstalledFrontendState.active ||
+          definitions == null ||
+          !definitions.any((entry) => identical(entry, type))) {
+        continue;
+      }
+      for (final (pointId, id, registration) in generation._registrations) {
+        if (pointId == point.value &&
+            id == editor.extensionId &&
+            !registration.isClosed) {
+          return _extensions
+              .discover(point)
+              .where(registration.owns)
+              .singleOrNull;
+        }
+      }
+    }
+    return null;
+  }
 
   /// Prepared selectors require their exact installation's provider registration,
   /// not merely a matching PluginId declared by an unrelated endpoint.
@@ -369,6 +406,8 @@ final class InstalledFrontendActivation {
       for (final descriptor in component.presentations) {
         if (_closed) return;
         switch (descriptor) {
+          case PreparedSettingsFieldEditorPresentation():
+            _registerSettingsFieldEditor(generation, descriptor);
           case PreparedSessionAccessoryPresentation():
             _registerSessionAccessory(generation, descriptor);
           case PreparedMainContentPresentation():
@@ -830,6 +869,47 @@ final class InstalledFrontendActivation {
         // Keep the activation failure primary. close reports cleanup failure.
       }
     }
+  }
+
+  void _registerSettingsFieldEditor(
+    PreparedFrontend generation,
+    PreparedSettingsFieldEditorPresentation descriptor,
+  ) {
+    if (!ContributedRecordFieldEditor(
+      descriptor.extensionId,
+    ).isOwnedBy(installation.metadata.id)) {
+      throw const FormatException(
+        'Field editor must be in the installation namespace.',
+      );
+    }
+    generation.validateOperation(
+      library: descriptor.library,
+      entrypoint: descriptor.entrypoint,
+    );
+    late final ExtensionBinding<SettingsFieldEditorContribution> binding;
+    final registration = _register(
+      point: settingsFieldEditorContributions,
+      id: descriptor.extensionId,
+      contribution: (isActive) => SettingsFieldEditorContribution(
+        createPresentation: (draft) {
+          bool available() => isActive() && generation.acceptsPresentations;
+          _requireActive(available);
+          return generation.createPresentation(
+            library: descriptor.library,
+            entrypoint: descriptor.entrypoint,
+            key: ObjectKey(draft),
+            createBridge: () => SettingsFieldEditorBridge(
+              draft: draft,
+              binding: binding,
+              isActive: available,
+            ),
+          );
+        },
+      ),
+    );
+    binding = _extensions
+        .discover(settingsFieldEditorContributions)
+        .singleWhere(registration.owns);
   }
 
   void _registerSessionAccessory(
