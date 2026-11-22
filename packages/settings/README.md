@@ -105,11 +105,13 @@ descriptions are optional prose. Fields are copied, immutable, duplicate-free,
 and retain declaration order. Empty field lists are valid. Ownership is declaration
 consistency, not activation or proof of trust.
 
-`RecordFieldDefinition.editor` is nullable presentation metadata. Omission leaves
-the field without an editor hint. `RecordFieldEditor.markdown` is valid only on
-a `StringSettingType` field, required or optional; a string-valued enum does not
-qualify. The hint neither parses nor normalizes Markdown: the value remains an
-ordinary string, with the same validation and presence rules as an unhinted field.
+`RecordFieldDefinition.editor` is optional presentation metadata for a required
+or optional `StringSettingType` field, not a string-valued enum. Omission leaves
+`editor` null. `RecordFieldEditor.markdown` requests Markdown editing;
+`RecordFieldEditor.modelProvider` lets the host suggest configured ModelProvider
+IDs without restricting the field to currently available providers. Both hints
+preserve the exact string and ordinary presence rules. Validation does not parse
+Markdown, validate a provider ID, or look up a provider.
 
 Optional `displayField: RecordFieldId?` identifies a declared required
 `StringSettingType` field for record display names. Construction rejects missing,

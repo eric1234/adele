@@ -1873,7 +1873,10 @@ RecordFieldDefinition<Object> _recordFieldDefinition(
     editor: value.containsKey('editor')
         ? switch (value['editor']) {
             'markdown' => RecordFieldEditor.markdown,
-            _ => throw FormatException('$label.editor must be "markdown".'),
+            'model-provider' => RecordFieldEditor.modelProvider,
+            _ => throw FormatException(
+              '$label.editor must be "markdown" or "model-provider".',
+            ),
           }
         : null,
   );

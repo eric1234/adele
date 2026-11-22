@@ -165,20 +165,23 @@ void main() {
     },
   );
 
-  test(
-    'Markdown editor preserves ordinary string values and field presence',
-    () {
+  for (final editor in RecordFieldEditor.values) {
+    test('${editor.name} preserves ordinary strings and field presence', () {
       expect(_field('text', const StringSettingType()).editor, isNull);
       for (final required in [false, true]) {
         final field = _field(
           'text',
           const StringSettingType(),
           required: required,
-          editor: RecordFieldEditor.markdown,
+          editor: editor,
         );
-        expect(field.editor, RecordFieldEditor.markdown);
+        expect(field.editor, editor);
         final type = _type(fields: [field]);
-        for (final value in ['', '  # Heading\r\n\r\n```unclosed\n']) {
+        for (final value in [
+          '',
+          'org.example.unavailable',
+          '  # Heading\r\n\r\n```unclosed\n',
+        ]) {
           expect(type.validate(_record, {'text': value}), {'text': value});
         }
         if (required) {
@@ -194,20 +197,22 @@ void main() {
           throwsA(_invalid('text', 'Expected a string.')),
         );
       }
-    },
-  );
+    });
+  }
 
-  test('Markdown editor rejects boolean, integer and string-enum fields', () {
+  test('record editors reject boolean, integer and string-enum fields', () {
     for (final type in <SettingType<Object>>[
       const BooleanSettingType(),
       IntegerSettingType(),
       EnumSettingType([SettingEnumOption('markdown')]),
     ]) {
       expect(_field('value', type).editor, isNull);
-      expect(
-        () => _field('value', type, editor: RecordFieldEditor.markdown),
-        throwsA(isA<ArgumentError>().having((e) => e.name, 'name', 'editor')),
-      );
+      for (final editor in RecordFieldEditor.values) {
+        expect(
+          () => _field('value', type, editor: editor),
+          throwsA(isA<ArgumentError>().having((e) => e.name, 'name', 'editor')),
+        );
+      }
     }
   });
 

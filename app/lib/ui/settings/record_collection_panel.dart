@@ -9,8 +9,10 @@ import 'package:flutter/services.dart';
 
 import '../../core/credential_service.dart';
 import '../../core/global_settings_service.dart';
+import '../../core/model_provider_choices.dart';
 import '../../core/record_apply_coordinator.dart';
 import '../../editor/native_rich_document_editor.dart';
+import 'model_provider_picker.dart';
 import 'record_credential_controls.dart';
 import 'scalar_input.dart';
 
@@ -19,6 +21,7 @@ final class RecordCollectionPanel extends StatefulWidget {
     super.key,
     required this.service,
     required this.collection,
+    this.modelProviders,
     this.credentialAssociations,
     this.recordApplication,
     this.active = true,
@@ -27,6 +30,7 @@ final class RecordCollectionPanel extends StatefulWidget {
 
   final GlobalSettingsService service;
   final RecordCollectionId collection;
+  final DiscoverModelProviders? modelProviders;
   final RecordCredentialService? credentialAssociations;
   final RecordApplication? recordApplication;
   final bool active;
@@ -817,6 +821,7 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
     final draft = _creationDrafts[type.id]!;
     return _RecordForm(
       draft: draft,
+      modelProviders: widget.modelProviders,
       active: widget.active && _adding && type.id == _type,
       enabled: enabled && _adding && type.id == _type,
       onChanged: () => setState(() {}),
@@ -858,6 +863,7 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
           : (expanded) => _RecordForm(
               key: ObjectKey(draft),
               draft: draft,
+              modelProviders: widget.modelProviders,
               active: widget.active && expanded,
               enabled: enabled,
               onChanged: () => setState(() {}),
@@ -881,7 +887,7 @@ final class _RecordDraft {
           markdown: value as String? ?? '',
         );
       } else {
-        values[field.id] = value;
+        if (field.type is! StringSettingType) values[field.id] = value;
         text[field.id] = TextEditingController(text: value?.toString() ?? '');
       }
     }
@@ -923,6 +929,8 @@ final class _RecordDraft {
           if (present.contains(field.id))
             field.id.value: markdown.containsKey(field.id)
                 ? _snapshot(recordId, field.id)
+                : field.type is StringSettingType
+                ? text[field.id]!.text
                 : values[field.id],
       });
 
@@ -963,6 +971,7 @@ final class _RecordForm extends StatelessWidget {
   const _RecordForm({
     super.key,
     required this.draft,
+    required this.modelProviders,
     required this.active,
     required this.enabled,
     required this.onChanged,
@@ -971,6 +980,7 @@ final class _RecordForm extends StatelessWidget {
   });
 
   final _RecordDraft draft;
+  final DiscoverModelProviders? modelProviders;
   final bool active;
   final bool enabled;
   final VoidCallback onChanged;
@@ -1052,10 +1062,7 @@ final class _RecordForm extends StatelessWidget {
                     if (draft.disposed) return;
                     if (present == true) {
                       draft.present.add(field.id);
-                      if (field.type is StringSettingType &&
-                          !draft.markdown.containsKey(field.id)) {
-                        draft.values[field.id] = draft.text[field.id]!.text;
-                      } else if (field.type is IntegerSettingType) {
+                      if (field.type is IntegerSettingType) {
                         draft.values[field.id] = int.tryParse(
                           draft.text[field.id]!.text,
                           radix: 10,
@@ -1099,7 +1106,25 @@ final class _RecordForm extends StatelessWidget {
                   : null,
               onChanged: (value) {
                 if (draft.disposed) return;
-                draft.values[field.id] = value;
+                if (field.type is! StringSettingType) {
+                  draft.values[field.id] = value;
+                }
+                onChanged();
+              },
+            ),
+          if (field.editor == RecordFieldEditor.modelProvider &&
+              active &&
+              draft.present.contains(field.id))
+            ModelProviderPicker(
+              discover: modelProviders,
+              currentId: draft.text[field.id]!.text,
+              enabled: enabled,
+              onSelected: (id) {
+                if (draft.disposed || !draft.present.contains(field.id)) return;
+                draft.text[field.id]!.value = TextEditingValue(
+                  text: id,
+                  selection: TextSelection.collapsed(offset: id.length),
+                );
                 onChanged();
               },
             ),

@@ -305,11 +305,13 @@ Only enums require nonempty `options`, with required stable `value` and optional
 display `label` per option. No unknown fields, nulls, coercion, defaults, secret
 values, validators, or executable hooks are accepted at any schema level.
 
-Only a `string` record field may include `"editor": "markdown"`. Omission
-leaves `field.editor` null; an explicit null, any other value, or the key on
-another field type rejects the whole record schema. This hint is not a scalar
-setting option or a new stored type. Version 1 assets without it remain valid;
-older strict readers reject assets that include it as having an unknown key.
+Only a `string` record field may include `editor`. Its value must be exactly
+`"markdown"` or `"model-provider"`; the latter requests suggestions for a
+configured ModelProvider ID. Discovery needs no provider registrations. Omission
+leaves `field.editor` null; explicit null, an unknown value, or the key on any
+other field type rejects the whole record schema. Neither hint is a scalar
+setting option or a new stored type. The schema version remains 1; strict readers
+that do not recognize an editor key or value reject schemas that use it.
 
 `credentialSlots` defaults to an empty array and retains declaration order. Entries
 accept exactly the required `id`, `label`, and `kind` keys; `kind` must be

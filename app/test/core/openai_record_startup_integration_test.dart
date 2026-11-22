@@ -37,6 +37,7 @@ const _catalogProviderId = 'dev.adele.openai.model-catalog';
 const _catalogConsumer = 'test.openai.catalog-consumer';
 const _chatGpt = 'dev.adele.openai.chatgpt-experimental';
 const _configurationService = 'dev.adele.openai.configuration';
+const _modelConfiguration = 'dev.adele.plugin.model-configuration';
 
 void main() {
   late Directory artifacts;
@@ -113,11 +114,23 @@ void main() {
     exercise, {
     int heldCaptures = 0,
     bool holdBeforeScan = false,
+    bool withModelPresets = false,
   }) {
     testWidgets(
       name,
       (tester) => tester.runAsync(() async {
         final fixture = await prepareProviders();
+        if (withModelPresets) {
+          // Editing definitions needs the published schema, not a Run backend.
+          await publishStockPluginInstallation(
+            repositoryRoot: repository,
+            installationDirectory: Directory(
+              '${fixture.installationRoot}/model-configuration',
+            ),
+            pluginId: _modelConfiguration,
+            displayName: 'Model Configuration',
+          );
+        }
         final app = NativeAdeleRuntime(
           localStateRoot: () => fixture.roots.localStateRoot,
         );
@@ -184,6 +197,88 @@ void main() {
       }),
     );
   }
+
+  applicationScenario(
+    'Global Settings picks a live OpenAI inference route and preserves its '
+    'stored Provider ID after retirement',
+    (ui, fixture, _) async {
+      const work = '$_recordType.work-openai';
+      const personal = '$_recordType.personal-openai';
+      const row = 'model-presets-review';
+      final dialog = ui.tester.widget<GlobalSettingsDialog>(
+        find.byType(GlobalSettingsDialog),
+      );
+      final settings = await dialog.service();
+      await settings.createRecord(
+        RecordTypeId('$_modelConfiguration.preset'),
+        ConfigurationRecordId('review'),
+        {
+          'name': 'Review model',
+          'provider-id': personal,
+          'model-id': 'review-v1',
+        },
+      );
+
+      final workBinding = fixture.capture('work').inference;
+      expect(
+        fixture.registry.providersFor(modelCatalogCapability),
+        hasLength(2),
+      );
+      await ui.section('Model Presets');
+      await ui.until(
+        () => ui.key('record-$row').evaluate().isNotEmpty,
+        'review preset',
+      );
+      await ui._tap(find.text('Review model'));
+      await ui.press('record-edit-$row');
+      final choose = find.text('Choose configured provider...');
+      final workChoice = ui.key('provider-choice-$work');
+      final personalChoice = ui.key('provider-choice-$personal');
+      await ui._tap(choose);
+      expect(
+        dialog.modelProviders!(),
+        unorderedEquals([
+          (id: personal, displayName: 'Personal OpenAI', pluginId: _openai),
+          (id: work, displayName: 'Work OpenAI', pluginId: _openai),
+        ]),
+      );
+      expect(personalChoice, findsOneWidget);
+      await ui._tap(workChoice);
+      expect(workChoice, findsNothing);
+      await ui.press('record-save-$row');
+      await ui.until(() => ui._enabled('record-edit-$row'), 'saved preset');
+      expect(find.text('Provider ID: $work'), findsOneWidget);
+
+      await ui.press('record-edit-$row');
+      await ui._tap(choose);
+      expect(workChoice, findsOneWidget);
+      // The Work configuration record still exists. Refresh must observe the
+      // live inference registry, not records, ready advertisements, or catalogs.
+      await fixture.backend.retireProvider(workBinding);
+      await ui._tap(find.text('Refresh providers'));
+      expect(workChoice, findsNothing);
+      expect(personalChoice, findsOneWidget);
+      expect(
+        ui.tester
+            .widget<TextField>(ui.key('record-input-$row-provider-id'))
+            .controller!
+            .text,
+        work,
+      );
+      await ui.dismiss();
+      final saved = await settings.loadRecords(
+        RecordCollectionId('model-presets'),
+      );
+      expect(saved.records.single.values, {
+        'name': 'Review model',
+        'provider-id': work,
+        'model-id': 'review-v1',
+      });
+      expect(fixture.storage.calls, isEmpty);
+      expect(fixture.requests, isEmpty);
+    },
+    withModelPresets: true,
+  );
 
   applicationScenario(
     'Global Settings automatically publishes, updates and deletes '

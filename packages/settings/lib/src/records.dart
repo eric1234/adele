@@ -112,7 +112,7 @@ void _validateRecordLocalId(
 }
 
 /// Presentation hint for a record field, not a scalar value type.
-enum RecordFieldEditor { markdown }
+enum RecordFieldEditor { markdown, modelProvider }
 
 /// Ordered record field metadata with no default, coercion, or executable hooks.
 final class RecordFieldDefinition<T extends Object> {
@@ -125,11 +125,11 @@ final class RecordFieldDefinition<T extends Object> {
     this.editor,
   }) {
     _validatePresentation(label, 'label');
-    if (editor == RecordFieldEditor.markdown && type is! StringSettingType) {
+    if (editor != null && type is! StringSettingType) {
       throw ArgumentError.value(
         editor,
         'editor',
-        'The Markdown editor requires a StringSettingType field.',
+        'Record field editors require a StringSettingType field.',
       );
     }
   }
