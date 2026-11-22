@@ -576,6 +576,13 @@ exercise Model Preset wire validation, live record projection and conditional
 Session selection. Run `dart tools/adele.dart test --target model_configuration_frontend`
 for the compiled selector: stable choices, incomplete observations, failed
 reads, unacknowledged changes, revision checks, and retired presentations.
+For guided Model ID editing, use `record_settings_dialog_test.dart` for the
+generic form's sibling-field reference, draft lifetime, manual entry, and
+out-of-order requests. The `core/backend_capability_integration_test.dart`
+fixture exercises exact registration provenance; the Global Settings cases in
+`core/openai_record_startup_integration_test.dart` use two real configured
+providers, isolated credentials and loopback catalog responses. An explicit
+model query may authenticate, but opening Settings or saving a preset must not.
 From `app/`, run
 `flutter test --no-pub test/core/model_preset_integration_test.dart` to cross
 the prepared frontend/backend boundary with real Settings and Project storage.
@@ -724,7 +731,8 @@ generation/registry checks. `app/test/session_execution_test.dart` owns explicit
 selected-provider failure without fallback and retained bindings across retirement;
 the app's temporary selection still explicitly names ChatGPT, regardless of new
 configured providers in the registry. Use deterministic storage and loopback HTTP
-for record apply; neither Settings nor refresh should authenticate with OpenAI.
+for record apply; applying or refreshing configured registrations should not
+authenticate with OpenAI. Keep explicit model catalog HTTP requests on loopback.
 These are validation procedures, not recorded passing results. Production backend
 AOT changes also require the maintained Linux profile build, not only isolated AOT fixtures.
 

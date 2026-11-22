@@ -165,18 +165,27 @@ void main() {
     },
   );
 
-  for (final editor in RecordFieldEditor.values) {
-    test('${editor.name} preserves ordinary strings and field presence', () {
-      expect(_field('text', const StringSettingType()).editor, isNull);
+  for (final editor in [null, ...RecordFieldEditor.values]) {
+    test('${editor?.name ?? 'no editor'} preserves strings and presence', () {
+      final provider = _field(
+        'account',
+        const StringSettingType(),
+        editor: RecordFieldEditor.modelProvider,
+      );
       for (final required in [false, true]) {
+        final reference = editor == RecordFieldEditor.modelCatalog
+            ? provider.id
+            : null;
         final field = _field(
           'text',
           const StringSettingType(),
           required: required,
           editor: editor,
+          providerField: reference,
         );
         expect(field.editor, editor);
-        final type = _type(fields: [field]);
+        expect(field.providerField, reference);
+        final type = _type(fields: [field, if (reference != null) provider]);
         for (final value in [
           '',
           'org.example.unavailable',
@@ -200,6 +209,61 @@ void main() {
     });
   }
 
+  test('only a modelCatalog declaration takes a providerField', () {
+    for (final editor in [null, ...RecordFieldEditor.values]) {
+      expect(
+        () => _field(
+          'model',
+          const StringSettingType(),
+          editor: editor,
+          providerField: editor == RecordFieldEditor.modelCatalog
+              ? null
+              : RecordFieldId('account'),
+        ),
+        throwsA(
+          isA<ArgumentError>().having((e) => e.name, 'name', 'providerField'),
+        ),
+      );
+    }
+  });
+
+  test('providerField must identify a sibling modelProvider field', () {
+    final model = _field(
+      'chosen-model',
+      const StringSettingType(),
+      editor: RecordFieldEditor.modelCatalog,
+      providerField: RecordFieldId('account'),
+    );
+    for (final fields in <List<RecordFieldDefinition<Object>>>[
+      [model],
+      [model, _field('account', const StringSettingType())],
+      [model, _field('account', const BooleanSettingType())],
+      [
+        model,
+        _field(
+          'account',
+          const StringSettingType(),
+          editor: RecordFieldEditor.markdown,
+        ),
+      ],
+      [
+        _field(
+          'account',
+          const StringSettingType(),
+          editor: RecordFieldEditor.modelCatalog,
+          providerField: RecordFieldId('account'),
+        ),
+      ],
+    ]) {
+      expect(
+        () => _type(fields: fields),
+        throwsA(
+          isA<ArgumentError>().having((e) => e.name, 'name', 'providerField'),
+        ),
+      );
+    }
+  });
+
   test('record editors reject boolean, integer and string-enum fields', () {
     for (final type in <SettingType<Object>>[
       const BooleanSettingType(),
@@ -209,7 +273,14 @@ void main() {
       expect(_field('value', type).editor, isNull);
       for (final editor in RecordFieldEditor.values) {
         expect(
-          () => _field('value', type, editor: editor),
+          () => _field(
+            'value',
+            type,
+            editor: editor,
+            providerField: editor == RecordFieldEditor.modelCatalog
+                ? RecordFieldId('account')
+                : null,
+          ),
           throwsA(isA<ArgumentError>().having((e) => e.name, 'name', 'editor')),
         );
       }
@@ -617,6 +688,7 @@ RecordFieldDefinition<T> _field<T extends Object>(
   SettingType<T> type, {
   bool required = false,
   RecordFieldEditor? editor,
+  RecordFieldId? providerField,
 }) => RecordFieldDefinition(
   id: RecordFieldId(id),
   label: '  Field  ',
@@ -624,6 +696,7 @@ RecordFieldDefinition<T> _field<T extends Object>(
   type: type,
   required: required,
   editor: editor,
+  providerField: providerField,
 );
 
 RecordTypeDefinition _type({

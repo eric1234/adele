@@ -2198,9 +2198,13 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
       expect(
         {
           for (final field in preset.fields)
-            if (field.editor != null) field.id.value: field.editor,
+            if (field.editor != null)
+              field.id.value: (field.editor, field.providerField?.value),
         },
-        {'provider-id': RecordFieldEditor.modelProvider},
+        {
+          'provider-id': (RecordFieldEditor.modelProvider, null),
+          'model-id': (RecordFieldEditor.modelCatalog, 'provider-id'),
+        },
       );
       expect(
         preset.fields.map(

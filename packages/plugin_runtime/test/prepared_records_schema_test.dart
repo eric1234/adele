@@ -1507,6 +1507,11 @@ void main() {
                 'maximum': 3,
               },
               _field(id: 'enabled', type: 'boolean'),
+              {
+                ..._field(id: 'choice'),
+                'editor': 'model-catalog',
+                'providerField': 'route',
+              },
               {..._field(id: 'route'), 'editor': 'model-provider'},
             ],
           },
@@ -1533,6 +1538,7 @@ void main() {
         'mode',
         'count',
         'enabled',
+        'choice',
         'route',
       ]);
       expect(type.fields.first.description, 'Field\nprose');
@@ -1551,6 +1557,9 @@ void main() {
       );
       expect((type.fields[2].type as IntegerSettingType).minimum, 1);
       expect((type.fields[2].type as IntegerSettingType).maximum, 3);
+      expect(type.fields[4].editor, RecordFieldEditor.modelCatalog);
+      expect(type.fields[4].providerField, RecordFieldId('route'));
+      expect(type.fields[4].type, isA<StringSettingType>());
       expect(type.fields.last.editor, RecordFieldEditor.modelProvider);
       expect(type.fields.last.type, isA<StringSettingType>());
       expect(
@@ -1969,6 +1978,20 @@ void main() {
       'credentialSlots': [_slot()],
     },
     'settings envelope': {'schemaVersion': 1, 'definitions': <Object?>[]},
+    'foreign providerField': _schema([
+      {
+        ..._type(id: 'org.example.plugin.owner'),
+        'fields': [
+          {..._field(id: 'account'), 'editor': 'model-provider'},
+        ],
+      },
+      {
+        ..._type(),
+        'fields': [
+          {..._field(), 'editor': 'model-catalog', 'providerField': 'account'},
+        ],
+      },
+    ]),
     for (final version in [null, false, '1', 1.0, 0, -1, 2])
       'version $version ${version.runtimeType}': {
         ..._schema([]),
@@ -2121,6 +2144,7 @@ void main() {
       'secret-text',
       'markdown',
       'model-provider',
+      'model-catalog',
     ])
       'type $type': {..._field(), 'type': type},
     for (final required in <Object?>[null, 0, 'true', [], {}])
@@ -2140,9 +2164,10 @@ void main() {
       ' markdown',
       'modelProvider',
       'model-provider ',
+      'modelCatalog',
     ])
       'editor ${jsonEncode(editor)}': {..._field(), 'editor': editor},
-    for (final editor in ['markdown', 'model-provider'])
+    for (final editor in ['markdown', 'model-provider', 'model-catalog'])
       for (final type in ['boolean', 'integer', 'enum'])
         '$editor editor on $type': {
           ..._field(type: type),
@@ -2151,7 +2176,37 @@ void main() {
               {'value': 'one'},
             ],
           'editor': editor,
+          if (editor == 'model-catalog') 'providerField': 'route',
         },
+    'model-catalog missing providerField': {
+      ..._field(),
+      'editor': 'model-catalog',
+    },
+    for (final reference in <Object?>[
+      null,
+      false,
+      1,
+      [],
+      {},
+      '',
+      ' route',
+      'other.route',
+      'x' * 65,
+      'missing',
+      'display-name',
+      'valid',
+    ])
+      'model-catalog providerField ${jsonEncode(reference)}': {
+        ..._field(),
+        'editor': 'model-catalog',
+        'providerField': reference,
+      },
+    for (final editor in [null, 'markdown', 'model-provider'])
+      'providerField with $editor editor': {
+        ..._field(),
+        if (editor != null) 'editor': editor,
+        'providerField': 'route',
+      },
     for (final bound in ['minimum', 'maximum'])
       for (final value in <Object?>[null, false, '1', 1.0, [], {}])
         '$bound $value': {..._field(type: 'integer'), bound: value},
@@ -2200,7 +2255,11 @@ void main() {
           _type(id: 'org.example.plugin.valid'),
           {
             ..._type(),
-            'fields': [_field(id: 'valid'), entry.value],
+            'fields': [
+              _field(id: 'valid'),
+              {..._field(id: 'route'), 'editor': 'model-provider'},
+              entry.value,
+            ],
           },
         ]),
       );

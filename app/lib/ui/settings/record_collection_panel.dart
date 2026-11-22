@@ -9,9 +9,11 @@ import 'package:flutter/services.dart';
 
 import '../../core/credential_service.dart';
 import '../../core/global_settings_service.dart';
+import '../../core/model_catalog_choices.dart';
 import '../../core/model_provider_choices.dart';
 import '../../core/record_apply_coordinator.dart';
 import '../../editor/native_rich_document_editor.dart';
+import 'model_catalog_picker.dart';
 import 'model_provider_picker.dart';
 import 'record_credential_controls.dart';
 import 'scalar_input.dart';
@@ -22,6 +24,8 @@ final class RecordCollectionPanel extends StatefulWidget {
     required this.service,
     required this.collection,
     this.modelProviders,
+    this.discoverModels,
+    this.sectionRevision,
     this.credentialAssociations,
     this.recordApplication,
     this.active = true,
@@ -31,6 +35,8 @@ final class RecordCollectionPanel extends StatefulWidget {
   final GlobalSettingsService service;
   final RecordCollectionId collection;
   final DiscoverModelProviders? modelProviders;
+  final DiscoverModels? discoverModels;
+  final int Function()? sectionRevision;
   final RecordCredentialService? credentialAssociations;
   final RecordApplication? recordApplication;
   final bool active;
@@ -68,6 +74,7 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
   bool _requiresReload = false;
   bool _creationRequiresReload = false;
   bool _adding = false;
+  int _formRevision = 0;
   String? _error;
   String? _creationError;
   String? _message;
@@ -87,6 +94,16 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
   }
 
   bool get _enabled => mounted && _loaded && !_busy && !_requiresReload;
+
+  // A hidden form may become visible again before Flutter rebuilds it. Fence
+  // the old controls at navigation / operation admission, not at disposal.
+  (int?, int) _catalogScope() =>
+      (widget.sectionRevision?.call(), _formRevision);
+
+  void _beginOperation() {
+    _formRevision++;
+    _busy = true;
+  }
 
   bool _current(RecordView record) =>
       _records.any((candidate) => identical(candidate, record));
@@ -110,7 +127,7 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
     if (!mounted || _busy) return;
     // Admission covers the confirmation as well as the eventual read.
     setState(() {
-      _busy = true;
+      _beginOperation();
       _confirming = _drafts.values.any((draft) => draft.dirty);
     });
     try {
@@ -188,6 +205,7 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
     // when an external deletion has made the file available again.
     if (_records.any((record) => record.id == id)) {
       setState(() {
+        _formRevision++;
         _creationRequiresReload = true;
         _creationError =
             'Not created: this record ID is already in the loaded collection. '
@@ -197,7 +215,7 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
       return;
     }
     setState(() {
-      _busy = true;
+      _beginOperation();
       _creationError = null;
       _message = null;
     });
@@ -266,6 +284,7 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
       return;
     }
     setState(() {
+      _formRevision++;
       _drafts[record.id] = _RecordDraft(
         widget.service.records.definition(record.type),
         record: record,
@@ -302,7 +321,7 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
     final application = widget.recordApplication;
     RecordView? acknowledged;
     setState(() {
-      _busy = true;
+      _beginOperation();
       _confirming = deleting;
     });
     try {
@@ -411,7 +430,7 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
       return;
     }
     setState(() {
-      _busy = true;
+      _beginOperation();
       _confirming = action == RecordCredentialAction.forget;
       _pendingCredential = key;
     });
@@ -614,7 +633,10 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
                     onPressed: creationEnabled && !_adding
                         ? () {
                             if (_enabled && !_creationRequiresReload) {
-                              setState(() => _adding = true);
+                              setState(() {
+                                _formRevision++;
+                                _adding = true;
+                              });
                             }
                           }
                         : null,
@@ -654,8 +676,13 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
                                 ],
                                 onChanged: creationEnabled
                                     ? (value) {
-                                        if (_enabled && value != null) {
-                                          setState(() => _type = value);
+                                        if (_enabled &&
+                                            value != null &&
+                                            value != _type) {
+                                          setState(() {
+                                            _formRevision++;
+                                            _type = value;
+                                          });
                                         }
                                       }
                                     : null,
@@ -676,7 +703,10 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
                                     ? null
                                     : () {
                                         if (mounted && !_busy) {
-                                          setState(() => _adding = false);
+                                          setState(() {
+                                            _formRevision++;
+                                            _adding = false;
+                                          });
                                         }
                                       },
                                 child: const Text('Back to records'),
@@ -822,6 +852,8 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
     return _RecordForm(
       draft: draft,
       modelProviders: widget.modelProviders,
+      discoverModels: widget.discoverModels,
+      catalogScope: _catalogScope,
       active: widget.active && _adding && type.id == _type,
       enabled: enabled && _adding && type.id == _type,
       onChanged: () => setState(() {}),
@@ -837,6 +869,7 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
       record: record,
       definition: widget.service.records.definition(record.type),
       error: _recordErrors[record.id],
+      onExpansionChanged: () => setState(() => _formRevision++),
       applyFeedback: _applyFeedback(_applyKey(record), record: record),
       credentials: (expanded) => [
         for (final slot
@@ -864,6 +897,8 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
               key: ObjectKey(draft),
               draft: draft,
               modelProviders: widget.modelProviders,
+              discoverModels: widget.discoverModels,
+              catalogScope: _catalogScope,
               active: widget.active && expanded,
               enabled: enabled,
               onChanged: () => setState(() {}),
@@ -897,6 +932,7 @@ final class _RecordDraft {
   final RecordView? record;
   final id = TextEditingController();
   final present = <RecordFieldId>{};
+  final presenceRevisions = <RecordFieldId, int>{};
   final values = <RecordFieldId, Object?>{};
   final text = <RecordFieldId, TextEditingController>{};
   final markdown = <RecordFieldId, NativeRichDocumentEditor>{};
@@ -972,6 +1008,8 @@ final class _RecordForm extends StatelessWidget {
     super.key,
     required this.draft,
     required this.modelProviders,
+    required this.discoverModels,
+    required this.catalogScope,
     required this.active,
     required this.enabled,
     required this.onChanged,
@@ -981,6 +1019,8 @@ final class _RecordForm extends StatelessWidget {
 
   final _RecordDraft draft;
   final DiscoverModelProviders? modelProviders;
+  final DiscoverModels? discoverModels;
+  final (int?, int) Function() catalogScope;
   final bool active;
   final bool enabled;
   final VoidCallback onChanged;
@@ -1059,7 +1099,15 @@ final class _RecordForm extends StatelessWidget {
             value: draft.present.contains(field.id),
             onChanged: enabled
                 ? (present) {
-                    if (draft.disposed) return;
+                    if (draft.disposed ||
+                        draft.present.contains(field.id) == (present == true)) {
+                      return;
+                    }
+                    draft.presenceRevisions.update(
+                      field.id,
+                      (n) => n + 1,
+                      ifAbsent: () => 1,
+                    );
                     if (present == true) {
                       draft.present.add(field.id);
                       if (field.type is IntegerSettingType) {
@@ -1120,14 +1168,14 @@ final class _RecordForm extends StatelessWidget {
               currentId: draft.text[field.id]!.text,
               enabled: enabled,
               onSelected: (id) {
-                if (draft.disposed || !draft.present.contains(field.id)) return;
-                draft.text[field.id]!.value = TextEditingValue(
-                  text: id,
-                  selection: TextSelection.collapsed(offset: id.length),
-                );
-                onChanged();
+                _select(field.id, id);
               },
             ),
+          if (field.editor == RecordFieldEditor.modelCatalog &&
+              active &&
+              enabled &&
+              draft.present.contains(field.id))
+            _catalogPicker(context, field),
           const SizedBox(height: 8),
         ],
         Wrap(
@@ -1165,6 +1213,38 @@ final class _RecordForm extends StatelessWidget {
       ],
     );
   }
+
+  Widget _catalogPicker(
+    BuildContext context,
+    RecordFieldDefinition<Object> field,
+  ) {
+    final provider = field.providerField!;
+    final route = ModalRoute.of(context);
+    Object scope() => (
+      catalogScope(),
+      draft.presenceRevisions[field.id],
+      draft.presenceRevisions[provider],
+    );
+    final captured = scope();
+    return ModelCatalogPicker(
+      key: ValueKey((field.id, captured)),
+      discover: discoverModels,
+      provider: draft.present.contains(provider) ? draft.text[provider] : null,
+      currentId: draft.text[field.id]!.text,
+      isCurrent: () =>
+          !draft.disposed && (route?.isActive ?? true) && scope() == captured,
+      onSelected: (id) => _select(field.id, id),
+    );
+  }
+
+  void _select(RecordFieldId field, String id) {
+    if (draft.disposed || !draft.present.contains(field)) return;
+    draft.text[field]!.value = TextEditingValue(
+      text: id,
+      selection: TextSelection.collapsed(offset: id.length),
+    );
+    onChanged();
+  }
 }
 
 final class _RecordDetails extends StatefulWidget {
@@ -1175,6 +1255,7 @@ final class _RecordDetails extends StatefulWidget {
     required this.onEdit,
     required this.onDelete,
     required this.credentials,
+    required this.onExpansionChanged,
     this.applyFeedback,
     this.editor,
     this.error,
@@ -1185,6 +1266,7 @@ final class _RecordDetails extends StatefulWidget {
   final VoidCallback? onEdit;
   final VoidCallback? onDelete;
   final List<Widget> Function(bool expanded) credentials;
+  final VoidCallback onExpansionChanged;
   final Widget? applyFeedback;
   final Widget Function(bool expanded)? editor;
   final String? error;
@@ -1202,7 +1284,10 @@ final class _RecordDetailsState extends State<_RecordDetails> {
     final definition = widget.definition;
     final details = ExpansionTile(
       maintainState: true,
-      onExpansionChanged: (expanded) => setState(() => _expanded = expanded),
+      onExpansionChanged: (expanded) {
+        setState(() => _expanded = expanded);
+        widget.onExpansionChanged();
+      },
       title: Text(_recordTitle(record, definition)),
       subtitle: Text('${definition.label} | ${record.id}'),
       childrenPadding: const EdgeInsets.all(16),

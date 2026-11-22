@@ -12,6 +12,8 @@ import 'package:adele_desktop/application.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/credential_service.dart';
 import 'package:adele_desktop/core/global_settings_service.dart';
+import 'package:adele_desktop/core/model_catalog_choices.dart';
+import 'package:adele_desktop/core/model_provider_choices.dart';
 import 'package:adele_desktop/core/prepared_records.dart'
     show StartupCredentialReader;
 import 'package:adele_desktop/core/prepared_settings.dart';
@@ -38,6 +40,9 @@ const _catalogConsumer = 'test.openai.catalog-consumer';
 const _chatGpt = 'dev.adele.openai.chatgpt-experimental';
 const _configurationService = 'dev.adele.openai.configuration';
 const _modelConfiguration = 'dev.adele.plugin.model-configuration';
+const _reviewRow = 'model-presets-review';
+const _workProvider = '$_recordType.work-openai';
+const _personalProvider = '$_recordType.personal-openai';
 
 void main() {
   late Directory artifacts;
@@ -93,6 +98,7 @@ void main() {
   Future<_ProviderFixture> prepareProviders({
     bool chatGpt = false,
     bool consumeCatalog = false,
+    bool withModelPresets = false,
   }) async {
     final temporary = await Directory.systemTemp.createTemp(
       'adele-configured-openai-',
@@ -103,6 +109,7 @@ void main() {
       repository,
       openaiArtifact,
       chatGpt: chatGpt,
+      withModelPresets: withModelPresets,
       consumerArtifact: consumeCatalog ? consumerArtifact : null,
     );
     return fixture;
@@ -119,18 +126,9 @@ void main() {
     testWidgets(
       name,
       (tester) => tester.runAsync(() async {
-        final fixture = await prepareProviders();
-        if (withModelPresets) {
-          // Editing definitions needs the published schema, not a Run backend.
-          await publishStockPluginInstallation(
-            repositoryRoot: repository,
-            installationDirectory: Directory(
-              '${fixture.installationRoot}/model-configuration',
-            ),
-            pluginId: _modelConfiguration,
-            displayName: 'Model Configuration',
-          );
-        }
+        final fixture = await prepareProviders(
+          withModelPresets: withModelPresets,
+        );
         final app = NativeAdeleRuntime(
           localStateRoot: () => fixture.roots.localStateRoot,
         );
@@ -199,57 +197,63 @@ void main() {
   }
 
   applicationScenario(
-    'Global Settings picks a live OpenAI inference route and preserves its '
-    'stored Provider ID after retirement',
+    'Global Settings picks a live OpenAI inference route and exact catalog '
+    'model, and saves a manual model after retirement',
     (ui, fixture, _) async {
-      const work = '$_recordType.work-openai';
-      const personal = '$_recordType.personal-openai';
-      const row = 'model-presets-review';
+      const exact = ' Work/MiX:v2+fast ';
+      fixture.catalogModels['/work/models'] = [exact];
       final dialog = ui.tester.widget<GlobalSettingsDialog>(
         find.byType(GlobalSettingsDialog),
       );
       final settings = await dialog.service();
-      await settings.createRecord(
-        RecordTypeId('$_modelConfiguration.preset'),
-        ConfigurationRecordId('review'),
-        {
-          'name': 'Review model',
-          'provider-id': personal,
-          'model-id': 'review-v1',
-        },
-      );
-
       final workBinding = fixture.capture('work').inference;
       expect(
         fixture.registry.providersFor(modelCatalogCapability),
         hasLength(2),
       );
-      await ui.section('Model Presets');
-      await ui.until(
-        () => ui.key('record-$row').evaluate().isNotEmpty,
-        'review preset',
-      );
-      await ui._tap(find.text('Review model'));
-      await ui.press('record-edit-$row');
+      await ui.editReviewPreset(settings, _personalProvider);
       final choose = find.text('Choose configured provider...');
-      final workChoice = ui.key('provider-choice-$work');
-      final personalChoice = ui.key('provider-choice-$personal');
+      final workChoice = ui.key('provider-choice-$_workProvider');
+      final personalChoice = ui.key('provider-choice-$_personalProvider');
       await ui._tap(choose);
       expect(
         dialog.modelProviders!(),
         unorderedEquals([
-          (id: personal, displayName: 'Personal OpenAI', pluginId: _openai),
-          (id: work, displayName: 'Work OpenAI', pluginId: _openai),
+          (
+            id: _personalProvider,
+            displayName: 'Personal OpenAI',
+            pluginId: _openai,
+          ),
+          (id: _workProvider, displayName: 'Work OpenAI', pluginId: _openai),
         ]),
       );
       expect(personalChoice, findsOneWidget);
       await ui._tap(workChoice);
       expect(workChoice, findsNothing);
-      await ui.press('record-save-$row');
-      await ui.until(() => ui._enabled('record-edit-$row'), 'saved preset');
-      expect(find.text('Provider ID: $work'), findsOneWidget);
+      expect(fixture.storage.calls, isEmpty);
+      expect(fixture.requests, isEmpty);
+      await ui._tap(find.text('Choose model...'));
+      await ui.waitForChoice(exact);
+      expect(ui.key('model-choice-personal-model'), findsNothing);
+      expect(ui.reviewField('model-id'), 'review-v1');
+      await ui.press('model-choice-$exact');
+      expect(ui.reviewField('model-id'), exact);
+      // A second Settings owner observes disk without revoking the UI revision.
+      Future<Map<String, Object>> persisted() async =>
+          (await fixture.settings.loadRecords(
+            RecordCollectionId('model-presets'),
+          )).records.single.values;
+      expect((await persisted())['model-id'], 'review-v1');
+      await ui.saveReviewPreset();
+      expect(find.text('Provider ID: $_workProvider'), findsOneWidget);
+      expect(await persisted(), {
+        'name': 'Review model',
+        'provider-id': _workProvider,
+        'model-id': exact,
+        'reasoning-effort': 'high',
+      });
 
-      await ui.press('record-edit-$row');
+      await ui.press('record-edit-$_reviewRow');
       await ui._tap(choose);
       expect(workChoice, findsOneWidget);
       // The Work configuration record still exists. Refresh must observe the
@@ -258,26 +262,131 @@ void main() {
       await ui._tap(find.text('Refresh providers'));
       expect(workChoice, findsNothing);
       expect(personalChoice, findsOneWidget);
-      expect(
-        ui.tester
-            .widget<TextField>(ui.key('record-input-$row-provider-id'))
-            .controller!
-            .text,
-        work,
-      );
+      expect(ui.reviewField('provider-id'), _workProvider);
+      await ui._tap(find.text('Choose model...'));
+      await ui.waitForUnavailableModels();
+      expect(ui.key('model-choice-$exact'), findsNothing);
+      expect(ui.reviewField('model-id'), exact);
+      const manual = ' Manual/unlisted ';
+      await ui._enter('record-input-$_reviewRow-model-id', manual);
+      await ui.saveReviewPreset();
       await ui.dismiss();
       final saved = await settings.loadRecords(
         RecordCollectionId('model-presets'),
       );
       expect(saved.records.single.values, {
         'name': 'Review model',
-        'provider-id': work,
-        'model-id': 'review-v1',
+        'provider-id': _workProvider,
+        'model-id': manual,
+        'reasoning-effort': 'high',
       });
-      expect(fixture.storage.calls, isEmpty);
-      expect(fixture.requests, isEmpty);
+      fixture.expectCatalogRequests(['work']);
     },
     withModelPresets: true,
+  );
+
+  testWidgets(
+    'Global Settings ignores a late Work catalog after switching to Personal '
+    'and requires fresh discovery after same-ID Personal replacement',
+    (tester) => tester.runAsync(() async {
+      final fixture = await prepareProviders(withModelPresets: true);
+      await fixture.start();
+      final ui = _ProviderSettings(tester);
+      final workGate = _HttpGate();
+      final personalGate = _HttpGate();
+      late Future<ModelDiscoveryResult> latestDiscovery;
+      try {
+        await tester.binding.setSurfaceSize(const Size(1100, 1000));
+        await tester.pumpWidget(
+          MaterialApp(
+            home: GlobalSettingsDialog(
+              service: () async => fixture.settings,
+              modelProviders: () => modelProviderChoices(fixture.registry),
+              discoverModels: (id) {
+                // Observe settlement of the actual picker request, not a second probe.
+                return latestDiscovery = discoverModelsForProvider(
+                  fixture.bootstrap,
+                  id,
+                );
+              },
+            ),
+          ),
+        );
+        await ui.until(() => ui._enabled('settings-reload'), 'Settings load');
+        await ui.editReviewPreset(fixture.settings, _workProvider);
+        fixture.responseGates['/work/models'] = workGate;
+        await ui._tap(find.text('Choose model...'));
+        await workGate.entered.future.timeout(const Duration(seconds: 10));
+        final work = latestDiscovery;
+        await ui._tap(find.text('Choose configured provider...'));
+        await ui.press('provider-choice-$_personalProvider');
+        expect(ui.reviewField('model-id'), 'review-v1');
+        fixture.expectCatalogRequests(['work']);
+
+        await ui._tap(find.text('Choose model...'));
+        await ui.waitForChoice('personal-model');
+        workGate.release();
+        expect(
+          (await work.timeout(const Duration(seconds: 10))).status,
+          ModelDiscoveryStatus.success,
+        );
+        await tester.pump();
+        expect(ui.key('model-choice-personal-model'), findsOneWidget);
+        expect(ui.key('model-choice-work-model'), findsNothing);
+        expect(ui.reviewField('provider-id'), _personalProvider);
+        expect(ui.reviewField('model-id'), 'review-v1');
+        fixture.expectCatalogRequests(['work', 'personal']);
+
+        final old = fixture.capture('personal');
+        fixture.responseGates['/personal/models'] = personalGate;
+        await ui._tap(find.text('Refresh models'));
+        await personalGate.entered.future.timeout(const Duration(seconds: 10));
+        final retired = latestDiscovery;
+        // The IDs, account and connection stay the same, not the registrations.
+        expect(
+          await fixture.refresh('personal-openai'),
+          _refreshResult('applied', 'replaced'),
+        );
+        old.expectReplacement(fixture.capture('personal'));
+        personalGate.release();
+        expect(
+          (await retired.timeout(const Duration(seconds: 10))).status,
+          ModelDiscoveryStatus.unavailable,
+        );
+        await ui.waitForUnavailableModels();
+        expect(ui.key('model-choice-personal-model'), findsNothing);
+        expect(ui.reviewField('model-id'), 'review-v1');
+        fixture.expectCatalogRequests(['work', 'personal', 'personal']);
+
+        const fresh = ' Personal/v2 ';
+        fixture.catalogModels['/personal/models'] = [fresh];
+        await ui._tap(find.text('Refresh models'));
+        await ui.waitForChoice(fresh);
+        await ui.press('model-choice-$fresh');
+        await ui.saveReviewPreset();
+        final saved = await fixture.settings.loadRecords(
+          RecordCollectionId('model-presets'),
+        );
+        expect(saved.records.single.values, {
+          'name': 'Review model',
+          'provider-id': _personalProvider,
+          'model-id': fresh,
+          'reasoning-effort': 'high',
+        });
+        fixture.expectCatalogRequests([
+          'work',
+          'personal',
+          'personal',
+          'personal',
+        ]);
+        expect(tester.takeException(), isNull);
+      } finally {
+        workGate.release();
+        personalGate.release();
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.binding.setSurfaceSize(null);
+      }
+    }),
   );
 
   applicationScenario(
@@ -2498,6 +2607,50 @@ final class _ProviderSettings {
 
   Future<void> press(String action) => _tap(key(action));
 
+  Future<void> editReviewPreset(
+    GlobalSettingsService settings,
+    String providerId,
+  ) async {
+    await settings.createRecord(
+      RecordTypeId('$_modelConfiguration.preset'),
+      ConfigurationRecordId('review'),
+      {
+        'name': 'Review model',
+        'provider-id': providerId,
+        'model-id': 'review-v1',
+        'reasoning-effort': 'high',
+      },
+    );
+    await section('Model Presets');
+    await until(
+      () => key('record-$_reviewRow').evaluate().isNotEmpty,
+      'review preset',
+    );
+    await _tap(find.text('Review model'));
+    await press('record-edit-$_reviewRow');
+  }
+
+  String reviewField(String field) => tester
+      .widget<TextField>(key('record-input-$_reviewRow-$field'))
+      .controller!
+      .text;
+
+  Future<void> waitForChoice(String id) =>
+      until(() => key('model-choice-$id').evaluate().isNotEmpty, '$id choice');
+
+  Future<void> waitForUnavailableModels() => until(
+    () => find
+        .text('Model discovery is unavailable for this provider.')
+        .evaluate()
+        .isNotEmpty,
+    'unavailable catalog',
+  );
+
+  Future<void> saveReviewPreset() async {
+    await press('record-save-$_reviewRow');
+    await until(() => _enabled('record-edit-$_reviewRow'), 'saved preset');
+  }
+
   Future<void> _enter(String field, String value) async {
     await tester.ensureVisible(key(field));
     await tester.enterText(key(field), value);
@@ -2635,6 +2788,26 @@ final class _ProviderFixture {
 
   CredentialReference reference(String id) => references[id]!;
 
+  void expectCatalogRequests(List<String> accounts) {
+    expect(storage.calls, List.filled(accounts.length, 'read'));
+    expect(storage.readReferences, [for (final id in accounts) reference(id)]);
+    expect(requests, [
+      for (final id in accounts)
+        {
+          'method': 'GET',
+          'authority': Uri.parse(
+            records[id]!.values['endpoint']! as String,
+          ).authority,
+          'path': '/$id/models',
+          'query': '',
+          'authorization': 'Bearer test-$id-key',
+          'account': null,
+          'accept': 'application/json',
+          'body': '',
+        },
+    ]);
+  }
+
   File recordFile(String id) =>
       File('${roots.configurationRoot}/providers/$id-openai.toml');
 
@@ -2642,6 +2815,7 @@ final class _ProviderFixture {
     Directory repository,
     File artifact, {
     required bool chatGpt,
+    required bool withModelPresets,
     File? consumerArtifact,
   }) async {
     server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
@@ -2735,9 +2909,11 @@ final class _ProviderFixture {
     }
 
     serverSubscription = server.listen(handle);
-    if (consumerArtifact != null) {
+    if (withModelPresets || consumerArtifact != null) {
       personalServer = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
       personalServerSubscription = personalServer!.listen(handle);
+    }
+    if (consumerArtifact != null) {
       final consumerDirectory = await Directory(
         '$installationRoot/catalog-consumer',
       ).create(recursive: true);
@@ -2777,6 +2953,17 @@ final class _ProviderFixture {
       displayName: 'OpenAI',
       backend: true,
     );
+    if (withModelPresets) {
+      // Editing definitions needs the published schema, not a Run backend.
+      await publishStockPluginInstallation(
+        repositoryRoot: repository,
+        installationDirectory: Directory(
+          '$installationRoot/model-configuration',
+        ),
+        pluginId: _modelConfiguration,
+        displayName: 'Model Configuration',
+      );
+    }
     final catalog = await PreparedPluginCatalog.discover(installationRoot);
     expect(catalog.issues, isEmpty);
     roots = PlatformStorageRoots(

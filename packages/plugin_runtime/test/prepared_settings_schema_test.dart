@@ -617,11 +617,15 @@ void main() {
       'maximum': 1,
     },
     'boolean bound': {..._definition(), 'minimum': 0},
-    for (final editor in ['markdown', 'model-provider'])
+    for (final editor in ['markdown', 'model-provider', 'model-catalog'])
       '$editor editor on scalar setting': {
         ..._definition(type: 'string', defaultValue: ''),
         'editor': editor,
       },
+    'providerField on scalar setting': {
+      ..._definition(type: 'string', defaultValue: ''),
+      'providerField': 'account',
+    },
     'string options': {
       ..._definition(type: 'string', defaultValue: ''),
       'options': <Object?>[],
