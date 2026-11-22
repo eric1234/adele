@@ -2965,7 +2965,14 @@ final class _ProviderFixture {
       );
     }
     final catalog = await PreparedPluginCatalog.discover(installationRoot);
-    expect(catalog.issues, isEmpty);
+    // A declaration-only preset installation cannot supply its Run preference
+    // source. That diagnostic must not prevent editing its records.
+    expect(
+      catalog.issues.map(
+        (i) => (i.pluginId?.value, i.isRunModelPreferenceSourceIssue),
+      ),
+      [if (withModelPresets) (_modelConfiguration, true)],
+    );
     roots = PlatformStorageRoots(
       operatingSystem: Platform.operatingSystem,
       configurationRoot: '${directory.path}/config',
