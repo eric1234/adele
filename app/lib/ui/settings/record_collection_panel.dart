@@ -1124,8 +1124,7 @@ final class _RecordForm extends StatelessWidget {
         '${definition.collection}${record == null ? '' : '-${record.id}'}';
     final errors = {
       for (final field in definition.fields)
-        if (draft.isIncluded(field))
-          if (draft._fieldError(field) case final message?) field.id: message,
+        if (draft.isIncluded(field)) field.id: ?draft._fieldError(field),
     };
     final scope = formScope();
     final route = ModalRoute.of(context);
