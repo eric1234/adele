@@ -2204,7 +2204,7 @@ void main() {
     for (final editor in [null, 'markdown', 'model-provider'])
       'providerField with $editor editor': {
         ..._field(),
-        if (editor != null) 'editor': editor,
+        'editor': ?editor,
         'providerField': 'route',
       },
     for (final bound in ['minimum', 'maximum'])
