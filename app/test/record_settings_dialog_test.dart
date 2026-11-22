@@ -137,13 +137,9 @@ void main() {
       _tap(tester, _key('records-add-jobs'));
 
   Future<void> fillRequired(WidgetTester tester, {String caption = ''}) async {
-    await _include(tester, 'caption');
     if (caption.isNotEmpty) await _enter(tester, _input('caption'), caption);
-    await _include(tester, 'enabled');
     await _choose(tester, _input('enabled'), 'False');
-    await _include(tester, 'count');
     await _enter(tester, _input('count'), '0');
-    await _include(tester, 'mode');
     await _choose(tester, _input('mode'), 'Compact label');
   }
 
@@ -469,7 +465,20 @@ void main() {
         final suffix = 'agents-$id';
         final recordFile = agentFile(id);
         expect(find.text('Agent'), findsOneWidget);
-        expect(_enabled(tester, createButton), isFalse);
+        // Both required fields accept empty strings, without any user input.
+        expect(_enabled(tester, createButton), isTrue);
+        expect(_key('record-presence-agents-name'), findsNothing);
+        expect(_key('record-presence-agents-instructions'), findsNothing);
+        final name = tester.widget<TextField>(_key('record-input-agents-name'));
+        expect(name.enabled, isTrue);
+        expect(name.decoration!.labelText, 'Name (Required)');
+        final instructions = tester.widget<InputDecorator>(
+          _instructions('agents'),
+        );
+        expect(instructions.decoration.labelText, 'Instructions (Required)');
+        final creation = _instructionsOwner(tester, 'agents');
+        expect(creation.editingEnabled, isTrue);
+        expect(creation.snapshot()['markdown'], '');
         const markdown = '```dart\nreport();\n```\n\nReview **risks**';
         const values = {
           'name': 'Reviewer',
@@ -477,25 +486,19 @@ void main() {
           'when-to-use': 'Before merging.',
           'instructions': markdown,
         };
-        for (final field in settings.records.definition(type).fields) {
-          final presence = _key('record-presence-agents-${field.id}');
-          final input = _key('record-input-agents-${field.id}');
+        await _enter(tester, _key('record-input-agents-name'), values['name']!);
+        for (final (field, label) in [
+          ('description', 'Description'),
+          ('when-to-use', 'When to Use'),
+        ]) {
+          final presence = _key('record-presence-agents-$field');
+          final input = _key('record-input-agents-$field');
           expect(tester.widget<CheckboxListTile>(presence).value, isFalse);
-          if (field.id.value == 'instructions') continue;
-          expect(
-            tester.widget<TextField>(input).decoration!.labelText,
-            field.label,
-          );
+          expect(tester.widget<TextField>(input).enabled, isFalse);
+          expect(tester.widget<TextField>(input).decoration!.labelText, label);
           await _tap(tester, presence);
-          await _enter(tester, input, values[field.id.value]!);
+          await _enter(tester, input, values[field]!);
         }
-        expect(_enabled(tester, createButton), isFalse);
-        await _tap(tester, _key('record-presence-agents-instructions'));
-        expect(
-          _enabled(tester, createButton),
-          isTrue,
-        ); // Present empty is valid.
-        final creation = _instructionsOwner(tester, 'agents');
         final state = await _selectInstructions(tester, 'agents');
         await native_input.insertAtSelection(tester, '```dart');
         await tester.sendKeyEvent(LogicalKeyboardKey.enter);
@@ -750,24 +753,12 @@ void main() {
         await open(tester);
         await _tap(tester, _key('records-add-agents'));
         final id = await inspectDraftId(tester);
-        for (final field in ['name', 'instructions']) {
-          await _tap(tester, _key('record-presence-agents-$field'));
-        }
         final create = tester
             .widget<ButtonStyleButton>(createButton)
             .onPressed!;
         final owner = _instructionsOwner(tester, 'agents');
         await _selectInstructions(tester, 'agents');
-        final initial = TextEditingValue.fromJSON(
-          tester.testTextInput.editingState!,
-        );
-        final at = initial.selection.start;
-        final composing = TextEditingValue(
-          text: initial.text.replaceRange(at, initial.selection.end, 'x'),
-          selection: TextSelection.collapsed(offset: at + 1),
-          composing: TextRange(start: at, end: at + 1),
-        );
-        await native_input.input(tester, composing);
+        final composing = await _compose(tester, 'x');
         expect(owner.snapshot()['error'], 'composition_pending');
         expect(_enabled(tester, createButton), isFalse);
         create();
@@ -776,11 +767,12 @@ void main() {
         expect(settings.creates, 0);
         expect(agentFile(id).existsSync(), isFalse);
         expect(_instructionsOwner(tester, 'agents'), same(owner));
-        final presence = _key('record-presence-agents-instructions');
-        await _richTap(tester, presence);
+        // Leaving the active form suspends input; it does not commit the IME.
+        await _richTap(tester, find.text('Back to records'));
         expect(owner.editingEnabled, isFalse);
         expect(owner.snapshot()['error'], 'composition_pending');
-        await _richTap(tester, presence);
+        await _richTap(tester, _key('records-add-agents'));
+        expect(_instructionsOwner(tester, 'agents'), same(owner));
         expect(owner.editingEnabled, isTrue);
         expect(_enabled(tester, createButton), isFalse);
         // Reattach input; only an actual settled delta can clear the fence.
@@ -843,6 +835,68 @@ void main() {
   }, skip: !Platform.isLinux);
 
   testWidgets(
+    'required empty Markdown persists; optional Markdown retains composition until committed or excluded',
+    (tester) => tester.runAsync(() async {
+      await mount(tester);
+      await openRecords(tester);
+      await add(tester);
+      await _choose(tester, _key('record-type-jobs'), 'Memo');
+      final id = await inspectDraftId(tester);
+      expect(_presence('body'), findsNothing);
+      final body = tester.widget<InputDecorator>(_input('body')).decoration;
+      expect(body.labelText, 'Body (Required)');
+      expect(body.enabled, isTrue);
+      expect(body.errorText, isNull);
+      expect(find.text('Memo text in Markdown.'), findsOneWidget);
+      final owner = _instructionsOwner(tester, 'jobs');
+      final presence = _presence('instructions');
+      expect(tester.widget<CheckboxListTile>(presence).value, isFalse);
+      expect(owner.editingEnabled, isFalse);
+      await _tap(tester, presence);
+      await _selectInstructions(tester, 'jobs');
+      final composing = await _compose(tester, 'x');
+      final button = _key('record-create-jobs');
+      expect(_enabled(tester, button), isFalse);
+      await _richTap(tester, presence);
+      expect(owner.editingEnabled, isFalse);
+      expect(owner.snapshot()['error'], 'composition_pending');
+      // Excluding the optional field makes Create possible without committing it.
+      expect(_enabled(tester, button), isTrue);
+      await _richTap(tester, presence);
+      expect(_instructionsOwner(tester, 'jobs'), same(owner));
+      expect(owner.editingEnabled, isTrue);
+      expect(_enabled(tester, button), isFalse);
+      await _selectInstructions(tester, 'jobs', offset: 1);
+      await native_input.input(tester, composing);
+      await native_input.input(
+        tester,
+        composing.copyWith(composing: TextRange.empty),
+      );
+      expect(_enabled(tester, button), isTrue);
+      await _richTap(tester, button);
+      await _loaded(tester);
+      expect(owner.isDisposed, isTrue);
+      expect(file(id).existsSync(), isTrue);
+      await _tap(tester, _key('records-reload-jobs'));
+      await _loaded(tester);
+      await _edit(tester, id);
+      final editing = _instructionsOwner(tester, 'jobs-$id');
+      expect(editing.snapshot()['markdown'], 'x');
+      final included = _editPresence(id, 'instructions');
+      expect(tester.widget<CheckboxListTile>(included).value, isTrue);
+      await _tap(tester, included);
+      expect(editing.editingEnabled, isFalse);
+      expect(editing.snapshot()['markdown'], 'x');
+      await save(tester, id);
+      final saved = (await service.loadRecords(_collection)).records.single;
+      expect(saved.id, ConfigurationRecordId(id));
+      expect(saved.values, {'body': ''});
+      await unmount(tester);
+    }),
+    skip: !Platform.isLinux,
+  );
+
+  testWidgets(
     'Global Settings persists published Model Presets without applying them',
     (tester) => tester.runAsync(() async {
       const pluginId = 'dev.adele.plugin.model-configuration';
@@ -883,11 +937,27 @@ void main() {
         await loaded();
       }
 
+      final queries = <String>[];
       await mount(
         tester,
         settingsService: settings,
         application: application,
         modelProviders: () => const [_firstProvider, _secondProvider],
+        discoverModels: (provider) async {
+          queries.add(provider);
+          return ModelDiscoveryResult.success(
+            ModelCatalogSnapshot(
+              models: [
+                ModelCatalogEntry(
+                  modelId: 'review-model-v1',
+                  displayName: 'Review model',
+                  description: null,
+                ),
+              ],
+            ),
+            isCurrent: () => true,
+          );
+        },
       );
       await _section(tester, 'Model Presets');
       await loaded();
@@ -918,29 +988,67 @@ void main() {
       expect(application.supports(key), isFalse);
       expect(find.text('Model Preset'), findsOneWidget);
       final create = _key('record-create-$collection');
-      for (final (field, label, value) in [
-        ('name', 'Name', 'Code Review'),
-        ('model-id', 'Model ID', 'review-model-v1'),
+      for (final (field, label) in [
+        ('name', 'Name'),
+        ('provider-id', 'Provider ID'),
+        ('model-id', 'Model ID'),
       ]) {
-        expect(find.text('Include $label (required)'), findsOneWidget);
-        expect(_enabled(tester, create), isFalse);
-        await _tap(tester, _key('record-presence-$collection-$field'));
-        await _enter(tester, _key('record-input-$collection-$field'), value);
+        expect(_key('record-presence-$collection-$field'), findsNothing);
+        final input = tester.widget<TextField>(
+          _key('record-input-$collection-$field'),
+        );
+        expect(input.decoration!.labelText, '$label (Required)');
+        expect(input.enabled, isTrue);
+        expect(input.controller!.text, '');
       }
-      expect(find.text('Include Provider ID (required)'), findsOneWidget);
-      expect(_enabled(tester, create), isFalse);
-      await _tap(tester, _key('record-presence-$collection-provider-id'));
+      for (final field in settings.records.definition(type).fields) {
+        if (field.description case final description?) {
+          expect(find.text(description), findsOneWidget);
+        }
+      }
       final providerInput = _key('record-input-$collection-provider-id');
-      expect(_text(tester, providerInput), ''); // No default provider.
-      expect(_enabled(tester, create), isTrue); // Present empty is a string.
+      final modelInput = _key('record-input-$collection-model-id');
+      final chooseModel = find.widgetWithText(TextButton, 'Choose model...');
+      expect(chooseModel, findsOneWidget);
+      expect(_enabled(tester, chooseModel), isFalse); // No default provider.
+      expect(_enabled(tester, create), isTrue); // Empty strings are present.
+      await _enter(
+        tester,
+        _key('record-input-$collection-name'),
+        'Code Review',
+      );
+      await _enter(tester, modelInput, 'Manual draft');
       expect(_choiceRow(creation, _secondProvider), findsNothing);
       await _tap(tester, find.text(_chooseProvider));
       for (final choice in [_firstProvider, _secondProvider]) {
         _expectChoice(tester, creation, choice, selected: false);
       }
+      final oldPick = tester
+          .widget<ListTile>(_choiceRow(creation, _firstProvider))
+          .onTap!;
+      final selectSection = tester
+          .widget<DropdownButtonFormField<String>>(_key('settings-section'))
+          .onChanged!;
+      selectSection('');
+      selectSection(collection.value);
+      oldPick(); // Leaving and returning before a frame still revokes the old row.
+      expect(_text(tester, providerInput), '');
+      await tester.pump();
+      if (_choiceRow(creation, _secondProvider).evaluate().isEmpty) {
+        await _tap(tester, find.text(_chooseProvider));
+      }
       await _tap(tester, _choiceRow(creation, _secondProvider));
       expect(_choiceRow(creation, _secondProvider), findsNothing);
       expect(_text(tester, providerInput), _secondProvider.id);
+      expect(_text(tester, modelInput), 'Manual draft');
+      expect(_enabled(tester, chooseModel), isTrue);
+      expect(queries, isEmpty);
+      await _tap(tester, chooseModel);
+      final modelChoice = _key('model-choice-review-model-v1');
+      await _until(tester, () => modelChoice.evaluate().isNotEmpty);
+      await _tap(tester, modelChoice);
+      expect(queries, [_secondProvider.id]);
+      expect(_text(tester, modelInput), 'review-model-v1');
       expect(settings.creates, 0);
       expect(Directory(roots.configurationRoot).existsSync(), isFalse);
       expect(find.text('Include Description (optional)'), findsOneWidget);
@@ -956,6 +1064,8 @@ void main() {
       expect(find.text('Reasoning Effort: Not provided'), findsOneWidget);
       final original = recordFile.readAsStringSync();
       expect(original, contains(_secondProvider.id));
+      expect(original, contains('review-model-v1'));
+      expect(original, isNot(contains('Review model')));
       expect(original, isNot(contains(_secondProvider.displayName)));
       expect(original, isNot(contains(_secondProvider.pluginId)));
       expect(original, isNot(contains('reasoning-effort')));
@@ -1070,6 +1180,7 @@ void main() {
       expect(find.text('Sibling'), findsOneWidget);
       expect(siblingFile.readAsBytesSync(), siblingBytes);
       expect(File(settings.filePath).existsSync(), isFalse);
+      expect(queries, [_secondProvider.id]); // No implicit catalog queries.
       await unmount(tester);
     }),
     skip: !Platform.isLinux,
@@ -1109,6 +1220,17 @@ void main() {
       await _tap(tester, find.text(_refreshProviders));
       _expectChoice(tester, form, replacement, selected: true);
       expect(tester.widget<ListTile>(second).selected, isFalse);
+
+      // An optional provider may leave and re-enter the draft before a frame.
+      final oldSelection = tester.widget<ListTile>(second).onTap!;
+      final presence = tester
+          .widget<CheckboxListTile>(_editPresence(id, 'destination'))
+          .onChanged!;
+      presence(false);
+      presence(true);
+      oldSelection();
+      expect(_text(tester, input), _firstProvider.id);
+      await tester.pump();
 
       choices = [_secondProvider];
       await _tap(tester, find.text(_refreshProviders));
@@ -1609,12 +1731,18 @@ void main() {
       await save(tester, 'original');
       expect(original.readAsBytesSync(), before);
       await _tap(tester, _key('record-edit-jobs-original'));
+      for (final field in ['caption', 'enabled', 'count', 'mode']) {
+        expect(_editPresence('original', field), findsNothing);
+      }
       await _enter(
         tester,
         _editInput('original', 'caption'),
         'Renamed\nSecond line',
       );
       await _choose(tester, _editInput('original', 'enabled'), 'True');
+      final saveBeforeInvalid = tester
+          .widget<ButtonStyleButton>(_key('record-save-jobs-original'))
+          .onPressed!;
       for (final invalid in ['', '1.5', '-1', '3', '9223372036854775808']) {
         await _enter(tester, _editInput('original', 'count'), invalid);
         expect(_enabled(tester, _key('record-save-jobs-original')), isFalse);
@@ -1626,11 +1754,23 @@ void main() {
           isNotNull,
         );
       }
+      saveBeforeInvalid();
+      await tester.pump();
+      expect(
+        service.updates,
+        1,
+      ); // Only the acknowledged no-op reached storage.
+      expect(original.readAsBytesSync(), before);
       await _enter(tester, _editInput('original', 'count'), '2');
       await _choose(tester, _editInput('original', 'mode'), 'Expanded label');
-      await _tap(tester, _editPresence('original', 'caption'));
-      expect(_enabled(tester, _key('record-save-jobs-original')), isFalse);
-      await _tap(tester, _editPresence('original', 'caption'));
+      expect(
+        tester
+            .widget<CheckboxListTile>(
+              _editPresence('original', 'optional-text'),
+            )
+            .value,
+        isTrue,
+      );
       await _tap(tester, _editPresence('original', 'optional-text'));
       for (final field in ['optional-bool', 'optional-int', 'optional-enum']) {
         await _tap(tester, _editPresence('original', field));
@@ -1817,7 +1957,6 @@ void main() {
       await _edit(tester, 'second');
       await _enter(tester, _editInput('second', 'caption'), 'Second draft');
       await add(tester);
-      await _include(tester, 'caption');
       await _enter(tester, _input('caption'), 'Creation draft');
       await _section(tester, 'Preferences');
       await _expectNoFocus(tester, ['record-', 'records-']);
@@ -2070,7 +2209,6 @@ void main() {
           .widget<ButtonStyleButton>(_key('record-save-jobs-first'))
           .onPressed!;
       await add(tester);
-      await _include(tester, 'caption');
       await _enter(tester, _input('caption'), 'Creation retained');
       final creation = tester.widget<TextField>(_input('caption')).controller;
       await _tap(tester, _key('records-reload-jobs'));
@@ -2481,7 +2619,7 @@ void main() {
   }
 
   testWidgets(
-    'all scalar forms require explicit presence and persist exact values',
+    'required scalar controls validate immediately and only included optional values persist',
     (tester) {
       return tester.runAsync(() async {
         await mount(tester);
@@ -2494,35 +2632,53 @@ void main() {
         expect(Directory(roots.configurationRoot).existsSync(), isFalse);
         await add(tester);
         final requiredId = await inspectDraftId(tester);
-        for (final field in ['caption', 'enabled', 'count', 'mode']) {
+        for (final (field, label) in [
+          ('caption', 'Caption'),
+          ('enabled', 'Enabled'),
+          ('count', 'Count'),
+          ('mode', 'Mode'),
+        ]) {
+          expect(_presence(field), findsNothing);
+          final decoration = _scalarDecoration(tester, _input(field));
+          expect(decoration.labelText, '$label (Required)');
+          expect(find.text('Help for $label.'), findsOneWidget);
+          // All three unset typed fields report their own error at the same time.
+          expect(
+            decoration.errorText,
+            field == 'caption' ? isNull : isNotEmpty,
+            reason: label,
+          );
+        }
+        const optional = [
+          'optional-text',
+          'optional-bool',
+          'optional-int',
+          'optional-enum',
+        ];
+        expect(find.byType(CheckboxListTile), findsNWidgets(optional.length));
+        for (final field in optional) {
           expect(
             tester.widget<CheckboxListTile>(_presence(field)).value,
             isFalse,
           );
+          expect(_scalarDecoration(tester, _input(field)).errorText, isNull);
         }
-        expect(
-          tester.widget<DropdownButton<bool>>(_input('enabled')).value,
-          isNull,
+        for (final field in ['caption', 'count']) {
+          final input = tester.widget<TextField>(_input(field));
+          expect(input.enabled, isTrue);
+          expect(input.controller!.text, '');
+        }
+        final boolean = tester.widget<DropdownButton<bool>>(_input('enabled'));
+        final enumeration = tester.widget<DropdownButton<String>>(
+          _input('mode'),
         );
-        expect(
-          tester.widget<DropdownButton<String>>(_input('mode')).value,
-          isNull,
-        );
-        expect(_enabled(tester, _key('record-create-jobs')), isFalse);
-        await _include(tester, 'caption');
-        // Required means presence, not a separate nonempty-string policy.
-        expect(
-          tester.widget<TextField>(_input('caption')).controller!.text,
-          '',
-        );
-        await _include(tester, 'enabled');
-        expect(
-          tester.widget<DropdownButton<bool>>(_input('enabled')).value,
-          isNull,
-        );
+        expect(boolean.onChanged, isNotNull);
+        expect(enumeration.onChanged, isNotNull);
+        expect(boolean.value, isNull);
+        expect(enumeration.value, isNull);
         expect(_enabled(tester, _key('record-create-jobs')), isFalse);
         await _choose(tester, _input('enabled'), 'False');
-        await _include(tester, 'count');
+        expect(_scalarDecoration(tester, _input('enabled')).errorText, isNull);
         for (final invalid in ['', '1.5', '-1', '3', '9223372036854775808']) {
           await _enter(tester, _input('count'), invalid);
           expect(
@@ -2532,14 +2688,18 @@ void main() {
           expect(_enabled(tester, _key('record-create-jobs')), isFalse);
         }
         await _enter(tester, _input('count'), '0');
-        await _include(tester, 'mode');
+        expect(_scalarDecoration(tester, _input('count')).errorText, isNull);
         expect(
           tester.widget<DropdownButton<String>>(_input('mode')).value,
           isNull,
         );
         expect(_enabled(tester, _key('record-create-jobs')), isFalse);
         await _choose(tester, _input('mode'), 'Compact label');
+        expect(_scalarDecoration(tester, _input('mode')).errorText, isNull);
         expect(_enabled(tester, _key('record-create-jobs')), isTrue);
+        expect(await inspectDraftId(tester), requiredId);
+        expect(service.creates, 0);
+        expect(file(requiredId).existsSync(), isFalse);
         await create(tester);
         final saved = (await service.loadRecords(_collection)).records.single;
         expect(saved.id, ConfigurationRecordId(requiredId));
@@ -2564,14 +2724,17 @@ void main() {
         await add(tester);
         final explicitId = await inspectDraftId(tester);
         await fillRequired(tester, caption: 'Two lines\nSecond line');
-        for (final field in [
-          'optional-text',
-          'optional-bool',
-          'optional-int',
-          'optional-enum',
-        ]) {
+        for (final field in optional) {
           await _include(tester, field);
         }
+        for (final field in optional) {
+          expect(
+            _scalarDecoration(tester, _input(field)).errorText,
+            field == 'optional-text' ? isNull : isNotEmpty,
+            reason: field,
+          );
+        }
+        expect(_enabled(tester, _key('record-create-jobs')), isFalse);
         expect(
           tester.widget<DropdownButton<bool>>(_input('optional-bool')).value,
           isNull,
@@ -2617,7 +2780,6 @@ void main() {
       await openRecords(tester);
       await add(tester);
       final jobId = await inspectDraftId(tester);
-      await _include(tester, 'caption');
       await _enter(tester, _input('caption'), 'Retained record');
       final recordElement = tester.element(_input('caption'));
       final recordController = tester
@@ -2676,23 +2838,48 @@ void main() {
   });
 
   testWidgets(
-    'creating one type retains the other type draft and controls',
+    'type switching fences old controls and sibling creation retains the other draft',
     (tester) {
       return tester.runAsync(() async {
         await mount(tester);
         await openRecords(tester);
         await add(tester);
         final jobId = await inspectDraftId(tester);
-        await _include(tester, 'caption');
-        await _enter(
-          tester,
-          _input('caption'),
-          'Retained across sibling creation',
-        );
+        await _include(tester, 'optional-text');
+        await fillRequired(tester, caption: 'Retained across sibling creation');
         final element = tester.element(_input('caption'));
         final controller = tester
             .widget<TextField>(_input('caption'))
             .controller;
+        final oldBoolean = tester
+            .widget<DropdownButton<bool>>(_input('enabled'))
+            .onChanged!;
+        final oldMode = tester
+            .widget<DropdownButton<String>>(_input('mode'))
+            .onChanged!;
+        final oldCreate = tester
+            .widget<ButtonStyleButton>(_key('record-create-jobs'))
+            .onPressed!;
+        final selectType = tester
+            .widget<DropdownButtonFormField<RecordTypeId>>(
+              _key('record-type-jobs'),
+            )
+            .onChanged!;
+        selectType(_note);
+        oldBoolean(true);
+        selectType(_job);
+        oldMode('expanded');
+        oldCreate();
+        expect(service.creates, 0);
+        await tester.pump();
+        expect(
+          tester.widget<DropdownButton<bool>>(_input('enabled')).value,
+          isFalse,
+        );
+        expect(
+          tester.widget<DropdownButton<String>>(_input('mode')).value,
+          'compact',
+        );
         await _choose(tester, _key('record-type-jobs'), 'Note');
         final noteId = await inspectDraftId(tester);
         await create(tester);
@@ -2708,9 +2895,10 @@ void main() {
         expect(controller!.text, 'Retained across sibling creation');
         expect(await inspectDraftId(tester), jobId);
         expect(
-          tester.widget<CheckboxListTile>(_presence('caption')).value,
+          tester.widget<CheckboxListTile>(_presence('optional-text')).value,
           isTrue,
         );
+        expect(_presence('caption'), findsNothing);
         expect(file(jobId).existsSync(), isFalse);
         await unmount(tester);
       });
@@ -2725,7 +2913,6 @@ void main() {
         await mount(tester);
         await openRecords(tester);
         await add(tester);
-        await _include(tester, 'caption');
         await _enter(tester, _input('caption'), 'Keep this');
         await _section(tester, 'Preferences');
         await _expectNoFocus(tester, ['record-', 'records-']);
@@ -2734,7 +2921,7 @@ void main() {
         await _expectNoFocus(tester, [
           'setting-',
           'record-input-jobs-caption',
-          'record-presence-jobs-caption',
+          'record-presence-jobs-optional-text',
         ]);
         await _choose(tester, _key('record-type-jobs'), 'Job');
         expect(
@@ -3363,6 +3550,7 @@ RecordCatalog _catalog() {
   }) => RecordFieldDefinition(
     id: RecordFieldId(id),
     label: label,
+    description: required ? 'Help for $label.' : null,
     type: type,
     required: required,
   );
@@ -3389,6 +3577,30 @@ RecordCatalog _catalog() {
         field('optional-bool', 'Optional boolean', const BooleanSettingType()),
         field('optional-int', 'Optional integer', IntegerSettingType()),
         field('optional-enum', 'Optional enumeration', enumeration),
+      ],
+    ),
+    RecordTypeDefinition(
+      id: RecordTypeId('dev.example.records.memo'),
+      owner: PluginId('dev.example.records'),
+      collection: _collection,
+      collectionLabel: 'Jobs',
+      label: 'Memo',
+      fields: [
+        RecordFieldDefinition(
+          id: RecordFieldId('body'),
+          label: 'Body',
+          description: 'Memo text in Markdown.',
+          type: const StringSettingType(),
+          required: true,
+          editor: RecordFieldEditor.markdown,
+        ),
+        RecordFieldDefinition(
+          id: RecordFieldId('instructions'),
+          label: 'Instructions',
+          type: const StringSettingType(),
+          required: false,
+          editor: RecordFieldEditor.markdown,
+        ),
       ],
     ),
     RecordTypeDefinition(
@@ -3553,6 +3765,17 @@ void _expectChoice(
 
 String _text(WidgetTester tester, Finder input) =>
     tester.widget<TextField>(input).controller!.text;
+
+InputDecoration _scalarDecoration(WidgetTester tester, Finder input) {
+  final control = tester.widget(input);
+  if (control is TextField) return control.decoration!;
+  return tester
+      .widget<InputDecorator>(
+        find.ancestor(of: input, matching: find.byType(InputDecorator)),
+      )
+      .decoration;
+}
+
 Finder _input(String field) => _key('record-input-jobs-$field');
 Finder _presence(String field) => _key('record-presence-jobs-$field');
 Finder _editInput(String id, String field) =>
@@ -3593,6 +3816,19 @@ Future<rich.EditorState> _selectInstructions(
   await native_input.frames(tester);
   expect(tester.testTextInput.hasAnyClients, isTrue);
   return editor.editorState;
+}
+
+Future<TextEditingValue> _compose(WidgetTester tester, String text) async {
+  final initial = TextEditingValue.fromJSON(tester.testTextInput.editingState!);
+  final start = initial.selection.start;
+  final end = start + text.length;
+  final composing = TextEditingValue(
+    text: initial.text.replaceRange(start, initial.selection.end, text),
+    selection: TextSelection.collapsed(offset: end),
+    composing: TextRange(start: start, end: end),
+  );
+  await native_input.input(tester, composing);
+  return composing;
 }
 
 // A focused native caret may keep scheduling frames while we scroll to the action.

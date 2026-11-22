@@ -239,6 +239,20 @@ immutable when editing; renaming a record does not change its filename. Generati
 belongs to the panel: [headless callers](../../packages/settings_host/README.md#configuration-records)
 still supply an explicit, validated `ConfigurationRecordId` to `create`.
 
+Create and Edit use the same declaration-generated form. Required fields are
+marked **(Required)**. Edit them directly, without an **Include** checkbox. Required
+means present, not nonblank. Leaving a required string or Markdown document empty
+submits an empty string. In a new record, a required Boolean or enum has no
+preselected choice, and a required integer starts blank.
+
+Optional fields start excluded in Add. Select **Include** to supply one; clear
+it to omit the field on Create or remove it on Save. An included empty string,
+`false` or `0` is a value, not absence. **Create** and **Save** stay disabled
+while any included field has an error, such as an unchosen Boolean or an integer
+outside its declared bounds. Edit restores the saved values and optional field
+selections without exposing unknown persisted fields. Malformed entries have no
+mutation UI.
+
 **Back to records**, switching types and navigating between Settings sections keep
 the draft's original ID and field values. Only a confirmed **Create** automatically
 resets the successful type's draft; other types' drafts are untouched. A collision
@@ -249,11 +263,6 @@ records using the original ID: an unconfirmed write may have succeeded. Reload d
 not change the ID in the retained draft. After a successful Reload, **Discard and
 start new draft** replaces only the affected draft with a blank one and a new ID.
 It does not write a record. Settings never retries Create automatically.
-
-Create and Edit use the same declaration-generated field controls. Neither infers
-defaults: absence stays distinct from false, zero and empty strings. Edit initializes
-only declared values and their presence, not controls for unknown persisted content.
-Malformed entries have no mutation UI.
 
 Each existing record has a separate draft retained through details collapse and
 ordinary Settings navigation; Cancel editing discards only that record's draft.

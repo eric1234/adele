@@ -244,7 +244,12 @@ void main() {
           (await fixture.settings.loadRecords(
             RecordCollectionId('model-presets'),
           )).records.single.values;
-      expect((await persisted())['model-id'], 'review-v1');
+      expect(await persisted(), {
+        'name': 'Review model',
+        'provider-id': _personalProvider,
+        'model-id': 'review-v1',
+        'reasoning-effort': 'high',
+      });
       await ui.saveReviewPreset();
       expect(find.text('Provider ID: $_workProvider'), findsOneWidget);
       expect(await persisted(), {
@@ -2709,13 +2714,9 @@ final class _ProviderSettings {
 
   Future<String> draftAccount(String name, String endpoint) async {
     await press('records-add-providers');
-    for (final (field, value) in [
-      ('display-name', name),
-      ('endpoint', endpoint),
-    ]) {
-      await press('record-presence-providers-$field');
-      await _enter('record-input-providers-$field', value);
-    }
+    await _enter('record-input-providers-display-name', name);
+    await press('record-presence-providers-endpoint');
+    await _enter('record-input-providers-endpoint', endpoint);
     return inspectDraftId(tester);
   }
 

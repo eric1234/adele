@@ -10,15 +10,17 @@ choice when a new Run is prepared.
 ## Choosing a Model Preset
 
 1. Open **Global Settings → Model Presets**. Choose **Add** or edit an existing
-   preset. Include **Name**, **Provider ID**, and **Model ID**.
-   Type the Provider ID or use **Choose configured provider...**. If several rows
-   have the same display name, compare their full IDs and owning plugins. Picking
-   a row copies its stable Provider ID, not its name, into the unsaved field.
+   preset. Enter **Name**, **Provider ID**, and **Model ID** directly; these
+   required fields have no **Include** checkbox. Type the Provider ID or use
+   **Choose configured provider...**. If several rows have the same display
+   name, compare their full IDs and owning plugins. Picking a row copies its
+   stable Provider ID, not its name, into the unsaved field.
    Type the model ID or use **Choose model...** to query the catalog associated
    with that exact provider registration. Select a model by its ID; its display
    name is only a label. Switching providers clears old suggestions but leaves
-   the model ID and reasoning effort alone. **Create** or **Save** stores the
-   draft; neither selects it for a Session.
+   the model ID and reasoning effort alone. Use **Include** for **Description**
+   or **Reasoning Effort** only if you want to supply them. **Create** or **Save**
+   stores the draft; neither selects it for a Session.
 2. In a Session that shows execution configuration, open **Model Preset** and
    choose the saved preset. Opening the choices reads the current catalog.
    **Refresh** rereads both the definitions and this Session's selection, for

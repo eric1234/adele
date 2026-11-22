@@ -13,13 +13,13 @@ declares the `agents` collection (Agents) and record type
 | `when-to-use` | Guidance about when the Agent is appropriate. | Optional |
 | `instructions` | Agent instructions. Only this field declares `"editor": "markdown"`. | Required |
 
-In Global Settings, edit instructions with the native rich Markdown editor;
-the other three fields use ordinary text controls. All fields are strings. The
-editor hint does not change how instructions are stored or returned by the
-catalog. Required means present, not nonblank. Optional
-absence remains distinct from an explicitly empty string. **Add** generates the
-Agent's immutable record ID; enter a name, not an ID. To copy the ID, open
-**Advanced details** in Add or expand the saved Agent's details.
+In **Global Settings > Agents**, choose **Add**. Enter **Name** directly and
+write **Instructions** in the rich Markdown editor; neither needs an **Include**
+step. Both are strings and may be empty. Use **Include** only for **Description**
+or **When to Use**: leaving one unchecked omits it rather than saving an empty
+string. Choose **Create** to save the definition, not to select it for a Session.
+Settings generates the Agent's immutable ID. To copy it, open **Advanced details**
+in Add or expand the saved Agent's details.
 
 These are ordinary global configuration records managed by the existing generic
 Global Settings UI and host persistence. See the

@@ -1145,15 +1145,6 @@ void main() {
           expect(tester.element(folding), same(foldingElement));
           expect(tester.widget<Switch>(folding).value, isTrue);
           expect(find.text('Advanced details'), findsOneWidget);
-          for (final key in [
-            'record-presence-providers-display-name',
-            'record-presence-providers-saved-openai-display-name',
-          ]) {
-            expect(
-              tester.widget<CheckboxListTile>(find.byKey(ValueKey(key))).value,
-              isTrue,
-            );
-          }
           for (final draft in recordDrafts) {
             expect(tester.element(draft.input), same(draft.element));
             expect(tester.state(draft.input), same(draft.state));
@@ -9123,14 +9114,11 @@ Future<String> _providerRecordDraft(WidgetTester tester, String name) async {
     'record collection is ready for creation',
   );
   await _terminalTap(tester, add);
-  await _terminalTap(
-    tester,
-    find.byKey(const ValueKey('record-presence-providers-display-name')),
+  final input = find.byKey(
+    const ValueKey('record-input-providers-display-name'),
   );
-  await tester.enterText(
-    find.byKey(const ValueKey('record-input-providers-display-name')),
-    name,
-  );
+  await tester.ensureVisible(input);
+  await tester.enterText(input, name);
   await tester.pump();
   return inspectDraftId(tester);
 }
