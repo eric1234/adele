@@ -22,20 +22,15 @@
           "required": false
         },
         {
-          "id": "provider-id",
-          "label": "Provider ID",
-          "description": "Stable ProviderId of one configured ModelProvider instance, not a vendor name or plugin ID.",
-          "type": "string",
-          "editor": "model-provider",
-          "required": true
-        },
-        {
-          "id": "model-id",
-          "label": "Model ID",
-          "description": "Exact model identifier expected by that provider.",
-          "type": "string",
-          "editor": "model-catalog",
-          "providerField": "provider-id",
+          "id": "model",
+          "label": "Model",
+          "description": "The configured provider instance and its exact model identifier.",
+          "type": "struct",
+          "properties": [
+            {"id": "provider-id", "type": "string"},
+            {"id": "model-id", "type": "string"}
+          ],
+          "editor": {"extensionId": "dev.adele.plugin.model-configuration.model-reference"},
           "required": true
         },
         {

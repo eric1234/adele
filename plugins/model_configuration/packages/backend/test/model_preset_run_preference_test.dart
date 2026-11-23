@@ -194,8 +194,7 @@ ModelPresetDefinition _preset({
   presetId: id,
   name: 'review',
   description: _private,
-  providerId: provider,
-  modelId: model,
+  model: ModelPresetModelReference(providerId: provider, modelId: model),
   reasoningEffort: effort,
 );
 

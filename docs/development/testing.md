@@ -576,13 +576,11 @@ exercise Model Preset wire validation, live record projection and conditional
 Session selection. Run `dart tools/adele.dart test --target model_configuration_frontend`
 for the compiled selector: stable choices, incomplete observations, failed
 reads, unacknowledged changes, revision checks, and retired presentations.
-For guided Model ID editing, use `record_settings_dialog_test.dart` for the
-generic form's sibling-field reference, draft lifetime, manual entry, and
-out-of-order requests. The `core/backend_capability_integration_test.dart`
-fixture exercises exact registration provenance; the Global Settings cases in
-`core/openai_record_startup_integration_test.dart` use two real configured
-providers, isolated credentials and loopback catalog responses. An explicit
-model query may authenticate, but opening Settings or saving a preset must not.
+For the structured field editor, run `test/prepared_settings_field_editor_test.dart`
+from `app/` to exercise the compiled proposal boundary, draft lifetime and exact
+owner. The Model Configuration frontend target exercises the stock presentation;
+the `adele_settings_host` target checks native subtable persistence and conflicts.
+Opening Settings or saving a preset must not authenticate or query a provider.
 From `app/`, run
 `flutter test --no-pub test/core/model_preset_integration_test.dart` to cross
 the prepared frontend/backend boundary with real Settings and Project storage.

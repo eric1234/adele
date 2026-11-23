@@ -218,10 +218,13 @@ class _ModelPresetSelectorState extends State<_ModelPresetSelector> {
     final preset = presets[id];
     if (preset == null) return;
     final provider = compactDisplayText(
-      preset.providerId,
+      preset.model.providerId,
       maximumCharacters: 40,
     );
-    final model = compactDisplayText(preset.modelId, maximumCharacters: 40);
+    final model = compactDisplayText(
+      preset.model.modelId,
+      maximumCharacters: 40,
+    );
     final effort = preset.reasoningEffort ?? 'unspecified';
     widgets.add(Text('Configured provider: $provider'));
     widgets.add(Text('Configured model: $model'));

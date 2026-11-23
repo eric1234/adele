@@ -23,13 +23,14 @@ final class AdeleBackendRecords {
 
   static const maxRecords = 256;
   static const maxFields = 128;
+  static const maxProperties = 16;
   static const maxLocalIdLength = 64;
   static const maxTypeIdLength = 256;
   static const maxStringLength = 64 * 1024;
   static const maxJsonBytes = 1024 * 1024;
 
   /// Deeply copied, unmodifiable entries with exactly collection/type/id/values.
-  /// Values are string-keyed maps containing only bool, int and String scalars.
+  /// Each field is a scalar or one flat, nonempty map of scalar properties.
   final List<Map<String, Object>> records;
 }
 
@@ -50,6 +51,39 @@ List<Map<String, Object>> adeleCopyBackendRecords(Object? records) {
   final identities = <(String, String)>{};
   // Include outer list brackets; budget each entry before retaining it.
   var jsonBytes = 2;
+  // Count each bounded member, including JSON escaping, before retaining it.
+  // Never encode a whole caller-supplied map (it could even be cyclic).
+  void charge(int bytes) {
+    jsonBytes += bytes;
+    if (jsonBytes > AdeleBackendRecords.maxJsonBytes) {
+      throw const FormatException(
+        'Backend records exceed the JSON byte limit.',
+      );
+    }
+  }
+
+  Object copyScalar(Object? value) {
+    if (value is! bool && value is! int && value is! String) {
+      throw const FormatException('Backend record contains an invalid scalar.');
+    }
+    if (value is String && value.length > AdeleBackendRecords.maxStringLength) {
+      throw const FormatException('Backend record string exceeds the limit.');
+    }
+    charge(utf8.encode(jsonEncode(value)).length);
+    return value!;
+  }
+
+  String memberKey(Object? key, {required bool first}) {
+    if (!_localId(key)) {
+      throw const FormatException(
+        'Backend record has an invalid field or property ID.',
+      );
+    }
+    // Local IDs are ASCII without escapes. Include quotes, colon and comma.
+    charge((key as String).length + (first ? 3 : 4));
+    return key;
+  }
+
   for (final record in records) {
     if (record is! Map ||
         record.length != 4 ||
@@ -88,35 +122,26 @@ List<Map<String, Object>> adeleCopyBackendRecords(Object? records) {
       'id': id,
       'values': values,
     };
-    jsonBytes += utf8.encode(jsonEncode(entry)).length;
-    if (copied.isNotEmpty) jsonBytes++;
+    charge(utf8.encode(jsonEncode(entry)).length + (copied.isEmpty ? 0 : 1));
     for (final field in rawValues.entries) {
-      final key = field.key;
+      final key = memberKey(field.key, first: values.isEmpty);
       final value = field.value;
-      if (!_localId(key)) {
-        throw const FormatException('Backend record has an invalid field ID.');
+      if (value is Map) {
+        if (value.isEmpty || value.length > AdeleBackendRecords.maxProperties) {
+          throw const FormatException(
+            'Backend record structure has an invalid size.',
+          );
+        }
+        charge(2); // Braces.
+        final properties = <String, Object>{};
+        for (final property in value.entries) {
+          final id = memberKey(property.key, first: properties.isEmpty);
+          properties[id] = copyScalar(property.value);
+        }
+        values[key] = Map<String, Object>.unmodifiable(properties);
+      } else {
+        values[key] = copyScalar(value);
       }
-      if (value is! bool && value is! int && value is! String) {
-        throw const FormatException('Backend record values must be scalars.');
-      }
-      if (value is String &&
-          value.length > AdeleBackendRecords.maxStringLength) {
-        throw const FormatException('Backend record string exceeds the limit.');
-      }
-      // Count JSON escaping and UTF-8 bytes without encoding an unbounded aggregate.
-      jsonBytes += utf8.encode(jsonEncode({key: value})).length - 2;
-      if (values.isNotEmpty) jsonBytes++;
-      if (jsonBytes > AdeleBackendRecords.maxJsonBytes) {
-        throw const FormatException(
-          'Backend records exceed the JSON byte limit.',
-        );
-      }
-      values[key as String] = value as Object;
-    }
-    if (jsonBytes > AdeleBackendRecords.maxJsonBytes) {
-      throw const FormatException(
-        'Backend records exceed the JSON byte limit.',
-      );
     }
     entry['values'] = Map<String, Object>.unmodifiable(values);
     copied.add(Map<String, Object>.unmodifiable(entry));

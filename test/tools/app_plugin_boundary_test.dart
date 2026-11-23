@@ -64,7 +64,7 @@ Future<void> main() async {
   });
 
   test(
-    'Model Preset selector uses only its public presentation dependencies',
+    'Model Preset frontend uses only its public presentation dependencies',
     () {
       final root = Directory('plugins/model_configuration/packages/frontend');
       final manifest =

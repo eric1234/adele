@@ -131,6 +131,8 @@ any remaining credential entries as described below.
 Desired-field validation happens before document edits or filesystem access.
 Unknown desired keys produce `ConfigurationRecordFormatException`; invalid known
 values and unsupported document edits produce `InvalidRecordValue` before writing.
+This includes an incomplete structured value or an undeclared component in a
+desired value. A component is never merged from the snapshot to fill a gap.
 These known prewrite failures leave the snapshot usable for a corrected update.
 Do not infer prewrite safety from `ConfigurationRecordFormatException` alone:
 filesystem alias checks use the same exception and remain a separate failure.
@@ -155,10 +157,24 @@ The collection and filename supply stable identity; no editable ID is duplicated
 inside the document. Renaming the display name never relocates the file. The header
 requires integer version `1`, a declared type belonging to the exact collection,
 and a regular `values` table (not an inline table or array). Values are literal
-field keys. Unknown header/values content is not interpreted. Unsupported known
-structures, missing required fields and invalid scalars fail rather than repairing
-the file or silently substituting defaults. The shared public scalar validator owns
-type, integer-bound and enum checks; there is no endpoint/provider-specific logic.
+field keys. Unknown header/values content is not interpreted. A structured field
+occupies a regular subtable, with one scalar entry per declared component. For
+example, a Model Preset stores its `model` field as:
+
+```toml
+[values.model]
+provider-id = "dev.example.provider.work"
+model-id = "Team-A/Research:V2"
+```
+
+Only declared components appear in `snapshot.values['model']`. An update edits
+those leaves in declaration order on the original native document. It does not
+replace the subtable: comments, unknown components and unrelated tables follow
+the same preservation rules as scalar edits. Both identifiers are saved with
+the rest of the record in one conditional write. Inline tables, arrays, missing
+required components and invalid known values fail rather than being repaired or
+defaulted. The shared public field validator owns type, integer-bound and enum
+checks; there is no endpoint/provider-specific logic.
 Use an explicit `[values]` table for optional-only records: removing the last
 dotted key can discard its implicit parent in the native editor. Such an update
 fails with `InvalidRecordValue` before saving, including when a later field edit

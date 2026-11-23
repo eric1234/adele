@@ -117,11 +117,9 @@ final class ConfigurationRecordStore {
       'recordVersion = 1\nrecordType = ""\n\n[values]\n',
     ).setScalar(['recordType'], type.id.value);
     for (final field in type.fields) {
-      if (validated.containsKey(field.id.value)) {
-        document = document.setScalar([
-          'values',
-          field.id.value,
-        ], validated[field.id.value]!);
+      final value = validated[field.id.value];
+      if (value != null) {
+        document = _setField(document, field, value);
       }
     }
     await _checkIdentity(type.collection, id);
@@ -140,10 +138,10 @@ final class ConfigurationRecordStore {
     var document = expected.document;
     try {
       for (final field in expected.type.fields) {
-        final path = ['values', field.id.value];
-        document = validated.containsKey(field.id.value)
-            ? document.setScalar(path, validated[field.id.value]!)
-            : document.removeScalar(path);
+        final value = validated[field.id.value];
+        document = value == null
+            ? document.removeScalar(['values', field.id.value])
+            : _setField(document, field, value);
       }
       document.requireTable(['values']);
     } on TomlException catch (error) {
@@ -153,7 +151,7 @@ final class ConfigurationRecordStore {
         expected.collection,
         expected.id,
         null,
-        'The edit must preserve supported scalar structure and a regular '
+        'The edit must preserve the declared field structure and a regular '
         '[values] table: ${error.message}',
       );
     }
@@ -172,6 +170,23 @@ final class ConfigurationRecordStore {
       credentials: expected.credentials,
       hasCredentialEntries: expected.hasCredentialEntries,
     );
+  }
+
+  TomlDocument _setField(
+    TomlDocument document,
+    RecordFieldDefinition<Object> field,
+    Object validated,
+  ) {
+    final path = ['values', field.id.value];
+    if (field.type case StructuredRecordFieldType(:final properties)) {
+      final components = validated as Map<String, Object>;
+      var edited = document.ensureTable(path);
+      for (final key in properties.keys) {
+        edited = edited.setScalar([...path, key.value], components[key.value]!);
+      }
+      return edited;
+    }
+    return document.setScalar(path, validated);
   }
 
   /// Changes only one declared nonsecret association, conditional on the same
@@ -340,14 +355,30 @@ final class ConfigurationRecordStore {
     }
     final values = <String, Object?>{};
     for (final field in type.fields) {
+      final path = ['values', field.id.value];
       try {
-        values[field.id.value] = document.readScalar([
-          'values',
-          field.id.value,
-        ]);
+        if (field.type case StructuredRecordFieldType(:final properties)) {
+          document.requireTable(path);
+          final components = <String, Object>{};
+          for (final key in properties.keys) {
+            try {
+              components[key.value] = document.readScalar([...path, key.value]);
+            } on TomlException catch (error) {
+              throw InvalidRecordValue(
+                collection,
+                id,
+                field.id,
+                'Property "$key": ${error.message}',
+              );
+            }
+          }
+          values[field.id.value] = components;
+        } else {
+          values[field.id.value] = document.readScalar(path);
+        }
       } on TomlException catch (error) {
-        // requireTable above establishes the parent. Only a missing leaf is
-        // absence; unsupported known structures must never be repaired away.
+        // The values table exists. Only a missing field may be absent; a
+        // present structured field must have every declared property.
         if (error.kind == TomlFailureKind.path) continue;
         throw InvalidRecordValue(collection, id, field.id, error.message);
       }

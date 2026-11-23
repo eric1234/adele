@@ -1882,9 +1882,8 @@ RecordFieldDefinition<Object> _recordFieldDefinition(
     'type',
     'required',
     'editor',
-    if (kind == 'string') 'providerField',
-    if (kind == 'integer') ...['minimum', 'maximum'],
-    if (kind == 'enum') 'options',
+    if (kind == 'struct') 'properties',
+    ..._scalarConstraintKeys(kind),
   });
   final required = value['required'];
   if (required is! bool) {
@@ -1904,21 +1903,48 @@ RecordFieldDefinition<Object> _recordFieldDefinition(
             PreparedRecordsSchema.maxDescriptionLength,
           )
         : null,
-    type: _scalarType(
-      value,
-      label,
-      maxEnumOptions: PreparedRecordsSchema.maxEnumOptions,
-      maxLabelLength: PreparedRecordsSchema.maxLabelLength,
-    ),
+    type: kind == 'struct'
+        ? _structuredRecordType(value['properties'], '$label.properties')
+        : _recordScalarType(value, label),
     required: required,
     editor: value.containsKey('editor')
         ? _recordFieldEditor(value['editor'], '$label.editor')
         : null,
-    providerField: value.containsKey('providerField')
-        ? RecordFieldId(_text(value['providerField'], '$label.providerField'))
-        : null,
   );
 }
+
+StructuredRecordFieldType _structuredRecordType(Object? value, String label) {
+  const max = StructuredRecordFieldType.maxProperties;
+  if (value is! List<Object?> || value.isEmpty || value.length > max) {
+    throw FormatException('$label must be an array with 1..$max entries.');
+  }
+  final properties = <RecordFieldId, SettingType<Object>>{};
+  for (var i = 0; i < value.length; i++) {
+    final property = value[i];
+    final path = '$label[$i]';
+    if (property is! Map<String, Object?>) {
+      throw FormatException('$path must be an object.');
+    }
+    final kind = _text(property['type'], '$path.type');
+    _object(property, path, {'id', 'type', ..._scalarConstraintKeys(kind)});
+    final id = RecordFieldId(_text(property['id'], '$path.id'));
+    if (properties.containsKey(id)) {
+      throw FormatException('$path duplicates property $id.');
+    }
+    properties[id] = _recordScalarType(property, path);
+  }
+  return StructuredRecordFieldType(properties);
+}
+
+SettingType<Object> _recordScalarType(
+  Map<String, Object?> value,
+  String label,
+) => _scalarType(
+  value,
+  label,
+  maxEnumOptions: PreparedRecordsSchema.maxEnumOptions,
+  maxLabelLength: PreparedRecordsSchema.maxLabelLength,
+);
 
 RecordFieldEditor _recordFieldEditor(Object? value, String label) {
   if (value is Map<String, Object?>) {
@@ -1935,8 +1961,6 @@ RecordFieldEditor _recordFieldEditor(Object? value, String label) {
   }
   return switch (value) {
     'markdown' => RecordFieldEditor.markdown,
-    'model-provider' => RecordFieldEditor.modelProvider,
-    'model-catalog' => RecordFieldEditor.modelCatalog,
     _ => throw FormatException(
       '$label must be a built-in editor name or an object with an extensionId.',
     ),
@@ -1961,8 +1985,7 @@ SettingDefinition<Object> _settingDefinition(
     'category',
     'section',
     'description',
-    if (kind == 'integer') ...['minimum', 'maximum'],
-    if (kind == 'enum') 'options',
+    ..._scalarConstraintKeys(kind),
   };
   _object(definition, label, allowed);
   return SettingDefinition(
@@ -2005,6 +2028,12 @@ SettingDefinition<Object> _settingDefinition(
     defaultValue: definition['default'],
   );
 }
+
+List<String> _scalarConstraintKeys(String kind) => switch (kind) {
+  'integer' => const ['minimum', 'maximum'],
+  'enum' => const ['options'],
+  _ => const [],
+};
 
 SettingType<Object> _scalarType(
   Map<String, Object?> definition,

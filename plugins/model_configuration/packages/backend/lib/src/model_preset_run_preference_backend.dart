@@ -46,8 +46,8 @@ final class ModelPresetRunPreferenceBackend
     );
     // The public value enforces ProviderId, exact model and effort semantics.
     return RemoteRunModelPreference(
-      providerId: preset.providerId,
-      modelId: preset.modelId,
+      providerId: preset.model.providerId,
+      modelId: preset.model.modelId,
       reasoningEffort: preset.reasoningEffort,
     );
   }

@@ -12,6 +12,7 @@ Map<String, Object?> _record({
 
 void main() {
   test('every entry path captures deeply immutable nonsecret values', () {
+    final properties = {'text': 'a', 'enabled': false, 'count': 1};
     final values = <String, Object>{
       'enabled': false,
       'count': 0,
@@ -19,6 +20,7 @@ void main() {
       'minimum': -9223372036854775808,
       'maximum': 9223372036854775807,
       'wide-integer': 9007199254740993,
+      'target': properties,
     };
     final record = _record(values: values);
     final source = [record];
@@ -33,6 +35,7 @@ void main() {
       AdeleBackendRecords(source).records,
       AdeleBackendRecords.fromBootstrap(bootstrap).records,
     ];
+    properties.clear();
     values.clear();
     record['id'] = 'changed';
     source.clear();
@@ -47,6 +50,7 @@ void main() {
       expect(() => copy.single['id'] = 'changed', throwsUnsupportedError);
       expect(copy.single.clear, throwsUnsupportedError);
       final fields = copy.single['values'] as Map<String, Object>;
+      expect((fields['target'] as Map).clear, throwsUnsupportedError);
       expect(fields.clear, throwsUnsupportedError);
       expect(() => fields['count'] = 9, throwsUnsupportedError);
     }
@@ -188,7 +192,7 @@ void main() {
     },
   );
 
-  test('rejects null, double, nested values and objects without coercion', () {
+  test('rejects malformed scalar or structured values without coercion', () {
     for (final value in <Object?>[
       null,
       0.0,
@@ -197,6 +201,17 @@ void main() {
       BigInt.one,
       [],
       {},
+      {'identifier': null},
+      {1: true},
+      {'invalid.id': true},
+      {
+        'more': {'levels': true},
+      },
+      {'too-long': 'x' * (AdeleBackendRecords.maxStringLength + 1)},
+      {
+        for (var i = 0; i <= AdeleBackendRecords.maxProperties; i++)
+          'key-$i': i,
+      },
       Object(),
     ]) {
       final source = [
@@ -255,6 +270,7 @@ void main() {
         final values = <String, Object>{
           for (var i = 0; i < 15; i++)
             'field-$i': character * (AdeleBackendRecords.maxStringLength ~/ 6),
+          'structure': {'a': character, 'b': 3, 'c': true},
           'padding': '',
         };
         final records = [_record(values: values)];

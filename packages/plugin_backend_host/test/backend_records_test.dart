@@ -87,7 +87,9 @@ void main() {
           null,
           1.0,
           [],
-          {'nested': marker},
+          {
+            'nested': {'too-deep': marker},
+          },
         ])
           {
             'records': [

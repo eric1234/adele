@@ -47,8 +47,14 @@ final class SettingOwnerId {
 }
 
 /// Closed, data-only scalar declarations. No caller-supplied validation behavior.
-sealed class SettingType<T extends Object> {
-  const SettingType._();
+sealed class SettingType<T extends Object> extends RecordFieldType<T> {
+  const SettingType._() : super._();
+
+  @override
+  (T?, String?) _checkedValue(Object? value) {
+    final error = _violation(value);
+    return error == null ? (value as T, null) : (null, error);
+  }
 
   T _validate(SettingId id, Object? value) {
     final violation = _violation(value);

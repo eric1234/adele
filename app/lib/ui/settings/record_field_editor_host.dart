@@ -113,8 +113,9 @@ final class _RecordFieldEditorHostState extends State<RecordFieldEditorHost>
     }
     final violation = widget.field.valueError(value);
     if (violation != null) return violation;
+    final snapshot = widget.field.snapshotValue(value);
     _revision++;
-    widget.acceptValue(value!);
+    widget.acceptValue(snapshot);
     return null;
   }
 

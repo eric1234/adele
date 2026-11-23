@@ -165,35 +165,20 @@ void main() {
     },
   );
 
-  const builtInEditors = [
-    RecordFieldEditor.markdown,
-    RecordFieldEditor.modelProvider,
-    RecordFieldEditor.modelCatalog,
-  ];
   final contributed = ContributedRecordFieldEditor(
     ExtensionId('org.example.editor'),
   );
-  for (final editor in [null, ...builtInEditors, contributed]) {
+  for (final editor in [null, RecordFieldEditor.markdown, contributed]) {
     test('${editor ?? 'no editor'} preserves strings and presence', () {
-      final provider = _field(
-        'account',
-        const StringSettingType(),
-        editor: RecordFieldEditor.modelProvider,
-      );
       for (final required in [false, true]) {
-        final reference = editor == RecordFieldEditor.modelCatalog
-            ? provider.id
-            : null;
         final field = _field(
           'text',
           const StringSettingType(),
           required: required,
           editor: editor,
-          providerField: reference,
         );
         expect(field.editor, editor);
-        expect(field.providerField, reference);
-        final type = _type(fields: [field, if (reference != null) provider]);
+        final type = _type(fields: [field]);
         for (final value in [
           '',
           'org.example.unavailable',
@@ -217,82 +202,129 @@ void main() {
     });
   }
 
-  test('only a modelCatalog declaration takes a providerField', () {
-    for (final editor in [null, ...builtInEditors, contributed]) {
-      expect(
-        () => _field(
-          'model',
-          const StringSettingType(),
-          editor: editor,
-          providerField: editor == RecordFieldEditor.modelCatalog
-              ? null
-              : RecordFieldId('account'),
-        ),
-        throwsA(
-          isA<ArgumentError>().having((e) => e.name, 'name', 'providerField'),
-        ),
-      );
-    }
-  });
-
-  test('providerField must identify a sibling modelProvider field', () {
-    final model = _field(
-      'chosen-model',
-      const StringSettingType(),
-      editor: RecordFieldEditor.modelCatalog,
-      providerField: RecordFieldId('account'),
-    );
-    for (final fields in <List<RecordFieldDefinition<Object>>>[
-      [model],
-      [model, _field('account', const StringSettingType())],
-      [model, _field('account', const BooleanSettingType())],
-      [
-        model,
-        _field(
-          'account',
-          const StringSettingType(),
-          editor: RecordFieldEditor.markdown,
-        ),
-      ],
-      [
-        _field(
-          'account',
-          const StringSettingType(),
-          editor: RecordFieldEditor.modelCatalog,
-          providerField: RecordFieldId('account'),
-        ),
-      ],
-    ]) {
-      expect(
-        () => _type(fields: fields),
-        throwsA(
-          isA<ArgumentError>().having((e) => e.name, 'name', 'providerField'),
-        ),
-      );
-    }
-  });
-
-  test('built-in editors reject boolean, integer and string-enum fields', () {
+  test('markdown rejects boolean, integer and string-enum fields', () {
     for (final type in <SettingType<Object>>[
       const BooleanSettingType(),
       IntegerSettingType(),
       EnumSettingType([SettingEnumOption('markdown')]),
     ]) {
       expect(_field('value', type).editor, isNull);
-      for (final editor in builtInEditors) {
+      expect(
+        () => _field('value', type, editor: RecordFieldEditor.markdown),
+        throwsA(isA<ArgumentError>().having((e) => e.name, 'name', 'editor')),
+      );
+    }
+  });
+
+  group('structured fields', () {
+    final properties = <RecordFieldId, SettingType<Object>>{
+      RecordFieldId('name'): const StringSettingType(),
+      RecordFieldId('mode'): EnumSettingType([SettingEnumOption('simple')]),
+      RecordFieldId('enabled'): const BooleanSettingType(),
+      RecordFieldId('count'): IntegerSettingType(minimum: 0, maximum: 3),
+    };
+    final struct = StructuredRecordFieldType(properties);
+    final field = _field('target', struct, required: true, editor: contributed);
+    final type = _type(fields: [field]);
+    const valid = {'count': 0, 'enabled': false, 'name': '', 'mode': 'simple'};
+
+    test(
+      'requires 1..16 scalar properties and a required, contributed field',
+      () {
+        final input = {
+          for (var i = 0; i < 16; i++)
+            RecordFieldId('k$i'): const StringSettingType(),
+        };
+        final declaration = StructuredRecordFieldType(input);
+        input[RecordFieldId('extra')] = const StringSettingType();
+        expect(() => StructuredRecordFieldType(input), throwsArgumentError);
+        expect(declaration.properties.length, 16);
+        expect(() => declaration.properties.clear(), throwsUnsupportedError);
+        expect(() => StructuredRecordFieldType({}), throwsArgumentError);
         expect(
-          () => _field(
-            'value',
-            type,
-            editor: editor,
-            providerField: editor == RecordFieldEditor.modelCatalog
-                ? RecordFieldId('account')
-                : null,
-          ),
-          throwsA(isA<ArgumentError>().having((e) => e.name, 'name', 'editor')),
+          () => _field('target', struct, editor: contributed),
+          throwsArgumentError,
+        );
+        for (final editor in [null, RecordFieldEditor.markdown]) {
+          expect(
+            () => _field('target', struct, required: true, editor: editor),
+            throwsArgumentError,
+          );
+        }
+        expect(
+          () => _type(fields: [field], displayField: field.id),
+          throwsArgumentError,
+        );
+      },
+    );
+
+    test('validation snapshots the complete value in declaration order', () {
+      final input = {...valid};
+      final snapshot =
+          type.validate(_record, {'target': input})['target']
+              as Map<String, Object>;
+      final fieldSnapshot = field.snapshotValue(input);
+      input.clear();
+      expect(snapshot.keys, ['name', 'mode', 'enabled', 'count']);
+      expect(snapshot, valid);
+      expect(fieldSnapshot, valid);
+      expect(() => snapshot['name'] = 'other', throwsUnsupportedError);
+      expect(() => fieldSnapshot.clear(), throwsUnsupportedError);
+      expect(field.valueError(valid), isNull);
+    });
+
+    test('rejects incomplete, extra, null, nested or invalid components', () {
+      for (final invalid in <Object?>[
+        null,
+        'not a map',
+        [valid],
+        {...valid}..remove('name'),
+        {...valid, 'extra': true},
+        {...valid, 1: 'bad key'}..remove('name'),
+        {...valid, 'name': null},
+        {
+          ...valid,
+          'name': {'nested': ''},
+        },
+        {...valid, 'name': <Object?>[]},
+        {...valid, 'enabled': 0},
+        {...valid, 'mode': 'other'},
+        {...valid, 'count': 4},
+        {...valid, 'count': 1.0},
+      ]) {
+        final error = field.valueError(invalid);
+        expect(error, isNotNull);
+        expect(() => field.snapshotValue(invalid), throwsArgumentError);
+        expect(
+          () => type.validate(_record, {'target': invalid}),
+          throwsA(_invalid('target', error!)),
         );
       }
-    }
+    });
+
+    test('bounds structured strings in UTF-16 code units, not code points', () {
+      final atLimit = '\u{1f600}' * (64 * 1024 ~/ 2);
+      expect(field.snapshotValue({...valid, 'name': atLimit})['name'], atLimit);
+      expect(field.valueError({...valid, 'name': '${atLimit}a'}), isNotNull);
+      expect(
+        _field('text', const StringSettingType()).valueError('${atLimit}a'),
+        isNull,
+      );
+    });
+
+    test('compares field snapshots by presence, keys and scalar values', () {
+      expect(recordFieldValuesEqual(valid, field.snapshotValue(valid)), isTrue);
+      expect(
+        recordFieldValuesEqual(valid, {...valid, 'enabled': true}),
+        isFalse,
+      );
+      expect(recordFieldValuesEqual({'x': 0}, {'y': 0}), isFalse);
+      expect(recordFieldValuesEqual(valid, {}), isFalse);
+      expect(recordFieldValuesEqual(valid, 'target'), isFalse);
+      expect(recordFieldValuesEqual(false, false), isTrue);
+      expect(recordFieldValuesEqual(null, null), isTrue);
+      expect(recordFieldValuesEqual(null, ''), isFalse);
+    });
   });
 
   test('a contributed editor does not change scalar validation', () {
@@ -739,10 +771,9 @@ Matcher _invalid(String field, String message) => isA<InvalidRecordValue>()
 
 RecordFieldDefinition<T> _field<T extends Object>(
   String id,
-  SettingType<T> type, {
+  RecordFieldType<T> type, {
   bool required = false,
   RecordFieldEditor? editor,
-  RecordFieldId? providerField,
 }) => RecordFieldDefinition(
   id: RecordFieldId(id),
   label: '  Field  ',
@@ -750,7 +781,6 @@ RecordFieldDefinition<T> _field<T extends Object>(
   type: type,
   required: required,
   editor: editor,
-  providerField: providerField,
 );
 
 RecordTypeDefinition _type({

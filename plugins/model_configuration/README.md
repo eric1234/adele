@@ -3,23 +3,21 @@
 `dev.adele.plugin.model-configuration` contributes the **Model Presets** collection
 to Global Settings. The host discovers its version-1 [record schema](records.schema.json)
 independently of backend activation, so editing does not require a running
-backend. The [Session selector](packages/frontend/README.md) changes the
+backend. Its [prepared frontend](packages/frontend/README.md) supplies the model
+reference editor and a separate Session selector. The selector changes the
 Session's choice; the [AOT backend](packages/backend/README.md) resolves that
 choice when a new Run is prepared.
 
 ## Choosing a Model Preset
 
 1. Open **Global Settings → Model Presets**. Choose **Add** or edit an existing
-   preset. Enter **Name**, **Provider ID**, and **Model ID** directly; these
-   required fields have no **Include** checkbox. Type the Provider ID or use
-   **Choose configured provider...**. If several rows have the same display
-   name, compare their full IDs and owning plugins. Picking a row copies its
-   stable Provider ID, not its name, into the unsaved field.
-   Type the model ID or use **Choose model...** to query the catalog associated
-   with that exact provider registration. Select a model by its ID; its display
-   name is only a label. Switching providers clears old suggestions but leaves
-   the model ID and reasoning effort alone. Use **Include** for **Description**
-   or **Reasoning Effort** only if you want to supply them. **Create** or **Save**
+   preset. Enter a **Name**. Under **Model**, type the **Provider ID** of one
+   configured provider instance (not its display name or plugin ID) and the
+   exact **Model ID** that provider expects. The two inputs form one reference:
+   the same model ID on another provider is a different target. Both IDs must
+   be entered before the editor proposes a reference. Their spelling, case and
+   surrounding whitespace are preserved. Use **Include** for **Description** or
+   **Reasoning Effort** only if you want to supply them. **Create** or **Save**
    stores the draft; neither selects it for a Session.
 2. In a Session that shows execution configuration, open **Model Preset** and
    choose the saved preset. Opening the choices reads the current catalog.
@@ -30,27 +28,11 @@ choice when a new Run is prepared.
    This allows a direct model configuration to be used **if one is configured**.
    Changes apply to newly prepared Runs, not to an active Run awaiting approval.
 
-**Refresh providers** rereads currently advertised routes, not the preset files.
-A provider can be offline or registered later; you can keep or save its exact ID
-even if the list is empty or discovery fails. Appearing in the list does not
-mean the provider has authenticated or supports the model you enter.
-
-**Refresh models** asks the provider for a fresh model list. Unlike refreshing
-provider names, this can use the configured account's credentials and network
-endpoint inside the owning backend. No other account is tried. The list is
-advisory: even if discovery is unavailable, fails, or returns no entries, you
-can enter and save any exact model ID. Editing a selected preset affects newly
-prepared Runs only, because an active Run retains its captured configuration.
-
-The two suggestion controls still run in desktop Settings. Moving them into
-this plugin's prepared frontend requires a bounded discovery API for configured
-providers and their **exact associated** catalogs, not an unrestricted service
-channel. The resulting control should use the [Settings editor contribution](../../packages/ui/lib/settings_field_editor.dart)
-and replace the `model-provider`, `model-catalog` and `providerField` hints.
-The current editor grant covers only one scalar. A combined picker would need
-explicit access to the declared provider/model pair in the same draft; it must
-not acquire arbitrary sibling or record access. A new composite storage type is
-not needed for the existing two independently editable IDs.
+The Model editor is manual and works offline. It does not list providers or
+models, look up credentials, or contact a network endpoint. A provider may be
+configured later. If the plugin frontend is unavailable, Settings does not
+substitute a native control; unrelated fields and an existing valid reference
+remain intact.
 
 **Missing Model Preset** means a complete catalog did not contain the selected
 ID. **Unresolved Model Preset** means the catalog was incomplete or unavailable
@@ -73,15 +55,16 @@ for draft retention and recovery.
 | --- | --- | --- |
 | `name` | Required string | Display name for the preset. |
 | `description` | Optional string | Purpose or guidance. |
-| `provider-id` | Required string | Stable `ProviderId` of one configured ModelProvider instance, not a vendor or plugin ID. |
-| `model-id` | Required string | Exact, opaque identifier the selected provider expects. |
+| `model` | Required struct | `provider-id` and `model-id`, both required strings. The pair is edited and validated as one field. |
 | `reasoning-effort` | Optional enum | Requested `ModelReasoningEffort`: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. |
 
 Omit `reasoning-effort` for no preference; `none` is an explicit request.
-Saving checks field presence, scalar types and enum membership, not whether a
-string is nonblank, a provider is running, a model is listed, or an effort is
-supported. Saving does not read credentials, select a model for a Session, or
-run inference.
+The pair is persisted under `[values.model]`, distinct from the preset's own
+identity. Old top-level `provider-id` and `model-id` fields are not an alternative
+representation: a record without `model` is invalid, not silently migrated.
+Settings validates the declared shape, types and enum membership, not whether
+a provider is running, a model exists, or an effort is supported. Saving does
+not read credentials, choose a preset for a Session, or run inference.
 
 The collection starts empty. Discovery and reads do not create preset files,
 and deleting the last preset leaves it empty. Each catalog read projects a

@@ -96,31 +96,33 @@ fail the grammar; no trimming or case normalization occurs. Field and slot IDs a
 not paths and do not have the device-name restriction. Invalid IDs throw
 `FormatException`. Identity classes have value equality within their own type.
 
-`RecordFieldDefinition<T>` requires `id`, `label`, existing `SettingType<T>`, and
-an explicit `required` boolean; `description` is optional. Fields have no defaults,
-null values, callbacks, or nested structures. `RecordTypeDefinition` requires
+`RecordFieldDefinition<T>` requires `id`, `label`, a `RecordFieldType<T>`, and
+an explicit `required` boolean; `description` is optional. A field type is either
+a scalar `SettingType<T>` or a `StructuredRecordFieldType`. Fields have no defaults,
+null values, or executable validators. `RecordTypeDefinition` requires
 `id`, `owner: PluginId`, `collection`, `collectionLabel`, `label`, and `fields`;
 `description` is optional. Labels use the same presentation validation as settings;
 descriptions are optional prose. Fields are copied, immutable, duplicate-free,
 and retain declaration order. Empty field lists are valid. Ownership is declaration
 consistency, not activation or proof of trust.
 
-`RecordFieldDefinition.editor` is optional presentation metadata; omission leaves
-it null. `ContributedRecordFieldEditor(extensionId)` references an `ExtensionId`
-of the form `<record type owner's PluginId>.<single local segment>`. The reference is
-valid on any scalar field and does not require an installed or active frontend.
-It changes neither the scalar constraints nor the field's presence rules.
+`StructuredRecordFieldType(properties)` declares one atomic field, not a nested
+record. Its ordered map contains 1 to 16 `RecordFieldId` keys, each with a scalar
+`SettingType<Object>`. Each property is required; structs cannot contain other
+structs, optional components, or extra authored keys. Each string component is
+limited to 65,536 UTF-16 code units, but an ordinary string can be empty. Property
+names in values are the IDs' string values. The validated result is a detached,
+immutable `Map<String, Object>` in declaration order. `field.snapshotValue(value)`
+returns that snapshot (or the original scalar) and rejects invalid values with
+`ArgumentError`; `field.valueError(value)` supplies feedback without throwing.
+`recordFieldValuesEqual` compares field snapshots by content, not map identity.
 
-The three built-in editors require `StringSettingType`, not a string-valued
-enum. `RecordFieldEditor.markdown` requests Markdown editing;
-`RecordFieldEditor.modelProvider` lets the host suggest configured ModelProvider
-IDs without restricting the field to currently available providers.
-`RecordFieldEditor.modelCatalog` requires `providerField`, the `RecordFieldId`
-of a different `modelProvider` string field in the same type. The reference
-names a field, not an account or a default. Only this editor accepts it. The host
-can suggest model IDs for the provider currently named in that sibling's draft.
-All hints preserve the exact string and ordinary presence rules. Record value
-validation does not parse Markdown, resolve providers, or require a listed model.
+`ContributedRecordFieldEditor(extensionId)` references an `ExtensionId` of the form
+`<record type owner's PluginId>.<single local segment>`. It is optional for scalars.
+A structured field must be required and name a contributed editor; this does not
+require an installed or active frontend. An editor never changes value validation.
+The only built-in hint, `RecordFieldEditor.markdown`, requests Markdown editing
+for `StringSettingType` (not a string-valued enum).
 
 Optional `displayField: RecordFieldId?` identifies a declared required
 `StringSettingType` field for record display names. Construction rejects missing,
@@ -149,10 +151,10 @@ existing consumers. Record failures instead throw `InvalidRecordValue` with
 `collection`, `recordId`, `fieldId`, and `message`. Hosts may use a null `fieldId`
 for record-wide/header errors.
 
-Unknown persisted keys are not inspected or mutated. The returned known-field
-projection is **not a replacement persistence document**: host adapters must retain
-unknown data and may reject unknown keys in desired edits. Validation neither reads
-nor rewrites persisted records.
+Unknown top-level fields are not inspected or mutated. Inside a structured field,
+the supplied value must contain exactly the declared properties. A storage adapter
+projects only known properties for validation and preserves unknown persisted keys
+when writing. The returned projection is **not a replacement persistence document**.
 
 `RecordCatalog(definitions)` copies declarations and exposes immutable `definitions`
 sorted by type ID and `collections` sorted by collection ID. `definition(typeId)`

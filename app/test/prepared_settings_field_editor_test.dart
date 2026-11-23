@@ -22,14 +22,17 @@ import 'support/record_draft_id.dart';
 const _plugin = 'dev.example.windows';
 const _library = 'package:window_controls/editor.dart';
 const _editor = '$_plugin.step';
+const _layoutEditor = '$_plugin.layout';
 const _missing = '$_plugin.uninstalled';
 const _collection = 'windows';
 final _type = RecordTypeId('$_plugin.window');
+final _layoutType = RecordTypeId('$_plugin.zoned');
+const _layout = {'name': 'stacked', 'columns': 2, 'locked': true};
 
 void main() {
   late List<int> bytes;
   late PlatformStorageRoots roots;
-  late GlobalSettingsService settings;
+  late _DialogService settings;
   late GlobalSettingsService reader;
   late ApplicationFrontendBootstrap frontends;
 
@@ -92,6 +95,38 @@ void main() {
               },
             ],
           },
+          {
+            'id': _layoutType.value,
+            'collection': _collection,
+            'collectionLabel': 'Windows',
+            'label': 'Zoned window',
+            'displayField': 'caption',
+            'fields': [
+              {
+                'id': 'caption',
+                'label': 'Caption',
+                'type': 'string',
+                'required': true,
+              },
+              {
+                'id': 'layout',
+                'label': 'Layout',
+                'type': 'struct',
+                'required': true,
+                'editor': {'extensionId': _layoutEditor},
+                'properties': [
+                  {'id': 'name', 'type': 'string'},
+                  {
+                    'id': 'columns',
+                    'type': 'integer',
+                    'minimum': 1,
+                    'maximum': 8,
+                  },
+                  {'id': 'locked', 'type': 'boolean'},
+                ],
+              },
+            ],
+          },
         ],
       }),
     );
@@ -109,6 +144,12 @@ void main() {
                 'extensionId': _editor,
                 'library': _library,
                 'entrypoint': 'editor',
+              },
+              {
+                'role': 'settingsFieldEditor',
+                'extensionId': _layoutEditor,
+                'library': _library,
+                'entrypoint': 'layoutEditor',
               },
             ],
           },
@@ -137,7 +178,7 @@ void main() {
       InstalledFrontendState.active,
       reason: '${generation.failure}',
     );
-    GlobalSettingsService owner() => GlobalSettingsService(
+    _DialogService owner() => _DialogService(
       catalog: prepared.settings,
       records: prepared.records,
       roots: roots,
@@ -294,6 +335,205 @@ void main() {
   );
 
   testWidgets(
+    'compiled structured proposals are complete immutable replacements until Create',
+    (tester) => tester.runAsync(() async {
+      await mount(tester);
+      await _tap(tester, _key('records-add-$_collection'));
+      tester
+          .widget<DropdownButtonFormField<RecordTypeId>>(
+            _key('record-type-$_collection'),
+          )
+          .onChanged!(_layoutType);
+      await tester.pumpAndSettle();
+      final id = await inspectDraftId(tester);
+      final layout = _input('layout');
+      final create = _key('record-create-$_collection');
+      expect(_enabled(tester, create), isFalse);
+      expect(_within(layout, 'Layout: unset'), findsOneWidget);
+      final original = _captureProposal(
+        tester,
+        layout,
+        label: 'Delayed layout',
+      );
+      await _tap(tester, _within(layout, 'Set layout'));
+      // The editor mutates its own proposed map after submitting it. Only the
+      // complete original value is visible to the next interpreted read.
+      expect(_within(layout, 'Layout: stacked / 2 / true'), findsOneWidget);
+      _expectRejected(original);
+      expect(_enabled(tester, create), isTrue);
+      final afterAcceptance = _captureProposal(
+        tester,
+        layout,
+        label: 'Delayed layout',
+      );
+      for (final invalid in [
+        'Partial',
+        'Extra',
+        'Wrong type',
+        'Out of range',
+      ]) {
+        await _tap(tester, _within(layout, invalid));
+        expect(_within(layout, 'Result: rejected'), findsOneWidget);
+        expect(_within(layout, 'Layout: stacked / 2 / true'), findsOneWidget);
+      }
+      // Rejections neither dirtied another field nor consumed the revision.
+      expect(afterAcceptance(), 'accepted');
+      expect(await saved(), isEmpty);
+      await _tap(tester, create);
+      await _ready(tester, 'records-reload-$_collection');
+      expect(await saved(), {
+        id: {'caption': '', 'layout': _layout},
+      });
+      _expectRejected(afterAcceptance);
+      await _dismiss(tester);
+    }),
+    skip: !Platform.isLinux,
+  );
+
+  testWidgets(
+    'structured dirty detection is structural; navigation and retirement fence old editors',
+    (tester) => tester.runAsync(() async {
+      const id = 'office';
+      final reload = _key('records-reload-$_collection');
+      final layout = _input('layout', id);
+      final baseline = {'caption': 'Office', 'layout': _layout};
+      await settings.createRecord(
+        _layoutType,
+        ConfigurationRecordId(id),
+        baseline,
+      );
+      final original = file(id).readAsBytesSync();
+      await mount(tester);
+      await _edit(tester, id, 'Office');
+      final same = _captureProposal(tester, layout, label: 'Delayed layout');
+      expect(
+        same(),
+        'accepted',
+      ); // A fresh map, equal properties in another order.
+      await _tap(tester, reload);
+      await _ready(tester, 'records-reload-$_collection'); // No discard prompt.
+      _expectRejected(same);
+      await _tap(tester, _key('record-edit-$_collection-$id'));
+      await _tap(tester, _within(layout, 'Set wide layout'));
+      await _tap(tester, reload);
+      await _tap(tester, _key('records-reload-cancel-$_collection'));
+      await _ready(tester, 'records-reload-$_collection');
+      expect(_within(layout, 'Layout: wide / 4 / false'), findsOneWidget);
+      final old = _captureProposal(tester, layout, label: 'Delayed layout');
+      final navigate = tester
+          .widget<DropdownButtonFormField<String>>(_key('settings-section'))
+          .onChanged!;
+      navigate('');
+      navigate(_collection);
+      _expectRejected(
+        old,
+      ); // Leaving and returning before any intervening frame.
+      await tester.pumpAndSettle();
+      expect(_within(layout, 'Layout: wide / 4 / false'), findsOneWidget);
+      await _tap(tester, _key('record-cancel-$_collection-$id'));
+      await _tap(tester, _key('record-edit-$_collection-$id'));
+      expect(_within(layout, 'Layout: stacked / 2 / true'), findsOneWidget);
+      final retired = _captureProposal(tester, layout, label: 'Delayed layout');
+      await frontends.generations.single.close();
+      _expectRejected(retired);
+      await tester.pumpAndSettle();
+      expect(
+        _within(layout, 'Field editor unavailable: $_layoutEditor'),
+        findsOneWidget,
+      );
+      expect(file(id).readAsBytesSync(), original);
+      await _enter(tester, _input('caption', id), 'New title');
+      await _tap(tester, _key('record-save-$_collection-$id'));
+      await _ready(tester, 'records-reload-$_collection');
+      expect(await saved(), {
+        id: {...baseline, 'caption': 'New title'},
+      });
+      expect(
+        find.text('Layout:\n  name: stacked\n  columns: 2\n  locked: true'),
+        findsOneWidget,
+      );
+      await _dismiss(tester);
+    }),
+    skip: !Platform.isLinux,
+  );
+
+  for (final lostReply in [false, true]) {
+    testWidgets(
+      '${lostReply ? "Unconfirmed" : "Stale"} structured Save is fenced until deliberate Reload',
+      (tester) => tester.runAsync(() async {
+        const id = 'office';
+        final layout = _input('layout', id);
+        final save = _key('record-save-$_collection-$id');
+        await settings.createRecord(_layoutType, ConfigurationRecordId(id), {
+          'caption': 'Office',
+          'layout': _layout,
+        });
+        await mount(tester);
+        await _edit(tester, id, 'Office');
+        await _tap(tester, _within(layout, 'Set wide layout'));
+        final previous = _captureProposal(
+          tester,
+          layout,
+          label: 'Delayed layout',
+        );
+        final oldSave = tester.widget<ButtonStyleButton>(save).onPressed!;
+        if (lostReply) {
+          settings.loseUpdateReply = true;
+        } else {
+          final record = file(id);
+          record.writeAsStringSync(
+            record.readAsStringSync().replaceFirst('stacked', 'external'),
+          );
+        }
+        await _tap(tester, save);
+        await _ready(tester, 'records-reload-$_collection');
+        expect(
+          find.textContaining(
+            lostReply
+                ? 'Could not confirm save'
+                : 'this record changed on disk',
+          ),
+          findsOneWidget,
+        );
+        expect(_enabled(tester, save), isFalse);
+        expect(_within(layout, 'Layout: wide / 4 / false'), findsOneWidget);
+        _expectRejected(previous);
+        _expectRejected(
+          _captureProposal(tester, layout, label: 'Delayed layout'),
+        );
+        oldSave();
+        expect(settings.updates, 1);
+        expect(await saved(), {
+          id: {
+            'caption': 'Office',
+            'layout': lostReply
+                ? {'name': 'wide', 'columns': 4, 'locked': false}
+                : {..._layout, 'name': 'external'},
+          },
+        });
+        await _tap(tester, _key('records-reload-$_collection'));
+        await _tap(tester, _key('records-reload-confirm-$_collection'));
+        await _ready(tester, 'records-reload-$_collection');
+        await _tap(tester, _key('record-edit-$_collection-$id'));
+        expect(_enabled(tester, save), isTrue);
+        expect(
+          _within(
+            layout,
+            lostReply
+                ? 'Layout: wide / 4 / false'
+                : 'Layout: external / 2 / true',
+          ),
+          findsOneWidget,
+        );
+        _expectRejected(previous);
+        expect(settings.updates, 1);
+        await _dismiss(tester);
+      }),
+      skip: !Platform.isLinux,
+    );
+  }
+
+  testWidgets(
     'navigation, dismissal and frontend retirement reject retained interpreted callbacks',
     (tester) => tester.runAsync(() async {
       const values = {'caption': 'Office', 'start': 1, 'end': 8};
@@ -346,6 +586,29 @@ void main() {
   );
 }
 
+final class _DialogService extends GlobalSettingsService {
+  _DialogService({
+    required super.catalog,
+    required super.roots,
+    required super.records,
+  });
+  bool loseUpdateReply = false;
+  int updates = 0;
+
+  @override
+  Future<RecordView> updateRecord(
+    RecordView expected,
+    Map<String, Object?> values,
+  ) async {
+    updates++;
+    final saved = await super.updateRecord(expected, values);
+    if (loseUpdateReply) {
+      throw const FileSystemException('Acknowledgement lost');
+    }
+    return saved;
+  }
+}
+
 Finder _key(String key) => find.byKey(ValueKey(key));
 Finder _input(String field, [String? id]) =>
     _key('record-input-$_collection${id == null ? '' : '-$id'}-$field');
@@ -355,12 +618,16 @@ Finder _within(Finder field, String text) =>
 // Exercise the actual Material callback after its owner departs, and check its
 // return *inside the original EVC runtime*. Merely observing no file writes
 // would not distinguish a rejected proposal from mutation of a detached draft.
-String Function() _captureProposal(WidgetTester tester, Finder field) {
+String Function() _captureProposal(
+  WidgetTester tester,
+  Finder field, {
+  String label = 'Delayed 7',
+}) {
   final button = tester
       .widget<TextButton>(
         find.descendant(
           of: field,
-          matching: find.widgetWithText(TextButton, 'Delayed 7'),
+          matching: find.widgetWithText(TextButton, label),
         ),
       )
       .onPressed!;
@@ -446,6 +713,45 @@ String takeReceipt() {
   return result;
 }
 Widget editor() => StepEditor();
+Widget layoutEditor() => LayoutEditor();
+class LayoutEditor extends StatefulWidget {
+  @override
+  State<LayoutEditor> createState() => LayoutEditorState();
+}
+class LayoutEditorState extends State<LayoutEditor> {
+  String result = 'not invoked';
+  void setLayout(int revision, Object? value) {
+    result = proposeSettingsFieldValue(revision, value) == null ? 'accepted' : 'rejected';
+    setState(() {});
+  }
+  @override
+  Widget build(BuildContext context) {
+    final rev = readSettingsFieldRevision();
+    final value = readSettingsFieldValue();
+    String summary = 'unset';
+    if (value != null) {
+      final map = value as Map;
+      summary = (map['name'] as String) + ' / ' + map['columns'].toString() + ' / ' + map['locked'].toString();
+    }
+    return Column(children: <Widget>[
+      Text('Layout: ' + summary), Text('Result: ' + result),
+      TextButton(onPressed: () {
+        final map = <String, Object>{'columns':2, 'locked':true, 'name':'stacked'};
+        setLayout(rev, map);
+        map['name'] = 'changed after proposal';
+      }, child: Text('Set layout')),
+      TextButton(onPressed: () => setLayout(rev, <String, Object>{'columns':4, 'locked':false, 'name':'wide'}), child: Text('Set wide layout')),
+      TextButton(onPressed: () => setLayout(rev, <String, Object>{'columns':3}), child: Text('Partial')),
+      TextButton(onPressed: () => setLayout(rev, <String, Object>{'columns':3, 'locked':true, 'name':'new', 'caption':'out of scope'}), child: Text('Extra')),
+      TextButton(onPressed: () => setLayout(rev, <String, Object>{'columns':'3', 'locked':true, 'name':'new'}), child: Text('Wrong type')),
+      TextButton(onPressed: () => setLayout(rev, <String, Object>{'columns':9, 'locked':true, 'name':'new'}), child: Text('Out of range')),
+      TextButton(onPressed: () {
+        final rejected = proposeSettingsFieldValue(rev, <String, Object>{'locked':true, 'columns':2, 'name':'stacked'});
+        receipt = rejected == null ? 'accepted' : 'rejected: ' + rejected;
+      }, child: Text('Delayed layout')),
+    ]);
+  }
+}
 class StepEditor extends StatefulWidget {
   @override
   State<StepEditor> createState() => StepEditorState();

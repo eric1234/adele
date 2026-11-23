@@ -10,13 +10,9 @@ import 'package:flutter/services.dart';
 
 import '../../core/credential_service.dart';
 import '../../core/global_settings_service.dart';
-import '../../core/model_catalog_choices.dart';
-import '../../core/model_provider_choices.dart';
 import '../../core/record_apply_coordinator.dart';
 import '../../editor/native_rich_document_editor.dart';
 import '../../frontend/application_frontend_bootstrap.dart';
-import 'model_catalog_picker.dart';
-import 'model_provider_picker.dart';
 import 'record_credential_controls.dart';
 import 'record_field_editor_host.dart';
 import 'scalar_input.dart';
@@ -27,8 +23,6 @@ final class RecordCollectionPanel extends StatefulWidget {
     required this.service,
     required this.collection,
     this.frontends,
-    this.modelProviders,
-    this.discoverModels,
     this.sectionRevision,
     this.credentialAssociations,
     this.recordApplication,
@@ -39,8 +33,6 @@ final class RecordCollectionPanel extends StatefulWidget {
   final GlobalSettingsService service;
   final RecordCollectionId collection;
   final ApplicationFrontendBootstrap? frontends;
-  final DiscoverModelProviders? modelProviders;
-  final DiscoverModels? discoverModels;
   final int Function()? sectionRevision;
   final RecordCredentialService? credentialAssociations;
   final RecordApplication? recordApplication;
@@ -895,8 +887,6 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
         _RecordForm(
           draft: draft,
           frontends: widget.frontends,
-          modelProviders: widget.modelProviders,
-          discoverModels: widget.discoverModels,
           formScope: _formScope,
           active: widget.active && _adding && type.id == _type,
           enabled: enabled && _adding && type.id == _type,
@@ -943,8 +933,6 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
               key: ObjectKey(draft),
               draft: draft,
               frontends: widget.frontends,
-              modelProviders: widget.modelProviders,
-              discoverModels: widget.discoverModels,
               formScope: _formScope,
               active: widget.active && expanded,
               enabled: enabled,
@@ -968,9 +956,11 @@ final class _RecordDraft {
         markdown[field.id] = NativeRichDocumentEditor(
           markdown: value as String? ?? '',
         );
+      } else if (field.type is StructuredRecordFieldType) {
+        if (value != null) typedValues[field.id] = field.snapshotValue(value);
       } else {
         if (field.type is BooleanSettingType || field.type is EnumSettingType) {
-          selections[field.id] = value;
+          typedValues[field.id] = value;
         }
         text[field.id] = TextEditingController(text: value?.toString() ?? '');
       }
@@ -983,7 +973,8 @@ final class _RecordDraft {
   bool reconciled = false;
   final _includedOptional = <RecordFieldId>{};
   final presenceRevisions = <RecordFieldId, int>{};
-  final selections = <RecordFieldId, Object?>{};
+  // Non-text controls hold typed values, not a display string to parse later.
+  final typedValues = <RecordFieldId, Object?>{};
   final text = <RecordFieldId, TextEditingController>{};
   final markdown = <RecordFieldId, NativeRichDocumentEditor>{};
   late final markdownChanges = Listenable.merge(markdown.values.toList());
@@ -1018,7 +1009,7 @@ final class _RecordDraft {
     if (field.type is StringSettingType || field.type is IntegerSettingType) {
       return text[field.id]!.text != (value?.toString() ?? '');
     }
-    return selections[field.id] != value;
+    return !recordFieldValuesEqual(typedValues[field.id], value);
   });
 
   static ConfigurationRecordId _newId() {
@@ -1036,7 +1027,9 @@ final class _RecordDraft {
     ),
     StringSettingType() => text[field.id]!.text,
     IntegerSettingType() => int.tryParse(text[field.id]!.text, radix: 10),
-    BooleanSettingType() || EnumSettingType() => selections[field.id],
+    BooleanSettingType() ||
+    EnumSettingType() ||
+    StructuredRecordFieldType() => typedValues[field.id],
   };
 
   String? _fieldError(RecordFieldDefinition<Object> field) {
@@ -1089,8 +1082,6 @@ final class _RecordForm extends StatelessWidget {
     super.key,
     required this.draft,
     required this.frontends,
-    required this.modelProviders,
-    required this.discoverModels,
     required this.formScope,
     required this.active,
     required this.enabled,
@@ -1101,8 +1092,6 @@ final class _RecordForm extends StatelessWidget {
 
   final _RecordDraft draft;
   final ApplicationFrontendBootstrap? frontends;
-  final DiscoverModelProviders? modelProviders;
-  final DiscoverModels? discoverModels;
   final (int?, int) Function() formScope;
   final bool active;
   final bool enabled;
@@ -1187,12 +1176,12 @@ final class _RecordForm extends StatelessWidget {
                 ),
               },
             )
-          else
+          else if (field.type case final SettingType<Object> scalarType)
             ScalarInput(
               inputKey: ValueKey('record-input-$suffix-${field.id}'),
-              type: field.type,
+              type: scalarType,
               label: _label(field),
-              value: draft.selections[field.id],
+              value: draft.typedValues[field.id],
               text: draft.text[field.id]!,
               enabled: active && enabled && draft.isIncluded(field),
               allowUnsetBoolean: true,
@@ -1201,7 +1190,7 @@ final class _RecordForm extends StatelessWidget {
                 if (!current() || !draft.isIncluded(field)) return;
                 if (field.type is BooleanSettingType ||
                     field.type is EnumSettingType) {
-                  draft.selections[field.id] = value;
+                  draft.typedValues[field.id] = value;
                 }
                 onChanged();
               },
@@ -1211,15 +1200,6 @@ final class _RecordForm extends StatelessWidget {
               field.description!,
               style: Theme.of(context).textTheme.bodySmall,
             ),
-          if (field.editor == RecordFieldEditor.modelProvider &&
-              active &&
-              draft.isIncluded(field))
-            _providerPicker(field, current),
-          if (field.editor == RecordFieldEditor.modelCatalog &&
-              active &&
-              enabled &&
-              draft.isIncluded(field))
-            _catalogPicker(context, field),
           const SizedBox(height: 8),
         ],
         Wrap(
@@ -1292,62 +1272,16 @@ final class _RecordForm extends StatelessWidget {
           draft.presenceRevisions[field.id] == presence,
       readValue: () => draft._value(field),
       acceptValue: (value) {
-        if (field.type is BooleanSettingType || field.type is EnumSettingType) {
-          draft.selections[field.id] = value;
+        if (field.type is StructuredRecordFieldType ||
+            field.type is BooleanSettingType ||
+            field.type is EnumSettingType) {
+          draft.typedValues[field.id] = value;
         } else {
           draft.text[field.id]!.text = value.toString();
         }
         onChanged();
       },
     );
-  }
-
-  Widget _providerPicker(
-    RecordFieldDefinition<Object> field,
-    bool Function() current,
-  ) {
-    final presence = draft.presenceRevisions[field.id];
-    return ModelProviderPicker(
-      discover: modelProviders,
-      currentId: draft.text[field.id]!.text,
-      canEdit: () =>
-          enabled && current() && draft.presenceRevisions[field.id] == presence,
-      onSelected: (id) => _select(field, id),
-    );
-  }
-
-  Widget _catalogPicker(
-    BuildContext context,
-    RecordFieldDefinition<Object> field,
-  ) {
-    final provider = draft.definition.fields.firstWhere(
-      (f) => f.id == field.providerField,
-    );
-    final route = ModalRoute.of(context);
-    Object scope() => (
-      formScope(),
-      draft.presenceRevisions[field.id],
-      draft.presenceRevisions[provider.id],
-    );
-    final captured = scope();
-    return ModelCatalogPicker(
-      key: ValueKey((field.id, captured)),
-      discover: discoverModels,
-      provider: draft.isIncluded(provider) ? draft.text[provider.id] : null,
-      currentId: draft.text[field.id]!.text,
-      isCurrent: () =>
-          !draft.disposed && (route?.isActive ?? true) && scope() == captured,
-      onSelected: (id) => _select(field, id),
-    );
-  }
-
-  void _select(RecordFieldDefinition<Object> field, String id) {
-    if (draft.disposed || !draft.isIncluded(field)) return;
-    draft.text[field.id]!.value = TextEditingValue(
-      text: id,
-      selection: TextSelection.collapsed(offset: id.length),
-    );
-    onChanged();
   }
 }
 
@@ -1413,7 +1347,10 @@ final class _RecordDetailsState extends State<_RecordDetails> {
                   Padding(
                     padding: const EdgeInsets.only(top: 8),
                     child: SelectableText(
-                      '${field.label}: ${record.values.containsKey(field.id.value) ? (record.values[field.id.value] == '' ? '(empty string)' : record.values[field.id.value]) : 'Not provided'}',
+                      _describeField(
+                        field.label,
+                        record.values[field.id.value],
+                      ),
                     ),
                   ),
                 Align(
@@ -1499,6 +1436,21 @@ final class _RecordIdentity extends StatelessWidget {
 
 String _recordTitle(RecordView record, RecordTypeDefinition definition) =>
     _displayName(record, definition) ?? record.id.value;
+
+String _describeField(String label, Object? value) {
+  String scalar(Object? value) => switch (value) {
+    null => 'Not provided',
+    '' => '(empty string)',
+    _ => value.toString(),
+  };
+  if (value is Map<String, Object>) {
+    return [
+      '$label:',
+      for (final e in value.entries) '  ${e.key}: ${scalar(e.value)}',
+    ].join('\n');
+  }
+  return '$label: ${scalar(value)}';
+}
 
 String? _displayName(RecordView record, RecordTypeDefinition definition) {
   final display = record.values[definition.displayField?.value];

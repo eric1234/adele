@@ -111,25 +111,103 @@ void _validateRecordLocalId(
   }
 }
 
-/// Presentation hint for a record field, not a scalar value type.
+/// A closed record value declaration: a scalar or one flat structured value.
+sealed class RecordFieldType<T extends Object> {
+  const RecordFieldType._();
+
+  /// Exactly one of the immutable snapshot and the validation error is non-null.
+  (T? snapshot, String? error) _checkedValue(Object? value);
+}
+
+/// A single atomic field with an ordered, fixed set of required scalar properties.
+final class StructuredRecordFieldType
+    extends RecordFieldType<Map<String, Object>> {
+  factory StructuredRecordFieldType(
+    Map<RecordFieldId, SettingType<Object>> properties,
+  ) {
+    if (properties.isEmpty || properties.length > maxProperties) {
+      throw ArgumentError(
+        'A structured field requires 1..$maxProperties properties.',
+      );
+    }
+    final copy = Map<RecordFieldId, SettingType<Object>>.unmodifiable(
+      properties,
+    );
+    if (copy.length != properties.length) {
+      throw ArgumentError('Duplicate structured property ID.');
+    }
+    return StructuredRecordFieldType._(copy);
+  }
+
+  const StructuredRecordFieldType._(this.properties) : super._();
+
+  static const maxProperties = 16;
+
+  /// Maximum UTF-16 code units in a single string component.
+  static const maxStringLength = 64 * 1024;
+
+  final Map<RecordFieldId, SettingType<Object>> properties;
+
+  @override
+  (Map<String, Object>?, String?) _checkedValue(Object? value) {
+    if (value is! Map<Object?, Object?>) {
+      return (null, 'Expected a structured value.');
+    }
+    if (value.length > properties.length) {
+      return (null, 'Unexpected structured property.');
+    }
+    // Loose transport maps are allowed, but only their actual string keys count.
+    final input = <String, Object?>{};
+    for (final entry in value.entries) {
+      final key = entry.key;
+      if (key is! String) return (null, 'Expected string property IDs.');
+      input[key] = entry.value;
+    }
+    final snapshot = <String, Object>{};
+    for (final property in properties.entries) {
+      final key = property.key.value;
+      if (!input.containsKey(key)) {
+        return (null, 'Required property $key is missing.');
+      }
+      final component = input[key];
+      if (component is String && component.length > maxStringLength) {
+        return (
+          null,
+          'Property $key exceeds $maxStringLength UTF-16 code units.',
+        );
+      }
+      final error = property.value._violation(component);
+      if (error != null) return (null, 'Property $key: $error');
+      snapshot[key] = component!;
+    }
+    return (Map<String, Object>.unmodifiable(snapshot), null);
+  }
+}
+
+/// Compares two field snapshots (or absence) without depending on map identity
+/// or property order. This compares one field, not a whole record.
+bool recordFieldValuesEqual(Object? left, Object? right) {
+  if (left is! Map<Object?, Object?> || right is! Map<Object?, Object?>) {
+    return left == right;
+  }
+  return left.length == right.length &&
+      left.entries.every(
+        (entry) =>
+            right.containsKey(entry.key) && right[entry.key] == entry.value,
+      );
+}
+
+/// Presentation hint for a record field, not a value type.
 sealed class RecordFieldEditor {
   const RecordFieldEditor._();
 
   static const RecordFieldEditor markdown = _BuiltinRecordFieldEditor.markdown;
-  static const RecordFieldEditor modelProvider =
-      _BuiltinRecordFieldEditor.modelProvider;
-  static const RecordFieldEditor modelCatalog =
-      _BuiltinRecordFieldEditor.modelCatalog;
 }
 
-enum _BuiltinRecordFieldEditor implements RecordFieldEditor {
-  markdown,
-  modelProvider,
-  modelCatalog,
-}
+enum _BuiltinRecordFieldEditor implements RecordFieldEditor { markdown }
 
 /// A reference to an editor contributed by the record type's owning plugin.
-/// It neither requires a live registration nor changes scalar validation.
+/// It neither requires a live registration nor changes value validation.
 final class ContributedRecordFieldEditor extends RecordFieldEditor {
   const ContributedRecordFieldEditor(this.extensionId) : super._();
 
@@ -158,7 +236,6 @@ final class RecordFieldDefinition<T extends Object> {
     required this.type,
     required this.required,
     this.editor,
-    this.providerField,
   }) {
     _validatePresentation(label, 'label');
     if (editor is _BuiltinRecordFieldEditor && type is! StringSettingType) {
@@ -168,27 +245,34 @@ final class RecordFieldDefinition<T extends Object> {
         'Built-in record field editors require a StringSettingType field.',
       );
     }
-    if ((editor == RecordFieldEditor.modelCatalog) != (providerField != null)) {
-      throw ArgumentError.value(
-        providerField,
-        'providerField',
-        'Field $id must declare providerField exactly when using modelCatalog.',
-      );
+    if (type is StructuredRecordFieldType) {
+      if (!required) {
+        throw ArgumentError('Structured field $id must be required.');
+      }
+      if (editor is! ContributedRecordFieldEditor) {
+        throw ArgumentError(
+          'Structured field $id requires a contributed editor.',
+        );
+      }
     }
   }
 
   final RecordFieldId id;
   final String label;
   final String? description;
-  final SettingType<T> type;
+  final RecordFieldType<T> type;
   final bool required;
   final RecordFieldEditor? editor;
 
-  /// For [RecordFieldEditor.modelCatalog], the sibling model-provider field ID.
-  final RecordFieldId? providerField;
-
   /// Validation feedback for a present value, independent of field inclusion.
-  String? valueError(Object? value) => type._violation(value);
+  String? valueError(Object? value) => type._checkedValue(value).$2;
+
+  /// Returns an immutable snapshot of a present value, or throws [ArgumentError].
+  T snapshotValue(Object? value) {
+    final (snapshot, error) = type._checkedValue(value);
+    if (error != null) throw ArgumentError('Field $id: $error');
+    return snapshot!;
+  }
 }
 
 /// Credential shape metadata, not an ordinary setting value type.
@@ -256,17 +340,6 @@ final class RecordTypeDefinition {
       }
       byId[field.id] = field;
     }
-    for (final field in this.fields) {
-      final providerField = field.providerField;
-      if (providerField != null &&
-          byId[providerField]?.editor != RecordFieldEditor.modelProvider) {
-        throw ArgumentError.value(
-          providerField,
-          'providerField',
-          'Field ${field.id} must reference a modelProvider field on $id.',
-        );
-      }
-    }
     final slotIds = <RecordCredentialSlotId>{};
     for (final slot in this.credentialSlots) {
       if (!slotIds.add(slot.id)) {
@@ -328,12 +401,13 @@ final class RecordTypeDefinition {
         }
         continue;
       }
-      final value = values[field.id.value];
-      final violation = field.valueError(value);
+      final (snapshot, violation) = field.type._checkedValue(
+        values[field.id.value],
+      );
       if (violation != null) {
         throw InvalidRecordValue(collection, recordId, field.id, violation);
       }
-      result[field.id.value] = value!;
+      result[field.id.value] = snapshot!;
     }
     return Map.unmodifiable(result);
   }

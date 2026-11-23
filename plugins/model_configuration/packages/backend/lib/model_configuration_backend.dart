@@ -46,29 +46,29 @@ ModelPresetDefinition _project(Map<String, Object> record) {
   }
   final values = record['values'] as Map<String, Object>;
   final name = values['name'];
-  final provider = values['provider-id'];
-  final model = values['model-id'];
+  final reference = values['model'];
   final description = values['description'];
   final effort = values['reasoning-effort'];
   if (name is! String ||
-      provider is! String ||
-      model is! String ||
+      reference is! Map<String, Object> ||
+      reference.length != 2 ||
       description is! String? ||
       effort is! String? ||
       !const {
         'name',
-        'provider-id',
-        'model-id',
+        'model',
         'description',
         'reasoning-effort',
       }.containsAll(values.keys)) {
     throw _invalidObservation;
   }
+  final providerId = reference['provider-id'];
+  final modelId = reference['model-id'];
+  if (providerId is! String || modelId is! String) throw _invalidObservation;
   return ModelPresetDefinition(
     presetId: record['id'] as String,
     name: name,
-    providerId: provider,
-    modelId: model,
+    model: ModelPresetModelReference(providerId: providerId, modelId: modelId),
     description: description,
     reasoningEffort: effort,
   );

@@ -347,6 +347,180 @@ void main() {
     skip: !Platform.isLinux,
   );
 
+  group('structured record values', () {
+    final model = RecordFieldId('model');
+    final id = ConfigurationRecordId('sample');
+    final type = RecordTypeDefinition(
+      id: RecordTypeId('dev.example.providers.config'),
+      owner: PluginId('dev.example.providers'),
+      collection: providers,
+      collectionLabel: 'Providers',
+      label: 'Example',
+      fields: [
+        RecordFieldDefinition(
+          id: model,
+          label: 'Model',
+          type: StructuredRecordFieldType({
+            RecordFieldId('provider-id'): const StringSettingType(),
+            RecordFieldId('model-id'): const StringSettingType(),
+          }),
+          required: true,
+          editor: ContributedRecordFieldEditor(
+            ExtensionId('dev.example.providers.model'),
+          ),
+        ),
+      ],
+    );
+    const reference = {'model-id': 'manual/A', 'provider-id': 'work'};
+    final invalidModel = throwsA(
+      isA<InvalidRecordValue>().having((e) => e.fieldId, 'field', model),
+    );
+    setUp(() {
+      host = ConfigurationRecordStore(
+        store: persistence,
+        catalog: RecordCatalog([type]),
+      );
+    });
+
+    test('create writes a regular subtable in declaration order', () async {
+      final input = Map.of(reference);
+      final created = await host.create(type.id, id, {'model': input});
+      input.clear();
+      expect(created.values, {'model': reference});
+      expect((created.values['model'] as Map).clear, throwsUnsupportedError);
+      expect(
+        file(id).readAsStringSync(),
+        contains(
+          '[values.model]\nprovider-id = "work"\nmodel-id = "manual/A"\n',
+        ),
+      );
+      expect((await host.load(providers, id)).values, created.values);
+    });
+
+    test('update changes only known leaves in the original document', () async {
+      final original = source('''unknown = 1979-05-27 # outside
+
+[values.model] # keep table
+model-id = 'manual/A' # model note
+future = { enabled = true, ids = [1, 2] } # unknown component
+provider-id = 'work' # provider note
+
+[values.model.extra.deep]
+flag = true # keep nested table
+
+[credentials]
+future = ["untouched"]
+''', type: type.id.value);
+      seed(id, original);
+      final loaded = await host.load(providers, id);
+      expect(loaded.values, {'model': reference});
+      expect(loaded.hasCredentialEntries, isTrue);
+
+      final desired = {
+        'model': {...reference, 'model-id': 'manual/B'},
+      };
+      final updated = await host.update(loaded, desired);
+      expect(updated.values, desired);
+      expect(
+        file(id).readAsStringSync(),
+        original.replaceFirst("'manual/A'", '"manual/B"'),
+      );
+      expect((await host.load(providers, id)).values, desired);
+      expect(loaded.values, {'model': reference});
+    });
+
+    test(
+      'missing or malformed known components invalidate the record',
+      () async {
+        await host.create(type.id, personal, {'model': reference});
+        for (final malformed in [
+          '',
+          'model = "not a table"',
+          'model = {provider-id = "work", model-id = "manual/A"}',
+          '[[values.model]]\nprovider-id = "work"\nmodel-id = "manual/A"',
+          '[values.model]\nprovider-id = "work"',
+          '[values.model]\nprovider-id = true\nmodel-id = "manual/A"',
+          '[values.model]\nprovider-id = "work"\nmodel-id = ["manual/A"]',
+        ]) {
+          final original = source(malformed, type: type.id.value);
+          seed(id, original);
+          await expectLater(
+            host.load(providers, id),
+            invalidModel,
+            reason: malformed,
+          );
+          final listing = await host.enumerate(providers);
+          expect(listing.records.single.id, personal);
+          expect(listing.diagnostics.single.recordId, id);
+          expect(file(id).readAsStringSync(), original);
+        }
+      },
+    );
+
+    test(
+      'invalid whole-field replacements are correctable before save',
+      () async {
+        final original = await host.create(type.id, id, {'model': reference});
+        final bytes = file(id).readAsBytesSync();
+        for (final invalid in <Object?>[
+          null,
+          'manual/A',
+          {'model-id': 'manual/A'},
+          {...reference, 'model-id': 1},
+          {...reference, 'unexpected': true},
+          {
+            ...reference,
+            'model-id': {'nested': true},
+          },
+        ]) {
+          await expectLater(
+            host.update(original, {'model': invalid}),
+            invalidModel,
+          );
+          expect(file(id).readAsBytesSync(), bytes);
+        }
+        final saved = await host.update(original, {
+          'model': {...reference, 'provider-id': 'local'},
+        });
+        expect((await host.load(providers, id)).values, saved.values);
+      },
+    );
+
+    test(
+      'no-op preserves exact bytes but still checks the whole baseline',
+      () async {
+        final original = source(
+          "[values.model]\nmodel-id = 'manual/A'\nprovider-id = 'work' # retained\n",
+          type: type.id.value,
+        ).replaceAll('\n', '\r\n');
+        seed(id, original);
+        final mtime = DateTime.utc(2001);
+        file(id).setLastModifiedSync(mtime);
+        final loaded = await host.load(providers, id);
+        expect(
+          await host.update(loaded, {'model': Map.of(reference)}),
+          same(loaded),
+        );
+        expect(file(id).readAsStringSync(), original);
+        expect(file(id).lastModifiedSync().toUtc(), mtime);
+        expect(Directory(roots.localStateRoot).existsSync(), isFalse);
+
+        final external = '${original}unknown = 42\r\n';
+        seed(id, external);
+        for (final desired in [
+          reference,
+          {...reference, 'model-id': 'new'},
+        ]) {
+          await expectLater(
+            host.update(loaded, {'model': desired}),
+            throwsA(isA<ConfigurationConflictException>()),
+          );
+          expect(file(id).readAsStringSync(), external);
+        }
+      },
+    );
+  }, skip: !Platform.isLinux);
+
   group('credential associations', () {
     final reference = CredentialReference.parse('cred1_${'0' * 32}');
     final replacement = CredentialReference.parse('cred1_${'1' * 32}');

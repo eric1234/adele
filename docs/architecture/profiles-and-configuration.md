@@ -22,8 +22,8 @@ and supports explicit targeted refresh within one backend generation, composing 
 captures with dynamic publication and route retirement. Untouched startup routes keep
 lazy startup-scope credential reads. Advertisement is not proof of successful
 authentication. [Record apply](#applying-confirmed-record-changes) connects confirmed
-Global Settings mutations to an opted-in backend. Session provider/model selection,
-record-based OAuth, and Profiles remain unimplemented.
+Global Settings mutations to an opted-in backend. Sessions can select a Model Preset
+by stable record ID. Record-based OAuth and Profiles remain unimplemented.
 The [Agent Configuration plugin](../../plugins/agent_configuration/README.md)
 projects its ordinary global Agent records through a read-only catalog using fresh
 nonsecret observations. Agent selection and execution are separate from that service.
@@ -185,8 +185,16 @@ required/optional presence, and existing Boolean, integer, string or string-enum
 types. They are not synthetic global `SettingId`s. Both models use the same scalar
 validation primitive. Required values must be explicit; optional absence stays
 distinct from false, zero and empty strings. There are no field defaults, explicit
-nulls, nested values, executable validators or cross-record validation. Unknown
+nulls, executable validators or cross-record validation. Unknown
 persisted data remains untouched, including when an owner is unavailable.
+
+A required record field may instead declare a fixed structure. Its ordered,
+required properties have local IDs and ordinary scalar types. A supplied value
+must contain exactly those properties; validation identifies the field and the
+missing or invalid component. The validated projection is immutable. Change
+detection compares component values, not map identity or insertion order. This
+is one replaceable field, not separately addressable settings, a list, or a
+recursive schema. It has no default and requires a contributed editor.
 
 ### Record Field Editors
 
@@ -201,8 +209,10 @@ there is no ranking, native substitute, or lookup of an editor by scalar type.
 A missing, failed or retired editor leaves the field unavailable, not the whole
 form. It does not invalidate a previously valid field value.
 
-One presentation reads its field in the unsaved draft and proposes scalar
-values against the revision it observed. The host checks the mount, editing
+One presentation reads its field in the unsaved draft and proposes a complete
+replacement against the revision it observed. A structured read returns a flat
+snapshot, not a mutable host map; the bridge copies and bounds proposals before
+declaration validation. There is no component patch or sibling access. The host checks the mount, editing
 state, revision, and field validator before accepting a proposal. A rejection
 leaves the value unchanged. The editor cannot select a different field or
 record, change inclusion, or submit the form. Navigation, dismissal, and
@@ -210,12 +220,8 @@ retirement revoke old callbacks; returning can create a fresh presentation
 over the retained draft. Only the form's ordinary Create/Save transaction
 persists an accepted edit. See the [public UI contract](../../packages/ui/lib/settings_field_editor.dart).
 
-The existing string hints select **native** controls, not contributed editor
-registrations. `markdown` edits the string as a document; `model-provider` offers configured
-ModelProvider IDs beside the editable text. A `model-catalog` field names a
-`model-provider` sibling through `providerField`; its unsaved value determines
-where to ask for model suggestions. These hints do not change field presence,
-value validation or storage.
+The `markdown` hint edits an ordinary string as a document using a native
+control. Settings has no model/provider-specific field hints or discovery path.
 
 A type may declare one `displayField` referencing a required string field. Discovery
 validates that reference; omission preserves existing declarations. Presentation uses
@@ -245,6 +251,11 @@ the exact format, CRUD API, diagnostics and bounds. Each record has its own
 existence/byte baseline; independent-record changes do not conflict. Update supplies
 the complete known-field set, removing omitted optional fields and preserving
 unknown content. Delete removes only that layer's file, not a tombstone or mask.
+For a structured field, a regular `[values.<field>]` table holds its scalar
+properties. Only declared properties are read and edited. Unknown siblings and
+unknown properties under that table stay in the document, not in the editor or
+backend snapshot. Component edits are published together under the record's one
+conditional write; they cannot succeed separately.
 Stale update/delete and no-op writes fail explicitly and require deliberate reload.
 Enumeration retains healthy records alongside attributable bad-file diagnostics;
 directory-wide failures remain errors. Aliased identities never select a winner.
@@ -330,20 +341,25 @@ installs a provider plugin nor creates the provider instance it names. It can
 outlive that instance's availability. Saving it needs no credentials, live
 Capability binding, or Model Catalog observation.
 
-When editing the Provider ID, Settings can read the application registry's
-currently available ModelProvider registrations. Display names can coincide;
-each choice shows the owner and supplies the exact registered `ProviderId`.
-Refreshing the choices does not reload the record, invalidate its revision or
-replace its draft. An absent registration may return, and a failed observation
-says nothing about a saved reference. Neither prevents manual entry or Save.
-An advertised route does not establish authentication or model compatibility.
-The model ID remains a separate editable string. Only opening model choices or
-refreshing them asks the configured provider's [associated Model Catalog](contracts-and-capabilities.md#model-catalog)
-for suggestions. Changing the provider discards its choices, not the model
-text, and does not query the new provider. Selecting an entry copies its exact
-ID into the draft; no selection, compatibility check or catalog call is part
-of Save. An empty list, a failed request, or an unlisted model does not
-invalidate a manually authored value.
+The preset declares one required `model` field. Model Configuration's prepared
+field editor accepts a configured provider ID and its provider-local model ID
+as one value. Neither identifier is inferred from a display label, a default, or
+a live registration. For example:
+
+```toml
+[values]
+name = "Review"
+reasoning-effort = "high"
+
+[values.model]
+provider-id = "dev.adele.openai.api-key.work"
+model-id = "review-v2"
+```
+
+Both properties must be present strings. Ordinary string validation does not
+prove a usable execution identifier or live availability. Settings does not query
+provider registrations or the [Model Catalog](contracts-and-capabilities.md#model-catalog)
+to author a preset. Separate top-level identifier fields do not satisfy `model`.
 
 Model Configuration owns both the live definition reader and the Session's
 choice. Its catalog RPC is a boundary for its own frontend, not the provider
@@ -428,7 +444,7 @@ worker-private. Ordinary CRUD and projection share admission/serialization; no
 second writer, filesystem parser or backend file access is introduced.
 
 Each delivered entry contains exactly a collection ID, record-type ID, stable
-record ID and validated declared ordinary scalar `values`. Optional absence is
+record ID and validated declared `values`, including complete flat structures. Optional absence is
 omission, not null, a default, false, zero or an empty string. Records of other types
 in the same collection, unknown fields/comments, credential references, protected
 credential values, roots and worker/revision handles are excluded. The immutable

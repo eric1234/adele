@@ -52,8 +52,8 @@ void main() {
         expect(preset.presetId, 'work-$i');
         expect(preset.name, _preset['name']);
         expect(preset.description, i == 0 ? null : '');
-        expect(preset.providerId, _preset['providerId']);
-        expect(preset.modelId, _preset['modelId']);
+        expect(preset.model.providerId, _model['providerId']);
+        expect(preset.model.modelId, _model['modelId']);
       }
       final input = [...snapshot.presets];
       final copied = ModelPresetCatalogSnapshot(
@@ -80,7 +80,16 @@ void main() {
           for (final key in _preset.keys) {..._preset}..remove(key),
           {..._preset, 'foreign': secret},
           {..._preset, 'presetId': secret},
-          {..._preset, 'providerId': null},
+          {..._preset, ..._model}..remove('model'),
+          for (final reference in [
+            null,
+            'unqualified',
+            for (final key in _model.keys) {..._model}..remove(key),
+            {..._model, 'providerId': null},
+            {..._model, 'modelId': 7},
+            {..._model, 'foreign': secret},
+          ])
+            {..._preset, 'model': reference},
           {..._preset, 'description': false},
           {..._preset, 'reasoningEffort': secret},
           {..._preset, 'reasoningEffort': 'NONE'},
@@ -247,12 +256,15 @@ final class _FailingSelection implements ModelPresetSelectionService {
   }
 }
 
+const _model = {
+  'providerId': ' Configured:provider/V2 ',
+  'modelId': ' org/Model.Mixed@v1+fine:tuned ',
+};
 const _preset = {
   'presetId': 'work',
   'name': 'Draft',
   'description': null,
-  'providerId': ' Configured:provider/V2 ',
-  'modelId': ' org/Model.Mixed@v1+fine:tuned ',
+  'model': _model,
   'reasoningEffort': null,
 };
 

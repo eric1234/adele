@@ -1507,12 +1507,7 @@ void main() {
                 'maximum': 3,
               },
               _field(id: 'enabled', type: 'boolean'),
-              {
-                ..._field(id: 'choice'),
-                'editor': 'model-catalog',
-                'providerField': 'route',
-              },
-              {..._field(id: 'route'), 'editor': 'model-provider'},
+              _structField(),
             ],
           },
         ]),
@@ -1538,8 +1533,7 @@ void main() {
         'mode',
         'count',
         'enabled',
-        'choice',
-        'route',
+        'target',
       ]);
       expect(type.fields.first.description, 'Field\nprose');
       expect(type.fields.first.editor, RecordFieldEditor.markdown);
@@ -1557,25 +1551,61 @@ void main() {
       );
       expect((type.fields[2].type as IntegerSettingType).minimum, 1);
       expect((type.fields[2].type as IntegerSettingType).maximum, 3);
-      expect(type.fields[4].editor, RecordFieldEditor.modelCatalog);
-      expect(type.fields[4].providerField, RecordFieldId('route'));
-      expect(type.fields[4].type, isA<StringSettingType>());
-      expect(type.fields.last.editor, RecordFieldEditor.modelProvider);
-      expect(type.fields.last.type, isA<StringSettingType>());
+      final target = type.fields.last;
+      final properties = (target.type as StructuredRecordFieldType).properties;
+      expect(properties.keys.map((id) => id.value), [
+        'name',
+        'pin',
+        'count',
+        'mode',
+      ]);
+      expect(properties[RecordFieldId('name')], isA<StringSettingType>());
+      expect(properties[RecordFieldId('pin')], isA<BooleanSettingType>());
+      expect(
+        (properties[RecordFieldId('count')] as IntegerSettingType).minimum,
+        1,
+      );
+      expect(
+        (properties[RecordFieldId('mode')] as EnumSettingType)
+            .options
+            .single
+            .value,
+        'auto',
+      );
+      expect(
+        target.editor,
+        ContributedRecordFieldEditor(
+          ExtensionId('org.example.plugin.target-editor'),
+        ),
+      );
+      const validTarget = {
+        'name': '',
+        'pin': false,
+        'count': 1,
+        'mode': 'auto',
+      };
       expect(
         type.validate(ConfigurationRecordId('work'), {
           'text': '\n\u0000',
           'mode': 'brief',
           'count': 2,
           'enabled': false,
+          'target': validTarget,
           'unknown': Object(),
         }),
-        {'text': '\n\u0000', 'mode': 'brief', 'count': 2, 'enabled': false},
+        {
+          'text': '\n\u0000',
+          'mode': 'brief',
+          'count': 2,
+          'enabled': false,
+          'target': validTarget,
+        },
       );
       expect(
         () => type.validate(ConfigurationRecordId('work'), {
           'mode': 'brief',
           'count': 4,
+          'target': validTarget,
         }),
         throwsA(isA<InvalidRecordValue>()),
       );
@@ -1620,7 +1650,6 @@ void main() {
           (field.editor as ContributedRecordFieldEditor).extensionId,
           ExtensionId(editorId),
         );
-        expect(field.providerField, isNull);
       }
     },
   );
@@ -2017,17 +2046,16 @@ void main() {
       'credentialSlots': [_slot()],
     },
     'settings envelope': {'schemaVersion': 1, 'definitions': <Object?>[]},
-    'foreign providerField': _schema([
-      {
-        ..._type(id: 'org.example.plugin.owner'),
-        'fields': [
-          {..._field(id: 'account'), 'editor': 'model-provider'},
-        ],
-      },
+    'retired sibling editor pair': _schema([
       {
         ..._type(),
         'fields': [
-          {..._field(), 'editor': 'model-catalog', 'providerField': 'account'},
+          {..._field(id: 'route'), 'editor': 'model-provider'},
+          {
+            ..._field(id: 'choice'),
+            'editor': 'model-catalog',
+            'providerField': 'route',
+          },
         ],
       },
     ]),
@@ -2169,6 +2197,8 @@ void main() {
       'unknown',
       'minimum',
       'options',
+      'properties',
+      'providerField',
     ])
       'unsupported $key': {..._field(), key: true},
     for (final id in [null, 1, 'UPPER', 'a.b', 'a_b', 'a-', 'x' * 65])
@@ -2201,9 +2231,8 @@ void main() {
       'plain',
       'Markdown',
       ' markdown',
-      'modelProvider',
-      'model-provider ',
-      'modelCatalog',
+      'model-provider',
+      'model-catalog',
       'org.example.plugin.editor',
       for (final id in [
         null,
@@ -2221,50 +2250,82 @@ void main() {
       {'extensionId': 'org.example.plugin.editor', 'entrypoint': 'buildEditor'},
     ])
       'editor ${jsonEncode(editor)}': {..._field(), 'editor': editor},
-    for (final editor in ['markdown', 'model-provider', 'model-catalog'])
-      for (final type in ['boolean', 'integer', 'enum'])
-        '$editor editor on $type': {
-          ..._field(type: type),
-          if (type == 'enum')
-            'options': [
-              {'value': 'one'},
-            ],
-          'editor': editor,
-          if (editor == 'model-catalog') 'providerField': 'route',
-        },
-    'model-catalog missing providerField': {
-      ..._field(),
-      'editor': 'model-catalog',
-    },
-    for (final reference in <Object?>[
-      null,
-      false,
-      1,
-      [],
-      {},
-      '',
-      ' route',
-      'other.route',
-      'x' * 65,
-      'missing',
-      'display-name',
-      'valid',
-    ])
-      'model-catalog providerField ${jsonEncode(reference)}': {
-        ..._field(),
-        'editor': 'model-catalog',
-        'providerField': reference,
+    for (final type in ['boolean', 'integer', 'enum'])
+      'markdown editor on $type': {
+        ..._field(type: type),
+        if (type == 'enum')
+          'options': [
+            {'value': 'one'},
+          ],
+        'editor': 'markdown',
       },
-    for (final editor in [
+    'struct missing properties': _structField()..remove('properties'),
+    'struct missing editor': _structField()..remove('editor'),
+    'struct without contributed editor': {
+      ..._structField(),
+      'editor': 'markdown',
+    },
+    'struct with foreign editor': {
+      ..._structField(),
+      'editor': {'extensionId': 'org.other.target-editor'},
+    },
+    'optional struct': {..._structField(), 'required': false},
+    for (final properties in <Object?>[
       null,
-      'markdown',
-      'model-provider',
-      {'extensionId': 'org.example.plugin.editor'},
+      {},
+      [],
+      [null],
+      [
+        for (var i = 0; i < 17; i++) {'id': 'p$i', 'type': 'string'},
+      ],
+      [
+        {'id': 'name', 'type': 'string'},
+        {'id': 'name', 'type': 'boolean'},
+      ],
+      [
+        {'type': 'string'},
+      ],
+      [
+        {'id': 'name'},
+      ],
+      [
+        {'id': 'Bad', 'type': 'string'},
+      ],
+      [
+        {'id': 'name', 'type': 'struct'},
+      ],
+      [
+        {
+          'id': 'name',
+          'type': 'struct',
+          'properties': [
+            {'id': 'n', 'type': 'string'},
+          ],
+        },
+      ],
+      [
+        {'id': 'name', 'type': 'integer', 'minimum': '1'},
+      ],
+      [
+        {'id': 'name', 'type': 'enum', 'options': <Object?>[]},
+      ],
+      for (final key in [
+        'label',
+        'description',
+        'required',
+        'editor',
+        'default',
+        'properties',
+        'options',
+        'maximum',
+      ])
+        [
+          {'id': 'name', 'type': 'string', key: true},
+        ],
     ])
-      'providerField with $editor editor': {
-        ..._field(),
-        'editor': ?editor,
-        'providerField': 'route',
+      'struct properties ${jsonEncode(properties)}': {
+        ..._structField(),
+        'properties': properties,
       },
     for (final bound in ['minimum', 'maximum'])
       for (final value in <Object?>[null, false, '1', 1.0, [], {}])
@@ -2314,11 +2375,7 @@ void main() {
           _type(id: 'org.example.plugin.valid'),
           {
             ..._type(),
-            'fields': [
-              _field(id: 'valid'),
-              {..._field(id: 'route'), 'editor': 'model-provider'},
-              entry.value,
-            ],
+            'fields': [_field(id: 'valid'), entry.value],
           },
         ]),
       );
@@ -2856,6 +2913,24 @@ Map<String, Object?> _field({
   String id = 'display-name',
   String type = 'string',
 }) => {'id': id, 'label': 'Name', 'type': type, 'required': false};
+
+Map<String, Object?> _structField() => {
+  ..._field(id: 'target', type: 'struct'),
+  'required': true,
+  'editor': {'extensionId': 'org.example.plugin.target-editor'},
+  'properties': [
+    {'id': 'name', 'type': 'string'},
+    {'id': 'pin', 'type': 'boolean'},
+    {'id': 'count', 'type': 'integer', 'minimum': 1},
+    {
+      'id': 'mode',
+      'type': 'enum',
+      'options': [
+        {'value': 'auto'},
+      ],
+    },
+  ],
+};
 
 Map<String, Object?> _slot({String id = 'api-key', String label = 'API key'}) =>
     {'id': id, 'label': label, 'kind': 'secret-text'};

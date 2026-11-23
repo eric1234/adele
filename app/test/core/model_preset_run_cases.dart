@@ -6,19 +6,16 @@ const _direct = 'test.preset.direct';
 const _first = 'test.preset.first';
 const _second = 'test.preset.second';
 const _directModel = 'launch-default';
-const _firstModel = ' Vendor/MiX:v1.2+custom ';
-const _secondModel = 'Second/Model:v2';
+const _sharedModel = ' Vendor/MiX:v1.2+custom ';
 const _bound = Duration(seconds: 10);
 const _firstValues = {
   'name': 'Review',
-  'provider-id': _first,
-  'model-id': _firstModel,
+  'model': {'provider-id': _first, 'model-id': _sharedModel},
   'reasoning-effort': 'none',
 };
 const _secondValues = {
   'name': 'Review',
-  'provider-id': _second,
-  'model-id': _secondModel,
+  'model': {'provider-id': _second, 'model-id': _sharedModel},
 };
 final _runArguments = {
   _strategyPlugin: [
@@ -86,7 +83,7 @@ const _directRequest = {
 };
 const _firstRequest = {
   'providerId': _first,
-  'modelId': _firstModel,
+  'modelId': _sharedModel,
   'reasoningEffort': 'none',
   'toolOutcomes': <String>[],
 };
@@ -96,7 +93,7 @@ final _continuedRequest = {
 };
 const _secondRequest = {
   'providerId': _second,
-  'modelId': _secondModel,
+  'modelId': _sharedModel,
   'reasoningEffort': null,
 };
 
@@ -146,7 +143,7 @@ void _registerRunCases(
       await f.create('review', _firstValues);
       final later = await f.create('later', {
         ..._secondValues,
-        'model-id': 'Before-edit',
+        'model': {'provider-id': _second, 'model-id': 'Before-edit'},
         'reasoning-effort': 'high',
       });
       // The same mounted selector must observe the newly authored records.
@@ -243,6 +240,66 @@ void _registerRunCases(
     }),
   );
 
+  testWidgets(
+    'editing only the provider of the selected preset redirects the next Run, not approval resume',
+    (tester) => tester.runAsync(() async {
+      final runs = await start(selector: true);
+      final f = runs.fixture;
+      final frontends = await _startFrontends(f);
+      await f.create('review', _firstValues);
+      await _SelectorPane(f).present(tester, runs.owner.session);
+      await _choose(tester, _noPreset, 'Review', 'Model Preset: Review');
+
+      final waiting = await runs.advance(RunState.waiting);
+      expect(await runs.requests(), [_firstRequest]);
+
+      // Change the saved target through the compiled field editor. Neither
+      // the Session selection nor the provider-local model ID changes.
+      await _showPresetSettings(tester, f, frontends);
+      await _waitForText(tester, 'Review');
+      await _press(tester, find.text('Review'));
+      await tester.pumpAndSettle();
+      const form = 'model-presets-review';
+      await _press(tester, _key('record-edit-$form'));
+      final inputs = _referenceInputs(form);
+      expect(inputs, findsNWidgets(2));
+      await _enter(tester, inputs.first, _second);
+      await _press(tester, _key('record-save-$form'));
+      await _until(
+        tester,
+        () => _key('record-edit-$form').evaluate().isNotEmpty,
+        'acknowledged provider edit',
+      );
+      final current = (await f.catalog.readPresets()).presets.single;
+      expect(
+        (current.model.providerId, current.model.modelId),
+        (_second, _sharedModel),
+      );
+      final sessionId = runs.owner.session.id.value;
+      expect(_selection(await f.selections.readSessionSelection(sessionId)), (
+        sessionId,
+        'review',
+        1,
+      ));
+
+      final beforeResume = f.reads;
+      await runs.approve();
+      expect(runs.owner.stateForRun(waiting), RunState.completed);
+      expect(f.reads, beforeResume);
+      expect(await runs.requests(), [_firstRequest, _continuedRequest]);
+      await runs.advance(RunState.completed);
+      expect(f.reads, beforeResume + 1);
+      final retargeted = {..._secondRequest, 'reasoningEffort': 'none'};
+      expect(await runs.requests(), [
+        _firstRequest,
+        _continuedRequest,
+        retargeted,
+        retargeted,
+      ]);
+      expect(tester.takeException(), isNull);
+    }),
+  );
+
   test(
     'a deleted selected definition in a complete or incomplete catalog never invokes a provider',
     () async {
@@ -271,7 +328,7 @@ void _registerRunCases(
       // the malformed sibling or writing a new Session selection.
       await f.create('saved', {
         ..._secondValues,
-        'model-id': 'Recreated/Model',
+        'model': {'provider-id': _second, 'model-id': 'Recreated/Model'},
         'reasoning-effort': 'high',
       });
       await runs.advance(RunState.completed);
@@ -315,22 +372,24 @@ void _registerRunCases(
     },
   );
 
-  test(
+  testWidgets(
     'invalid authored provider fails capture; valid unregistered ID fails exact binding resolution',
-    () async {
-      final runs = await start();
+    (tester) => tester.runAsync(() async {
+      final runs = await start(selector: true);
       final f = runs.fixture;
       final record = await f.create('saved', {
         ..._secondValues,
-        'provider-id': 'not a provider',
+        'model': {'provider-id': 'not a provider', 'model-id': _sharedModel},
       });
-      await runs.select('saved', 0);
+      await _startFrontends(f);
+      await _SelectorPane(f).present(tester, runs.owner.session);
+      await _choose(tester, _noPreset, 'Review', 'Model Preset: Review');
       await runs.expectPreparationFailure(isA<RunModelPreferenceFailure>());
 
       const absent = 'test.preset.unregistered';
       await f.settings.updateRecord(record, {
         ..._secondValues,
-        'provider-id': absent,
+        'model': {'provider-id': absent, 'model-id': _sharedModel},
       });
       await runs.expectPreparationFailure(
         isA<ProviderUnavailable>().having(
@@ -339,16 +398,24 @@ void _registerRunCases(
           ProviderId(absent),
         ),
       );
-    },
+      final sessionId = runs.owner.session.id.value;
+      expect(_selection(await f.selections.readSessionSelection(sessionId)), (
+        sessionId,
+        'saved',
+        1,
+      ));
+    }),
   );
 
-  test(
+  testWidgets(
     'retiring the captured provider while waiting cannot switch the continuation to direct',
-    () async {
-      final runs = await start();
+    (tester) => tester.runAsync(() async {
+      final runs = await start(selector: true);
       final f = runs.fixture;
       await f.create('review', _firstValues);
-      await runs.select('review', 0);
+      await _startFrontends(f);
+      await _SelectorPane(f).present(tester, runs.owner.session);
+      await _choose(tester, _noPreset, 'Review', 'Model Preset: Review');
       final runA = await runs.advance(RunState.waiting);
       final binding = f.runtime.registry.resolveExact(
         modelProviderCapability,
@@ -360,8 +427,17 @@ void _registerRunCases(
       await runs.approve();
       expect(runs.owner.failure, isNotNull);
       expect(runs.owner.stateForRun(runA), RunState.failed);
+      await runs.advance(RunState.failed);
+      expect(
+        runs.owner.failure,
+        isA<ProviderUnavailable>().having(
+          (e) => e.providerId,
+          'providerId',
+          ProviderId(_first),
+        ),
+      );
       expect(await runs.requests(), [_firstRequest]);
-    },
+    }),
   );
 
   for (final stock in [_StockArtifact.corrupt, _StockArtifact.missing]) {

@@ -2199,6 +2199,8 @@ exit "$CLIPPY_EXIT"
               ('console', 'extensionId') => 'consoles',
               ('taskBrowser', 'extensionId') => 'task-browsers',
               ('sessionAccessory', 'extensionId') => 'session-accessories',
+              ('settingsFieldEditor', 'extensionId') =>
+                'settings-field-editors',
               ('sessionContentInspection', 'extensionId') =>
                 'session-content-inspections',
               ('toolActivity', 'inspectionExtensionId') =>
@@ -2359,6 +2361,10 @@ exit "$CLIPPY_EXIT"
           (
             'session-accessories',
             'dev.adele.plugin.model-configuration.selector',
+          ),
+          (
+            'settings-field-editors',
+            'dev.adele.plugin.model-configuration.model-reference',
           ),
           ('main-content', 'dev.adele.diff-viewer.main-content'),
           ('main-content', 'dev.adele.source-editor.main-content'),

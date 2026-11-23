@@ -24,6 +24,13 @@ const Map<String, List<Map<String, Object?>>> stockFrontendDescriptors = {
       'entrypoint': 'buildModelPresetSelector',
       'backendServices': ['modelPresetCatalog', 'modelPresetSelection'],
     },
+    {
+      'role': 'settingsFieldEditor',
+      'extensionId': 'dev.adele.plugin.model-configuration.model-reference',
+      'library':
+          'package:model_configuration_frontend/model_reference_editor.dart',
+      'entrypoint': 'buildModelReferenceEditor',
+    },
   ],
   'dev.adele.diff-viewer': [
     {

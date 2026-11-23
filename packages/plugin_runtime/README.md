@@ -298,8 +298,8 @@ existing declarations with no designated display field, allowing presentation to
 fall back to record identity. The metadata adds no string-value constraints and
 does not change record identity. Each field requires `id`, `label`, `type`, and
 an explicit Boolean `required`; `description` is optional. Field arrays retain
-authored order. Empty `recordTypes` and `fields` arrays are valid. `type` is exactly
-`boolean`, `integer`, `string`, or `enum`, reusing settings' scalar constructors.
+authored order. Empty `recordTypes` and `fields` arrays are valid. Scalar field
+types are `boolean`, `integer`, `string`, or `enum`, reusing settings' constructors.
 Only integers accept inclusive optional `minimum`/`maximum` native integer bounds.
 Only enums require nonempty `options`, with required stable `value` and optional
 display `label` per option. No unknown fields, nulls, coercion, defaults, secret
@@ -312,16 +312,33 @@ record type owner's plugin ID plus one dot-separated segment. Multiple fields ma
 reference the same editor. Discovery
 does not require a matching frontend or live registration.
 
-Only a `string` record field may instead name a built-in editor:
-`"markdown"`, `"model-provider"`, or `"model-catalog"`. The last two request
-suggestions for a configured ModelProvider ID and a model ID respectively. Only
-`"model-catalog"` requires (and accepts) `providerField`, a local field ID naming
-a different string field with the `"model-provider"` editor in the same type.
-Schema discovery needs no provider registrations. Omitting `editor`
-leaves `field.editor` null; explicit null, an unknown value, or an invalid editor
-reference rejects the whole record schema. No editor hint is a scalar
-setting option or a new stored type. The schema version remains 1; strict readers
-that do not recognize an editor key or value reject schemas that use it.
+Only a `string` field may name the built-in `"markdown"` editor. Omitting `editor`
+on a scalar leaves `field.editor` null; explicit null, an unknown value, or an
+invalid reference rejects the whole record schema.
+
+A record field (not a global setting) can also declare one flat structured value:
+
+```json
+{
+  "id": "target",
+  "label": "Target",
+  "type": "struct",
+  "required": true,
+  "editor": {"extensionId": "org.example.plugin.target-editor"},
+  "properties": [
+    {"id": "provider-id", "type": "string"},
+    {"id": "model-id", "type": "string"}
+  ]
+}
+```
+
+`properties` is an ordered array of 1 to 16 distinct local IDs. Each entry
+accepts only `id`, a scalar `type`, and that type's constraints (`minimum`,
+`maximum`, or `options` as applicable). Every property is required, so a
+`required` flag on a property is invalid. The field itself must be required and
+reference a contributed editor. Its atomic value and string-length bound belong
+to the [Settings record contract](../settings/README.md#named-records). The
+schema version remains 1; strict readers reject types they do not recognize.
 
 `credentialSlots` defaults to an empty array and retains declaration order. Entries
 accept exactly the required `id`, `label`, and `kind` keys; `kind` must be

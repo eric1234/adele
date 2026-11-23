@@ -2,7 +2,7 @@
 library;
 
 import 'package:adele_contract/adele_contract.dart';
-import 'package:adele_model_provider/adele_model_provider.dart' as model;
+import 'package:adele_model_provider/adele_model_provider.dart' as provider;
 import 'package:adele_settings/adele_settings.dart' as settings;
 
 part 'model_configuration_contract.g.dart';
@@ -13,19 +13,30 @@ abstract interface class ModelPresetCatalogService {
   Future<ModelPresetCatalogSnapshot> readPresets();
 }
 
+/// An authored reference to one provider-local model, not a live binding.
+@AdeleValue('modelPresetCatalog.modelReference')
+final class ModelPresetModelReference {
+  const ModelPresetModelReference({
+    required this.providerId,
+    required this.modelId,
+  });
+
+  final String providerId;
+  final String modelId;
+}
+
 @AdeleValue('modelPresetCatalog.definition')
 final class ModelPresetDefinition {
   ModelPresetDefinition({
     required this.presetId,
     required this.name,
     required this.description,
-    required this.providerId,
-    required this.modelId,
+    required this.model,
     required this.reasoningEffort,
   }) {
     _validatePresetId(presetId);
     if (reasoningEffort != null &&
-        !model.ModelReasoningEffort.values.any(
+        !provider.ModelReasoningEffort.values.any(
           (e) => e.name == reasoningEffort,
         )) {
       throw const FormatException('Invalid Model Preset reasoning effort.');
@@ -35,8 +46,7 @@ final class ModelPresetDefinition {
   final String presetId;
   final String name;
   final String? description;
-  final String providerId;
-  final String modelId;
+  final ModelPresetModelReference model;
 
   /// Canonical effort name, or null when no effort was authored.
   final String? reasoningEffort;

@@ -265,7 +265,14 @@ field. Interpreted widgets import
 [`settings_field_editor_bridge.dart`](lib/settings_field_editor_bridge.dart) to
 read its `value`, revision, enabled state, and validation error. A widget should
 capture the revision it rendered and pass it to `proposeSettingsFieldValue` with
-the proposed scalar. Null means accepted; a non-null string explains rejection.
+the complete replacement. For a structured field, `readSettingsFieldValue()`
+returns null when unset, otherwise a read-only `Map`. Read its properties by
+their declared local keys; propose a new map literal, not property updates.
+The host accepts only the fixed declared keys (at most 16) and their declared
+boolean, integer or string values (strings up to 64 Ki UTF-16 code units).
+There are no nested containers or implicit defaults. Null **as a result** means
+accepted; a non-null string explains rejection. Both the draft value and its
+revision stay unchanged on rejection. An accepted map is copied and frozen.
 Neither editing nor acceptance saves the record. Unmounting the view or retiring
 its registration revokes this access, including callbacks retained by the widget.
 No record lookup, sibling field, credential, or backend service is exposed.

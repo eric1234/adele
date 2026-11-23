@@ -51,11 +51,11 @@ const _extensionId = '$_plugin.run-model-preference';
 const _peer = '$_plugin.peer';
 final _type = RecordTypeId('$_plugin.preset');
 final _strategy = OrchestrationStrategyId('test.preset.strategy');
-const _values = {
-  'name': 'Same name',
-  'provider-id': 'Unregistered/Instance:1',
+const _offlineModel = {
+  'provider-id': 'test.preset.offline',
   'model-id': ' Vendor/MiX:v1.2+custom ',
 };
+const _values = {'name': 'Same name', 'model': _offlineModel};
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -117,7 +117,7 @@ void main() {
     ).readAsString();
     await File(
       '${peer.path}/records.schema.json',
-    ).writeAsString(schema.replaceAll(_type.value, '$_peer.preset'));
+    ).writeAsString(schema.replaceAll(_plugin, _peer));
     await File('${peer.path}/adele_plugin.installation.json').writeAsString(
       jsonEncode({
         'manifestVersion': 1,
@@ -224,22 +224,27 @@ void main() {
       expect(before.isComplete, isTrue);
       expect(
         before.presets.map(
-          (p) =>
-              (p.presetId, p.name, p.providerId, p.modelId, p.reasoningEffort),
+          (p) => (
+            p.presetId,
+            p.name,
+            p.model.providerId,
+            p.model.modelId,
+            p.reasoningEffort,
+          ),
         ),
         [
           (
             'alpha',
             _values['name'],
-            _values['provider-id'],
-            _values['model-id'],
+            _offlineModel['provider-id'],
+            _offlineModel['model-id'],
             'none',
           ),
           (
             'zulu',
             _values['name'],
-            _values['provider-id'],
-            _values['model-id'],
+            _offlineModel['provider-id'],
+            _offlineModel['model-id'],
             null,
           ),
         ],
@@ -264,11 +269,11 @@ void main() {
       final edited = await f.settings.updateRecord(alpha, {
         ..._values,
         'name': 'Renamed',
-        'model-id': 'Other:2',
+        'model': {..._offlineModel, 'model-id': 'Other:2'},
       });
       final updated = (await catalog.readPresets()).presets.first;
       expect(
-        (updated.presetId, updated.name, updated.modelId),
+        (updated.presetId, updated.name, updated.model.modelId),
         ('alpha', 'Renamed', 'Other:2'),
       );
       expect(_selection(await selections.readSessionSelection(session)), (
@@ -476,42 +481,24 @@ void main() {
       final (f, graph) = await startSelectors(root);
       _expectNoInference(f, graph);
       final collection = RecordCollectionId('model-presets');
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: RecordCollectionPanel(
-              service: f.settings,
-              collection: collection,
-            ),
-          ),
-        ),
-      );
-      Finder key(String value) => find.byKey(ValueKey(value));
-      Future<void> press(Finder control) async {
-        await tester.ensureVisible(control);
-        await tester.pump();
-        await tester.tap(control);
-        await tester.pump();
-      }
-
-      final add = key('records-add-$collection');
+      final frontends = await _startFrontends(f);
+      await _showPresetSettings(tester, f, frontends);
+      final add = _key('records-add-$collection');
       await _until(
         tester,
         () => tester.widget<FilledButton>(add).onPressed != null,
         'empty Model Presets collection',
       );
-      await press(add);
+      await _press(tester, add);
       const name = 'Offline review';
       final values = {..._values, 'name': name};
-      for (final field in values.entries) {
-        expect(key('record-presence-$collection-${field.key}'), findsNothing);
-        final input = key('record-input-$collection-${field.key}');
-        expect(tester.widget<TextField>(input).enabled, isTrue);
-        await tester.ensureVisible(input);
-        await tester.enterText(input, field.value);
-        await tester.pump();
-      }
-      await press(key('record-create-$collection'));
+      expect(_key('record-presence-$collection-model'), findsNothing);
+      await _enter(tester, _key('record-input-$collection-name'), name);
+      final inputs = _referenceInputs('model-presets');
+      expect(inputs, findsNWidgets(2));
+      await _enter(tester, inputs.first, _offlineModel['provider-id']!);
+      await _enter(tester, inputs.last, _offlineModel['model-id']!);
+      await _press(tester, _key('record-create-$collection'));
       await _until(
         tester,
         () => find.widgetWithText(ExpansionTile, name).evaluate().isNotEmpty,
@@ -526,11 +513,17 @@ void main() {
         (
           preset.presetId,
           preset.name,
-          preset.providerId,
-          preset.modelId,
+          preset.model.providerId,
+          preset.model.modelId,
           preset.reasoningEffort,
         ),
-        (saved.id.value, name, values['provider-id'], values['model-id'], null),
+        (
+          saved.id.value,
+          name,
+          _offlineModel['provider-id'],
+          _offlineModel['model-id'],
+          null,
+        ),
       );
 
       final session = graph.session.id.value;
@@ -539,7 +532,6 @@ void main() {
         null,
         0,
       ));
-      await _startFrontends(f);
       await _SelectorPane(f).present(tester, graph.session);
       await _choose(tester, _noPreset, name, 'Model Preset: $name');
       expect(_selection(await f.selections.readSessionSelection(session)), (
@@ -602,6 +594,41 @@ void main() {
     );
     return _StockRuns(f, session);
   });
+}
+
+Future<void> _showPresetSettings(
+  WidgetTester tester,
+  _Fixture fixture,
+  ApplicationFrontendBootstrap frontends,
+) => tester.pumpWidget(
+  MaterialApp(
+    home: Scaffold(
+      body: RecordCollectionPanel(
+        service: fixture.settings,
+        collection: RecordCollectionId('model-presets'),
+        frontends: frontends,
+      ),
+    ),
+  ),
+);
+
+Finder _key(String value) => find.byKey(ValueKey(value));
+Finder _referenceInputs(String form) => find.descendant(
+  of: _key('record-input-$form-model'),
+  matching: find.byType(TextField),
+);
+
+Future<void> _press(WidgetTester tester, Finder control) async {
+  await tester.ensureVisible(control);
+  await tester.pump();
+  await tester.tap(control);
+  await tester.pump();
+}
+
+Future<void> _enter(WidgetTester tester, Finder control, String value) async {
+  await tester.ensureVisible(control);
+  await tester.enterText(control, value);
+  await tester.pump();
 }
 
 final class _Fixture {
