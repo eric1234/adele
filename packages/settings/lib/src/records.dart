@@ -112,7 +112,42 @@ void _validateRecordLocalId(
 }
 
 /// Presentation hint for a record field, not a scalar value type.
-enum RecordFieldEditor { markdown, modelProvider, modelCatalog }
+sealed class RecordFieldEditor {
+  const RecordFieldEditor._();
+
+  static const RecordFieldEditor markdown = _BuiltinRecordFieldEditor.markdown;
+  static const RecordFieldEditor modelProvider =
+      _BuiltinRecordFieldEditor.modelProvider;
+  static const RecordFieldEditor modelCatalog =
+      _BuiltinRecordFieldEditor.modelCatalog;
+}
+
+enum _BuiltinRecordFieldEditor implements RecordFieldEditor {
+  markdown,
+  modelProvider,
+  modelCatalog,
+}
+
+/// A reference to an editor contributed by the record type's owning plugin.
+/// It neither requires a live registration nor changes scalar validation.
+final class ContributedRecordFieldEditor extends RecordFieldEditor {
+  const ContributedRecordFieldEditor(this.extensionId) : super._();
+
+  final ExtensionId extensionId;
+
+  /// Checks the declaration namespace, not installation or registration liveness.
+  bool isOwnedBy(PluginId owner) {
+    final id = extensionId.value;
+    return id.substring(0, id.lastIndexOf('.')) == owner.value;
+  }
+
+  @override
+  bool operator ==(Object other) =>
+      other is ContributedRecordFieldEditor && other.extensionId == extensionId;
+
+  @override
+  int get hashCode => extensionId.hashCode;
+}
 
 /// Ordered record field metadata with no default, coercion, or executable hooks.
 final class RecordFieldDefinition<T extends Object> {
@@ -126,11 +161,11 @@ final class RecordFieldDefinition<T extends Object> {
     this.providerField,
   }) {
     _validatePresentation(label, 'label');
-    if (editor != null && type is! StringSettingType) {
+    if (editor is _BuiltinRecordFieldEditor && type is! StringSettingType) {
       throw ArgumentError.value(
         editor,
         'editor',
-        'Record field editors require a StringSettingType field.',
+        'Built-in record field editors require a StringSettingType field.',
       );
     }
     if ((editor == RecordFieldEditor.modelCatalog) != (providerField != null)) {
@@ -204,6 +239,14 @@ final class RecordTypeDefinition {
     _validatePresentation(label, 'label');
     final byId = <RecordFieldId, RecordFieldDefinition<Object>>{};
     for (final field in this.fields) {
+      final editor = field.editor;
+      if (editor is ContributedRecordFieldEditor && !editor.isOwnedBy(owner)) {
+        throw ArgumentError.value(
+          editor.extensionId,
+          'editor',
+          'Editor for field ${field.id} must be directly within owner $owner.',
+        );
+      }
       if (byId.containsKey(field.id)) {
         throw ArgumentError.value(
           field.id,

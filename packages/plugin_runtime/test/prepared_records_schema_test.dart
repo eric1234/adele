@@ -1587,6 +1587,45 @@ void main() {
   );
 
   test(
+    'any scalar field may reference the same contributed editor without a frontend',
+    () async {
+      const editorId = 'org.example.plugin.draft-editor';
+      await install(
+        'plugin',
+        components: {},
+        schema: _schema([
+          {
+            ..._type(),
+            'fields': [
+              for (final type in ['string', 'integer', 'boolean', 'enum'])
+                {
+                  ..._field(id: type, type: type),
+                  'editor': {'extensionId': editorId},
+                  if (type == 'enum')
+                    'options': [
+                      {'value': 'one'},
+                    ],
+                },
+            ],
+          },
+        ]),
+      );
+      final catalog = await PreparedPluginCatalog.discover(root.path);
+      expect(catalog.issues, isEmpty);
+      expect(catalog.installations.single.frontend, isNull);
+      final fields = catalog.records.definitions.single.fields;
+      expect(fields, hasLength(4));
+      for (final field in fields) {
+        expect(
+          (field.editor as ContributedRecordFieldEditor).extensionId,
+          ExtensionId(editorId),
+        );
+        expect(field.providerField, isNull);
+      }
+    },
+  );
+
+  test(
     'display metadata is optional and captures a declared string field',
     () async {
       final directory = await install(
@@ -2165,6 +2204,21 @@ void main() {
       'modelProvider',
       'model-provider ',
       'modelCatalog',
+      'org.example.plugin.editor',
+      for (final id in [
+        null,
+        1,
+        'not-an-id',
+        'org.example.plugin.Bad',
+        'org.example.plugin',
+        'org.example.plugin-other.editor',
+        'org.example.plugin.nested.editor',
+        'org.example.editor',
+        'org.example.plugin.${'x' * 256}',
+      ])
+        {'extensionId': id},
+      {'extensionId': 'org.example.plugin.editor', 'providerField': 'route'},
+      {'extensionId': 'org.example.plugin.editor', 'entrypoint': 'buildEditor'},
     ])
       'editor ${jsonEncode(editor)}': {..._field(), 'editor': editor},
     for (final editor in ['markdown', 'model-provider', 'model-catalog'])
@@ -2201,7 +2255,12 @@ void main() {
         'editor': 'model-catalog',
         'providerField': reference,
       },
-    for (final editor in [null, 'markdown', 'model-provider'])
+    for (final editor in [
+      null,
+      'markdown',
+      'model-provider',
+      {'extensionId': 'org.example.plugin.editor'},
+    ])
       'providerField with $editor editor': {
         ..._field(),
         'editor': ?editor,

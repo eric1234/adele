@@ -1559,6 +1559,119 @@ void main() {
     });
   }
 
+  const editor = {
+    'role': 'settingsFieldEditor',
+    'extensionId': 'org.example.plugin.editor',
+    'library': 'package:example_frontend/editor.dart',
+    'entrypoint': 'buildEditor',
+  };
+  test(
+    'settings field editor roundtrips without a backend or schema',
+    () async {
+      await install(
+        'editor',
+        _manifest(
+          components: {
+            'frontend': _frontend(presentations: [editor]),
+          },
+        ),
+      );
+      final catalog = await PreparedPluginCatalog.discover(root.path);
+      expect(catalog.issues, isEmpty);
+      final installation = catalog.installations.single;
+      expect(installation.backendArtifactUri, isNull);
+      expect(installation.recordsSchema, isNull);
+      final descriptor =
+          installation.frontend!.presentations.single
+              as PreparedSettingsFieldEditorPresentation;
+      expect(descriptor.extensionId, ExtensionId('org.example.plugin.editor'));
+      expect(descriptor.toJson(), editor);
+    },
+  );
+
+  test(
+    'constructed installations reject foreign and duplicate field editor IDs',
+    () {
+      final descriptor = PreparedSettingsFieldEditorPresentation(
+        extensionId: ExtensionId('org.example.plugin.editor'),
+        library: 'package:example_frontend/editor.dart',
+        entrypoint: 'buildEditor',
+      );
+      for (final (owner, editors) in [
+        ('org.example', [descriptor]),
+        ('org.example.plugin', [descriptor, descriptor]),
+      ]) {
+        expect(
+          () => PreparedPluginInstallation(
+            metadata: PluginMetadata(
+              id: PluginId(owner),
+              version: '1',
+              displayName: 'Example',
+            ),
+            installationDirectory: root,
+            backendArtifactUri: null,
+            frontend: PreparedFrontendComponent(
+              artifactUri: root.uri.resolve('frontend.evc'),
+              presentations: editors,
+            ),
+          ),
+          throwsFormatException,
+        );
+      }
+    },
+  );
+
+  for (final (name, presentations) in <(String, List<Object?>)>[
+    for (final key in editor.keys)
+      (
+        'missing $key',
+        [
+          {...editor}..remove(key),
+        ],
+      ),
+    for (final (key, value) in <(String, Object?)>[
+      ('extensionId', null),
+      ('extensionId', 'org.example.plugin.Bad'),
+      ('extensionId', 'org.example.plugin'),
+      ('extensionId', 'org.example.plugin-other.editor'),
+      ('extensionId', 'org.example.plugin.nested.editor'),
+      ('extensionId', 'org.example.editor'),
+      ('library', 'package:example_frontend/../other.dart'),
+      ('entrypoint', 'Editor.build'),
+      ('backendServices', []),
+      ('providerField', 'provider'),
+    ])
+      (
+        '$key = $value',
+        [
+          {...editor, key: value},
+        ],
+      ),
+    (
+      'duplicate ID',
+      [
+        editor,
+        {...editor, 'entrypoint': 'buildOtherEditor'},
+      ],
+    ),
+  ]) {
+    test('malformed field editor ($name) rejects only the frontend', () async {
+      await install(
+        'invalid',
+        _manifest(
+          components: {
+            'backend': {'artifact': 'backend.aot'},
+            'frontend': _frontend(presentations: presentations),
+          },
+        ),
+      );
+      final catalog = await PreparedPluginCatalog.discover(root.path);
+      expect(catalog.issues.single.component, PreparedPluginComponent.frontend);
+      expect(catalog.installations.single.frontend, isNull);
+      expect(catalog.installations.single.backendArtifactUri, isNotNull);
+    });
+  }
+
   test(
     'Session accessory is frontend-only, with an immutable allowlist',
     () async {

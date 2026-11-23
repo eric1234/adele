@@ -561,6 +561,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
       context: navigator.context,
       builder: (_) => GlobalSettingsDialog(
         service: _settingsService,
+        frontends: _frontends,
         modelProviders: () => modelProviderChoices(_runtime.registry),
         discoverModels: (id) => discoverModelsForProvider(_runtime.plugins, id),
         recordApplication: () => _recordApplication,

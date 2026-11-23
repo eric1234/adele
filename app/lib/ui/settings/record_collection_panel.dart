@@ -14,9 +14,11 @@ import '../../core/model_catalog_choices.dart';
 import '../../core/model_provider_choices.dart';
 import '../../core/record_apply_coordinator.dart';
 import '../../editor/native_rich_document_editor.dart';
+import '../../frontend/application_frontend_bootstrap.dart';
 import 'model_catalog_picker.dart';
 import 'model_provider_picker.dart';
 import 'record_credential_controls.dart';
+import 'record_field_editor_host.dart';
 import 'scalar_input.dart';
 
 final class RecordCollectionPanel extends StatefulWidget {
@@ -24,6 +26,7 @@ final class RecordCollectionPanel extends StatefulWidget {
     super.key,
     required this.service,
     required this.collection,
+    this.frontends,
     this.modelProviders,
     this.discoverModels,
     this.sectionRevision,
@@ -35,6 +38,7 @@ final class RecordCollectionPanel extends StatefulWidget {
 
   final GlobalSettingsService service;
   final RecordCollectionId collection;
+  final ApplicationFrontendBootstrap? frontends;
   final DiscoverModelProviders? modelProviders;
   final DiscoverModels? discoverModels;
   final int Function()? sectionRevision;
@@ -890,6 +894,7 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
         ],
         _RecordForm(
           draft: draft,
+          frontends: widget.frontends,
           modelProviders: widget.modelProviders,
           discoverModels: widget.discoverModels,
           formScope: _formScope,
@@ -937,6 +942,7 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
           : (expanded) => _RecordForm(
               key: ObjectKey(draft),
               draft: draft,
+              frontends: widget.frontends,
               modelProviders: widget.modelProviders,
               discoverModels: widget.discoverModels,
               formScope: _formScope,
@@ -1082,6 +1088,7 @@ final class _RecordForm extends StatelessWidget {
   const _RecordForm({
     super.key,
     required this.draft,
+    required this.frontends,
     required this.modelProviders,
     required this.discoverModels,
     required this.formScope,
@@ -1093,6 +1100,7 @@ final class _RecordForm extends StatelessWidget {
   });
 
   final _RecordDraft draft;
+  final ApplicationFrontendBootstrap? frontends;
   final DiscoverModelProviders? modelProviders;
   final DiscoverModels? discoverModels;
   final (int?, int) Function() formScope;
@@ -1157,7 +1165,8 @@ final class _RecordForm extends StatelessWidget {
                     }
                   : null,
             ),
-          if (draft.markdown[field.id] case final editor?)
+          if (field.editor is ContributedRecordFieldEditor ||
+              draft.markdown.containsKey(field.id))
             InputDecorator(
               key: ValueKey('record-input-$suffix-${field.id}'),
               decoration: InputDecoration(
@@ -1167,10 +1176,16 @@ final class _RecordForm extends StatelessWidget {
                 errorText: errors[field.id],
                 errorMaxLines: 4,
               ),
-              child: SizedBox(
-                height: 220,
-                child: active ? editor.buildView() : null,
-              ),
+              child: switch (field.editor) {
+                final ContributedRecordFieldEditor editor =>
+                  active && draft.isIncluded(field)
+                      ? _contributedEditor(field, editor, current)
+                      : const SizedBox.shrink(),
+                _ => SizedBox(
+                  height: 220,
+                  child: active ? draft.markdown[field.id]!.buildView() : null,
+                ),
+              },
             )
           else
             ScalarInput(
@@ -1250,6 +1265,42 @@ final class _RecordForm extends StatelessWidget {
 
   String _label(RecordFieldDefinition<Object> field) =>
       field.required ? '${field.label} (Required)' : field.label;
+
+  Widget _contributedEditor(
+    RecordFieldDefinition<Object> field,
+    ContributedRecordFieldEditor editor,
+    bool Function() current,
+  ) {
+    final presence = draft.presenceRevisions[field.id];
+    return RecordFieldEditorHost(
+      key: ValueKey((
+        frontends,
+        draft,
+        field.id,
+        formScope(),
+        enabled,
+        presence,
+      )),
+      definition: draft.definition,
+      field: field,
+      extensionId: editor.extensionId,
+      frontends: frontends,
+      canEdit: enabled,
+      isCurrent: () =>
+          current() &&
+          draft.isIncluded(field) &&
+          draft.presenceRevisions[field.id] == presence,
+      readValue: () => draft._value(field),
+      acceptValue: (value) {
+        if (field.type is BooleanSettingType || field.type is EnumSettingType) {
+          draft.selections[field.id] = value;
+        } else {
+          draft.text[field.id]!.text = value.toString();
+        }
+        onChanged();
+      },
+    );
+  }
 
   Widget _providerPicker(
     RecordFieldDefinition<Object> field,

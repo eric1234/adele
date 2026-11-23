@@ -6,6 +6,7 @@ import '../../core/global_settings_service.dart';
 import '../../core/model_catalog_choices.dart';
 import '../../core/model_provider_choices.dart';
 import '../../core/record_apply_coordinator.dart';
+import '../../frontend/application_frontend_bootstrap.dart';
 import 'record_collection_panel.dart';
 import 'scalar_settings_panel.dart';
 
@@ -14,6 +15,7 @@ final class GlobalSettingsDialog extends StatefulWidget {
   const GlobalSettingsDialog({
     super.key,
     required this.service,
+    this.frontends,
     this.modelProviders,
     this.discoverModels,
     this.credentialAssociations,
@@ -23,6 +25,7 @@ final class GlobalSettingsDialog extends StatefulWidget {
   });
 
   final Future<GlobalSettingsService> Function() service;
+  final ApplicationFrontendBootstrap? frontends;
   final DiscoverModelProviders? modelProviders;
   final DiscoverModels? discoverModels;
   final RecordCredentialService Function()? credentialAssociations;
@@ -132,6 +135,7 @@ final class _GlobalSettingsDialogState extends State<GlobalSettingsDialog> {
                             )
                           : (active) => RecordCollectionPanel(
                               service: _service!,
+                              frontends: widget.frontends,
                               modelProviders: widget.modelProviders,
                               discoverModels: widget.discoverModels,
                               sectionRevision: () => _sectionRevision,

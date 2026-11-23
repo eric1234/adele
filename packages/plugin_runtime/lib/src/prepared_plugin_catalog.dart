@@ -39,7 +39,7 @@ final class PreparedPluginInstallation {
          authorizationPolicies: authorizationPolicies,
          authorizationPolicyEnabledSettings: authorizationPolicyEnabledSettings,
          runModelPreferenceSource: runModelPreferenceSource,
-         frontend: frontend,
+         frontend: frontend?.._validateSettingsFieldEditors(metadata.id),
          settingsSchema: settingsSchema,
          recordsSchema: recordsSchema,
        );
@@ -361,6 +361,22 @@ final class PreparedFrontendComponent {
   final Uri artifactUri;
   final List<PreparedPresentationDescriptor> presentations;
   final List<PreparedFrontendExtension> extensions;
+
+  void _validateSettingsFieldEditors(PluginId owner) {
+    final ids = <ExtensionId>{};
+    for (final editor
+        in presentations.whereType<PreparedSettingsFieldEditorPresentation>()) {
+      final id = editor.extensionId;
+      if (!ContributedRecordFieldEditor(id).isOwnedBy(owner)) {
+        throw FormatException(
+          'Settings field editor $id must be directly within owner $owner.',
+        );
+      }
+      if (!ids.add(id)) {
+        throw FormatException('Duplicate settings field editor: $id.');
+      }
+    }
+  }
 }
 
 /// Data-only behavioral extension metadata, separate from presentation roles.
@@ -542,6 +558,29 @@ sealed class PreparedPresentationDescriptor {
 }
 
 enum PreparedStrategyAffinity { independent, owningBackend }
+
+/// Presentation of one record field draft; no backend or other service grants.
+final class PreparedSettingsFieldEditorPresentation
+    extends PreparedPresentationDescriptor {
+  PreparedSettingsFieldEditorPresentation({
+    required this.extensionId,
+    required super.library,
+    required this.entrypoint,
+  }) {
+    _library(library, 'library');
+    _entrypoint(entrypoint, 'entrypoint');
+  }
+
+  final ExtensionId extensionId;
+  final String entrypoint;
+
+  Map<String, Object?> toJson() => {
+    'role': 'settingsFieldEditor',
+    'extensionId': extensionId.value,
+    'library': library,
+    'entrypoint': entrypoint,
+  };
+}
 
 /// A widget at one semantic Session location. It receives no Main Content or
 /// execution grants; the only optional channels are to its own installation.
@@ -1410,6 +1449,7 @@ final class PreparedPluginCatalog {
                 frontend = await _frontend(
                   components['frontend'],
                   resolvedDirectory,
+                  pluginMetadata.id,
                 );
             }
           } on FormatException catch (error) {
@@ -1841,7 +1881,8 @@ RecordFieldDefinition<Object> _recordFieldDefinition(
     'description',
     'type',
     'required',
-    if (kind == 'string') ...['editor', 'providerField'],
+    'editor',
+    if (kind == 'string') 'providerField',
     if (kind == 'integer') ...['minimum', 'maximum'],
     if (kind == 'enum') 'options',
   });
@@ -1871,19 +1912,35 @@ RecordFieldDefinition<Object> _recordFieldDefinition(
     ),
     required: required,
     editor: value.containsKey('editor')
-        ? switch (value['editor']) {
-            'markdown' => RecordFieldEditor.markdown,
-            'model-provider' => RecordFieldEditor.modelProvider,
-            'model-catalog' => RecordFieldEditor.modelCatalog,
-            _ => throw FormatException(
-              '$label.editor must be "markdown", "model-provider" or "model-catalog".',
-            ),
-          }
+        ? _recordFieldEditor(value['editor'], '$label.editor')
         : null,
     providerField: value.containsKey('providerField')
         ? RecordFieldId(_text(value['providerField'], '$label.providerField'))
         : null,
   );
+}
+
+RecordFieldEditor _recordFieldEditor(Object? value, String label) {
+  if (value is Map<String, Object?>) {
+    final editor = _object(value, label, {'extensionId'});
+    return ContributedRecordFieldEditor(
+      ExtensionId(
+        _schemaText(
+          editor['extensionId'],
+          '$label.extensionId',
+          PreparedRecordsSchema.maxIdLength,
+        ),
+      ),
+    );
+  }
+  return switch (value) {
+    'markdown' => RecordFieldEditor.markdown,
+    'model-provider' => RecordFieldEditor.modelProvider,
+    'model-catalog' => RecordFieldEditor.modelCatalog,
+    _ => throw FormatException(
+      '$label must be a built-in editor name or an object with an extensionId.',
+    ),
+  };
 }
 
 SettingDefinition<Object> _settingDefinition(
@@ -2023,6 +2080,7 @@ String _schemaText(Object? value, String label, int limit) {
 Future<PreparedFrontendComponent> _frontend(
   Object? value,
   Directory directory,
+  PluginId owner,
 ) async {
   final frontend = _object(value, 'components.frontend', {
     'artifact',
@@ -2055,7 +2113,7 @@ Future<PreparedFrontendComponent> _frontend(
     ),
     presentations: descriptors,
     extensions: extensionDescriptors,
-  );
+  ).._validateSettingsFieldEditors(owner);
 }
 
 PreparedFrontendExtension _extension(Object? value, String label) {
@@ -2185,6 +2243,13 @@ PreparedPresentationDescriptor _presentation(Object? value, String label) {
   }
   String text(String field) => _text(value[field], '$label.$field');
   switch (text('role')) {
+    case 'settingsFieldEditor':
+      _object(value, label, {'role', 'extensionId', 'library', 'entrypoint'});
+      return PreparedSettingsFieldEditorPresentation(
+        extensionId: ExtensionId(text('extensionId')),
+        library: text('library'),
+        entrypoint: text('entrypoint'),
+      );
     case 'sessionAccessory':
       _object(value, label, {
         'role',
