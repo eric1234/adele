@@ -261,9 +261,7 @@ void _registerRunCases(
       await tester.pumpAndSettle();
       const form = 'model-presets-review';
       await _press(tester, _key('record-edit-$form'));
-      final inputs = _referenceInputs(form);
-      expect(inputs, findsNWidgets(2));
-      await _enter(tester, inputs.first, _second);
+      await _authorReference(tester, _second, _sharedModel);
       await _press(tester, _key('record-save-$form'));
       await _until(
         tester,

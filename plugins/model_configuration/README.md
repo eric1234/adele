@@ -11,12 +11,11 @@ choice when a new Run is prepared.
 ## Choosing a Model Preset
 
 1. Open **Global Settings → Model Presets**. Choose **Add** or edit an existing
-   preset. Enter a **Name**. Under **Model**, type the **Provider ID** of one
-   configured provider instance (not its display name or plugin ID) and the
-   exact **Model ID** that provider expects. The two inputs form one reference:
-   the same model ID on another provider is a different target. Both IDs must
-   be entered before the editor proposes a reference. Their spelling, case and
-   surrounding whitespace are preserved. Use **Include** for **Description** or
+   preset. Enter a **Name**. Choose **Browse models...** to see models across
+   configured providers. Search the loaded results, filter by provider, or
+   click a column header to change the sort. The same model on Work and
+   Personal is two choices. Select a row and choose **Use model**. This changes
+   the unsaved pair; canceling the browser leaves it alone. Use **Include** for **Description** or
    **Reasoning Effort** only if you want to supply them. **Create** or **Save**
    stores the draft; neither selects it for a Session.
 2. In a Session that shows execution configuration, open **Model Preset** and
@@ -28,9 +27,12 @@ choice when a new Run is prepared.
    This allows a direct model configuration to be used **if one is configured**.
    Changes apply to newly prepared Runs, not to an active Run awaiting approval.
 
-The Model editor is manual and works offline. It does not list providers or
-models, look up credentials, or contact a network endpoint. A provider may be
-configured later. If the plugin frontend is unavailable, Settings does not
+Only explicit browsing and refresh request catalogs. One provider's missing or
+failed catalog does not prevent using a healthy sibling. If the provider has no
+catalog, choose **Enter manually**, choose the configured instance and enter the
+exact model ID. **Enter provider ID instead** also works for unresolved or
+offline references. Confirming a manual pair does not verify model support or
+authentication. If the plugin frontend is unavailable, Settings does not
 substitute a native control; unrelated fields and an existing valid reference
 remain intact.
 

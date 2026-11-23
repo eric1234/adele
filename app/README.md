@@ -633,6 +633,13 @@ to `PreparedMainContentHost`; each presentation receives a fresh bridge constrai
 by its descriptor's Capability ID/major allowlist. No owning backend or Session
 execution service is needed. Initializers and finite operations receive no bridge.
 
+An opted-in Settings field editor gets its own `CapabilityAccessBridge` with an
+**empty** direct allowlist. `ApplicationFrontendBootstrap` injects exact backend
+ownership lookup and only the editor descriptor's `associatedAccess` pairs. Its
+modal and handles are scoped to the editor presentation, not the Settings dialog
+as a whole. The application neither decodes catalog entries nor proposes a model
+reference for the plugin.
+
 The bridge captures `ProviderBinding.requestChannel`, rather than looking up
 connections or configuration by transported IDs. Its bounded local handle table
 owns release and exact registration-retirement observers. Shared

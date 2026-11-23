@@ -275,7 +275,20 @@ accepted; a non-null string explains rejection. Both the draft value and its
 revision stay unchanged on rejection. An accepted map is copied and frozen.
 Neither editing nor acceptance saves the record. Unmounting the view or retiring
 its registration revokes this access, including callbacks retained by the widget.
-No record lookup, sibling field, credential, or backend service is exposed.
+No record lookup, sibling field, credential, or backend service is exposed by
+the draft. A mounted editor can separately opt into
+[association-aware Capability access](../../docs/architecture/contracts-and-capabilities.md#associated-access-from-field-editors).
+Use `observeAssociatedProviders` without capture for labels; pass `true` as the
+final argument only when a handle is needed. Construct the
+generated client over the offered `CapabilityRequestChannel`, check
+`isCapabilityProviderCurrent` before accepting a choice, and release every
+captured handle on refresh or dismissal. Neither compilation nor registration
+grants access.
+
+An interpreted editor can show a child widget using
+[`showPresentationDialog`](lib/presentation_dialog.dart). The child checks its
+own context with `isPresentationDialogCurrent` and dismisses only that exact
+route. Revoking the presentation removes its dialog, not an unrelated route.
 
 The preparation harness adds `flutterEvalPlugin` and
 [`SettingsFieldEditorDeclarations`](../../app/lib/frontend/settings_field_editor_bridge.dart)

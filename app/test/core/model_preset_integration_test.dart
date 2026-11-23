@@ -494,10 +494,11 @@ void main() {
       final values = {..._values, 'name': name};
       expect(_key('record-presence-$collection-model'), findsNothing);
       await _enter(tester, _key('record-input-$collection-name'), name);
-      final inputs = _referenceInputs('model-presets');
-      expect(inputs, findsNWidgets(2));
-      await _enter(tester, inputs.first, _offlineModel['provider-id']!);
-      await _enter(tester, inputs.last, _offlineModel['model-id']!);
+      await _authorReference(
+        tester,
+        _offlineModel['provider-id']!,
+        _offlineModel['model-id']!,
+      );
       await _press(tester, _key('record-create-$collection'));
       await _until(
         tester,
@@ -613,10 +614,30 @@ Future<void> _showPresetSettings(
 );
 
 Finder _key(String value) => find.byKey(ValueKey(value));
-Finder _referenceInputs(String form) => find.descendant(
-  of: _key('record-input-$form-model'),
-  matching: find.byType(TextField),
-);
+
+Future<void> _authorReference(
+  WidgetTester tester,
+  String provider,
+  String model,
+) async {
+  Future<void> press(String text) async {
+    await _waitForText(tester, text);
+    await _press(tester, find.text(text));
+    await tester.pump(const Duration(milliseconds: 300));
+  }
+
+  await press('Browse models...');
+  await press('Enter manually');
+  await press('Enter provider ID instead');
+  final inputs = find.descendant(
+    of: find.byType(Dialog),
+    matching: find.byType(TextField),
+  );
+  expect(inputs, findsNWidgets(2));
+  await _enter(tester, inputs.first, provider);
+  await _enter(tester, inputs.last, model);
+  await press('Use reference');
+}
 
 Future<void> _press(WidgetTester tester, Finder control) async {
   await tester.ensureVisible(control);

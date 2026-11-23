@@ -154,8 +154,10 @@ configuration-context strings do not establish an association or account identit
 retains its connection, configured context, and generated service.
 
 Authoring a [Model Preset](profiles-and-configuration.md#model-presets) needs no
-catalog or inference registration. Its Settings field editor receives no provider
-discovery, credential or network authority.
+catalog or inference registration. Its plugin-owned browser uses a mounted
+editor's [associated access](#associated-access-from-field-editors) to list
+configured inference providers and request their catalogs. Only the selected
+backend can use its own network and credential access to answer a request.
 
 Successful empty catalogs, declared semantic discovery failures, malformed transport,
 and unavailable resolution remain distinct. Explicit selection never falls back.
@@ -164,9 +166,8 @@ Snapshots are immutable observations, not application-lifetime caches: another c
 on an available route may observe changes without restart. Newly registered routes
 are available to fresh discovery/resolution, while retired access never migrates to
 a same-ID replacement. Prepared backend consumption uses the ordinary request-only
-path and its release/admitted-call lifetime rules below. The generic consumer does
-not yet expose sibling-association lookup; host/runtime registration evidence proves
-the relationship without inventing a future routing lookup API. Exact DTO bounds,
+path and its release/admitted-call lifetime rules below; it does not gain the
+field editor's association lookup. Exact DTO bounds,
 failure codes, and generated APIs belong to
 [`model_provider`](../../packages/model_provider/README.md).
 
@@ -624,6 +625,28 @@ does not extend this route. See the
 [public bridge API](../../packages/ui/README.md#interpreted-bridges),
 [descriptor schema](../../packages/plugin_runtime/README.md#prepared-catalog), and
 [application hosting](../../app/README.md#prepared-capability-access).
+
+### Associated access from field editors
+
+A `settingsFieldEditor` descriptor can separately declare pairs of **observe**
+and **invokeAssociated** identities. Each identity includes a Capability ID,
+major and generated service ID. Without an exact declared pair there is no
+access. Observation returns provider IDs and display names. It grants no
+invocation of the observed service, no direct lookup of the associated service,
+and no channel to the editor's own backend. Other presentations in the same
+artifact do not share this authority.
+
+On explicit capture, the host requires one eligible associated registration,
+using the observed registration's actual backend owner and the explicit sibling
+association. Ranking never resolves ambiguity. The opaque handle captures
+**both** registrations and their backend generation; it only admits unary calls
+to the associated service. Unlike direct pane access, an associated result is
+useful only while the relationship remains valid: the host checks the exact pair
+at admission, settlement, and when a consumer validates a previously offered
+choice. New discovery can see a replacement, but cannot repair the old handle.
+Dismissal releases browser captures; unmounting or revoking the editor disposes
+its access. Late results cannot authorize a choice. This neither cancels backend
+work already admitted nor changes ordinary Capability consumers' settlement rules.
 
 ### Prepared contextual Environment reads
 

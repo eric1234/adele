@@ -8,11 +8,22 @@ user workflow.
 
 [`buildModelReferenceEditor`](lib/model_reference_editor.dart) edits the
 `model` field through the [public field draft bridge](../../../../packages/ui/lib/settings_field_editor_bridge.dart).
-Its two text inputs read the current pair and propose one complete replacement
-against the observed revision. An incomplete pair stays local to the widget;
-an incomplete or rejected edit does not replace an already accepted draft.
-Only the form's Create or Save button persists the draft. The editor has no
-Session, backend, provider catalog, credential, or sibling-field access.
+The field displays the accepted pair and can resolve provider labels without
+requesting a catalog. Its modal Model Browser reads available catalogs through
+the [associated Capability bridge](../../../../packages/ui/lib/capability_bridge.dart).
+Search, sorting, provider filters and draft row selection operate on loaded
+observations, not on the network. Confirming a still-current row, or explicitly
+confirming both IDs in manual entry, proposes one complete replacement against
+the revision from which the browser opened. Dismissing the browser does not
+propose anything. Only the form's Create or Save persists the draft. The editor
+has no inference, Session, credential, configuration-store or sibling-field access.
+
+The browser limits each observation to 64 configured providers and four pending
+catalog calls. It retains up to 2,048 rows and 1 Mi UTF-16 units of row text
+across catalogs; provider status indicates when the view is limited. IDs on
+different providers remain distinct. Search and sorting cannot start requests.
+Refresh discards the previous observation, not the accepted field value. No
+catalog data is persisted, and no timer polls for availability.
 
 ## Session selector
 
@@ -31,8 +42,8 @@ Leaving the Session retires the presentation, not an already admitted backend
 transaction. Returning creates a fresh observation.
 
 The [frontend compiler](../../../../app/tool/model_configuration_frontend_compiler.dart)
-generates eval clients from the plugin contract for the selector; the Settings
-editor needs only its own bridge. From a bootstrapped checkout,
+generates eval clients from the plugin contract for the selector and the public
+Model Catalog contract for the browser. From a bootstrapped checkout,
 run `dart tools/adele.dart test --target model_configuration_frontend` for the
 compiled widget tests, including an [editor test](test/model_reference_editor_eval_test.dart)
 with the real Settings store and no installed backend. The [desktop integration fixture](../../../../app/test/core/model_preset_integration_test.dart)
