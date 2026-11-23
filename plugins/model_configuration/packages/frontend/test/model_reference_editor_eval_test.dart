@@ -97,16 +97,27 @@ void main() {
         _key('record-input-model-presets-name'),
         'Unfinished',
       );
-      final newInputs = find.descendant(
-        of: _key('record-input-model-presets-model'),
-        matching: find.byType(TextField),
-      );
-      await tester.enterText(newInputs.first, 'Offline');
-      await tester.pump();
       final create = _key('record-create-model-presets');
       expect(tester.widget<FilledButton>(create).onPressed, isNull);
-      await tester.enterText(newInputs.last, '  ');
+      expect(find.text('No model selected.'), findsOneWidget);
+      final dialogInputs = find.descendant(
+        of: find.byType(Dialog),
+        matching: find.byType(TextField),
+      );
+      Future<void> author() async {
+        await _tap(tester, find.text('Browse models...'));
+        await _tap(tester, find.text('Enter manually'));
+        await _tap(tester, find.text('Enter provider ID instead'));
+      }
+
+      await author();
+      await tester.enterText(dialogInputs.first, 'Offline');
+      await tester.enterText(dialogInputs.last, '  ');
       await tester.pump();
+      expect(find.text('Use reference'), findsNothing);
+      await _tap(tester, find.text('Cancel').last);
+      await tester.pumpAndSettle();
+      expect(find.text('No model selected.'), findsOneWidget);
       expect(tester.widget<FilledButton>(create).onPressed, isNull);
       await _tap(tester, find.text('Back to records'));
       await _tap(tester, title);
@@ -116,37 +127,30 @@ void main() {
         of: _key('record-input-$_suffix-model'),
         matching: find.byType(TextField),
       );
-      List<String> pair() => tester
-          .widgetList<TextField>(inputs)
-          .map((input) => input.controller!.text)
-          .toList();
-      expect(find.text('Provider ID'), findsOneWidget);
-      expect(find.text('Model ID'), findsOneWidget);
-      expect(pair(), _initial.values.toList());
-      final stale = tester.widget<TextField>(inputs.last).onChanged!;
-      await tester.enterText(inputs.first, 'other');
-      await tester.pump();
-      stale('obsolete'); // A callback retained from before the provider change.
-      await tester.pump();
-      expect(pair(), ['other', 'alpha']);
-      expect(
-        find.text('The form still uses provider other, model alpha.'),
-        findsOneWidget,
-      );
+      expect(inputs, findsNothing);
+      expect(find.text('Configured provider: Local/Work'), findsOneWidget);
+      expect(find.text('alpha'), findsOneWidget);
+      await author();
+      await tester.enterText(dialogInputs.first, 'other');
+      await _tap(tester, find.text('Use reference'));
+      expect(find.text('Configured provider: other'), findsOneWidget);
       await _tap(tester, _key('record-cancel-$_suffix'));
       expect(file.readAsStringSync(), original);
 
       await _tap(tester, edit);
-      expect(pair(), _initial.values.toList());
+      expect(find.text('Configured provider: Local/Work'), findsOneWidget);
       const updated = {
         'provider-id': 'Offline/Account.2',
         'model-id': ' Org/Model:v2+custom ',
       };
-      await tester.enterText(inputs.last, updated['model-id']!);
+      await author();
+      await tester.enterText(dialogInputs.last, updated['model-id']!);
       await tester.pump();
-      await tester.enterText(inputs.first, updated['provider-id']!);
+      await tester.enterText(dialogInputs.first, updated['provider-id']!);
       await tester.pump();
-      expect(pair(), updated.values.toList());
+      await _tap(tester, find.text('Use reference'));
+      await tester.pumpAndSettle();
+      expect(find.text(updated['model-id']!), findsOneWidget);
       expect(file.readAsStringSync(), original);
       await _tap(tester, _key('record-save-$_suffix'));
       await _waitFor(tester, find.text('Saved Writer.'));

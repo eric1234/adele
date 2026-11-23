@@ -10,6 +10,7 @@ environment:
 resolution: workspace
 
 dependencies:
+  adele_model_provider: ^0.1.0
   adele_ui: ^0.1.0
   flutter:
     sdk: flutter
@@ -21,6 +22,7 @@ dev_dependencies:
   adele_platform_storage: ^0.1.0
   adele_plugin_api: ^0.1.0
   adele_settings: ^0.1.0
+  dart_eval: 0.8.5
   plugin_runtime: ^0.1.0
   flutter_test:
     sdk: flutter

@@ -75,6 +75,7 @@ Future<void> main() async {
               )
               as YamlMap;
       const allowedPackages = {
+        'adele_model_provider',
         'adele_ui',
         'flutter',
         'model_configuration_contract',
@@ -102,6 +103,8 @@ Future<void> main() async {
           ]) {
             final uri = Uri.parse(literal.stringValue!);
             final allowed = switch (uri.scheme) {
+              'package' when uri.pathSegments.first == 'adele_model_provider' =>
+                uri.path == 'adele_model_provider/adele_model_catalog.dart',
               'package' =>
                 allowedPackages.contains(uri.pathSegments.first) ||
                     uri.pathSegments.first == manifest['name'],

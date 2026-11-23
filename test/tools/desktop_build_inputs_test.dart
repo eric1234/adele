@@ -113,6 +113,7 @@ void main() {
       'session_content_inspection',
       'session_accessory',
       'settings_field_editor',
+      'capability',
       'session_execution',
       'session_feedback',
       'session_presentation_lifecycle',
@@ -132,6 +133,12 @@ void main() {
       write('packages/ui/lib/${bridge}_bridge.dart');
     }
     write('packages/ui/lib/inspection_display.dart');
+    write('packages/ui/lib/presentation_dialog.dart');
+    write(
+      'packages/model_provider/pubspec.yaml',
+      'name: adele_model_provider\n',
+    );
+    write('packages/model_provider/lib/adele_model_catalog.dart');
     for (final entry in _backends.entries) {
       final source = write(
         entry.value,
@@ -162,6 +169,9 @@ dev_dependencies:
     write('plugins/source_editor/packages/frontend/lib/source_documents.dart');
     write(
       'plugins/model_configuration/packages/frontend/lib/model_reference_editor.dart',
+    );
+    write(
+      'plugins/model_configuration/packages/frontend/lib/model_browser.dart',
     );
     for (final plugin in [
       'agent_configuration',
@@ -382,8 +392,16 @@ part 'public.g.dart';
                 if (plugin == 'model_configuration')
                   'settings_field_editor_bridge.dart',
               ]) ...['app/lib/frontend/$bridge', 'packages/ui/lib/$bridge'],
-              if (plugin == 'model_configuration')
+              if (plugin == 'model_configuration') ...[
                 '$packages/frontend/lib/model_reference_editor.dart',
+                '$packages/frontend/lib/model_browser.dart',
+                'app/lib/frontend/capability_access_bridge.dart',
+                'app/lib/frontend/presentation_dialog_bridge.dart',
+                'packages/ui/lib/capability_bridge.dart',
+                'packages/ui/lib/presentation_dialog.dart',
+                'packages/model_provider/lib/adele_model_catalog.dart',
+                'packages/model_provider/lib/adele_model_catalog.g.dart',
+              ],
               'packages/ui/lib/inspection_display.dart',
             ])
               File(path).absolute.path,
@@ -581,17 +599,21 @@ part 'missing_part.dart';
       final commandContract = absolute(
         'plugins/command_tools/packages/contract/lib/command_tools_contract.dart',
       );
-      final editorBridge = absolute(
+      for (final path in [
         'packages/ui/lib/settings_field_editor_bridge.dart',
-      );
-      expect(
-        inputs['model-configuration-frontend-compilation'],
-        contains(editorBridge),
-      );
-      expect(
-        inputs['agent-configuration-frontend-compilation'],
-        isNot(contains(editorBridge)),
-      );
+        'packages/ui/lib/capability_bridge.dart',
+        'packages/ui/lib/presentation_dialog.dart',
+        'packages/model_provider/lib/adele_model_catalog.dart',
+      ]) {
+        expect(
+          inputs['model-configuration-frontend-compilation'],
+          contains(absolute(path)),
+        );
+        expect(
+          inputs['agent-configuration-frontend-compilation'],
+          isNot(contains(absolute(path))),
+        );
+      }
       expect(inputs['command-frontend-compilation'], contains(commandContract));
       expect(
         inputs['session-evaluator-frontend-compilation'],

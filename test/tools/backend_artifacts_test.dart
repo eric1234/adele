@@ -3270,6 +3270,20 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
             'library':
                 'package:model_configuration_frontend/model_reference_editor.dart',
             'entrypoint': 'buildModelReferenceEditor',
+            'associatedAccess': [
+              {
+                'observe': {
+                  'id': 'dev.adele.model.provider',
+                  'majorVersion': 1,
+                  'serviceId': 'modelProvider',
+                },
+                'invokeAssociated': {
+                  'id': 'dev.adele.model.catalog',
+                  'majorVersion': 1,
+                  'serviceId': 'modelCatalog',
+                },
+              },
+            ],
           },
         );
         expect(
