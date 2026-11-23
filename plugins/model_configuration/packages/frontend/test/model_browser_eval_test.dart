@@ -128,6 +128,71 @@ void main() {
   );
 
   testWidgets(
+    'invalid metadata discards only that provider, including its prior selection',
+    (tester) async {
+      draft.value = _work;
+      await mount(tester);
+      await _tap(tester, 'Browse models...');
+      final old = _button(tester, 'Use model');
+      await _tap(tester, 'Provider status');
+      // Each observation has a good first row. A malformed later row rejects
+      // the whole snapshot, even if the first row matches the accepted draft.
+      for (final (field, status) in <(Map<String, Object?>, String)>[
+        for (final values in [
+          ['future-private-effort'],
+          ['none', 'none'],
+          ['high', 'low'],
+          List.filled(modelCatalogReasoningEffortNames.length + 1, 'none'),
+        ])
+          (
+            {
+              'supportedReasoningEfforts': {'values': values},
+            },
+            'Invalid reasoning effort metadata.',
+          ),
+        ({}, 'Catalog request failed.'),
+        for (final text in ['  ', 'a\u0000b'])
+          for (final key in ['displayName', 'description'])
+            (
+              {key: text, 'supportedReasoningEfforts': null},
+              'Invalid model display metadata.',
+            ),
+        ({'supportedReasoningEfforts': []}, 'Catalog request failed.'),
+        (
+          {
+            'supportedReasoningEfforts': {
+              'values': [true],
+            },
+          },
+          'Catalog request failed.',
+        ),
+      ]) {
+        access.workTail = {
+          'modelId': 'private-id',
+          'displayName': null,
+          'description': null,
+          ...field,
+        };
+        await _tap(tester, 'Refresh');
+        expect(find.text('Account (work): $status'), findsOneWidget);
+        expect(find.text('Use model'), findsNothing);
+        expect(find.textContaining('private'), findsNothing);
+        expect(find.text('Luna'), findsOneWidget, reason: 'Healthy sibling');
+        expect(access.handles.values, ['home']);
+        old();
+        await tester.pumpAndSettle();
+        expect(draft.value, _work);
+        expect(draft.proposals, isEmpty);
+      }
+      await _tap(tester, 'Provider status');
+      await _tap(tester, 'Luna');
+      await _tap(tester, 'Use model');
+      expect(draft.proposals, [_home]);
+      expect(access.handles, isEmpty);
+    },
+  );
+
+  testWidgets(
     'partial discovery leaves healthy results usable; manual choices need no catalog',
     (tester) async {
       final slow = access.gates['home'] = Completer<void>();
@@ -299,6 +364,7 @@ class _Observations extends CapabilityAccessDeclarations
   final stale = <String>{};
   final gates = <String, Completer<void>>{};
   final calls = <String>[];
+  Map<String, Object?>? workTail;
   int capture = 0;
   void retire(String id) =>
       stale.addAll(handles.keys.where((h) => handles[h] == id));
@@ -392,9 +458,22 @@ class _Channel implements AdeleRequestChannel {
     return {
       'models': [
         if (id != 'empty')
-          {'modelId': 'same', 'displayName': 'Luna', 'description': null},
+          {
+            'modelId': 'same',
+            'displayName': 'Luna',
+            'description': null,
+            'supportedReasoningEfforts': {
+              'values': id == 'work' ? ['none', 'minimal', 'high'] : <String>[],
+            },
+          },
         if (id == 'work')
-          {'modelId': 'Artemis', 'displayName': null, 'description': null},
+          access.workTail ??
+              {
+                'modelId': 'Artemis',
+                'displayName': null,
+                'description': null,
+                'supportedReasoningEfforts': null,
+              },
       ],
     };
   }

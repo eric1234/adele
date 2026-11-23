@@ -58,6 +58,21 @@ provider-supplied `displayName` and `description`. IDs are case-sensitive and ne
 trimmed, normalized, or treated as global identities. Null metadata stays unknown;
 catalog inclusion does not establish ADELE text/tool inference compatibility.
 
+The required `supportedReasoningEfforts` key is null when support is unknown.
+A `ModelCatalogReasoningEfforts` value with `values: []` means the provider knows
+there are no configurable explicit choices. A nonempty list is the set of exact
+`ModelReasoningEffort` names supported on this route. `['none']` is therefore
+different from `[]` and from null; none of these states reports a provider default.
+Names must be distinct and in enum declaration order. Invalid names, duplicates,
+out-of-order values, or malformed shapes reject the observation.
+
+The generator admits only library-local enum types. Rather than define a second
+enum, the catalog derives its ordered vocabulary from the inference enum. The
+nullable **value DTO** owns a nonnullable immutable list: this also uses the
+generated interpreted client's defensively copied list representation. The
+compiled Model Browser checks semantic bounds, names and ordering before using
+a projected catalog; interpreted DTO projection does not run native constructors.
+
 Bounds are 1,024 entries, 1,024 UTF-16 code units per ID, 256 per display name, and
 4,096 per description, with 1,048,576 total UTF-16 code units across all text fields.
 The aggregate bound leaves room for worst-case JSON escaping and transport envelopes

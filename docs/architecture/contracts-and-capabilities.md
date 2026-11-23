@@ -145,6 +145,14 @@ valid application configuration. Provider-reported model IDs retain exact spelli
 optional display metadata remains unknown when absent. Inclusion is not confirmed
 compatibility with ADELE's text/tool inference workflow or future availability.
 
+For each exact model on that route the provider can report which explicit
+`ModelReasoningEffort` requests it supports. Unknown is distinct from a known
+empty set (no configurable effort) and from a set containing `none` (a real
+request value). This does not report a default, establish authentication, or
+guarantee that a later request will succeed. The observation is neither a
+preset field nor Run admission authority: unspecified still omits the request
+preference, and provider rejection never permits a silent downgrade.
+
 The catalog registration declares an `AdeleProviderAssociation` to its exact sibling
 ModelProvider registration in the same activation. The provider owns the semantic
 configured-account relationship; the host validates provenance and captures the two

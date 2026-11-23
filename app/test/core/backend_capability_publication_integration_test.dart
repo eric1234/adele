@@ -632,6 +632,7 @@ Map<String, Object?> _catalog(String id, int revision) => {
       'modelId': 'fixture-model',
       'displayName': 'Catalog $id:$revision',
       'description': null,
+      'supportedReasoningEfforts': null,
     },
   ],
 };

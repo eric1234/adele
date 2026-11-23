@@ -96,6 +96,90 @@ void main() {
   });
 
   test(
+    'generated wire preserves unknown, known-empty and explicit choices',
+    () async {
+      final all = ModelReasoningEffort.values.map((e) => e.name).toList();
+      final choices = <List<String>?>[
+        null,
+        [],
+        ['none'],
+        ['minimal', 'high'],
+        ['medium', 'xhigh', 'max'],
+        all,
+      ];
+      service.models = [
+        for (var i = 0; i < choices.length; i++)
+          _entry('model-$i', efforts: choices[i]),
+      ];
+      final snapshot = await client.listModels();
+      expect(
+        snapshot.models.map((m) => m.supportedReasoningEfforts?.values),
+        choices,
+      );
+      expect((channel.response!['payload']! as Map)['models'], [
+        for (var i = 0; i < choices.length; i++)
+          _wireEntry('model-$i', efforts: choices[i]),
+      ]);
+      all.clear();
+      expect(
+        service.models.last.supportedReasoningEfforts!.values,
+        modelCatalogReasoningEffortNames,
+      );
+      expect(
+        () => snapshot.models.last.supportedReasoningEfforts!.values.clear(),
+        throwsUnsupportedError,
+      );
+      expect(
+        () => modelCatalogReasoningEffortNames.clear(),
+        throwsUnsupportedError,
+      );
+    },
+  );
+
+  test('invalid effort sets fail construction and generated decode', () async {
+    final invalid = [
+      ['none', 'none'],
+      ['medium', 'low'],
+      ['default'],
+      ['LOW'],
+      [' high '],
+      [''],
+      [...modelCatalogReasoningEffortNames, 'max'],
+    ];
+    for (final efforts in invalid) {
+      expect(() => _entry('model', efforts: efforts), throwsFormatException);
+    }
+    for (final entry in [
+      _wireEntry('model')..remove('supportedReasoningEfforts'),
+      for (final malformed in <Object?>[
+        [],
+        'none',
+        {},
+        {'values': null},
+        {'values': 'none'},
+        {
+          'values': [null],
+        },
+        {
+          'values': [1],
+        },
+        {'values': <String>[], 'default': 'medium'},
+        for (final efforts in invalid) {'values': efforts},
+      ])
+        {..._wireEntry('model'), 'supportedReasoningEfforts': malformed},
+    ]) {
+      await expectLater(
+        ModelCatalogServiceClient(
+          _ResponseChannel({
+            'models': [entry],
+          }),
+        ).listModels(),
+        throwsA(isA<AdeleProtocolException>()),
+      );
+    }
+  });
+
+  test(
     'maximum finite catalog and text bounds round trip without truncation',
     () async {
       service.models = [
@@ -161,7 +245,16 @@ void main() {
           utf8.encode(jsonEncode(channel.response)).length,
           lessThan(7 * 1024 * 1024),
         );
-        final excessive = [...service.models, _entry('x')];
+        final last = service.models.last;
+        final excessive = [
+          ...service.models.take(service.models.length - 1),
+          _entry(
+            last.modelId,
+            name: last.displayName,
+            description: last.description,
+            efforts: ['none'],
+          ),
+        ];
         expect(
           () => ModelCatalogSnapshot(models: excessive),
           throwsFormatException,
@@ -371,14 +464,31 @@ void main() {
   );
 }
 
-ModelCatalogEntry _entry(String id, {String? name, String? description}) =>
-    ModelCatalogEntry(modelId: id, displayName: name, description: description);
+ModelCatalogEntry _entry(
+  String id, {
+  String? name,
+  String? description,
+  List<String>? efforts,
+}) => ModelCatalogEntry(
+  modelId: id,
+  displayName: name,
+  description: description,
+  supportedReasoningEfforts: efforts == null
+      ? null
+      : ModelCatalogReasoningEfforts(values: efforts),
+);
 
 Map<String, Object?> _wireEntry(
   String id, {
   String? name,
   String? description,
-}) => {'modelId': id, 'displayName': name, 'description': description};
+  List<String>? efforts,
+}) => {
+  'modelId': id,
+  'displayName': name,
+  'description': description,
+  'supportedReasoningEfforts': efforts == null ? null : {'values': efforts},
+};
 
 Map<String, Object?> _request(String method, Object? payload) => {
   'kind': 'request',

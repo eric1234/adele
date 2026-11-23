@@ -146,6 +146,8 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
                   'modelId': model.modelId,
                   'displayName': model.displayName,
                   'description': model.description,
+                  'supportedReasoningEfforts':
+                      model.supportedReasoningEfforts?.values,
                 },
             ],
           };

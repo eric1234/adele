@@ -4,6 +4,8 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:adele_model_provider/adele_model_catalog.dart';
+import 'package:adele_model_provider/adele_model_provider.dart'
+    show ModelReasoningEffort;
 import 'package:adele_plugin_backend_support/adele_plugin_backend_support.dart';
 
 import 'openai_api_key.dart';
@@ -51,6 +53,8 @@ final class OpenAiConfiguredModelCatalog implements ModelCatalogService {
         message: 'Model discovery is unsupported for this configured endpoint.',
       );
     }
+    final responsesEndpoint =
+        configuration.endpoint?.toString() ?? openAiDefaultResponsesEndpoint;
     final result = Completer<ModelCatalogSnapshot>();
     HttpClient? client;
     HttpClientRequest? request;
@@ -176,10 +180,7 @@ final class OpenAiConfiguredModelCatalog implements ModelCatalogService {
                 // rewriting an exact ID or publishing private transport data.
                 if (id.contains(key) ||
                     id.contains(endpoint.toString()) ||
-                    id.contains(
-                      configuration.endpoint?.toString() ??
-                          openAiDefaultResponsesEndpoint,
-                    )) {
+                    id.contains(responsesEndpoint)) {
                   throw const FormatException();
                 }
                 models.add(
@@ -187,6 +188,10 @@ final class OpenAiConfiguredModelCatalog implements ModelCatalogService {
                     modelId: id,
                     displayName: null,
                     description: null,
+                    supportedReasoningEfforts:
+                        responsesEndpoint == openAiDefaultResponsesEndpoint
+                        ? _documentedEfforts(id)
+                        : null,
                   ),
                 );
               }
@@ -230,6 +235,67 @@ final class OpenAiConfiguredModelCatalog implements ModelCatalogService {
       }
     }
   }
+}
+
+// Only complete sets from the API model cards linked in the backend README.
+// An unlisted ID is unknown, not a model with no supported explicit efforts.
+ModelCatalogReasoningEfforts? _documentedEfforts(String modelId) {
+  final efforts = switch (modelId) {
+    'gpt-6-astra' || 'gpt-6.1-sol' => const [
+      ModelReasoningEffort.low,
+      ModelReasoningEffort.medium,
+      ModelReasoningEffort.high,
+      ModelReasoningEffort.xhigh,
+      ModelReasoningEffort.max,
+    ],
+    'gpt-6.1-terra' ||
+    'gpt-6-sol' ||
+    'gpt-6-luna' ||
+    'gpt-5.6' ||
+    'gpt-5.6-sol' ||
+    'gpt-5.6-terra' ||
+    'gpt-5.6-luna' => const [
+      ModelReasoningEffort.none,
+      ModelReasoningEffort.low,
+      ModelReasoningEffort.medium,
+      ModelReasoningEffort.high,
+      ModelReasoningEffort.xhigh,
+      ModelReasoningEffort.max,
+    ],
+    'gpt-5.5' ||
+    'gpt-5.5-2026-04-23' ||
+    'gpt-5.4' ||
+    'gpt-5.4-2026-03-05' ||
+    'gpt-5.4-mini' ||
+    'gpt-5.4-mini-2026-03-17' ||
+    'gpt-5.4-nano' ||
+    'gpt-5.4-nano-2026-03-17' => const [
+      ModelReasoningEffort.none,
+      ModelReasoningEffort.low,
+      ModelReasoningEffort.medium,
+      ModelReasoningEffort.high,
+      ModelReasoningEffort.xhigh,
+    ],
+    'gpt-5.5-pro' ||
+    'gpt-5.5-pro-2026-04-23' ||
+    'gpt-5.4-pro' ||
+    'gpt-5.4-pro-2026-03-05' => const [
+      ModelReasoningEffort.medium,
+      ModelReasoningEffort.high,
+      ModelReasoningEffort.xhigh,
+    ],
+    'gpt-5' || 'gpt-5-2025-08-07' => const [
+      ModelReasoningEffort.minimal,
+      ModelReasoningEffort.low,
+      ModelReasoningEffort.medium,
+      ModelReasoningEffort.high,
+    ],
+    'gpt-5-pro' || 'gpt-5-pro-2025-10-06' => const [ModelReasoningEffort.high],
+    _ => null,
+  };
+  return efforts == null
+      ? null
+      : ModelCatalogReasoningEfforts(values: [for (final e in efforts) e.name]);
 }
 
 const _unavailable = ModelCatalogFailure(

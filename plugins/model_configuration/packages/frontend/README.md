@@ -25,6 +25,12 @@ different providers remain distinct. Search and sorting cannot start requests.
 Refresh discards the previous observation, not the accepted field value. No
 catalog data is persisted, and no timer polls for availability.
 
+The interpreted editor validates each provider's [catalog](../../../../packages/model_provider/README.md#model-catalog)
+before offering any of its rows. Malformed reasoning-effort evidence rejects
+that provider's observation, not a healthy sibling's. Valid evidence (unknown,
+known empty, or an explicit ordered list) neither filters models nor changes
+the preset's reasoning effort: **Use model** still proposes only the ID pair.
+
 ## Session selector
 
 [`buildModelPresetSelector`](lib/model_configuration_frontend.dart) is a
