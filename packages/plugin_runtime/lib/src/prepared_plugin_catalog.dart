@@ -559,26 +559,92 @@ sealed class PreparedPresentationDescriptor {
 
 enum PreparedStrategyAffinity { independent, owningBackend }
 
-/// Presentation of one record field draft; no backend or other service grants.
+/// Observation of one capability/service, and unary invocation of a unique
+/// registration explicitly associated with that observed registration.
+final class PreparedAssociatedCapabilityAccess {
+  PreparedAssociatedCapabilityAccess({
+    required this.capability,
+    required this.serviceId,
+    required this.associatedCapability,
+    required this.associatedServiceId,
+  }) {
+    for (final (key, service) in [
+      (capability, serviceId),
+      (associatedCapability, associatedServiceId),
+    ]) {
+      if (key.id.value.length > 256 || service.length > 256) {
+        throw const FormatException('Associated access identity is too long.');
+      }
+      adeleValidateServiceId(service);
+    }
+    if (capability == associatedCapability) {
+      throw const FormatException(
+        'Associated access needs distinct capabilities.',
+      );
+    }
+  }
+
+  final CapabilityKey capability;
+  final String serviceId;
+  final CapabilityKey associatedCapability;
+  final String associatedServiceId;
+
+  Map<String, Object?> toJson() => {
+    'observe': {
+      'id': capability.id.value,
+      'majorVersion': capability.majorVersion,
+      'serviceId': serviceId,
+    },
+    'invokeAssociated': {
+      'id': associatedCapability.id.value,
+      'majorVersion': associatedCapability.majorVersion,
+      'serviceId': associatedServiceId,
+    },
+  };
+}
+
+/// One record field draft. No ambient backend, Session or Capability channel.
 final class PreparedSettingsFieldEditorPresentation
     extends PreparedPresentationDescriptor {
   PreparedSettingsFieldEditorPresentation({
     required this.extensionId,
     required super.library,
     required this.entrypoint,
-  }) {
+    Iterable<PreparedAssociatedCapabilityAccess> associatedAccess = const [],
+  }) : associatedAccess = List.unmodifiable(associatedAccess) {
     _library(library, 'library');
     _entrypoint(entrypoint, 'entrypoint');
+    final pairs = {
+      for (final grant in this.associatedAccess)
+        (
+          grant.capability,
+          grant.serviceId,
+          grant.associatedCapability,
+          grant.associatedServiceId,
+        ),
+    };
+    if (pairs.length != this.associatedAccess.length ||
+        pairs.length > maxAssociatedAccess) {
+      throw const FormatException(
+        'Too many or duplicate associated access declarations.',
+      );
+    }
   }
 
+  static const int maxAssociatedAccess = 8;
   final ExtensionId extensionId;
   final String entrypoint;
+  final List<PreparedAssociatedCapabilityAccess> associatedAccess;
 
   Map<String, Object?> toJson() => {
     'role': 'settingsFieldEditor',
     'extensionId': extensionId.value,
     'library': library,
     'entrypoint': entrypoint,
+    if (associatedAccess.isNotEmpty)
+      'associatedAccess': [
+        for (final grant in associatedAccess) grant.toJson(),
+      ],
   };
 }
 
@@ -2273,11 +2339,31 @@ PreparedPresentationDescriptor _presentation(Object? value, String label) {
   String text(String field) => _text(value[field], '$label.$field');
   switch (text('role')) {
     case 'settingsFieldEditor':
-      _object(value, label, {'role', 'extensionId', 'library', 'entrypoint'});
+      _object(value, label, {
+        'role',
+        'extensionId',
+        'library',
+        'entrypoint',
+        'associatedAccess',
+      });
+      final grants = value.containsKey('associatedAccess')
+          ? value['associatedAccess']
+          : const <Object?>[];
+      if (grants is! List<Object?> ||
+          grants.length >
+              PreparedSettingsFieldEditorPresentation.maxAssociatedAccess) {
+        throw FormatException(
+          '$label.associatedAccess must be a bounded array.',
+        );
+      }
       return PreparedSettingsFieldEditorPresentation(
         extensionId: ExtensionId(text('extensionId')),
         library: text('library'),
         entrypoint: text('entrypoint'),
+        associatedAccess: [
+          for (final grant in grants)
+            _associatedAccess(grant, '$label.associatedAccess'),
+        ],
       );
     case 'sessionAccessory':
       _object(value, label, {
@@ -2838,6 +2924,48 @@ void _validateBackendCredentialSlots(
   }
 }
 
+PreparedAssociatedCapabilityAccess _associatedAccess(
+  Object? value,
+  String label,
+) {
+  final pair = _object(value, label, {'observe', 'invokeAssociated'});
+  (CapabilityKey, String) identity(String field) {
+    final endpoint = _object(pair[field], '$label.$field', {
+      'id',
+      'majorVersion',
+      'serviceId',
+    });
+    return (
+      _capabilityKey(endpoint, '$label.$field'),
+      _text(endpoint['serviceId'], '$label.$field.serviceId'),
+    );
+  }
+
+  final (observe, service) = identity('observe');
+  final (invoke, associatedService) = identity('invokeAssociated');
+  return PreparedAssociatedCapabilityAccess(
+    capability: observe,
+    serviceId: service,
+    associatedCapability: invoke,
+    associatedServiceId: associatedService,
+  );
+}
+
+CapabilityKey _capabilityKey(Map<String, Object?> fields, String label) {
+  final version = fields['majorVersion'];
+  if (version is! int) {
+    throw FormatException('$label.majorVersion must be an integer.');
+  }
+  try {
+    return CapabilityKey(
+      id: CapabilityId(_text(fields['id'], '$label.id')),
+      majorVersion: version,
+    );
+  } on CapabilityException catch (error) {
+    throw FormatException('$label: ${error.message}');
+  }
+}
+
 List<CapabilityKey> _capabilityKeys(
   Object? value,
   String label, {
@@ -2856,22 +2984,7 @@ List<CapabilityKey> _capabilityKeys(
       'id',
       'majorVersion',
     });
-    final majorVersion = capability['majorVersion'];
-    if (majorVersion is! int) {
-      throw FormatException(
-        '$capabilityLabel.majorVersion must be an integer.',
-      );
-    }
-    try {
-      keys.add(
-        CapabilityKey(
-          id: CapabilityId(_text(capability['id'], '$capabilityLabel.id')),
-          majorVersion: majorVersion,
-        ),
-      );
-    } on CapabilityException catch (error) {
-      throw FormatException('$capabilityLabel: ${error.message}');
-    }
+    keys.add(_capabilityKey(capability, capabilityLabel));
   }
   return keys;
 }

@@ -342,9 +342,9 @@ outlive that instance's availability. Saving it needs no credentials, live
 Capability binding, or Model Catalog observation.
 
 The preset declares one required `model` field. Model Configuration's prepared
-field editor accepts a configured provider ID and its provider-local model ID
-as one value. Neither identifier is inferred from a display label, a default, or
-a live registration. For example:
+editor can take the configured provider ID and provider-local model ID from a
+confirmed browser row, or accept the user's explicitly authored pair without
+discovery. Labels are presentation data, never identifiers. For example:
 
 ```toml
 [values]
@@ -357,9 +357,13 @@ model-id = "review-v2"
 ```
 
 Both properties must be present strings. Ordinary string validation does not
-prove a usable execution identifier or live availability. Settings does not query
-provider registrations or the [Model Catalog](contracts-and-capabilities.md#model-catalog)
-to author a preset. Separate top-level identifier fields do not satisfy `model`.
+prove a usable execution identifier or live availability. Opening Settings,
+rendering the reference or saving does not request a catalog. Only browsing or
+refreshing asks the providers; the plugin owns the search, sort, filters and
+manual entry. A catalog choice must still match its captured live association
+at confirmation. Once accepted into the draft, the reference is authored data:
+provider retirement cannot invalidate a Save or silently change the reference
+or reasoning effort. Separate top-level identifiers do not satisfy `model`.
 
 Model Configuration owns both the live definition reader and the Session's
 choice. Its catalog RPC is a boundary for its own frontend, not the provider

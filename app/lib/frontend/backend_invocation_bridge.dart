@@ -223,6 +223,7 @@ final class BackendInvocationBridge {
     Runtime runtime,
     List<$Value?> args, {
     EnvironmentCapabilityDiagnostic? diagnostic,
+    String? Function(Object error)? matchFailureCode,
   }) {
     final operation = args.first! as $Future;
     return $Future<$Value>.wrap(
@@ -238,8 +239,12 @@ final class BackendInvocationBridge {
         },
         onError: (Object error, StackTrace stack) {
           diagnostic?.settle(error);
+          final matched = matchFailureCode?.call(error);
           return $List.wrap(
-            List<$Value>.unmodifiable([$bool(false), const $null()]),
+            List<$Value>.unmodifiable([
+              $bool(false),
+              matched == null ? const $null() : $String(matched),
+            ]),
           );
         },
       ),

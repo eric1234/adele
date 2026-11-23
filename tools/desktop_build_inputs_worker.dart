@@ -78,7 +78,7 @@ const _frontends =
         String harness,
         List<String> sources,
         List<String> ui,
-        String? contract,
+        List<String> contracts,
       })
     >{
       'chat': (
@@ -94,14 +94,16 @@ const _frontends =
           'session_presentation_lifecycle_bridge.dart',
           'inspection_display.dart',
         ],
-        contract: 'chat_strategy',
+        contracts: [
+          'plugins/chat_strategy/packages/contract/lib/chat_strategy_contract.dart',
+        ],
       ),
       'filesystem': (
         plugin: 'filesystem_tools',
         harness: 'compile_tool_inspection_frontends.dart',
         sources: ['filesystem_tools_frontend.dart'],
         ui: ['tool_activity_inspection_bridge.dart', 'inspection_display.dart'],
-        contract: null,
+        contracts: [],
       ),
       'command': (
         plugin: 'command_tools',
@@ -114,35 +116,39 @@ const _frontends =
           'console_bridge.dart',
           'terminal_projection_bridge.dart',
         ],
-        contract: 'command_tools',
+        contracts: [
+          'plugins/command_tools/packages/contract/lib/command_tools_contract.dart',
+        ],
       ),
       'openai': (
         plugin: 'openai',
         harness: 'compile_openai_activity_frontend.dart',
         sources: ['openai_frontend.dart'],
         ui: ['model_native_activity_bridge.dart', 'inspection_display.dart'],
-        contract: null,
+        contracts: [],
       ),
       'local-directory-project': (
         plugin: 'local_directory_project',
         harness: 'compile_local_directory_project_frontend.dart',
         sources: ['local_directory_project_frontend.dart'],
         ui: ['directory_picker_bridge.dart'],
-        contract: null,
+        contracts: [],
       ),
       'task-browser': (
         plugin: 'task_browser',
         harness: 'compile_task_browser_frontend.dart',
         sources: ['task_browser_frontend.dart'],
         ui: ['task_browser_bridge.dart'],
-        contract: null,
+        contracts: [],
       ),
       'session-evaluator': (
         plugin: 'session_evaluator',
         harness: 'compile_session_evaluator_frontend.dart',
         sources: ['session_evaluator_frontend.dart'],
         ui: ['command_bridge.dart', 'owning_backend_bridge.dart'],
-        contract: 'session_evaluator',
+        contracts: [
+          'plugins/session_evaluator/packages/contract/lib/session_evaluator_contract.dart',
+        ],
       ),
       'agent-configuration': (
         plugin: 'agent_configuration',
@@ -153,7 +159,9 @@ const _frontends =
           'owning_backend_bridge.dart',
           'inspection_display.dart',
         ],
-        contract: 'agent_configuration',
+        contracts: [
+          'plugins/agent_configuration/packages/contract/lib/agent_configuration_contract.dart',
+        ],
       ),
       'model-configuration': (
         plugin: 'model_configuration',
@@ -161,14 +169,20 @@ const _frontends =
         sources: [
           'model_configuration_frontend.dart',
           'model_reference_editor.dart',
+          'model_browser.dart',
         ],
         ui: [
           'session_accessory_bridge.dart',
           'owning_backend_bridge.dart',
           'inspection_display.dart',
           'settings_field_editor_bridge.dart',
+          'capability_bridge.dart',
+          'presentation_dialog.dart',
         ],
-        contract: 'model_configuration',
+        contracts: [
+          'plugins/model_configuration/packages/contract/lib/model_configuration_contract.dart',
+          'packages/model_provider/lib/adele_model_catalog.dart',
+        ],
       ),
       'terminal': (
         plugin: 'terminal',
@@ -178,7 +192,7 @@ const _frontends =
           'environment_terminal_bridge.dart',
           'terminal_surface_bridge.dart',
         ],
-        contract: null,
+        contracts: [],
       ),
       'source-editor': (
         plugin: 'source_editor',
@@ -190,7 +204,7 @@ const _frontends =
           'contribution_bridge.dart',
           'environment_access_bridge.dart',
         ],
-        contract: null,
+        contracts: [],
       ),
       'diff-viewer': (
         plugin: 'diff_viewer',
@@ -203,7 +217,9 @@ const _frontends =
           'session_presentation_lifecycle_bridge.dart',
           'session_feedback_bridge.dart',
         ],
-        contract: 'diff_viewer',
+        contracts: [
+          'plugins/diff_viewer/packages/contract/lib/diff_viewer_contract.dart',
+        ],
       ),
     };
 
@@ -292,12 +308,8 @@ class _Discovery {
           ..._tree(Directory.fromUri(component.uri.resolve('lib/'))),
           for (final bridge in spec.ui)
             _requiredFile(root.uri.resolve('packages/ui/lib/$bridge')),
-          if (spec.contract case final contract?)
-            _requiredFile(
-              root.uri.resolve(
-                'plugins/$contract/packages/contract/lib/${contract}_contract.dart',
-              ),
-            ),
+          for (final contract in spec.contracts)
+            _requiredFile(root.uri.resolve(contract)),
         ],
         [
           ...common,

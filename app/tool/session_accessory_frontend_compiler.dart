@@ -15,6 +15,8 @@ Future<Uint8List> compileSessionAccessoryFrontend({
   List<String> additionalLibraries = const [],
   List<String> additionalUiSources = const [],
   List<EvalPlugin> additionalDeclarations = const [],
+  Future<Map<String, Map<String, String>>> Function(ContractGenerator)?
+  generateAdditionalContracts,
 }) async {
   // flutter_test runs inside flutter_tester. Use that toolchain's bundled SDK.
   var directory = File(Platform.resolvedExecutable).parent;
@@ -27,12 +29,16 @@ Future<Uint8List> compileSessionAccessoryFrontend({
   final packages = repositoryRoot.uri.resolve('plugins/$plugin/packages/');
   final frontendPackage = '${plugin}_frontend';
   final contractPackage = '${plugin}_contract';
-  final contract =
-      await ContractGenerator(
-        sdkPath: '${directory.path}/dart-sdk',
-      ).generateEvalClient(
+  final generator = ContractGenerator(sdkPath: '${directory.path}/dart-sdk');
+  final contracts = {
+    contractPackage: {
+      '$contractPackage.dart': await generator.generateEvalClient(
         File.fromUri(packages.resolve('contract/lib/$contractPackage.dart')),
-      );
+      ),
+    },
+    if (generateAdditionalContracts != null)
+      ...await generateAdditionalContracts(generator),
+  };
   final libraries = ['$frontendPackage.dart', ...additionalLibraries];
   final compiler = Compiler()
     ..addPlugin(flutterEvalPlugin)
@@ -40,20 +46,23 @@ Future<Uint8List> compileSessionAccessoryFrontend({
     ..addPlugin(const OwningBackendDeclarations())
     ..entrypoints.addAll([
       for (final library in libraries) 'package:$frontendPackage/$library',
-      'package:$contractPackage/$contractPackage.dart',
+      for (final package in contracts.entries)
+        for (final library in package.value.keys)
+          'package:${package.key}/$library',
       'package:adele_contract/adele_contract.dart',
     ]);
   for (final declaration in additionalDeclarations) {
     compiler.addPlugin(declaration);
   }
   final program = compiler.compile({
+    // The eval pin resolves imported top-level constants in compilation order.
+    ...contracts,
     frontendPackage: {
       for (final library in libraries)
         library: await File.fromUri(
           packages.resolve('frontend/lib/$library'),
         ).readAsString(),
     },
-    contractPackage: {'$contractPackage.dart': contract},
     'adele_contract': {'adele_contract.dart': evalContractSupportSource},
     'adele_ui': {
       for (final source in [

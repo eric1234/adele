@@ -155,7 +155,19 @@ class CapabilityProbeState extends State<CapabilityProbe> {
       'test.capability.private',
       null,
     );
+    // A direct pane allowlist (including both named majors) is not an
+    // association grant, even in an artifact compiled with that API present.
+    final associated = observeAssociatedProviders(
+      capability,
+      1,
+      capabilityProbeServiceId,
+      capability,
+      2,
+      capabilityProbeServiceId,
+      true,
+    );
     final pass =
+        associated == null &&
         missing != null &&
         missing.isEmpty &&
         version != null &&

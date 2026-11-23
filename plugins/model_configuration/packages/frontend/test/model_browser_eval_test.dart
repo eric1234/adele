@@ -1,0 +1,401 @@
+import 'dart:async';
+import 'dart:io';
+import 'dart:typed_data';
+
+import 'package:adele_contract/adele_contract.dart';
+import 'package:adele_desktop/frontend/backend_invocation_bridge.dart';
+import 'package:adele_desktop/frontend/capability_access_bridge.dart';
+import 'package:adele_desktop/frontend/interpreted_widget.dart';
+import 'package:adele_desktop/frontend/prepared_frontend.dart';
+import 'package:adele_desktop/frontend/presentation_dialog_bridge.dart';
+import 'package:adele_desktop/frontend/settings_field_editor_bridge.dart';
+import 'package:adele_desktop/frontend/structured_bridge_data.dart';
+import 'package:adele_model_provider/adele_model_catalog.dart';
+import 'package:adele_plugin_api/adele_plugin_api.dart';
+import 'package:adele_ui/settings_field_editor.dart';
+import 'package:dart_eval/dart_eval_bridge.dart';
+import 'package:dart_eval/stdlib/core.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+import '../../../../../app/tool/model_configuration_frontend_compiler.dart';
+
+const _library = 'package:adele_ui/capability_bridge.dart';
+const _work = {'provider-id': 'work', 'model-id': 'same'};
+const _home = {'provider-id': 'home', 'model-id': 'same'};
+
+void main() {
+  late Uint8List artifact;
+  late _Observations access;
+  late _Draft draft;
+
+  setUpAll(() async {
+    artifact = await compileModelConfigurationFrontend(
+      repositoryRoot: Directory.current.parent.parent.parent.parent,
+    );
+  });
+
+  setUp(() async {
+    draft = _Draft();
+    access = _Observations();
+  });
+
+  Future<void> mount(WidgetTester tester) async {
+    final registry = ExtensionRegistry();
+    final registration = registry.register(
+      point: settingsFieldEditorContributions,
+      id: ExtensionId('dev.test.editor'),
+      value: SettingsFieldEditorContribution(
+        createPresentation: (_) => throw UnimplementedError(),
+      ),
+    );
+    addTearDown(registration.close);
+    final bridge = PreparedFrontendBridges([
+      SettingsFieldEditorBridge(
+        draft: draft,
+        binding: registry.discover(settingsFieldEditorContributions).single,
+        isActive: () => true,
+      ),
+      PresentationDialogBridge(),
+      access,
+    ]);
+    addTearDown(bridge.invalidate);
+    final loaded = await loadInterpretedWidget(
+      bytes: artifact,
+      bridge: bridge,
+      library:
+          'package:model_configuration_frontend/model_reference_editor.dart',
+      entrypoint: 'buildModelReferenceEditor',
+    );
+    await tester.pumpWidget(MaterialApp(home: Scaffold(body: loaded.widget)));
+    await tester.pumpAndSettle();
+  }
+
+  testWidgets(
+    'multi-account rows, local search, sorting and chips preserve the exact choice',
+    (tester) async {
+      draft.value = _work;
+      await mount(tester);
+      expect(find.text('same'), findsOneWidget);
+      expect(find.text('Configured provider: Account (work)'), findsOneWidget);
+      expect(access.calls, isEmpty);
+      await _tap(tester, 'Browse models...');
+      expect(find.text('Selected: same / Account (work)'), findsOneWidget);
+      expect(find.text('Luna'), findsNWidgets(2));
+      expect(
+        find.descendant(of: find.byType(Dialog), matching: find.text('same')),
+        findsNWidgets(2),
+      );
+      expect(_chip('Account (work)'), findsOneWidget);
+      expect(_chip('Account (home)'), findsOneWidget);
+      expect(draft.proposals, isEmpty);
+      expect(
+        access.calls,
+        unorderedEquals(['work', 'home', 'empty', 'failed']),
+      );
+      double y(String label) => tester.getTopLeft(find.text(label).first).dy;
+      expect(y('Artemis'), lessThan(y('Luna')));
+      await _tap(tester, 'Model (ascending)');
+      expect(y('Luna'), lessThan(y('Artemis')));
+      await _tap(tester, 'Configured provider');
+      expect(find.text('Configured provider (ascending)'), findsOneWidget);
+      await _tap(tester, 'Configured provider (ascending)');
+      expect(find.text('Configured provider (descending)'), findsOneWidget);
+      final search = find.byType(TextField);
+      for (final (query, count) in [
+        ('LuNa', 2),
+        ('sAmE', 2),
+        ('Account (home)', 1),
+      ]) {
+        await tester.enterText(search, query);
+        await tester.pumpAndSettle();
+        expect(find.text('Luna'), findsNWidgets(count));
+        expect(find.text('Artemis'), findsNothing);
+      }
+      await tester.enterText(search, '');
+      await tester.tap(_chip('Account (home)'));
+      await tester.pumpAndSettle();
+      await _tap(tester, 'Luna');
+      expect(find.text('Selected: same / Account (home)'), findsOneWidget);
+      expect(draft.value, _work);
+      expect(access.calls, hasLength(4));
+      await _tap(tester, 'Use model');
+      expect(draft.proposals, [_home]);
+      expect(find.text('Model ID: same'), findsOneWidget);
+      expect(find.text('Luna'), findsOneWidget);
+      expect(access.handles, isEmpty);
+    },
+  );
+
+  testWidgets(
+    'partial discovery leaves healthy results usable; manual choices need no catalog',
+    (tester) async {
+      final slow = access.gates['home'] = Completer<void>();
+      await mount(tester);
+      expect(find.text('No model selected.'), findsOneWidget);
+      await _tap(tester, 'Browse models...');
+      expect(find.text('Artemis'), findsOneWidget);
+      await _tap(tester, 'Provider status');
+      for (final label in [
+        'Account (home): Loading...',
+        'Empty: Empty catalog.',
+        'Broken: Catalog request failed.',
+        'Offline: No catalog.',
+      ]) {
+        expect(find.text(label), findsOneWidget);
+      }
+      await tester.drag(
+        find.text('Account (home): Loading...'),
+        const Offset(0, -100),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Multiple: Ambiguous association.'), findsOneWidget);
+      expect(find.textContaining('PRIVATE'), findsNothing);
+      await _tap(tester, 'Artemis');
+      await _tap(tester, 'Cancel');
+      expect(draft.proposals, isEmpty);
+      expect(access.handles, isEmpty);
+      slow.complete();
+      await tester.pumpAndSettle();
+      await _tap(tester, 'Browse models...');
+      await _tap(tester, 'Enter manually');
+      final offline = _chip('Offline');
+      await tester.drag(
+        find.byWidgetPredicate(
+          (widget) =>
+              widget is ListView && widget.scrollDirection == Axis.horizontal,
+        ),
+        const Offset(-440, 0),
+      );
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(offline);
+      await tester.tap(offline);
+      await tester.enterText(find.byType(TextField), '  exact:manual  ');
+      await tester.pumpAndSettle();
+      await _tap(tester, 'Use reference');
+      expect(draft.proposals, [
+        {'provider-id': 'offline', 'model-id': '  exact:manual  '},
+      ]);
+      expect(access.calls.where((id) => id == 'offline'), isEmpty);
+    },
+  );
+
+  testWidgets(
+    'refresh fences old arrivals without multiplying pending requests',
+    (tester) async {
+      access.providers.clear();
+      for (int i = 0; i < 7; i++) {
+        access.providers['p$i'] = 'Provider $i';
+        access.gates['p$i'] = Completer<void>();
+      }
+      await mount(tester);
+      await _tap(tester, 'Browse models...');
+      expect(access.calls, ['p0', 'p1', 'p2', 'p3']);
+      await _tap(tester, 'Refresh');
+      expect(access.calls, hasLength(4));
+      expect(find.text('Use model'), findsNothing);
+      // The first capture's response cannot publish a row. Its released worker
+      // slot admits the new capture, whose response remains independently gated.
+      final first = access.gates['p0']!;
+      access.gates['p0'] = Completer<void>();
+      first.complete();
+      await tester.pumpAndSettle();
+      expect(access.calls, ['p0', 'p1', 'p2', 'p3', 'p0']);
+      expect(find.text('Luna'), findsNothing);
+      await _tap(tester, 'Cancel');
+      expect(access.handles, isEmpty);
+      for (final gate in access.gates.values) {
+        gate.complete();
+      }
+      await tester.pumpAndSettle();
+      expect(access.calls, hasLength(5));
+      expect(draft.proposals, isEmpty);
+    },
+  );
+
+  testWidgets(
+    'replacement, refresh, barrier dismissal and stale revisions fence retained choices',
+    (tester) async {
+      draft.value = _work;
+      await mount(tester);
+      await _tap(tester, 'Browse models...');
+      final old = _button(tester, 'Use model');
+      access.retire('work');
+      old();
+      await tester.pumpAndSettle();
+      expect(
+        find.text('Catalog changed; refresh to browse again.'),
+        findsOneWidget,
+      );
+      expect(draft.proposals, isEmpty);
+      await _tap(tester, 'Refresh');
+      expect(find.text('Use model'), findsNothing);
+      old();
+      await tester.pumpAndSettle();
+      expect(draft.proposals, isEmpty);
+      await _tap(tester, 'Artemis');
+      final dismissed = _button(tester, 'Use model');
+      await tester.tapAt(const Offset(4, 4));
+      dismissed(); // Before the exit transition has disposed the interpreted child.
+      await tester.pumpAndSettle();
+      expect(access.handles, isEmpty);
+      await _tap(tester, 'Browse models...');
+      dismissed();
+      expect(draft.proposals, isEmpty);
+      draft.revision++;
+      await _tap(tester, 'Use model');
+      expect(find.text('Field draft has changed.'), findsOneWidget);
+      expect(draft.proposals, isEmpty);
+      await _tap(tester, 'Cancel');
+      expect(draft.value, _work);
+    },
+  );
+}
+
+Finder _chip(String label) => find.widgetWithText(ChoiceChip, label);
+VoidCallback _button(WidgetTester tester, String label) => tester
+    .widget<TextButton>(find.widgetWithText(TextButton, label))
+    .onPressed!;
+Future<void> _tap(WidgetTester tester, String label) async {
+  final text = find.text(label);
+  expect(text, findsOneWidget);
+  await tester.ensureVisible(text);
+  await tester.tap(text);
+  await tester.pumpAndSettle();
+}
+
+class _Draft implements SettingsFieldDraft {
+  @override
+  int revision = 0;
+  @override
+  Object? value;
+  @override
+  bool get enabled => true;
+  @override
+  String? get error => null;
+  final proposals = <Object?>[];
+  @override
+  String? propose(int revision, Object? value) {
+    expect(revision, this.revision++);
+    proposals.add(value);
+    this.value = value;
+    return null;
+  }
+}
+
+// A deterministic observation source for the compiled plugin. Actual backend
+// ownership, grants and association capture are tested by hosting/integration.
+class _Observations extends CapabilityAccessDeclarations
+    implements PreparedFrontendBridge {
+  final providers = {
+    'work': 'Account',
+    'home': 'Account',
+    'failed': 'Broken',
+    'empty': 'Empty',
+    'offline': 'Offline',
+    'many': 'Multiple',
+  };
+  final handles = <String, String>{};
+  final stale = <String>{};
+  final gates = <String, Completer<void>>{};
+  final calls = <String>[];
+  int capture = 0;
+  void retire(String id) =>
+      stale.addAll(handles.keys.where((h) => handles[h] == id));
+
+  List<Map<String, Object?>> observe(bool capturing) {
+    if (capturing) capture++;
+    final result = <Map<String, Object?>>[];
+    for (final provider in providers.entries) {
+      final entry = <String, Object?>{
+        'providerId': provider.key,
+        'displayName': provider.value,
+      };
+      if (capturing) {
+        final status = switch (provider.key) {
+          'offline' => 'missing',
+          'many' => 'ambiguous',
+          _ => 'ready',
+        };
+        entry['status'] = status;
+        if (status == 'ready') {
+          final handle = '${provider.key}:$capture';
+          handles[handle] = provider.key;
+          entry['handle'] = handle;
+        }
+      }
+      result.add(entry);
+    }
+    return result;
+  }
+
+  late final transport = BackendInvocationBridge(
+    channelFor: (h) => _Channel(this, handles[h]!),
+    validateAdmission: () {},
+    validateSettlement: () {},
+    isPresentationActive: () => true,
+  );
+
+  @override
+  void configureForRuntime(Runtime runtime) {
+    runtime
+      ..registerBridgeFunc(
+        _library,
+        'observeAssociatedProviders',
+        (_, _, args) =>
+            wrapStructuredBridgeData(observe(args.last!.$value as bool)),
+      )
+      ..registerBridgeFunc(
+        _library,
+        'isCapabilityProviderCurrent',
+        (_, _, args) => $bool(
+          handles.containsKey(args.single!.$value) &&
+              !stale.contains(args.single!.$value),
+        ),
+      )
+      ..registerBridgeFunc(
+        _library,
+        'releaseCapabilityProvider',
+        (_, _, args) => $bool(handles.remove(args.single!.$value) != null),
+      )
+      ..registerBridgeFunc(
+        _library,
+        'requestCapability',
+        (runtime, _, args) => transport.evalRequest(runtime, args),
+      )
+      ..registerBridgeFunc(
+        _library,
+        'settleCapabilityOperation',
+        (runtime, _, args) =>
+            BackendInvocationBridge.settleOperation(runtime, args),
+      );
+  }
+
+  @override
+  void invalidate() {
+    handles.clear();
+    transport.invalidate();
+  }
+}
+
+class _Channel implements AdeleRequestChannel {
+  _Channel(this.access, this.id);
+  final _Observations access;
+  final String id;
+  @override
+  Future<Object?> request(String method, Map<String, Object?> payload) async {
+    expect(method, modelCatalogServiceListModelsId);
+    expect(payload, isEmpty);
+    access.calls.add(id);
+    await access.gates[id]?.future;
+    if (id == 'failed') throw StateError('PRIVATE backend diagnostic');
+    return {
+      'models': [
+        if (id != 'empty')
+          {'modelId': 'same', 'displayName': 'Luna', 'description': null},
+        if (id == 'work')
+          {'modelId': 'Artemis', 'displayName': null, 'description': null},
+      ],
+    };
+  }
+}

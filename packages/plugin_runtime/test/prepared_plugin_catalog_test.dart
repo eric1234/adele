@@ -1565,6 +1565,46 @@ void main() {
     'library': 'package:example_frontend/editor.dart',
     'entrypoint': 'buildEditor',
   };
+  const observe = {
+    'id': 'example.source',
+    'majorVersion': 1,
+    'serviceId': 'source',
+  };
+  const invoke = {
+    'id': 'example.lookup',
+    'majorVersion': 2,
+    'serviceId': 'lookup',
+  };
+  const associated = {'observe': observe, 'invokeAssociated': invoke};
+
+  test(
+    'associated access roundtrips only the declared pair and roles',
+    () async {
+      final declaration = {
+        ...editor,
+        'associatedAccess': [associated],
+      };
+      await install(
+        'editor',
+        _manifest(
+          components: {
+            'frontend': _frontend(presentations: [declaration]),
+          },
+        ),
+      );
+      final catalog = await PreparedPluginCatalog.discover(root.path);
+      expect(catalog.issues, isEmpty);
+      final descriptor =
+          catalog.installations.single.frontend!.presentations.single
+              as PreparedSettingsFieldEditorPresentation;
+      expect(descriptor.toJson(), declaration);
+      expect(
+        descriptor.associatedAccess.single.associatedCapability.majorVersion,
+        2,
+      );
+      expect(descriptor.associatedAccess.clear, throwsUnsupportedError);
+    },
+  );
   test(
     'settings field editor roundtrips without a backend or schema',
     () async {
@@ -1585,6 +1625,7 @@ void main() {
           installation.frontend!.presentations.single
               as PreparedSettingsFieldEditorPresentation;
       expect(descriptor.extensionId, ExtensionId('org.example.plugin.editor'));
+      expect(descriptor.associatedAccess, isEmpty);
       expect(descriptor.toJson(), editor);
     },
   );
@@ -1640,6 +1681,53 @@ void main() {
       ('entrypoint', 'Editor.build'),
       ('backendServices', []),
       ('providerField', 'provider'),
+      ('capabilities', [observe]),
+      ('associatedAccess', null),
+      ('associatedAccess', associated),
+      ('associatedAccess', [associated, associated]),
+      ('associatedAccess', List.filled(9, associated)),
+      (
+        'associatedAccess',
+        [
+          {'observe': observe},
+        ],
+      ),
+      (
+        'associatedAccess',
+        [
+          {'invokeAssociated': invoke},
+        ],
+      ),
+      (
+        'associatedAccess',
+        [
+          {...associated, 'backend': 'foreign'},
+        ],
+      ),
+      (
+        'associatedAccess',
+        [
+          {...associated, 'invokeAssociated': observe},
+        ],
+      ),
+      for (final side in ['observe', 'invokeAssociated'])
+        for (final invalid in [
+          null,
+          'example.source',
+          for (final key in observe.keys) {...observe}..remove(key),
+          {...observe, 'method': '*'},
+          {...observe, 'id': 'invalid ID'},
+          {...observe, 'majorVersion': 0},
+          {...observe, 'majorVersion': '1'},
+          {...observe, 'serviceId': '*'},
+          {...observe, 'serviceId': 'a' * 257},
+        ])
+          (
+            'associatedAccess',
+            [
+              {...associated, side: invalid},
+            ],
+          ),
     ])
       (
         '$key = $value',
@@ -1652,6 +1740,18 @@ void main() {
       [
         editor,
         {...editor, 'entrypoint': 'buildOtherEditor'},
+      ],
+    ),
+    (
+      'another role requesting associated access',
+      [
+        {
+          ...editor,
+          'role': 'sessionAccessory',
+          'location': 'execution-configuration',
+          'order': 0,
+          'associatedAccess': [associated],
+        },
       ],
     ),
   ]) {

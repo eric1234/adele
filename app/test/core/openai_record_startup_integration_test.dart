@@ -4,6 +4,7 @@ library;
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:ui' show AppExitResponse;
 
 import 'package:adele_capabilities/adele_capabilities.dart';
@@ -17,20 +18,32 @@ import 'package:adele_desktop/core/prepared_records.dart'
 import 'package:adele_desktop/core/prepared_settings.dart';
 import 'package:adele_desktop/core/record_apply_coordinator.dart';
 import 'package:adele_desktop/terminal/native_adele_runtime.dart';
+import 'package:adele_desktop/ui/execution/session_execution_controller.dart';
 import 'package:adele_desktop/ui/settings/global_settings_dialog.dart';
 import 'package:adele_desktop/ui/settings/record_credential_controls.dart';
+import 'package:adele_desktop/ui/settings/record_field_editor_host.dart';
 import 'package:adele_model_provider/adele_model_catalog.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
+import 'package:adele_model_tool/adele_model_tool.dart';
+import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_platform_storage/adele_platform_storage.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
+import 'package:adele_product/adele_product.dart' show Project;
 import 'package:adele_settings/adele_settings.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:model_configuration_contract/model_configuration_contract.dart';
 import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
 import '../../../tools/backend_artifacts.dart';
+import '../../tool/model_configuration_frontend_compiler.dart';
+import '../support/project_provider.dart';
 import '../support/record_draft_id.dart';
+import '../support/review_execution_fixture.dart';
+import '../support/selection_sessions.dart';
+
+part 'openai_model_browser_cases.dart';
 
 const _openai = 'dev.adele.openai';
 const _recordType = 'dev.adele.openai.api-key';
@@ -93,17 +106,21 @@ void main() {
   Future<_ProviderFixture> prepareProviders({
     bool chatGpt = false,
     bool consumeCatalog = false,
+    bool modelBrowser = false,
   }) async {
     final temporary = await Directory.systemTemp.createTemp(
       'adele-configured-openai-',
     );
+    addTearDown(() => temporary.delete(recursive: true));
     final fixture = _ProviderFixture(temporary, runtime, hostArtifact.path);
+    if (modelBrowser) await _publishBrowserInstallations(fixture, repository);
     addTearDown(fixture.close);
     await fixture.prepare(
       repository,
       openaiArtifact,
       chatGpt: chatGpt,
       consumerArtifact: consumeCatalog ? consumerArtifact : null,
+      modelBrowser: modelBrowser,
     );
     return fixture;
   }
@@ -122,69 +139,18 @@ void main() {
         final app = NativeAdeleRuntime(
           localStateRoot: () => fixture.roots.localStateRoot,
         );
-        fixture._bootstrap = app.plugins;
-        final gates = List.generate(heldCaptures, (_) => _ReadGate());
-        late StartupCredentialReader reader;
-        late Future<void> starting;
-        try {
-          await tester.binding.setSurfaceSize(const Size(1100, 1000));
-          await tester.pumpWidget(
-            AdeleApplication(
-              createRuntime: () => app,
-              createCredentials: () => fixture.credentials,
-              createCredentialAssociations:
-                  ({required settings, required credentials}) {
-                    final owner = RecordCredentialService(
-                      settings: settings,
-                      credentials: credentials,
-                    );
-                    if (gates.isNotEmpty) {
-                      reader = _HeldCaptures(
-                        owner,
-                        gates,
-                        beforeScan: holdBeforeScan,
-                      );
-                    }
-                    return owner;
-                  },
-              configurationRoots: fixture.roots,
-              readChatGptConfiguration: () => null,
-              bootstrapPlugins: (plugins) {
-                if (gates.isNotEmpty) {
-                  plugins.configureCredentialAssociations(() => reader);
-                }
-                return starting = plugins.start(
-                  installationRoot: fixture.installationRoot,
-                  dartaotruntimeExecutable: fixture.runtime,
-                  hostArtifactPath: fixture.host,
-                );
-              },
-            ),
-          );
-          await starting;
-          expect(
-            fixture.backend.state,
-            InstalledBackendState.active,
-            reason: '${fixture.backend.failure}',
-          );
-          final ui = _ProviderSettings(tester);
-          await ui.open();
-          await exercise(ui, fixture, gates);
-          expect(tester.takeException(), isNull);
-        } finally {
-          for (final gate in gates) {
-            gate.release();
-          }
-          if (fixture.bootstrap.state != ApplicationPluginState.closed) {
-            await tester.binding.handleRequestAppExit();
-          }
-          await tester.pumpWidget(const SizedBox.shrink());
-          await app.close();
-          await tester.binding.setSurfaceSize(null);
-        }
+        await fixture.withApplication(
+          tester,
+          app,
+          (ui, gates) => exercise(ui, fixture, gates),
+          heldCaptures: heldCaptures,
+          holdBeforeScan: holdBeforeScan,
+        );
       }),
     );
   }
+
+  _registerModelBrowserCases(() => prepareProviders(modelBrowser: true));
 
   applicationScenario(
     'Global Settings automatically publishes, updates and deletes '
@@ -2509,6 +2475,7 @@ final class _ProviderFixture {
   final records = <String, RecordView>{};
   final references = <String, CredentialReference>{};
   final requests = <Map<String, Object?>>[];
+  bool proposeReviewTool = false;
   final responseGates = <String, _HttpGate>{};
   final catalogModels = <String, List<String>>{
     '/work/models': ['work-model'],
@@ -2529,7 +2496,7 @@ final class _ProviderFixture {
   late final StreamSubscription<HttpRequest> serverSubscription;
   HttpServer? personalServer;
   StreamSubscription<HttpRequest>? personalServerSubscription;
-  late final Map<String, List<String>> startupArguments;
+  final startupArguments = <String, List<String>>{};
   ApplicationPluginBootstrap? _bootstrap;
 
   ApplicationPluginBootstrap get bootstrap => _bootstrap!;
@@ -2555,6 +2522,7 @@ final class _ProviderFixture {
     File artifact, {
     required bool chatGpt,
     File? consumerArtifact,
+    bool modelBrowser = false,
   }) async {
     server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     void handle(HttpRequest request) {
@@ -2613,28 +2581,45 @@ final class _ProviderFixture {
           'event-stream',
           charset: 'utf-8',
         );
+        final propose =
+            proposeReviewTool && request.uri.path == '/work/responses';
+        if (propose) proposeReviewTool = false;
         for (final event in [
-          {
-            'type': 'response.output_text.delta',
-            'item_id': 'message',
-            'delta': request.uri.path,
-          },
-          {
-            'type': 'response.output_item.done',
-            'item': {
-              'type': 'message',
-              'id': 'message',
-              'role': 'assistant',
-              'status': 'completed',
-              'content': [
-                {
-                  'type': 'output_text',
-                  'text': request.uri.path,
-                  'annotations': <Object?>[],
-                },
-              ],
+          if (propose)
+            {
+              'type': 'response.output_item.done',
+              'item': {
+                'type': 'function_call',
+                'id': 'fc_review',
+                'call_id': 'call_review',
+                'status': 'completed',
+                'name': 'review_probe',
+                'arguments': '{}',
+              },
+            }
+          else ...[
+            {
+              'type': 'response.output_text.delta',
+              'item_id': 'message',
+              'delta': request.uri.path,
             },
-          },
+            {
+              'type': 'response.output_item.done',
+              'item': {
+                'type': 'message',
+                'id': 'message',
+                'role': 'assistant',
+                'status': 'completed',
+                'content': [
+                  {
+                    'type': 'output_text',
+                    'text': request.uri.path,
+                    'annotations': <Object?>[],
+                  },
+                ],
+              },
+            },
+          ],
           {
             'type': 'response.completed',
             'response': {'id': 'response', 'model': (body as Map)['model']},
@@ -2647,9 +2632,11 @@ final class _ProviderFixture {
     }
 
     serverSubscription = server.listen(handle);
-    if (consumerArtifact != null) {
+    if (consumerArtifact != null || modelBrowser) {
       personalServer = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
       personalServerSubscription = personalServer!.listen(handle);
+    }
+    if (consumerArtifact != null) {
       final consumerDirectory = await Directory(
         '$installationRoot/catalog-consumer',
       ).create(recursive: true);
@@ -2731,7 +2718,6 @@ final class _ProviderFixture {
           )
           .key;
     }
-    startupArguments = {};
     if (chatGpt) {
       final credentialFile = File('${directory.path}/chatgpt.json');
       String encode(Object value) =>
@@ -2812,6 +2798,79 @@ final class _ProviderFixture {
         InstalledBackendState.active,
         reason: '${backend.failure}',
       );
+    }
+  }
+
+  Future<void> withApplication(
+    WidgetTester tester,
+    NativeAdeleRuntime app,
+    Future<void> Function(_ProviderSettings, List<_ReadGate>) exercise, {
+    int heldCaptures = 0,
+    bool holdBeforeScan = false,
+  }) async {
+    _bootstrap = app.plugins;
+    final gates = List.generate(heldCaptures, (_) => _ReadGate());
+    late StartupCredentialReader reader;
+    late Future<void> starting;
+    try {
+      await tester.binding.setSurfaceSize(const Size(1100, 1000));
+      await tester.pumpWidget(
+        AdeleApplication(
+          createRuntime: () => app,
+          // Only the simulated protected storage persists between app lifetimes.
+          createCredentials: () => CredentialService(storage),
+          createCredentialAssociations:
+              ({required settings, required credentials}) {
+                final owner = RecordCredentialService(
+                  settings: settings,
+                  credentials: credentials,
+                );
+                if (gates.isNotEmpty) {
+                  reader = _HeldCaptures(
+                    owner,
+                    gates,
+                    beforeScan: holdBeforeScan,
+                  );
+                }
+                return owner;
+              },
+          configurationRoots: roots,
+          readChatGptConfiguration: () => null,
+          bootstrapPlugins: (plugins) {
+            if (gates.isNotEmpty) {
+              plugins.configureCredentialAssociations(() => reader);
+            }
+            return starting = plugins.start(
+              installationRoot: installationRoot,
+              dartaotruntimeExecutable: runtime,
+              hostArtifactPath: host,
+              startupArguments: startupArguments,
+            );
+          },
+        ),
+      );
+      await starting;
+      for (final entry in bootstrap.backends) {
+        expect(
+          entry.state,
+          InstalledBackendState.active,
+          reason: '${entry.failure}',
+        );
+      }
+      final ui = _ProviderSettings(tester);
+      await ui.open();
+      await exercise(ui, gates);
+      expect(tester.takeException(), isNull);
+    } finally {
+      for (final gate in gates) {
+        gate.release();
+      }
+      if (bootstrap.state != ApplicationPluginState.closed) {
+        await tester.binding.handleRequestAppExit();
+      }
+      await tester.pumpWidget(const SizedBox.shrink());
+      await app.close();
+      await tester.binding.setSurfaceSize(null);
     }
   }
 
@@ -3026,7 +3085,6 @@ final class _ProviderFixture {
     await server.close(force: true);
     await personalServerSubscription?.cancel();
     await personalServer?.close(force: true);
-    await directory.delete(recursive: true);
   }
 }
 

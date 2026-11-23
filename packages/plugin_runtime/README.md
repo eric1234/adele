@@ -641,11 +641,15 @@ context, admission, and lifetime remain with the
 no authority and captured targets never migrate to replacement registrations.
 
 Settings field editors declare `role: 'settingsFieldEditor'` under
-`frontend.presentations`. The only other fields are the required `extensionId`,
+`frontend.presentations`. Required fields are `extensionId`,
 canonical `package:` Dart `library`, and top-level `entrypoint`. The ID must be
 exactly one segment beneath the installation's plugin ID and unique among
 its field editor presentations. An invalid descriptor rejects the frontend, not
-its independent record declarations. This role requests no backend service.
+its independent record declarations. Optional `associatedAccess` is a list of
+up to eight distinct `{observe, invokeAssociated}` pairs. Both sides must name
+an `id`, positive `majorVersion`, and `serviceId`, for distinct capabilities.
+Absence means no access. It is not a `backendServices` or `capabilities` grant;
+see [associated access from field editors](../../docs/architecture/contracts-and-capabilities.md#associated-access-from-field-editors).
 
 Session accessories declare `role: 'sessionAccessory'`, an `extensionId`,
 `location: 'execution-configuration'`, integer `order`, canonical `package:` Dart
