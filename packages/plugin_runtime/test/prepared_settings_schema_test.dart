@@ -617,14 +617,15 @@ void main() {
       'maximum': 1,
     },
     'boolean bound': {..._definition(), 'minimum': 0},
-    for (final editor in ['markdown', 'model-provider', 'model-catalog'])
-      '$editor editor on scalar setting': {
-        ..._definition(type: 'string', defaultValue: ''),
-        'editor': editor,
-      },
-    'providerField on scalar setting': {
+    'editor on scalar setting': {
       ..._definition(type: 'string', defaultValue: ''),
-      'providerField': 'account',
+      'editor': 'markdown',
+    },
+    'structured fields are record-only': {
+      ..._definition(type: 'struct', defaultValue: {'text': ''}),
+      'properties': [
+        {'id': 'text', 'type': 'string'},
+      ],
     },
     'string options': {
       ..._definition(type: 'string', defaultValue: ''),

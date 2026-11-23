@@ -627,9 +627,15 @@ final class _PluginIsolate {
             for (final record in records)
               <String, Object>{
                 ...record,
-                'values': Map<String, Object>.of(
-                  record['values'] as Map<String, Object>,
-                ),
+                'values': <String, Object>{
+                  for (final field
+                      in (record['values'] as Map<String, Object>).entries)
+                    field.key: switch (field.value) {
+                      final Map<String, Object> properties =>
+                        Map<String, Object>.of(properties),
+                      final scalar => scalar,
+                    },
+                },
               },
           ],
         },

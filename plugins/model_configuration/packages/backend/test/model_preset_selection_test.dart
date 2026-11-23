@@ -236,8 +236,10 @@ ModelPresetCatalogSnapshot _snapshot({
         presetId: 'work',
         name: 'Editable',
         description: null,
-        providerId: 'not-running',
-        modelId: 'Unknown',
+        model: const ModelPresetModelReference(
+          providerId: 'not-running',
+          modelId: 'Unknown',
+        ),
         reasoningEffort: null,
       ),
   ],

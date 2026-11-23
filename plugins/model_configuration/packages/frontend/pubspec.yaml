@@ -1,5 +1,5 @@
 name: model_configuration_frontend
-description: Interpreted Session Model Preset selector for Model Configuration.
+description: Interpreted Settings model reference editor and Session Model Preset selector.
 publish_to: none
 version: 0.1.0
 
@@ -18,6 +18,10 @@ dependencies:
 dev_dependencies:
   adele_contract: ^0.1.0
   adele_desktop: ^0.1.0
+  adele_platform_storage: ^0.1.0
+  adele_plugin_api: ^0.1.0
+  adele_settings: ^0.1.0
+  plugin_runtime: ^0.1.0
   flutter_test:
     sdk: flutter
 

@@ -623,15 +623,26 @@ void main() {
       final second = ConfigurationRecordId('second');
       const minimal = {
         'name': 'Research',
-        'provider-id': 'dev.example.provider.work-01',
-        'model-id': 'Team-A/Research:V2',
+        'model': {
+          'provider-id': 'dev.example.provider.work-01',
+          'model-id': 'Team-A/Research:V2',
+        },
       };
       const none = {
         ...minimal,
         'description': 'Quick lookup',
         'reasoning-effort': 'none',
       };
-      final created = await presets.createRecord(type, first, minimal);
+      final reference = {...minimal['model']! as Map<String, String>};
+      final creating = presets.createRecord(type, first, {
+        ...minimal,
+        'model': reference,
+      });
+      // Admission captures the whole value before queuing I/O.
+      reference.clear();
+      final created = await creating;
+      expect(created.values, minimal);
+      expect((created.values['model'] as Map).clear, throwsUnsupportedError);
       await presets.createRecord(type, second, none);
       final directory = presets.collectionPath(collection);
       final firstFile = File('$directory/$first.toml');
@@ -643,8 +654,10 @@ void main() {
       firstFile.writeAsStringSync(external);
       const edited = {
         'name': 'Deep research',
-        'provider-id': 'dev.example.provider.lab-02',
-        'model-id': 'Lab-B/Experimental:V3+Preview',
+        'model': {
+          'provider-id': 'dev.example.provider.lab-02',
+          'model-id': 'Lab-B/Experimental:V3+Preview',
+        },
         'reasoning-effort': 'xhigh',
       };
       await expectLater(
@@ -657,6 +670,19 @@ void main() {
       expect(loaded.map((record) => record.id), [first, second]);
       expect(loaded.first.values, minimal);
       expect(loaded.last.values, none);
+      await expectLater(
+        presets.updateRecord(loaded.first, {
+          ...edited,
+          'model': {'provider-id': 'dev.example.provider.lab-02'},
+        }),
+        throwsA(
+          isA<InvalidRecordValue>().having(
+            (e) => e.fieldId,
+            'field',
+            RecordFieldId('model'),
+          ),
+        ),
+      );
       await expectLater(
         presets.updateRecord(loaded.first, {
           ...edited,

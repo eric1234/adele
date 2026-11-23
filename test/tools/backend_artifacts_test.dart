@@ -51,6 +51,7 @@ const _openaiApplyHandler = {
 };
 const _modelConfigurationId = 'dev.adele.plugin.model-configuration';
 const _modelPreferenceExtension = '$_modelConfigurationId.run-model-preference';
+const _modelReferenceEditor = '$_modelConfigurationId.model-reference';
 const _modelPresetSchema = 'plugins/model_configuration/records.schema.json';
 const _stockInstallationDirectories = [
   'agent-configuration',
@@ -2195,17 +2196,18 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
       expect(preset.label, 'Model Preset');
       expect(preset.displayField?.value, 'name');
       expect(preset.credentialSlots, isEmpty);
+      final model = preset.fields.singleWhere((field) => field.editor != null);
+      expect(model.id.value, 'model');
       expect(
-        {
-          for (final field in preset.fields)
-            if (field.editor != null)
-              field.id.value: (field.editor, field.providerField?.value),
-        },
-        {
-          'provider-id': (RecordFieldEditor.modelProvider, null),
-          'model-id': (RecordFieldEditor.modelCatalog, 'provider-id'),
-        },
+        (model.editor as ContributedRecordFieldEditor).extensionId.value,
+        _modelReferenceEditor,
       );
+      final properties = (model.type as StructuredRecordFieldType).properties;
+      expect(properties.keys.map((id) => id.value), [
+        'provider-id',
+        'model-id',
+      ]);
+      expect(properties.values, everyElement(isA<StringSettingType>()));
       expect(
         preset.fields.map(
           (field) => (field.id.value, field.label, field.required),
@@ -2213,13 +2215,12 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         [
           ('name', 'Name', true),
           ('description', 'Description', false),
-          ('provider-id', 'Provider ID', true),
-          ('model-id', 'Model ID', true),
+          ('model', 'Model', true),
           ('reasoning-effort', 'Reasoning Effort', false),
         ],
       );
       expect(
-        preset.fields.take(4).map((field) => field.type),
+        preset.fields.take(2).map((field) => field.type),
         everyElement(isA<StringSettingType>()),
       );
       final effort = preset.fields.last.type as EnumSettingType;
@@ -2236,10 +2237,25 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
       final recordId = ConfigurationRecordId('work');
       const requiredValues = {
         'name': 'Work model',
-        'provider-id': 'work-provider',
-        'model-id': 'model-a',
+        'model': {'provider-id': 'work-provider', 'model-id': 'model-a'},
       };
       expect(preset.validate(recordId, requiredValues), requiredValues);
+      for (final invalid in [
+        {'provider-id': 'work-provider'},
+        {'provider-id': 'work-provider', 'model-id': 3},
+      ]) {
+        expect(
+          () =>
+              preset.validate(recordId, {...requiredValues, 'model': invalid}),
+          throwsA(
+            isA<InvalidRecordValue>().having(
+              (e) => e.fieldId?.value,
+              'field',
+              'model',
+            ),
+          ),
+        );
+      }
       for (final option in effort.options) {
         final values = {...requiredValues, 'reasoning-effort': option.value};
         expect(preset.validate(recordId, values), values);
@@ -2649,6 +2665,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         'app/$_agentConfigurationFrontendHarness',
         'app/tool/agent_configuration_frontend_compiler.dart',
         'plugins/model_configuration/packages/frontend/lib/model_configuration_frontend.dart',
+        'plugins/model_configuration/packages/frontend/lib/model_reference_editor.dart',
         'app/$_modelConfigurationFrontendHarness',
         'app/tool/model_configuration_frontend_compiler.dart',
         _sessionEvaluatorEntrypoint,
@@ -3229,9 +3246,9 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           installations.uri.resolve('model-configuration/frontend.evc'),
         );
         expect(presetFrontend.extensions, isEmpty);
-        final presetSelector =
-            presetFrontend.presentations.single
-                as PreparedSessionAccessoryPresentation;
+        final presetSelector = presetFrontend.presentations
+            .whereType<PreparedSessionAccessoryPresentation>()
+            .single;
         expect(presetSelector.toJson(), {
           'role': 'sessionAccessory',
           'extensionId': '$_modelConfigurationId.selector',
@@ -3242,6 +3259,19 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           'order': 200,
           'backendServices': ['modelPresetCatalog', 'modelPresetSelection'],
         });
+        expect(
+          presetFrontend.presentations
+              .whereType<PreparedSettingsFieldEditorPresentation>()
+              .single
+              .toJson(),
+          {
+            'role': 'settingsFieldEditor',
+            'extensionId': _modelReferenceEditor,
+            'library':
+                'package:model_configuration_frontend/model_reference_editor.dart',
+            'entrypoint': 'buildModelReferenceEditor',
+          },
+        );
         expect(
           presets.runModelPreferenceSource?.value,
           _modelPreferenceExtension,

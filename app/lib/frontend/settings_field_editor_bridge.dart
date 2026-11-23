@@ -1,4 +1,5 @@
 import 'package:adele_plugin_api/adele_plugin_api.dart';
+import 'package:adele_settings/adele_settings.dart';
 import 'package:adele_ui/adele_ui.dart';
 import 'package:dart_eval/dart_eval_bridge.dart';
 import 'package:dart_eval/stdlib/core.dart';
@@ -92,17 +93,63 @@ final class SettingsFieldEditorBridge extends SettingsFieldEditorDeclarations
       ? const $null()
       : $String(text.length <= 256 ? text : _invalid);
 
+  static $Value _boxScalar(Object? value) => switch (value) {
+    null => const $null(),
+    bool() => $bool(value),
+    int() => $int(value),
+    String() => $String(value),
+    _ => throw StateError(_invalid),
+  };
+
+  // Do not use recursive $reified: even a self-referential eval collection is
+  // just an invalid leaf. Bound work before copying or examining property keys.
+  static Object? _proposal($Value? value) {
+    Object? scalar(Object? box) => switch (box) {
+      null || $null() => null,
+      $bool() => box.$value,
+      $int() => box.$value,
+      $String() => box.$value,
+      _ => throw const FormatException(_invalid),
+    };
+
+    if (value is! $Map) return scalar(value);
+    final entries = value.$value;
+    if (entries.isEmpty ||
+        entries.length > StructuredRecordFieldType.maxProperties) {
+      throw const FormatException(_invalid);
+    }
+    final copy = <String, Object>{};
+    for (final entry in entries.entries) {
+      final key = scalar(entry.key);
+      final child = scalar(entry.value);
+      if (key is! String ||
+          key.length > 64 ||
+          child == null ||
+          (child is String &&
+              child.length > StructuredRecordFieldType.maxStringLength)) {
+        throw const FormatException(_invalid);
+      }
+      // RecordFieldId enforces the shared local-key grammar. The actual field
+      // declaration then checks its exact keys, types, and per-property bounds.
+      copy[RecordFieldId(key).value] = child;
+    }
+    return Map<String, Object>.unmodifiable(copy);
+  }
+
   @override
   void configureForRuntime(Runtime runtime) {
     runtime
       ..registerBridgeFunc(_library, 'readSettingsFieldValue', (_, _, _) {
-        return switch (_liveDraft?.value) {
-          null => const $null(),
-          final bool value => $bool(value),
-          final int value => $int(value),
-          final String value => $String(value),
-          _ => throw StateError(_invalid),
-        };
+        final value = _liveDraft?.value;
+        if (value is Map<String, Object>) {
+          return $Map.wrap(
+            Map<$Value, $Value>.unmodifiable({
+              for (final entry in value.entries)
+                $String(entry.key): _boxScalar(entry.value),
+            }),
+          );
+        }
+        return _boxScalar(value);
       })
       ..registerBridgeFunc(
         _library,
@@ -125,23 +172,8 @@ final class SettingsFieldEditorBridge extends SettingsFieldEditorDeclarations
           if (revision != draft.revision) {
             return $String('Field draft has changed.');
           }
-          // Only unwrap known scalar boxes. In particular, a cyclic eval List
-          // or Map must be rejected without even looking at its contents.
-          final Object? scalar;
-          switch (proposed) {
-            case null || $null():
-              scalar = null;
-            case $bool():
-              scalar = proposed.$value;
-            case $int():
-              scalar = proposed.$value;
-            case $String():
-              scalar = proposed.$value;
-            default:
-              return $String(_invalid);
-          }
           try {
-            return _message(draft.propose(revision, scalar));
+            return _message(draft.propose(revision, _proposal(proposed)));
           } on Object {
             return $String(_invalid);
           }

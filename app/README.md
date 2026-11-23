@@ -427,7 +427,9 @@ and comments within the native document API's limits.
 [`RecordFieldEditorHost`](lib/ui/settings/record_field_editor_host.dart) mounts
 explicitly requested plugin controls through `ApplicationFrontendBootstrap` and
 `PreparedFrontend`, only for visible, included fields. Its bridge carries one
-field draft, not the Settings service. See [record editor authority](../docs/architecture/profiles-and-configuration.md#record-field-editors)
+field draft, not the Settings service. A contributed editor can propose one
+scalar or one complete, bounded structure at its observed revision. The desktop
+does not implement a model picker. See [record editor authority](../docs/architecture/profiles-and-configuration.md#record-field-editors)
 and the [compiled form fixture](test/prepared_settings_field_editor_test.dart).
 
 For a string field declared with `editor: "markdown"`, the draft owns a

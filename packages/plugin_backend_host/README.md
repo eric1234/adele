@@ -49,10 +49,11 @@ for scalar roundtrips, immutable capture, peer isolation, and same-ID replacemen
 Every `startPlugin` frame also requires an explicit nonsecret `records` list,
 including `[]`. Public
 [`AdeleBackendRecords`](../plugin_backend_support/README.md#bootstrap-records)
-owns its strict shape, identity grammar, duplicate rejection, scalar and size
+owns its strict shape, identity grammar, duplicate rejection, scalar and flat structure
 bounds. The runtime captures it before startup callbacks/awaits; the host validates
 and makes a fresh immutable copy before spawning. `spawnUri` requires fresh plain
-list/map containers rather than unmodifiable wrappers, and the plugin-side decoder
+list/map containers (including a structured field's properties) rather than
+unmodifiable wrappers, and the plugin-side decoder
 validates and copies those again. No mutable caller container survives a boundary.
 Malformed records fail before isolate creation with fixed bounded errors that do
 not echo record contents. Declaration-specific ownership, allowed fields and

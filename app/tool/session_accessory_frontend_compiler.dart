@@ -5,12 +5,16 @@ import 'package:adele_desktop/frontend/owning_backend_bridge.dart';
 import 'package:adele_desktop/frontend/session_accessory_bridge.dart';
 import 'package:contract_codegen/contract_codegen.dart';
 import 'package:dart_eval/dart_eval.dart';
+import 'package:dart_eval/dart_eval_bridge.dart' show EvalPlugin;
 import 'package:flutter_eval/flutter_eval.dart';
 
 /// Compile an owning-backend Session accessory with its own generated clients.
 Future<Uint8List> compileSessionAccessoryFrontend({
   required Directory repositoryRoot,
   required String plugin,
+  List<String> additionalLibraries = const [],
+  List<String> additionalUiSources = const [],
+  List<EvalPlugin> additionalDeclarations = const [],
 }) async {
   // flutter_test runs inside flutter_tester. Use that toolchain's bundled SDK.
   var directory = File(Platform.resolvedExecutable).parent;
@@ -29,20 +33,25 @@ Future<Uint8List> compileSessionAccessoryFrontend({
       ).generateEvalClient(
         File.fromUri(packages.resolve('contract/lib/$contractPackage.dart')),
       );
+  final libraries = ['$frontendPackage.dart', ...additionalLibraries];
   final compiler = Compiler()
     ..addPlugin(flutterEvalPlugin)
     ..addPlugin(const SessionAccessoryDeclarations())
     ..addPlugin(const OwningBackendDeclarations())
     ..entrypoints.addAll([
-      'package:$frontendPackage/$frontendPackage.dart',
+      for (final library in libraries) 'package:$frontendPackage/$library',
       'package:$contractPackage/$contractPackage.dart',
       'package:adele_contract/adele_contract.dart',
     ]);
+  for (final declaration in additionalDeclarations) {
+    compiler.addPlugin(declaration);
+  }
   final program = compiler.compile({
     frontendPackage: {
-      '$frontendPackage.dart': await File.fromUri(
-        packages.resolve('frontend/lib/$frontendPackage.dart'),
-      ).readAsString(),
+      for (final library in libraries)
+        library: await File.fromUri(
+          packages.resolve('frontend/lib/$library'),
+        ).readAsString(),
     },
     contractPackage: {'$contractPackage.dart': contract},
     'adele_contract': {'adele_contract.dart': evalContractSupportSource},
@@ -51,6 +60,7 @@ Future<Uint8List> compileSessionAccessoryFrontend({
         'session_accessory_bridge.dart',
         'owning_backend_bridge.dart',
         'inspection_display.dart',
+        ...additionalUiSources,
       ])
         source: await File.fromUri(
           repositoryRoot.uri.resolve('packages/ui/lib/$source'),

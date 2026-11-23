@@ -49,8 +49,9 @@ copied, unmodifiable `records` list. Import the package root or
 `package:adele_plugin_backend_support/adele_backend_records.dart`.
 
 Each entry has exactly `collection`, `type`, `id`, and `values`. The first three
-are strings; `values` is a string-keyed map of ordinary bool/int/String scalars.
-Unknown entry keys, nulls, doubles, nested values, and duplicate `(collection, id)`
+are strings. Each field under `values` is either a bool/int/String scalar or
+a flat map of 1–16 local property IDs to those same scalars. Unknown envelope
+keys, nulls, doubles, lists, deeper nesting, and duplicate `(collection, id)`
 pairs across any types fail. Identities follow the
 [R1 record grammar](../settings/README.md#named-records), including portable device
 name rejection for collections/records, without normalization. Type IDs use the
@@ -61,7 +62,7 @@ The `AdeleBackendRecords.max*` constants own these transport bounds. Empty value
 false, zero, and optional absence remain distinct; integer semantics are unchanged.
 Failures use fixed bounded messages without supplied values or identities.
 
-Declaration ownership, opted-in types, allowed/required fields, and scalar semantic
+Declaration ownership, opted-in types, exact property sets, field presence, and scalar semantic
 constraints are validated by the host owner where declarations are available, not
 by this transport. Inputs are already nonsecret projections: credential references,
 documents, storage roots, baseline handles, and authorization are not part of the

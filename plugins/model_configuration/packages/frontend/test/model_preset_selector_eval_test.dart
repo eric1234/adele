@@ -437,8 +437,7 @@ ModelPresetDefinition _preset(
   presetId: id,
   name: name,
   description: null,
-  providerId: provider,
-  modelId: model,
+  model: ModelPresetModelReference(providerId: provider, modelId: model),
   reasoningEffort: effort,
 );
 

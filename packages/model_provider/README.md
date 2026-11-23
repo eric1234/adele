@@ -86,10 +86,8 @@ provenance and retains the exact pair. Matching IDs, plugin identity, or context
 strings alone do not establish that relationship. See the canonical
 [catalog and binding semantics](../../docs/architecture/contracts-and-capabilities.md#model-catalog).
 
-Native Settings uses that association in the reverse direction: an explicit
-request for model suggestions queries the unique catalog pointing to the
-selected inference registration. Only the provider performs any authentication
-or external request. A catalog is not a prerequisite for authoring a model ID.
+A catalog is not a prerequisite for authoring a Model Preset. Settings neither
+resolves that association nor contacts the provider to save a reference.
 
 An independent prepared backend declares the catalog in `consumesCapabilities`,
 discovers providers with `AdeleCapabilityConsumer`, resolves an explicit provider

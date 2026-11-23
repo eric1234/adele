@@ -62,18 +62,12 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
     'kind': 'ready',
     'commandPort': commands.sendPort,
     'pluginBackendProtocolVersion': adelePluginBackendProtocolVersion,
-    'capabilityExposures': [
-      for (final exposure in exposures) exposure.toMap(),
-      ...?options['extraExposures'] as List?,
-    ],
+    'capabilityExposures': [for (final exposure in exposures) exposure.toMap()],
   });
   try {
     await for (final Object? message in commands) {
       if (message is! Map) continue;
       if (message['method'] == 'shutdown') {
-        for (final catalog in catalogs.values) {
-          catalog.release();
-        }
         await router.close();
         responses.send({
           'kind': 'response',
@@ -85,35 +79,23 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
       }
       if (message['serviceId'] == 'test.controller') {
         final payload = message['payload'] as Map;
-        void respond(Object? result) => responses.send({
-          'kind': 'response',
-          'requestId': message['requestId'],
-          'ok': true,
-          'payload': result,
-        });
         Object? result;
         switch (message['method']) {
           case 'setCatalog':
             final catalog = catalogs[payload['account']]!;
             catalog.mode = payload['mode'] as String? ?? 'models';
             catalog.revision = payload['revision'] as int? ?? 0;
-          case 'hold':
-            catalogs[payload['account']]!.hold();
-          case 'wait':
-            unawaited(
-              catalogs[payload['account']]!.entered!.future.then(
-                (_) => respond(null),
-              ),
-            );
-            continue;
-          case 'release':
-            catalogs[payload['account']]!.release();
           case 'snapshot':
             result = {'requests': requests};
           default:
             throw StateError('Unknown catalog provider controller method.');
         }
-        respond(result);
+        responses.send({
+          'kind': 'response',
+          'requestId': message['requestId'],
+          'ok': true,
+          'payload': result,
+        });
         continue;
       }
       requests.add({
@@ -124,17 +106,7 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
         'hostInvocationContext': message['hostInvocationContext'],
         'hostInfrastructureContext': message['hostInfrastructureContext'],
       });
-      if (message['configurationContext'] == 'catalog-work' &&
-          catalogs['work']!.mode == 'malformed') {
-        responses.send({
-          'kind': 'response',
-          'requestId': message['requestId'],
-          'ok': true,
-          'payload': {'models': 'SECRET malformed response'},
-        });
-      } else {
-        unawaited(router.handle(message, responses.send));
-      }
+      unawaited(router.handle(message, responses.send));
     }
   } finally {
     commands.close();
@@ -148,26 +120,9 @@ final class _Catalog implements ModelCatalogService {
   final String account;
   String mode = 'models';
   int revision = 0;
-  Completer<void>? entered;
-  Completer<void>? _gate;
-
-  void hold() {
-    entered = Completer<void>();
-    _gate = Completer<void>();
-  }
-
-  void release() {
-    _gate?.complete();
-    _gate = null;
-    entered = null;
-  }
 
   @override
   Future<ModelCatalogSnapshot> listModels() async {
-    if (_gate case final gate?) {
-      entered!.complete();
-      await gate.future;
-    }
     switch (mode) {
       case 'empty':
         return ModelCatalogSnapshot(models: []);
@@ -178,12 +133,6 @@ final class _Catalog implements ModelCatalogService {
         );
       case 'unexpected-failure':
         throw StateError('SECRET catalog credential and endpoint diagnostics');
-      case 'unsupported_discovery':
-      case 'unavailable':
-        throw ModelCatalogFailure(
-          code: mode,
-          message: 'SECRET untrusted diagnostic',
-        );
       case 'models':
         return ModelCatalogSnapshot(
           models: [

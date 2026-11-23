@@ -126,11 +126,13 @@ void main() {
     () async {
       final host = await _startHost(dartaotruntime, hostArtifact);
       addTearDown(host.close);
+      final target = <String, Object>{'endpoint': 'first', 'port': 73};
       final values = <String, Object>{
         'display-name': 'Work',
         'enabled': false,
         'count': 9007199254740993,
         'empty': '',
+        'target': target,
       };
       final record = <String, Object?>{
         'collection': 'providers',
@@ -148,6 +150,7 @@ void main() {
         settings: {'unchanged': 17},
       );
       values['display-name'] = 'Personal';
+      target['endpoint'] = 'second';
       record['id'] = 'personal';
       final first = await starting;
       expect(first.capabilityExposures, isEmpty);

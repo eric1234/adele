@@ -19,7 +19,11 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
   if (arguments.first == 'records') {
     final raw = bootstrap['records'] as List;
     for (final record in raw.cast<Map<Object?, Object?>>()) {
-      (record['values'] as Map).clear();
+      final values = record['values'] as Map;
+      for (final field in values.values.whereType<Map<Object?, Object?>>()) {
+        field.clear();
+      }
+      values.clear();
       record.clear();
     }
     raw.clear();
@@ -329,15 +333,7 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
         'kind': 'response',
         'requestId': message['requestId'],
         'ok': true,
-        'payload': [
-          for (final record in records.records)
-            {
-              ...record,
-              'values': Map<String, Object>.of(
-                record['values'] as Map<String, Object>,
-              ),
-            },
-        ],
+        'payload': jsonDecode(jsonEncode(records.records)),
       });
     }
     if (message['method'] == 'forward-envelope') {

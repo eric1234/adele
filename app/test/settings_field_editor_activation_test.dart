@@ -8,6 +8,7 @@ import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_ui/adele_ui.dart';
 import 'package:dart_eval/dart_eval.dart';
 import 'package:dart_eval/dart_eval_bridge.dart' show $Value;
+import 'package:dart_eval/stdlib/core.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_eval/flutter_eval.dart';
 import 'package:flutter_eval/widgets.dart' show $StatelessWidget$bridge;
@@ -47,6 +48,8 @@ String? cycle() {
   return proposeSettingsFieldValue(readSettingsFieldRevision(), map);
 }
 String? submit() => proposeSettingsFieldValue(0, 'edited');
+String? proposeObject(Object? value) => proposeSettingsFieldValue(readSettingsFieldRevision(), value);
+Object? read() => readSettingsFieldValue();
 String? error() => readSettingsFieldError();
 bool enabled() => settingsFieldEditingEnabled();
 ''',
@@ -263,12 +266,46 @@ bool enabled() => settingsFieldEditingEnabled();
     expect(call('submit'), isA<String>());
     expect(draft.calls, 1);
 
+    Object? propose($Value proposal) {
+      final result = runtime.executeLib(_library, 'proposeObject', [proposal]);
+      return result is $Value ? result.$value : result;
+    }
+
+    final boundary = <$Value, $Value>{
+      for (var i = 0; i < 16; i++) $String('k$i'): $int(i),
+    };
+    for (final invalid in [
+      $Map.wrap({...boundary, $String('extra'): $int(0)}),
+      $Map.wrap({$String('x'): $String('s' * 65537)}),
+      $Map.wrap({$String('bad.key'): $int(0)}),
+      $Map.wrap({$int(0): $bool(false)}),
+      $Map.wrap({$String('x'): const $null()}),
+      $Map.wrap({$String('x'): $double(1.5)}),
+      $Map.wrap({
+        $String('x'): $List.wrap([$String('no')]),
+      }),
+      $List.wrap([$int(0)]),
+    ]) {
+      expect(propose(invalid), 'Invalid field value.');
+    }
+    expect(draft.calls, 1); // Transport rejects all of these before validation.
+    boundary[$String('k0')] = $String('s' * 65536);
+    expect(propose($Map.wrap(boundary)), isNull);
+    final snapshot = draft.value! as Map<String, Object>;
+    boundary.clear();
+    expect(snapshot.length, 16);
+    expect(snapshot['k0'], hasLength(65536));
+    expect(() => snapshot.clear(), throwsUnsupportedError);
+    final read = runtime.executeLib(_library, 'read') as $Map;
+    expect(read.$value[$String('k15')], isA<$int>());
+    expect(() => read.$value.clear(), throwsUnsupportedError);
+
     final close = frontends.generations.single.registrations.single.close();
     expect(call('enabled'), false);
     // A retained callback with a valid revision still cannot reach the draft.
     draft.revision = 0;
     expect(call('submit'), isA<String>());
-    expect(draft.calls, 1);
+    expect(draft.calls, 2);
     await close;
     await tester.pump();
     expect(find.text('original'), findsNothing);

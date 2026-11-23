@@ -41,11 +41,11 @@ void main() {
     return result;
   }
 
-  const required = {
-    'name': '',
+  const model = {
     'provider-id': ' Unknown:Provider ',
     'model-id': r'Model/V2$beta',
   };
+  const required = {'name': '', 'model': model};
   Map<String, Object?> record(String id, Map<String, Object?> values) => {
     'id': id,
     'type': 'dev.adele.plugin.model-configuration.preset',
@@ -77,8 +77,8 @@ void main() {
         expect(both.presets.map((p) => p.name), ['', '']);
         expect(both.presets.map((p) => p.description), [null, '']);
         expect(both.presets.map((p) => p.reasoningEffort), [null, 'none']);
-        expect(both.presets.first.providerId, required['provider-id']);
-        expect(both.presets.first.modelId, required['model-id']);
+        expect(both.presets.first.model.providerId, model['provider-id']);
+        expect(both.presets.first.model.modelId, model['model-id']);
       }
     },
   );
@@ -117,8 +117,12 @@ void main() {
       );
       expect(
         fields.values.where((f) => f['type'] == 'string').map((f) => f['id']),
-        unorderedEquals([...required.keys, 'description']),
+        unorderedEquals(['name', 'description']),
       );
+      expect(fields['model']!['type'], 'struct');
+      expect(fields['model']!['properties'], [
+        for (final key in model.keys) {'id': key, 'type': 'string'},
+      ]);
       expect(fields['reasoning-effort']!['type'], 'enum');
       for (final option
           in (fields['reasoning-effort']!['options'] as List<dynamic>)
@@ -166,6 +170,14 @@ void main() {
           record('bad', {...required}..remove(key)),
         for (final key in [...required.keys, 'description', 'reasoning-effort'])
           record('bad', {...required, key: false}),
+        record('bad', {'name': '', ...model}),
+        for (final reference in [
+          for (final key in model.keys) {...model}..remove(key),
+          {...model, 'model-id': false},
+          {...model, 'provider-id': 123},
+          {...model, 'other': 'PRIVATE'},
+        ])
+          record('bad', {...required, 'model': reference}),
         record('bad', {...required, 'reasoning-effort': 'PRIVATE'}),
         record('bad', {...required, 'unexpected': 'PRIVATE'}),
       ]) {

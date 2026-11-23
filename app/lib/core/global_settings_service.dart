@@ -210,7 +210,7 @@ base class GlobalSettingsService {
     _Operation.createRecord,
     recordType: type,
     recordId: id,
-    recordValues: Map.unmodifiable(values),
+    recordValues: _captureRecordEdit(values),
   ).then((saved) => RecordView._(_identity, saved));
 
   /// Replaces the complete known-field set using this owner's exact revision.
@@ -221,8 +221,21 @@ base class GlobalSettingsService {
   ) => _enqueue<_RecordValues>(
     _Operation.updateRecord,
     expectedRecord: expected,
-    recordValues: Map.unmodifiable(values),
+    recordValues: _captureRecordEdit(values),
   ).then((saved) => RecordView._(_identity, saved));
+
+  // The request can wait behind another write before crossing the isolate
+  // boundary. Capture both supported levels at admission, not at dispatch.
+  // Declaration validation and write authority remain on the worker.
+  static Map<String, Object?> _captureRecordEdit(Map<String, Object?> values) =>
+      Map.unmodifiable({
+        for (final entry in values.entries)
+          entry.key: switch (entry.value) {
+            final Map<Object?, Object?> properties =>
+              Map<Object?, Object?>.unmodifiable(properties),
+            final scalar => scalar,
+          },
+      });
 
   /// Conditionally deletes the record and retires its edit handle.
   Future<void> deleteRecord(RecordView expected) =>

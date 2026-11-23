@@ -112,6 +112,7 @@ void main() {
       'rich_document_editor',
       'session_content_inspection',
       'session_accessory',
+      'settings_field_editor',
       'session_execution',
       'session_feedback',
       'session_presentation_lifecycle',
@@ -159,6 +160,9 @@ dev_dependencies:
       'plugins/command_tools/packages/frontend/lib/command_output_view.dart',
     );
     write('plugins/source_editor/packages/frontend/lib/source_documents.dart');
+    write(
+      'plugins/model_configuration/packages/frontend/lib/model_reference_editor.dart',
+    );
     for (final plugin in [
       'agent_configuration',
       'model_configuration',
@@ -375,7 +379,11 @@ part 'public.g.dart';
               for (final bridge in [
                 'session_accessory_bridge.dart',
                 'owning_backend_bridge.dart',
+                if (plugin == 'model_configuration')
+                  'settings_field_editor_bridge.dart',
               ]) ...['app/lib/frontend/$bridge', 'packages/ui/lib/$bridge'],
+              if (plugin == 'model_configuration')
+                '$packages/frontend/lib/model_reference_editor.dart',
               'packages/ui/lib/inspection_display.dart',
             ])
               File(path).absolute.path,
@@ -572,6 +580,17 @@ part 'missing_part.dart';
       }
       final commandContract = absolute(
         'plugins/command_tools/packages/contract/lib/command_tools_contract.dart',
+      );
+      final editorBridge = absolute(
+        'packages/ui/lib/settings_field_editor_bridge.dart',
+      );
+      expect(
+        inputs['model-configuration-frontend-compilation'],
+        contains(editorBridge),
+      );
+      expect(
+        inputs['agent-configuration-frontend-compilation'],
+        isNot(contains(editorBridge)),
       );
       expect(inputs['command-frontend-compilation'], contains(commandContract));
       expect(

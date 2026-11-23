@@ -7,10 +7,13 @@ A selector can read both without resolving an executable model provider.
 `modelPresetCatalog.readPresets` returns current definitions in stable record ID
 order. Names are editable and need not be unique. An empty list is meaningful
 only with its `isComplete` flag; unavailable access is a failure, not a list.
-Provider and model IDs are authored strings, not live bindings. The generator
-only accepts locally declared enums, so reasoning effort travels as a nullable
-string checked against `ModelReasoningEffort` on the native side. Null means
-unspecified; `none` is an explicit request.
+Each definition's `model` is a `ModelPresetModelReference`: `providerId` names
+one configured provider and `modelId` is an exact ID in that provider's namespace.
+The same model ID on a different provider is a different target. Both IDs are
+authored strings, not live bindings. The generator only accepts locally declared
+enums, so reasoning effort travels as a nullable string checked against
+`ModelReasoningEffort` on the native side. Null means unspecified; `none` is an
+explicit request.
 
 `modelPresetSelection.readSessionSelection` returns the stored reference without
 looking it up. Null at revision zero means untouched; null at a positive revision

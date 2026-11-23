@@ -7,7 +7,6 @@ import 'dart:io';
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
-import 'package:adele_desktop/core/model_catalog_choices.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/project_storage_host.dart';
 import 'package:adele_model_provider/adele_model_catalog.dart';
@@ -90,7 +89,6 @@ void main() {
     List<String> providers = const ['b', 'c'],
     List<Map<String, Object?>>? declarations,
     bool advertiseCatalogs = true,
-    List<AdeleCapabilityExposure> extraCatalogExposures = const [],
     int? readyGatePort,
     int? discoveryGatePort,
     Map<String, AdeleBackendDispatcher> Function(PluginBackendConnection)?
@@ -133,12 +131,7 @@ void main() {
           'test.backend.$id': [
             jsonEncode(
               id == 'catalog'
-                  ? {
-                      'advertiseCatalogs': advertiseCatalogs,
-                      'extraExposures': [
-                        for (final e in extraCatalogExposures) e.toMap(),
-                      ],
-                    }
+                  ? {'advertiseCatalogs': advertiseCatalogs}
                   : {
                       'identity': id.toUpperCase(),
                       'context': 'configured-$id',
@@ -159,7 +152,6 @@ void main() {
     List<String> providers = const ['b', 'c'],
     List<Map<String, Object?>>? declarations,
     bool advertiseCatalogs = true,
-    List<AdeleCapabilityExposure> extraCatalogExposures = const [],
     Map<String, AdeleBackendDispatcher> Function(PluginBackendConnection)?
     infrastructureServices,
   }) async {
@@ -168,7 +160,6 @@ void main() {
       providers: providers,
       declarations: declarations,
       advertiseCatalogs: advertiseCatalogs,
-      extraCatalogExposures: extraCatalogExposures,
       infrastructureServices: infrastructureServices,
     );
     await fixture.ready();
@@ -553,199 +544,6 @@ void main() {
       await _call(consumer, 'release', {'slot': 'work'});
     },
   );
-
-  test(
-    'app model discovery requires one exact generated catalog association, not matching IDs, context or rank',
-    () async {
-      AdeleCapabilityExposure exposure(
-        String id, {
-        CapabilityKey? capability,
-        int major = 1,
-        String service = modelCatalogServiceId,
-        String? target,
-      }) => AdeleCapabilityExposure(
-        providerId: id,
-        capabilityId: (capability ?? modelCatalogCapability).id.value,
-        capabilityMajorVersion: major,
-        serviceId: service,
-        displayName: 'Inference inference-only',
-        configurationContext: 'inference-inference-only',
-        rank: 1000,
-        association: target == null
-            ? null
-            : AdeleProviderAssociation(
-                capabilityId: modelProviderCapability.id.value,
-                capabilityMajorVersion: modelProviderCapability.majorVersion,
-                providerId: target,
-              ),
-      );
-      const solo = 'test.inference.inference-only';
-      const wrong = 'test.inference.wrong-service';
-      final fixture = await start(
-        consumers: [],
-        providers: ['catalog'],
-        extraCatalogExposures: [
-          // Same ID, backend, display name and context; no association.
-          exposure(solo),
-          exposure('test.catalog.wrong-major', major: 2, target: solo),
-          exposure(
-            'test.catalog.wrong-service',
-            service: modelProviderServiceId,
-            target: solo,
-          ),
-          exposure(
-            wrong,
-            capability: modelProviderCapability,
-            service: 'otherService',
-          ),
-          exposure('test.catalog.for-wrong-service', target: wrong),
-          exposure('test.catalog.second', target: 'test.inference.work'),
-        ],
-      );
-      final provider = fixture.provider('catalog');
-      for (final id in [
-        wrong,
-        'missing.id',
-        ' test.inference.work ',
-        'test.catalog.work',
-      ]) {
-        _expectDiscoveryFailure(
-          await fixture.discover(id),
-          ModelDiscoveryStatus.unavailable,
-        );
-      }
-      _expectDiscoveryFailure(
-        await fixture.discover(solo),
-        ModelDiscoveryStatus.unavailable,
-      );
-      _expectDiscoveryFailure(
-        await fixture.discover('test.inference.work'),
-        ModelDiscoveryStatus.ambiguous,
-      );
-      expect(await _requests(provider), isEmpty);
-
-      final personal = await fixture.discover('test.inference.personal');
-      expect(
-        personal.snapshot!.models.single.displayName,
-        'Scripted personal v0',
-      );
-      final duplicate = fixture.capabilities.resolveExact(
-        modelCatalogCapability,
-        ProviderId('test.catalog.second'),
-      );
-      await fixture.bootstrap
-          .backendForProvider(duplicate)!
-          .retireProvider(duplicate);
-      final work = await fixture.discover('test.inference.work');
-      expect(work.status, ModelDiscoveryStatus.success);
-      expect(work.snapshot!.models.single.displayName, 'Scripted work v0');
-      expect(personal.isCurrent!(), isTrue);
-      expect(work.isCurrent!(), isTrue);
-      expect(await _requests(provider), [
-        _catalogRequest('personal'),
-        _catalogRequest('work'),
-      ]);
-
-      await fixture.bootstrap.close();
-      expect(work.isCurrent!(), isFalse);
-      expect(personal.isCurrent!(), isFalse);
-    },
-  );
-
-  test(
-    'app model discovery separates empty success from sanitized failures and refreshes only on request',
-    () async {
-      final fixture = await start(consumers: [], providers: ['catalog']);
-      final provider = fixture.provider('catalog');
-      for (final mode in [
-        'empty',
-        'declared-failure',
-        'unsupported_discovery',
-        'unavailable',
-        'unexpected-failure',
-        'malformed',
-        'models',
-      ]) {
-        await _control(provider, 'setCatalog', {
-          'account': 'work',
-          'mode': mode,
-          'revision': 1,
-        });
-        final result = await fixture.discover('test.inference.work');
-        if (mode == 'empty' || mode == 'models') {
-          expect(result.status, ModelDiscoveryStatus.success);
-          expect(result.isCurrent!(), isTrue);
-          expect(
-            result.snapshot!.models.map((e) => e.displayName),
-            mode == 'empty' ? <String>[] : ['Scripted work v1'],
-          );
-        } else {
-          _expectDiscoveryFailure(result, switch (mode) {
-            'unsupported_discovery' => ModelDiscoveryStatus.unsupported,
-            'unavailable' => ModelDiscoveryStatus.unavailable,
-            _ => ModelDiscoveryStatus.failed,
-          });
-        }
-      }
-      expect(
-        await _requests(provider),
-        List.filled(7, _catalogRequest('work')),
-      );
-    },
-  );
-
-  for (final retireInference in [true, false]) {
-    test(
-      'app model discovery rejects pending and displayed data after ${retireInference ? 'inference' : 'catalog'} replacement',
-      () async {
-        final fixture = await start(consumers: [], providers: ['catalog']);
-        final provider = fixture.provider('catalog');
-        const work = 'test.inference.work';
-        final displayed = await fixture.discover(work);
-        final binding = fixture.capabilities.resolveExact(
-          retireInference ? modelProviderCapability : modelCatalogCapability,
-          ProviderId(retireInference ? work : 'test.catalog.work'),
-        );
-        final endpoint = binding.endpointAs<AdeleRequestChannelEndpoint>();
-        await _control(provider, 'hold', {'account': 'work'});
-        final pending = fixture.discover(work);
-        await _control(provider, 'wait', {'account': 'work'});
-        final changed = displayed.changes!.first.timeout(_bound);
-        await fixture.bootstrap
-            .backendForProvider(binding)!
-            .retireProvider(binding);
-        final foreign = fixture.capabilities.register(
-          provider: binding.provider,
-          endpoint: endpoint,
-        );
-        addTearDown(foreign.close);
-        expect(foreign.binding.isSameRegistration(binding), isFalse);
-        expect(displayed.isCurrent!(), isFalse);
-        await changed;
-        await _control(provider, 'release', {'account': 'work'});
-        _expectDiscoveryFailure(
-          await pending,
-          ModelDiscoveryStatus.unavailable,
-        );
-        // Even a fresh request cannot borrow the old association for an identical
-        // descriptor and endpoint registered outside the generation.
-        _expectDiscoveryFailure(
-          await fixture.discover(work),
-          ModelDiscoveryStatus.unavailable,
-        );
-        final other = await fixture.discover('test.inference.personal');
-        expect(
-          other.snapshot!.models.single.displayName,
-          'Scripted personal v0',
-        );
-        expect(await _requests(provider), [
-          _catalogRequest('work'),
-          _catalogRequest('work'),
-          _catalogRequest('personal'),
-        ]);
-      },
-    );
-  }
 
   test(
     'normal three-plugin bootstrap lets consumer AOT discover, select and inspect independent B/C providers',
@@ -1702,9 +1500,6 @@ final class _Installation {
   late final ApplicationPluginBootstrap bootstrap;
   late final Future<void> starting;
 
-  Future<ModelDiscoveryResult> discover(String providerId) =>
-      discoverModelsForProvider(bootstrap, providerId);
-
   Future<void> ready() async {
     await starting.timeout(_bound);
     expect(bootstrap.state, ApplicationPluginState.ready);
@@ -1726,16 +1521,6 @@ final class _Installation {
   PluginBackendConnection _connection(String pluginId) => bootstrap.backends
       .singleWhere((entry) => entry.installation.metadata.id.value == pluginId)
       .connection!;
-}
-
-void _expectDiscoveryFailure(
-  ModelDiscoveryResult result,
-  ModelDiscoveryStatus status,
-) {
-  expect(result.status, status);
-  expect(result.snapshot, isNull);
-  expect(result.isCurrent, isNull);
-  expect(result.changes, isNull);
 }
 
 Future<void> _manifest(
