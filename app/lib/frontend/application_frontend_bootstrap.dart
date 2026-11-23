@@ -14,6 +14,7 @@ import 'package:plugin_runtime/plugin_runtime.dart';
 import '../core/application_plugin_bootstrap.dart';
 import '../core/prepared_settings.dart';
 import '../core/resource_cleanup.dart';
+import 'capability_access_bridge.dart';
 import 'console_bridge.dart';
 import 'directory_picker_bridge.dart';
 import 'model_native_activity_bridge.dart';
@@ -24,6 +25,7 @@ import 'prepared_main_content_host.dart';
 import 'prepared_session_command.dart';
 import 'prepared_session_services.dart';
 import 'prepared_task_browser_host.dart';
+import 'presentation_dialog_bridge.dart';
 import 'session_accessory_bridge.dart';
 import 'session_content_inspection_bridge.dart';
 import 'settings_field_editor_bridge.dart';
@@ -898,11 +900,23 @@ final class InstalledFrontendActivation {
             library: descriptor.library,
             entrypoint: descriptor.entrypoint,
             key: ObjectKey(draft),
-            createBridge: () => SettingsFieldEditorBridge(
-              draft: draft,
-              binding: binding,
-              isActive: available,
-            ),
+            createBridge: () => PreparedFrontendBridges([
+              SettingsFieldEditorBridge(
+                draft: draft,
+                binding: binding,
+                isActive: available,
+              ),
+              PresentationDialogBridge(),
+              if (descriptor.associatedAccess.isNotEmpty)
+                CapabilityAccessBridge(
+                  registry: _backends?.registry,
+                  // Observation is not permission to resolve or call a source.
+                  capabilities: const [],
+                  associatedAccess: descriptor.associatedAccess,
+                  backendForProvider: _backends?.backendForProvider,
+                  isActive: () => available() && draft.enabled,
+                ),
+            ]),
           );
         },
       ),

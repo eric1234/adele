@@ -85,6 +85,22 @@ void main() {
 
   test('native imports grant no cross-plugin Capability access', () {
     expect(
+      () => observeAssociatedProviders(
+        'test.anchor',
+        1,
+        'anchor',
+        'test.peer',
+        1,
+        'peer',
+        true,
+      ),
+      throwsUnsupportedError,
+    );
+    expect(
+      () => isCapabilityProviderCurrent('invented'),
+      throwsUnsupportedError,
+    );
+    expect(
       () => discoverCapabilityProviders('dev.example.probe', 1),
       throwsUnsupportedError,
     );
