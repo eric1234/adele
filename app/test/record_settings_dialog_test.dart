@@ -426,6 +426,27 @@ void main() {
     }
 
     testWidgets(
+      'duplicate names and empty required Instructions save as distinct Agents',
+      (tester) => tester.runAsync(() async {
+        await seedAgent('Existing');
+        await open(tester);
+        await _tap(tester, _key('records-add-agents'));
+        await _enter(tester, _key('record-input-agents-name'), 'Reviewer');
+        final id = await inspectDraftId(tester);
+        await submit(tester, createButton);
+        final byId = {
+          for (final record in (await reader.loadRecords(agents)).records)
+            record.id.value: record.values,
+        };
+        expect(byId, {
+          'reviewer': {'name': 'Reviewer', 'instructions': 'Existing'},
+          id: {'name': 'Reviewer', 'instructions': ''},
+        });
+        await unmount(tester);
+      }),
+    );
+
+    testWidgets(
       'creates, edits and reloads formatted instructions without a backend',
       (tester) => tester.runAsync(() async {
         await open(tester);
@@ -439,12 +460,14 @@ void main() {
         final suffix = 'agents-$id';
         final recordFile = agentFile(id);
         expect(find.text('Agent'), findsOneWidget);
-        // Both required fields accept empty strings, without any user input.
-        expect(_enabled(tester, createButton), isTrue);
+        expect(_enabled(tester, createButton), isFalse);
         expect(find.byType(CheckboxListTile), findsNothing);
         final name = tester.widget<TextField>(_key('record-input-agents-name'));
         expect(name.enabled, isTrue);
         expect(name.decoration!.labelText, 'Name (Required)');
+        expect(name.decoration!.errorText, isNotEmpty);
+        await _enter(tester, _key('record-input-agents-name'), '   ');
+        expect(_enabled(tester, createButton), isFalse);
         final instructions = tester.widget<InputDecorator>(
           _instructions('agents'),
         );
@@ -460,6 +483,8 @@ void main() {
           'instructions': markdown,
         };
         await _enter(tester, _key('record-input-agents-name'), values['name']!);
+        // Instructions require presence, not a nonblank Markdown document.
+        expect(_enabled(tester, createButton), isTrue);
         for (final (field, label) in [
           ('description', 'Description'),
           ('when-to-use', 'When to Use'),
@@ -725,6 +750,7 @@ void main() {
         await open(tester);
         await _tap(tester, _key('records-add-agents'));
         final id = await inspectDraftId(tester);
+        await _enter(tester, _key('record-input-agents-name'), 'Writer');
         final create = tester
             .widget<ButtonStyleButton>(createButton)
             .onPressed!;
@@ -755,7 +781,7 @@ void main() {
           composing.copyWith(composing: TextRange.empty),
         );
         await submit(tester, createButton);
-        expect(await stored(), {'name': '', 'instructions': 'x'});
+        expect(await stored(), {'name': 'Writer', 'instructions': 'x'});
         expect(agentFile(id).existsSync(), isTrue);
         expect(settings.creates, 1);
         await unmount(tester);

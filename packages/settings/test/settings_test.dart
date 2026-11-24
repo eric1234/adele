@@ -297,6 +297,134 @@ void main() {
     });
   });
 
+  group('constrained strings', () {
+    test('constraints are opt-in; impossible bounds fail at declaration', () {
+      for (final type in [
+        const StringSettingType(),
+        StringSettingType.constrained(),
+      ]) {
+        expect(type.nonBlank, isFalse);
+        expect(type.maxLength, isNull);
+        expect(type.rejectAsciiControls, isFalse);
+        expect(type.format, isNull);
+        expect(_definition(type, '').validate('\t\n\x7f'), '\t\n\x7f');
+      }
+      for (final limit in [-1, 0]) {
+        expect(
+          () => StringSettingType.constrained(maxLength: limit),
+          throwsArgumentError,
+        );
+      }
+      const format = StringSettingFormat.adelePublicId;
+      for (final limit in [1, 2]) {
+        expect(
+          () => StringSettingType.constrained(maxLength: limit, format: format),
+          throwsArgumentError,
+        );
+      }
+      final type = StringSettingType.constrained(
+        nonBlank: true,
+        maxLength: 3,
+        rejectAsciiControls: true,
+        format: format,
+      );
+      expect(type.nonBlank, isTrue);
+      expect(type.rejectAsciiControls, isTrue);
+      expect(type.maxLength, 3);
+      expect(type.format, format);
+      final definition = _definition(type, 'a.b');
+      expect(definition.validate('x.y'), 'x.y');
+      expect(
+        () => definition.validate('xy.z'),
+        throwsA(isA<InvalidSettingValue>()),
+      );
+    });
+
+    test(
+      'defaults and global overrides check constraints without rewriting text',
+      () {
+        for (final (type, initial, override, invalidValues, message)
+            in <(StringSettingType, String, String, List<String>, Matcher)>[
+              (
+                StringSettingType.constrained(nonBlank: true),
+                '  name  ',
+                '\tCafe\u0301\n',
+                ['', ' \t\r\n', '\u00a0\ufeff'],
+                contains('blank'),
+              ),
+              (
+                StringSettingType.constrained(maxLength: 2),
+                '',
+                '\u{1f680}',
+                ['a\u{1f680}', ' a '],
+                contains('2 UTF-16 code units'),
+              ),
+              (
+                StringSettingType.constrained(rejectAsciiControls: true),
+                ' ',
+                '~\u0080\u009f\u2028',
+                [
+                  for (var unit = 0; unit < 0x20; unit++)
+                    'a${String.fromCharCode(unit)}b',
+                  'a\x7fb',
+                ],
+                contains('ASCII control'),
+              ),
+              (
+                StringSettingType.constrained(
+                  format: StringSettingFormat.adelePublicId,
+                ),
+                'a.b',
+                'dev.example2.item-3',
+                [
+                  'local',
+                  'a..b',
+                  'A.b',
+                  'a.-b',
+                  'a.b--c',
+                  ' a.b',
+                  'a.b ',
+                  'private\ninput',
+                  'a.\u00e9',
+                ],
+                allOf(
+                  contains('lowercase ASCII'),
+                  contains('dot-separated'),
+                  isNot(contains('private')),
+                ),
+              ),
+            ]) {
+          final definition = _definition(type, initial);
+          final id = definition.id;
+          final catalog = SettingsCatalog([definition]);
+          expect(catalog.resolve<String>(id).value, initial);
+          expect(
+            catalog.resolve<String>(id, globalOverrides: {id: override}).value,
+            override,
+          );
+          for (final invalid in invalidValues) {
+            expect(
+              () => _definition(type, invalid),
+              throwsA(
+                isA<InvalidSettingValue>()
+                    .having((e) => e.id, 'id', id)
+                    .having((e) => e.message, 'message', message),
+              ),
+            );
+            expect(
+              () => catalog.resolve<String>(id, globalOverrides: {id: invalid}),
+              throwsA(
+                isA<InvalidSettingOverride>()
+                    .having((e) => e.id, 'id', id)
+                    .having((e) => e.message, 'message', message),
+              ),
+            );
+          }
+        }
+      },
+    );
+  });
+
   group('enum', () {
     test(
       'matches stable strings exactly, not display labels or other types',

@@ -1938,6 +1938,13 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
     },
   );
 
+  void expectNonBlankControlFree(RecordFieldDefinition<Object> field) {
+    for (final invalid in ['', '  ', 'a\nb', 'a\u007fb']) {
+      expect(field.valueError(invalid), isNotNull, reason: field.id.value);
+    }
+    expect(field.snapshotValue('  exact text  '), '  exact text  ');
+  }
+
   test(
     'stock OpenAI records are discoverable without executable components or auth',
     () async {
@@ -1995,6 +2002,8 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
                 'id': 'display-name',
                 'label': 'Name',
                 'type': 'string',
+                'nonBlank': true,
+                'rejectAsciiControls': true,
                 'required': true,
               },
               {
@@ -2002,6 +2011,8 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
                 'label': 'API endpoint',
                 'description': endpointHint,
                 'type': 'string',
+                'nonBlank': true,
+                'rejectAsciiControls': true,
                 'required': false,
               },
             ],
@@ -2042,6 +2053,13 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         null,
         endpointHint,
       ]);
+      expectNonBlankControlFree(type.fields.first);
+      expectNonBlankControlFree(type.fields.last);
+      const withoutEndpoint = {'display-name': 'Work'};
+      expect(
+        type.validate(ConfigurationRecordId('work'), withoutEndpoint),
+        withoutEndpoint,
+      );
       expect(commands.existsSync(), isFalse);
     },
   );
@@ -2147,6 +2165,14 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
       false,
       true,
     ]);
+    expectNonBlankControlFree(type.fields.first);
+    const agent = {
+      'name': 'Reviewer',
+      'description': 'Two\nlines',
+      'when-to-use': '',
+      'instructions': '',
+    };
+    expect(type.validate(ConfigurationRecordId('reviewer'), agent), agent);
     expect(commands.existsSync(), isFalse);
   });
 
@@ -2243,24 +2269,45 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
       ]);
 
       final recordId = ConfigurationRecordId('work');
-      const requiredValues = {
-        'name': 'Work model',
-        'model': {'provider-id': 'work-provider', 'model-id': 'model-a'},
+      expectNonBlankControlFree(preset.fields.first);
+      const reference = {
+        'provider-id': 'org.example.work-provider',
+        'model-id': '  Local/Model:v2  ',
       };
+      const requiredValues = {'name': 'Work model', 'model': reference};
       expect(preset.validate(recordId, requiredValues), requiredValues);
-      for (final invalid in [
-        {'provider-id': 'work-provider'},
-        {'provider-id': 'work-provider', 'model-id': 3},
+      final boundary = {
+        'provider-id': 'a.${'b' * 1022}',
+        'model-id': '\u{1F600}' * 512,
+      };
+      expect(model.snapshotValue(boundary), boundary);
+      for (final (property, invalid) in [
+        ('model-id', {'provider-id': 'org.example.work-provider'}),
+        ('model-id', {...reference, 'model-id': 3}),
+        ('provider-id', {...reference, 'provider-id': 'work-provider'}),
+        (
+          'provider-id',
+          {...boundary, 'provider-id': '${boundary['provider-id']}x'},
+        ),
+        for (final invalidId in [
+          '',
+          '  ',
+          'model\u0000a',
+          '${boundary['model-id']}x',
+        ])
+          ('model-id', {...reference, 'model-id': invalidId}),
       ]) {
         expect(
           () =>
               preset.validate(recordId, {...requiredValues, 'model': invalid}),
           throwsA(
-            isA<InvalidRecordValue>().having(
-              (e) => e.fieldId?.value,
-              'field',
-              'model',
-            ),
+            isA<InvalidRecordValue>()
+                .having((e) => e.fieldId?.value, 'field', 'model')
+                .having(
+                  (e) => e.message,
+                  'property diagnostic',
+                  contains(property),
+                ),
           ),
         );
       }

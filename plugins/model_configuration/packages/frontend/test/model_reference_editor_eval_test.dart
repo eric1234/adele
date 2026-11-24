@@ -16,7 +16,7 @@ import '../../../../../tools/backend_artifacts.dart';
 
 const _plugin = 'dev.adele.plugin.model-configuration';
 const _suffix = 'model-presets-work';
-const _initial = {'provider-id': 'Local/Work', 'model-id': 'alpha'};
+const _initial = {'provider-id': 'local.work', 'model-id': 'alpha'};
 
 void main() {
   testWidgets(
@@ -110,17 +110,37 @@ void main() {
         of: find.byType(Dialog),
         matching: find.byType(TextField),
       );
+      final fields = catalog.records.definitions.single.fields;
+      final modelField = fields.singleWhere((f) => f.id.value == 'model');
+      final nameField = fields.singleWhere((f) => f.id.value == 'name');
       Future<void> author() async {
         await _tap(tester, find.text('Browse models...'));
         await _tap(tester, find.text('Enter manually'));
         await _tap(tester, find.text('Enter provider ID instead'));
       }
 
+      Future<void> reject(String provider, String model) async {
+        await tester.enterText(dialogInputs.first, provider);
+        await tester.enterText(dialogInputs.last, model);
+        await _tap(tester, find.text('Use reference'));
+        final error = modelField.valueError({
+          'provider-id': provider,
+          'model-id': model,
+        });
+        expect(find.text(error!), findsOneWidget);
+        expect(
+          tester.widget<TextField>(dialogInputs.first).controller!.text,
+          provider,
+        );
+        expect(
+          tester.widget<TextField>(dialogInputs.last).controller!.text,
+          model,
+        );
+        expect(file.readAsStringSync(), original);
+      }
+
       await author();
-      await tester.enterText(dialogInputs.first, 'Offline');
-      await tester.enterText(dialogInputs.last, '  ');
-      await tester.pump();
-      expect(find.text('Use reference'), findsNothing);
+      await reject('test.offline', '  ');
       await _tap(tester, find.text('Cancel').last);
       await tester.pumpAndSettle();
       expect(find.text('No model selected.'), findsOneWidget);
@@ -135,7 +155,7 @@ void main() {
         matching: find.byType(TextField),
       );
       expect(inputs, findsNothing);
-      expect(find.text('Configured provider: Local/Work'), findsOneWidget);
+      expect(find.text('Configured provider: local.work'), findsOneWidget);
       expect(find.text('alpha'), findsOneWidget);
       expect(effort(_suffix).value, 'high');
       expect(effort(_suffix).onChanged, isNotNull);
@@ -151,30 +171,41 @@ void main() {
       ]);
       expect(find.textContaining('choices are unverified'), findsOneWidget);
       await author();
-      await tester.enterText(dialogInputs.first, 'other');
+      await tester.enterText(dialogInputs.first, 'local.other');
       await _tap(tester, find.text('Use reference'));
-      expect(find.text('Configured provider: other'), findsOneWidget);
+      expect(find.text('Configured provider: local.other'), findsOneWidget);
       await _tap(tester, _key('record-cancel-$_suffix'));
       expect(file.readAsStringSync(), original);
 
       await _tap(tester, edit);
       await _waitFor(tester, find.text('Browse models...'));
-      expect(find.text('Configured provider: Local/Work'), findsOneWidget);
+      expect(find.text('Configured provider: local.work'), findsOneWidget);
       const updated = {
-        'provider-id': 'Offline/Account.2',
+        'provider-id': 'offline.account-2',
         'model-id': ' Org/Model:v2+custom ',
       };
       await author();
+      await reject('Offline/Account.2', updated['model-id']!);
+      await reject(updated['provider-id']!, 'a\u007fb');
+      await reject(updated['provider-id']!, 'a' * 1025);
       await tester.enterText(dialogInputs.last, updated['model-id']!);
-      await tester.pump();
-      await tester.enterText(dialogInputs.first, updated['provider-id']!);
-      await tester.pump();
       await _tap(tester, find.text('Use reference'));
       await tester.pumpAndSettle();
       expect(find.text(updated['model-id']!), findsOneWidget);
       expect(effort(_suffix).value, 'high');
+      final name = _key('record-input-$_suffix-name');
+      final save = _key('record-save-$_suffix');
+      for (final invalid in ['', '  ']) {
+        await tester.enterText(name, invalid);
+        await tester.pump();
+        expect(find.text(nameField.valueError(invalid)!), findsOneWidget);
+        expect(tester.widget<FilledButton>(save).onPressed, isNull);
+      }
+      await tester.enterText(name, siblings['name']!);
+      await tester.pump();
+      expect(tester.widget<FilledButton>(save).onPressed, isNotNull);
       expect(file.readAsStringSync(), original);
-      await _tap(tester, _key('record-save-$_suffix'));
+      await _tap(tester, save);
       await _waitFor(tester, find.text('Saved Writer.'));
       final saved = (await settings.loadRecords(collection)).records.single;
       expect(saved.values, {...siblings, 'model': updated});

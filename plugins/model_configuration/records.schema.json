@@ -14,6 +14,8 @@
           "id": "name",
           "label": "Name",
           "type": "string",
+          "nonBlank": true,
+          "rejectAsciiControls": true,
           "required": true
         },
         {
@@ -28,8 +30,19 @@
           "description": "The configured provider instance and its exact model identifier.",
           "type": "struct",
           "properties": [
-            {"id": "provider-id", "type": "string"},
-            {"id": "model-id", "type": "string"}
+            {
+              "id": "provider-id",
+              "type": "string",
+              "format": "adele-public-id",
+              "maxLength": 1024
+            },
+            {
+              "id": "model-id",
+              "type": "string",
+              "nonBlank": true,
+              "rejectAsciiControls": true,
+              "maxLength": 1024
+            }
           ],
           "editor": {"extensionId": "dev.adele.plugin.model-configuration.model-reference"},
           "required": true

@@ -275,12 +275,17 @@ void main() {
     'partial and unavailable observations are not clean empty or a cached success',
     () async {
       final healthy = await create('healthy', {
-        'name': '',
+        'name': 'Healthy',
         'instructions': 'Retain me',
       });
       final broken = recordFile('broken');
       const invalid = 'invalid = [ # private diagnostic';
       await broken.writeAsString(invalid);
+      final malformed = recordFile('blank-name');
+      final blank =
+          'recordVersion = 1\nrecordType = "$_type"\n'
+          '[values]\nname = "   "\ninstructions = "Keep"\n';
+      await malformed.writeAsString(blank);
       final partial = await client.readAgents();
       expect(partial.isComplete, isFalse);
       expect(partial.agents.single.id, 'healthy');
@@ -289,6 +294,7 @@ void main() {
       expect(allInvalid.isComplete, isFalse);
       expect(allInvalid.agents, isEmpty);
       expect(await broken.readAsString(), invalid);
+      expect(await malformed.readAsString(), blank);
 
       final saved = await agents.rename('${agents.path}-saved');
       final obstruction = await File(
@@ -307,6 +313,7 @@ void main() {
       await obstruction.delete();
       await saved.rename(agents.path);
       await broken.delete();
+      await malformed.delete();
       final recovered = await client.readAgents();
       expect(recovered.isComplete, isTrue);
       expect(recovered.agents, isEmpty);

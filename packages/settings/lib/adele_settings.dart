@@ -79,9 +79,35 @@ sealed class SettingType<T extends Object> extends RecordFieldType<T> {
         if (maximum != null && value > maximum) {
           return 'Must be at most $maximum.';
         }
-      case StringSettingType():
+      case StringSettingType(
+        :final nonBlank,
+        :final maxLength,
+        :final rejectAsciiControls,
+        :final format,
+      ):
         if (value is! String) {
           return 'Expected a string.';
+        }
+        if (maxLength != null && value.length > maxLength) {
+          return 'Must be at most $maxLength UTF-16 code units.';
+        }
+        if (nonBlank && value.trim().isEmpty) {
+          return 'Must not be blank.';
+        }
+        if (rejectAsciiControls && RegExp(r'[\x00-\x1f\x7f]').hasMatch(value)) {
+          return 'Must not contain ASCII control characters.';
+        }
+        switch (format) {
+          case null:
+            break;
+          case StringSettingFormat.adelePublicId:
+            try {
+              validateAdelePublicId(value, label: 'public ID');
+            } on FormatException {
+              // The shared validator includes the rejected text in its exception.
+              return 'Use a lowercase ASCII ADELE public ID with at least two '
+                  'dot-separated segments, such as org.example.';
+            }
         }
       case EnumSettingType(:final options):
         if (value is! String ||
@@ -112,9 +138,47 @@ final class IntegerSettingType extends SettingType<int> {
   final int? maximum;
 }
 
-/// An unconstrained string value, distinct from single-line display metadata.
+enum StringSettingFormat { adelePublicId }
+
+/// A string value, validated without trimming, normalization, or coercion.
 final class StringSettingType extends SettingType<String> {
-  const StringSettingType() : super._();
+  const StringSettingType()
+    : nonBlank = false,
+      maxLength = null,
+      rejectAsciiControls = false,
+      format = null,
+      super._();
+
+  StringSettingType.constrained({
+    this.nonBlank = false,
+    this.maxLength,
+    this.rejectAsciiControls = false,
+    this.format,
+  }) : super._() {
+    if (maxLength case final limit?) {
+      if (limit <= 0) {
+        throw ArgumentError.value(limit, 'maxLength', 'Must be positive.');
+      }
+      if (format == StringSettingFormat.adelePublicId && limit < 3) {
+        throw ArgumentError.value(
+          limit,
+          'maxLength',
+          'An ADELE public ID needs at least 3 UTF-16 code units.',
+        );
+      }
+    }
+  }
+
+  /// Reject values whose [String.trim] result is empty; retain the original text.
+  final bool nonBlank;
+
+  /// Inclusive limit in UTF-16 code units ([String.length]), or null for no limit.
+  final int? maxLength;
+
+  /// Reject U+0000 through U+001F and U+007F, not other Unicode characters.
+  final bool rejectAsciiControls;
+
+  final StringSettingFormat? format;
 }
 
 /// A stable string value with an optional single-line display label.

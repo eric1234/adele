@@ -13,6 +13,8 @@
           "id": "name",
           "label": "Name",
           "type": "string",
+          "nonBlank": true,
+          "rejectAsciiControls": true,
           "required": true
         },
         {

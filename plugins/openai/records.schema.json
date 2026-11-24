@@ -20,6 +20,8 @@
           "id": "display-name",
           "label": "Name",
           "type": "string",
+          "nonBlank": true,
+          "rejectAsciiControls": true,
           "required": true
         },
         {
@@ -27,6 +29,8 @@
           "label": "API endpoint",
           "description": "Default when not set: https://api.openai.com/v1/responses",
           "type": "string",
+          "nonBlank": true,
+          "rejectAsciiControls": true,
           "required": false
         }
       ]

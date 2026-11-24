@@ -580,7 +580,17 @@ void main() {
         final workEndpoint = find.byKey(
           ValueKey('record-input-providers-$workId-endpoint'),
         );
+        await tester.enterText(workEndpoint, '   ');
+        await tester.pump();
+        final save = find.byKey(ValueKey('record-save-providers-$workId'));
+        expect(tester.widget<FilledButton>(save).onPressed, isNull);
+        expect(
+          tester.widget<TextField>(workEndpoint).decoration!.errorText,
+          isNotEmpty,
+        );
         await tester.enterText(workEndpoint, 'https://example.invalid/v1');
+        await tester.pumpAndSettle();
+        expect(tester.widget<FilledButton>(save).onPressed, isNotNull);
         await _settingsAction(tester, 'record-save-providers-$workId');
         await _settingsUntil(tester, () => workName.evaluate().isEmpty);
         expect(
@@ -2442,6 +2452,8 @@ Future<String> _createProviderRecord(
   final input = find.byKey(
     const ValueKey('record-input-providers-display-name'),
   );
+  final create = find.byKey(const ValueKey('record-create-providers'));
+  expect(tester.widget<FilledButton>(create).onPressed, isNull);
   expect(tester.widget<TextField>(input).enabled, isTrue);
   expect(
     find.byKey(const ValueKey('record-presence-providers-endpoint')),
@@ -2457,9 +2469,13 @@ Future<String> _createProviderRecord(
     findsOneWidget,
   );
   await tester.ensureVisible(input);
+  await tester.enterText(input, '   ');
+  await tester.pump();
+  expect(tester.widget<FilledButton>(create).onPressed, isNull);
+  expect(tester.widget<TextField>(input).decoration!.errorText, isNotEmpty);
   await tester.enterText(input, name);
   await tester.pump();
-  final create = find.byKey(const ValueKey('record-create-providers'));
+  expect(tester.widget<FilledButton>(create).onPressed, isNotNull);
   await tester.ensureVisible(create);
   await tester.tap(create);
   await _settingsUntil(tester, () => create.evaluate().isEmpty);

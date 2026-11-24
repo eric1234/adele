@@ -2,6 +2,8 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
 
+import 'package:adele_model_provider/adele_model_catalog.dart';
+import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_backend_support/adele_plugin_backend_support.dart';
 import 'package:model_configuration_backend/model_configuration_backend.dart';
 import 'package:model_configuration_contract/model_configuration_contract.dart';
@@ -42,10 +44,10 @@ void main() {
   }
 
   const model = {
-    'provider-id': ' Unknown:Provider ',
+    'provider-id': 'dev.example.offline',
     'model-id': r'Model/V2$beta',
   };
-  const required = {'name': '', 'model': model};
+  const required = {'name': ' Research ', 'model': model};
   Map<String, Object?> record(String id, Map<String, Object?> values) => {
     'id': id,
     'type': 'dev.adele.plugin.model-configuration.preset',
@@ -74,7 +76,7 @@ void main() {
         ], complete: complete);
         expect(both.isComplete, complete);
         expect(both.presets.map((p) => p.presetId), ['a', 'z']);
-        expect(both.presets.map((p) => p.name), ['', '']);
+        expect(both.presets.map((p) => p.name), [' Research ', ' Research ']);
         expect(both.presets.map((p) => p.description), [null, '']);
         expect(both.presets.map((p) => p.reasoningEffort), [null, 'none']);
         expect(both.presets.first.model.providerId, model['provider-id']);
@@ -121,7 +123,19 @@ void main() {
       );
       expect(fields['model']!['type'], 'struct');
       expect(fields['model']!['properties'], [
-        for (final key in model.keys) {'id': key, 'type': 'string'},
+        {
+          'id': 'provider-id',
+          'type': 'string',
+          'format': 'adele-public-id',
+          'maxLength': RunModelPreference.maxProviderIdLength,
+        },
+        {
+          'id': 'model-id',
+          'type': 'string',
+          'nonBlank': true,
+          'rejectAsciiControls': true,
+          'maxLength': modelCatalogMaxModelIdLength,
+        },
       ]);
       expect(fields['reasoning-effort']!['type'], 'enum');
       for (final option
@@ -170,7 +184,7 @@ void main() {
           record('bad', {...required}..remove(key)),
         for (final key in [...required.keys, 'description', 'reasoning-effort'])
           record('bad', {...required, key: false}),
-        record('bad', {'name': '', ...model}),
+        record('bad', {'name': 'Flat reference', ...model}),
         for (final reference in [
           for (final key in model.keys) {...model}..remove(key),
           {...model, 'model-id': false},

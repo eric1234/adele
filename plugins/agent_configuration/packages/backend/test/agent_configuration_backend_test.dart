@@ -34,7 +34,8 @@ void main() {
       final fields = (field['required'] as bool)
           ? requiredFields
           : optionalFields;
-      fields[field['id'] as String] = '';
+      final id = field['id'] as String;
+      fields[id] = id == 'name' ? 'Reviewer' : '';
     }
   });
 
@@ -114,7 +115,7 @@ void main() {
         'last',
       ]);
       final first = snapshot.agents.first;
-      expect(first.name, '');
+      expect(first.name, 'Reviewer');
       expect(first.instructions, '');
       expect(first.description, isNull);
       expect(first.whenToUse, isNull);
