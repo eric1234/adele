@@ -3,17 +3,22 @@ library;
 
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/project_storage_host.dart';
+import 'package:adele_desktop/frontend/capability_access_bridge.dart';
+import 'package:adele_desktop/frontend/structured_bridge_data.dart';
 import 'package:adele_model_provider/adele_model_catalog.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:adele_project_storage/adele_project_storage.dart';
+import 'package:contract_codegen/contract_codegen.dart';
+import 'package:dart_eval/dart_eval.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
@@ -209,6 +214,108 @@ void main() {
         // Only this provider fixture links the existing scripted implementation.
         'package:scripted_model_backend/scripted_model_provider_backend.dart',
       });
+    },
+  );
+
+  test(
+    'associated EVC catalog reader distinguishes unknown, empty and explicit effort evidence from AOT',
+    () async {
+      final fixture = await start(consumers: [], providers: ['catalog']);
+      final provider = fixture.provider('catalog');
+      final bridge = CapabilityAccessBridge(
+        registry: fixture.capabilities,
+        capabilities: [],
+        associatedAccess: [
+          PreparedAssociatedCapabilityAccess(
+            capability: modelProviderCapability,
+            serviceId: modelProviderServiceId,
+            associatedCapability: modelCatalogCapability,
+            associatedServiceId: modelCatalogServiceId,
+          ),
+        ],
+        backendForProvider: fixture.bootstrap.backendForProvider,
+        isActive: () => true,
+      );
+      addTearDown(bridge.invalidate);
+      const lib = 'package:catalog_probe/reader.dart';
+      final client =
+          await ContractGenerator(
+            sdkPath: File(aotRuntime).parent.parent.path,
+          ).generateEvalClient(
+            File(
+              '../packages/model_provider/lib/adele_model_catalog.dart',
+            ).absolute,
+          );
+      final compiled =
+          (Compiler()
+                ..addPlugin(const CapabilityAccessDeclarations())
+                ..entrypoints.addAll([
+                  lib,
+                  'package:adele_contract/adele_contract.dart',
+                  'package:adele_model_provider/adele_model_catalog.dart',
+                ]))
+              .compile({
+                'adele_contract': {
+                  'adele_contract.dart': evalContractSupportSource,
+                },
+                'adele_ui': {
+                  'capability_bridge.dart': await File(
+                    '../packages/ui/lib/capability_bridge.dart',
+                  ).readAsString(),
+                },
+                'adele_model_provider': {'adele_model_catalog.dart': client},
+                'catalog_probe': {
+                  'reader.dart': '''
+import 'package:adele_model_provider/adele_model_catalog.dart';
+import 'package:adele_ui/capability_bridge.dart';
+
+Future<Map<String, Object?>> observe() async {
+  final offers = observeAssociatedProviders('dev.adele.model.provider', 1,
+      'modelProvider', 'dev.adele.model.catalog', 1, modelCatalogServiceId, true)!;
+  final observations = <String, Object?>{};
+  for (final offer in offers) {
+    if (offer['status'] == 'ready') {
+      final handle = offer['handle'] as String;
+      final client = ModelCatalogServiceClient(CapabilityRequestChannel(handle));
+      final result = await settleCapabilityOperation(client.listModels());
+      final snapshot = result[1] as ModelCatalogSnapshot;
+      final support = snapshot.models.single.supportedReasoningEfforts;
+      if (support != null) {
+        // The projected getter returns a detached copy, not mutable DTO storage.
+        support.values.clear();
+      }
+      observations[offer['providerId'] as String] = support?.values;
+      releaseCapabilityProvider(handle);
+    }
+  }
+  return observations;
+}
+''',
+                },
+              });
+      final runtime = Runtime(ByteData.sublistView(compiled.write()))
+        ..addPlugin(bridge);
+      Future<Object?> observe() async =>
+          copyStructuredBridgeData(await runtime.executeLib(lib, 'observe'));
+      expect(await observe(), {
+        'test.inference.personal': null,
+        'test.inference.work': <String>[],
+      });
+      await _control(provider, 'setCatalog', {
+        'account': 'work',
+        'revision': 1,
+      });
+      expect(await observe(), {
+        'test.inference.personal': null,
+        'test.inference.work': ['none', 'high', 'max'],
+      });
+      expect(
+        await _requests(provider),
+        unorderedEquals([
+          for (final account in ['personal', 'work', 'personal', 'work'])
+            _catalogRequest(account),
+        ]),
+      );
     },
   );
 
@@ -1566,6 +1673,11 @@ Map<String, Object?> _catalogSnapshot(String account, {int revision = 0}) => {
       'modelId': 'scripted-v1',
       'displayName': 'Scripted $account v$revision',
       'description': null,
+      'supportedReasoningEfforts': account != 'work'
+          ? null
+          : revision == 0
+          ? <String>[]
+          : ['none', 'high', 'max'],
     },
   ],
 };

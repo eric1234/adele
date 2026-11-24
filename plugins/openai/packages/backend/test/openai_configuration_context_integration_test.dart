@@ -788,19 +788,25 @@ void main() {
       final fixture = await configured(chatGpt: true);
       final work = fixture.catalog('work-openai');
       final personal = fixture.catalog('personal-openai');
+      // Both custom routes may use a public model ID; neither inherits its
+      // documented efforts, or models/credentials from the other account.
+      const workIds = ['work-model', 'gpt-6-astra', ' Exact Work ID '];
+      const personalIds = ['gpt-6-astra', 'personal-model'];
+      fixture.responses.catalogModels['/work/models'] = workIds;
+      fixture.responses.catalogModels['/personal/models'] = personalIds;
       expect(fixture.credentials.requests, isEmpty);
       expect(fixture.responses.catalogRequests, isEmpty);
 
       final first = await work.listModels();
-      _expectModels(first, ['work-model', ' Exact Work ID ']);
+      _expectModels(first, workIds);
       expect(() => first.models.clear(), throwsUnsupportedError);
       expect(fixture.credentials.requests, [
         _credentialSelectors('work-openai'),
       ]);
       fixture.responses.catalogModels['/work/models'] = [];
       _expectModels(await work.listModels(), []);
-      _expectModels(first, ['work-model', ' Exact Work ID ']);
-      _expectModels(await personal.listModels(), ['personal-model']);
+      _expectModels(first, workIds);
+      _expectModels(await personal.listModels(), personalIds);
       expect(fixture.credentials.requests, [
         _credentialSelectors('work-openai'),
         _credentialSelectors('work-openai'),
@@ -859,7 +865,7 @@ void main() {
       final httpBeforeFailure = fixture.responses.catalogRequests.length;
       await expectLater(work.listModels(), throwsA(_catalogUnavailable));
       expect(fixture.responses.catalogRequests, hasLength(httpBeforeFailure));
-      _expectModels(await personal.listModels(), ['personal-model']);
+      _expectModels(await personal.listModels(), personalIds);
       expect(
         fixture.responses.catalogRequests.last['path'],
         '/personal/models',
@@ -1482,9 +1488,14 @@ void _expectCompleted(List<ModelProviderEvent> events, String text) {
 void _expectModels(ModelCatalogSnapshot snapshot, List<String> ids) {
   expect(
     snapshot.models.map(
-      (model) => (model.modelId, model.displayName, model.description),
+      (model) => (
+        model.modelId,
+        model.displayName,
+        model.description,
+        model.supportedReasoningEfforts,
+      ),
     ),
-    [for (final id in ids) (id, null, null)],
+    [for (final id in ids) (id, null, null, null)],
   );
 }
 

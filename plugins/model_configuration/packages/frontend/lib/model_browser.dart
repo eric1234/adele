@@ -62,6 +62,12 @@ const _maxRows = 2048;
 const _maxText = modelCatalogMaxTextLength;
 const _workers = 4;
 
+bool _validOptionalText(String? value) {
+  if (value == null) return true;
+  if (value.trim().isEmpty) return false;
+  return !value.codeUnits.contains(0);
+}
+
 class _BrowserState extends State<ModelBrowser> {
   _BrowserState(this.selection)
     : providerInput = TextEditingController(text: selection.provider),
@@ -226,6 +232,24 @@ class _BrowserState extends State<ModelBrowser> {
       final display = entry.displayName ?? '';
       final description = entry.description ?? '';
       catalogText += id.length + display.length + description.length;
+      final efforts = entry.supportedReasoningEfforts;
+      if (efforts != null) {
+        final values = efforts.values;
+        if (values.length > modelCatalogReasoningEffortNames.length) {
+          offer.status = 'Invalid reasoning effort metadata.';
+          return;
+        }
+        int previous = -1;
+        for (final value in values) {
+          final index = modelCatalogReasoningEffortNames.indexOf(value);
+          if (index <= previous) {
+            offer.status = 'Invalid reasoning effort metadata.';
+            return;
+          }
+          previous = index;
+          catalogText += value.length;
+        }
+      }
       if (id.length > modelCatalogMaxModelIdLength ||
           id.trim().isEmpty ||
           seen.containsKey(id)) {
@@ -244,8 +268,13 @@ class _BrowserState extends State<ModelBrowser> {
         offer.status = 'Catalog exceeds the text limit.';
         return;
       }
+      if (!_validOptionalText(entry.displayName) ||
+          !_validOptionalText(entry.description)) {
+        offer.status = 'Invalid model display metadata.';
+        return;
+      }
       seen[id] = true;
-      final name = display.trim().isEmpty ? id : display;
+      final name = display.isEmpty ? id : display;
       final cost = id.length + name.length;
       if (models.length + accepted.length < _maxRows &&
           retainedText + size + cost <= _maxText) {

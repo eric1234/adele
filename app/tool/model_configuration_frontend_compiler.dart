@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -36,7 +37,7 @@ Future<Uint8List> compileModelConfigurationFrontend({
       ),
     );
     // Eval generation projects annotated transport, not ordinary constants.
-    // Keep semantic bounds available to consumers without copying their values.
+    // Project the same bounds and inference vocabulary used by native validation.
     return {
       'adele_model_provider': {
         'adele_model_catalog.dart':
@@ -47,6 +48,7 @@ const int modelCatalogMaxModelIdLength = ${catalog.modelCatalogMaxModelIdLength}
 const int modelCatalogMaxDisplayNameLength = ${catalog.modelCatalogMaxDisplayNameLength};
 const int modelCatalogMaxDescriptionLength = ${catalog.modelCatalogMaxDescriptionLength};
 const int modelCatalogMaxTextLength = ${catalog.modelCatalogMaxTextLength};
+const List<String> modelCatalogReasoningEffortNames = ${jsonEncode(catalog.modelCatalogReasoningEffortNames)};
 ''',
       },
     };

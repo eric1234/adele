@@ -350,6 +350,7 @@ final class _Account implements ModelProviderService, ModelCatalogService {
           modelId: 'fixture-model',
           displayName: 'Catalog $label',
           description: null,
+          supportedReasoningEfforts: null,
         ),
       ],
     );

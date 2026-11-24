@@ -47,6 +47,9 @@ void main() {
                     'display_name': _privateText,
                     'description': _privateText,
                     'capabilities': {'tools': true},
+                    'supportedReasoningEfforts': {
+                      'values': ['max'],
+                    },
                   },
               ],
               'has_more': true,
@@ -69,6 +72,10 @@ void main() {
             snapshot.models.map((model) => model.description),
             everyElement(isNull),
           );
+          expect(
+            snapshot.models.map((model) => model.supportedReasoningEfforts),
+            everyElement(isNull),
+          );
           expect(() => snapshot.models.clear(), throwsUnsupportedError);
           _expectReleased(client);
           expect(client.urls, [Uri.parse('https://api.openai.com/v1/models')]);
@@ -79,6 +86,71 @@ void main() {
           expect(client.request.followRedirects, isFalse);
           expect(client.request.closes, 1);
           expect(harness.host.requests, hasLength(1));
+        });
+      },
+    );
+
+    test(
+      'official API reports only documented exact model/effort sets',
+      () async {
+        final expected = <String, List<String>?>{
+          for (final id in ['gpt-6-astra', 'gpt-6.1-sol'])
+            id: ['low', 'medium', 'high', 'xhigh', 'max'],
+          for (final id in [
+            'gpt-6.1-terra',
+            'gpt-6-sol',
+            'gpt-6-luna',
+            'gpt-5.6',
+            'gpt-5.6-sol',
+            'gpt-5.6-terra',
+            'gpt-5.6-luna',
+          ])
+            id: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
+          for (final id in [
+            'gpt-5.5',
+            'gpt-5.5-2026-04-23',
+            'gpt-5.4',
+            'gpt-5.4-2026-03-05',
+            'gpt-5.4-mini',
+            'gpt-5.4-mini-2026-03-17',
+            'gpt-5.4-nano',
+            'gpt-5.4-nano-2026-03-17',
+          ])
+            id: ['none', 'low', 'medium', 'high', 'xhigh'],
+          for (final id in [
+            'gpt-5.5-pro',
+            'gpt-5.5-pro-2026-04-23',
+            'gpt-5.4-pro',
+            'gpt-5.4-pro-2026-03-05',
+          ])
+            id: ['medium', 'high', 'xhigh'],
+          for (final id in ['gpt-5', 'gpt-5-2025-08-07'])
+            id: ['minimal', 'low', 'medium', 'high'],
+          for (final id in ['gpt-5-pro', 'gpt-5-pro-2025-10-06']) id: ['high'],
+          'GPT-6-astra': null,
+          ' gpt-6-astra ': null,
+          'gpt-5.4-2099-01-01': null,
+          'gpt-5.6-sol-latest': null,
+          'ft:gpt-5.4:org:custom': null,
+          'opaque-server-id': null,
+        };
+        final harness = _Harness();
+        await harness.run(() async {
+          final result = harness.catalog.listModels();
+          harness.host.reply(0, {'secret': _key});
+          await _pump();
+          final client = harness.clients.single;
+          client.response.json(_list(expected.keys.map(_model).toList()));
+          final snapshot = await result;
+          expect(snapshot.models.map((entry) => entry.modelId), expected.keys);
+          for (final entry in snapshot.models) {
+            expect(
+              entry.supportedReasoningEfforts?.values,
+              expected[entry.modelId],
+              reason: entry.modelId,
+            );
+          }
+          _expectReleased(client);
         });
       },
     );
@@ -294,6 +366,22 @@ void main() {
 
     for (final (endpoint, expected) in <(String?, String)>[
       (null, 'https://api.openai.com/v1/models'),
+      (
+        'https://api.openai.com/v1/responses',
+        'https://api.openai.com/v1/models',
+      ),
+      (
+        'https://api.openai.com/v2/responses',
+        'https://api.openai.com/v2/models',
+      ),
+      (
+        'https://api.openai.com:8443/v1/responses',
+        'https://api.openai.com:8443/v1/models',
+      ),
+      (
+        'https://api.openai.com.example.test/v1/responses',
+        'https://api.openai.com.example.test/v1/models',
+      ),
       (_endpoint, _catalogEndpoint),
       ('https://example.test/responses', 'https://example.test/models'),
       (
@@ -331,8 +419,15 @@ void main() {
             await _pump();
             final client = harness.clients.single;
             expect(client.urls, [Uri.parse(expected)]);
-            client.response.json(_list([]));
-            await result;
+            client.response.json(_list([_model('gpt-6-astra')]));
+            final row = (await result).models.single;
+            expect(row.modelId, 'gpt-6-astra');
+            expect(
+              row.supportedReasoningEfforts?.values,
+              expected == 'https://api.openai.com/v1/models'
+                  ? ['low', 'medium', 'high', 'xhigh', 'max']
+                  : null,
+            );
             _expectReleased(client);
           });
         },
@@ -586,7 +681,10 @@ void main() {
           );
           harness.host.reply(3, {'secret': 'fresh-key-3'});
           await _pump();
-          harness.clients.last.response.json({'object': 'invalid'});
+          // A documented row does not rescue a malformed sibling.
+          harness.clients.last.response.json(
+            _list([_model('gpt-6-astra'), _model(null)]),
+          );
           await failed;
           expect(harness.host.requests, hasLength(4));
           expect(harness.clients, hasLength(3));

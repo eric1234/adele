@@ -266,14 +266,13 @@ observation; oversized lists are never truncated. HTTP 200 with an empty list is
 successful empty discovery.
 
 The [OpenAI models list reference](https://developers.openai.com/api/reference/resources/models/methods/list)
-supplies IDs and basic metadata, not friendly display names or descriptions. Only
-exact IDs are returned, in provider order; both optional metadata fields are null.
+supplies IDs and basic metadata, not friendly display names, descriptions or effort
+sets. Rows retain exact IDs in provider order; display name and description are null.
 Additional fields (including owner, timestamps and shutdown metadata) are ignored,
 not exposed as account information or authority. Reflected API keys or complete
 configured/catalog endpoints in IDs reject the result rather than rewriting IDs.
 Catalog inclusion **does not prove compatibility with ADELE's Responses-based
-text/tool execution**. There is no family, reasoning-effort, context, modality,
-pricing or compatibility inference from identifiers.
+text/tool execution**.
 
 Success, failure and backend shutdown fence callbacks, abort requests, force-close
 the operation's client and cancel its response subscription, with a one-second
@@ -290,6 +289,29 @@ and credential authority belong to the selected immutable revision, not whicheve
 record now has the same ID. Explicit refresh makes a new catalog available to fresh
 resolution; old held bindings fail rather than follow it. Catalog calls admitted
 before route retirement can settle on their original dispatcher and captured scope.
+
+### Documented Reasoning Efforts
+
+Only the public `https://api.openai.com/v1/responses` API-key route (default or
+explicit) annotates returned IDs with `supportedReasoningEfforts`. The set is
+documentation-backed, not reported by `GET /v1/models` or probed by inference.
+The public API model cards below enumerate the supported explicit values and
+identify the model, its documented aliases and any included default snapshot:
+
+| OpenAI model cards | Explicit `reasoning.effort` values |
+| --- | --- |
+| [GPT-6 Astra](https://developers.openai.com/api/docs/models/gpt-6-astra), [GPT-6.1 Sol](https://developers.openai.com/api/docs/models/gpt-6.1-sol) | `low`, `medium`, `high`, `xhigh`, `max` |
+| [GPT-6.1 Terra](https://developers.openai.com/api/docs/models/gpt-6.1-terra), [GPT-6 Sol](https://developers.openai.com/api/docs/models/gpt-6-sol), [GPT-6 Luna](https://developers.openai.com/api/docs/models/gpt-6-luna), [GPT-5.6 Sol (including `gpt-5.6`)](https://developers.openai.com/api/docs/models/gpt-5.6-sol), [GPT-5.6 Terra](https://developers.openai.com/api/docs/models/gpt-5.6-terra), [GPT-5.6 Luna](https://developers.openai.com/api/docs/models/gpt-5.6-luna) | `none`, `low`, `medium`, `high`, `xhigh`, `max` |
+| [GPT-5.5](https://developers.openai.com/api/docs/models/gpt-5.5), [GPT-5.4](https://developers.openai.com/api/docs/models/gpt-5.4), [GPT-5.4 mini](https://developers.openai.com/api/docs/models/gpt-5.4-mini), [GPT-5.4 nano](https://developers.openai.com/api/docs/models/gpt-5.4-nano) | `none`, `low`, `medium`, `high`, `xhigh` |
+| [GPT-5.5 Pro](https://developers.openai.com/api/docs/models/gpt-5.5-pro), [GPT-5.4 Pro](https://developers.openai.com/api/docs/models/gpt-5.4-pro) | `medium`, `high`, `xhigh` |
+| [GPT-5](https://developers.openai.com/api/docs/models/gpt-5) | `minimal`, `low`, `medium`, `high` |
+| [GPT-5 Pro](https://developers.openai.com/api/docs/models/gpt-5-pro) | `high` |
+
+The lookup is exact and deliberately incomplete. Unlisted spellings, including
+unlisted snapshots and fine-tunes, remain unknown (`null`), not known-empty.
+Custom endpoints always return unknown, even for an identical ID. No row is
+added if the selected account does not list it. These hints neither choose a
+default nor validate, rewrite or retry [inference requests](#reasoning-effort-requests).
 
 ### Safe Failures
 
@@ -440,13 +462,15 @@ entirely, not an empty object.
 
 The current public [Responses create reference](https://developers.openai.com/api/reference/resources/responses/methods/create)
 and [reasoning guide](https://developers.openai.com/api/docs/guides/reasoning#reasoning-effort)
-document these wire values and model-dependent support/defaults. ADELE does not
-infer effort compatibility from model IDs, prefixes, the summary set, or catalog
-membership. It forwards an explicit choice unchanged, including `none`, and lets
+document these wire values and model-dependent support/defaults. Inference does
+not consult the catalog, infer support from prefixes or use the summary set to
+validate effort. It forwards an explicit choice unchanged, including `none`, and lets
 the selected endpoint reject unsupported combinations. HTTP 400 retains the
 existing failed `invalidRequest` terminal; no downgrade, option removal, model
 substitution, or retry follows that rejection. Nonempty `providerOptions` remain
 unsupported, and the ChatGPT profile still rejects an explicit output-token cap.
+
+### Experimental ChatGPT: Requests And Catalog Evidence
 
 ChatGPT effort support is based on first-party interoperability evidence, not an
 assumption that the public API documents the subscription endpoint. At Codex
@@ -464,6 +488,49 @@ using ADELE's existing shared lowering rather than rejecting all explicit effort
 for ChatGPT. It does not establish every account/model/effort combination, a stable
 third-party contract, or live-provider acceptance. ADELE does not copy Codex's
 default selection, effort normalization, Responses Lite, or workflow policies.
+
+**ADELE advertises inference only for `dev.adele.openai.chatgpt-experimental`.**
+The [backend entrypoint](bin/openai_model_provider_backend.dart) registers no
+associated Model Catalog for this context. A preset can still name a model and
+leave effort unset or specify it manually. Absence of a catalog means unknown
+support, not an empty model list or a reason to query a different account.
+
+**What Codex observes.** At `openai/codex` revision `9c5ebee9dfdbb07591ec22679a3650f15d1eb49c`
+(2026-11-23), the [default ChatGPT base](https://github.com/openai/codex/blob/9c5ebee9dfdbb07591ec22679a3650f15d1eb49c/codex-rs/model-provider-info/src/lib.rs)
+and [models client](https://github.com/openai/codex/blob/9c5ebee9dfdbb07591ec22679a3650f15d1eb49c/codex-rs/codex-api/src/endpoint/models.rs)
+give `GET https://chatgpt.com/backend-api/codex/models?client_version=...`.
+The [bearer profile](https://github.com/openai/codex/blob/9c5ebee9dfdbb07591ec22679a3650f15d1eb49c/codex-rs/model-provider/src/bearer_auth_provider.rs)
+carries the access token, bound `ChatGPT-Account-ID` and conditional
+`X-OpenAI-Fedramp`. The response is `models[]`, not the API-key `data[].id` list.
+Each [model descriptor](https://github.com/openai/codex/blob/9c5ebee9dfdbb07591ec22679a3650f15d1eb49c/codex-rs/protocol/src/openai_models.rs)
+has an exact `slug`, visibility, `supported_reasoning_levels` (effort/description
+pairs) and a separate optional `default_reasoning_level`. The default is not the
+set of supported values. For example, the [bundled catalog](https://github.com/openai/codex/blob/9c5ebee9dfdbb07591ec22679a3650f15d1eb49c/codex-rs/models-manager/models.json)
+lists `low` as the default for `gpt-6-astra` and `ultra` among its choices;
+[Codex resolves `ultra` locally](https://github.com/openai/codex/blob/9c5ebee9dfdbb07591ec22679a3650f15d1eb49c/codex-rs/protocol/src/openai_models/reasoning_effort.rs).
+It is not an ADELE wire effort. Codex's [catalog manager](https://github.com/openai/codex/blob/9c5ebee9dfdbb07591ec22679a3650f15d1eb49c/codex-rs/models-manager/src/manager.rs)
+can use bundled fallback or a versioned, identity-scoped cache with ETag refresh.
+Neither the bundle nor a picker result proves current account entitlement or
+acceptance by ADELE's classic Responses route.
+
+**The documented third-party route is different.** OpenAI's ChatGPT plan preview
+for open-source, locally hosted apps requires [registration and consent](https://developers.openai.com/siwc/token-sharing-open-source/sign-in)
+with a host ID, an issued user/workspace-bound client ID and the granted
+`chatgpt.tokens.use.direct` scope. Its [models and inference guide](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference)
+uses the selected account's plan access token at `https://api.openai.com/v1/models`,
+shows `visibility: "list"`, `display_name` and `slug`, and refreshes choices on
+account switch. It specifies public `/v1/responses`, **not** ChatGPT `backend-api`.
+This neither documents per-model effort sets for that preview nor authorizes
+using ADELE's existing Codex-profile credentials there.
+
+ADELE's [credential owner](lib/src/openai_chatgpt_auth.dart) loads an instance's
+account-bound authorization and can rotate tokens under a credential-revision
+check. A custom Responses URL does not specify a catalog URL. Inference auth is
+not a grant to probe a sibling URL, follow a redirect, switch to the public
+route, or import Codex's cache. Discovery would need an authorized catalog route,
+bounded reads and timeouts, and a check before returning results that the live
+provider and account still match after logout, relogin or retirement. This source
+evidence is not a live ADELE catalog observation or validation of an effort.
 
 ## Reasoning Summary Requests
 
@@ -665,8 +732,9 @@ and explicit control against the prepared backend, with real inference/catalog
 publication, credential capture and route replacement.
 
 `test/openai_model_catalog_test.dart` covers finite HTTP decoding, exact IDs and
-bounds, safe failures, endpoint derivation, no fallback, fresh reads and cleanup
-using controlled HTTP/credential fixtures. The configured startup/AOT suites also
+bounds, documented public-route efforts versus unknowns, safe failures, endpoint
+derivation, no fallback, fresh reads and cleanup using controlled HTTP/credential
+fixtures. The configured startup/AOT suites also
 assert the complete inference/catalog exposure sets and explicit associations.
 The app's `test/core/openai_record_startup_integration_test.dart` invokes the real
 prepared OpenAI catalogs through an independently prepared public Capability consumer,

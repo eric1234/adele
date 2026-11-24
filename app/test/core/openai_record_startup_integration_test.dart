@@ -3108,7 +3108,12 @@ Map<String, Object?> _catalogSnapshot(List<String> ids) => {
   'ok': true,
   'models': [
     for (final id in ids)
-      {'modelId': id, 'displayName': null, 'description': null},
+      {
+        'modelId': id,
+        'displayName': null,
+        'description': null,
+        'supportedReasoningEfforts': null,
+      },
   ],
 };
 

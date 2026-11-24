@@ -4,6 +4,8 @@ library;
 import 'package:adele_capabilities/adele_capabilities.dart' as capabilities;
 import 'package:adele_contract/adele_contract.dart';
 
+import 'adele_model_provider.dart' as inference;
+
 part 'adele_model_catalog.g.dart';
 
 final capabilities.CapabilityKey modelCatalogCapability =
@@ -20,6 +22,35 @@ const int modelCatalogMaxDescriptionLength = 4096;
 /// Aggregate UTF-16 text bound, leaving room for JSON escaping and envelopes.
 const int modelCatalogMaxTextLength = 1024 * 1024;
 
+/// Generated contracts use library-local schema types. Efforts travel as the
+/// exact names of the inference enum, in its declaration order.
+final List<String> modelCatalogReasoningEffortNames = List.unmodifiable(
+  inference.ModelReasoningEffort.values.map((effort) => effort.name),
+);
+
+/// Known choices for an explicit effort request; an empty list means none.
+@AdeleValue('modelCatalog.reasoningEfforts')
+final class ModelCatalogReasoningEfforts {
+  ModelCatalogReasoningEfforts({required List<String> values})
+    : values = List<String>.unmodifiable(values) {
+    if (this.values.length > modelCatalogReasoningEffortNames.length) {
+      throw const FormatException('Too many model reasoning efforts.');
+    }
+    var previous = -1;
+    for (final value in this.values) {
+      final index = modelCatalogReasoningEffortNames.indexOf(value);
+      if (index <= previous) {
+        throw const FormatException(
+          'Expected distinct, ordered reasoning efforts.',
+        );
+      }
+      previous = index;
+    }
+  }
+
+  final List<String> values;
+}
+
 /// Provider-reported metadata, not proof of text/tool inference compatibility.
 @AdeleValue('modelCatalog.entry')
 final class ModelCatalogEntry {
@@ -27,6 +58,7 @@ final class ModelCatalogEntry {
     required this.modelId,
     required this.displayName,
     required this.description,
+    required this.supportedReasoningEfforts,
   }) {
     _validateText(modelId, modelCatalogMaxModelIdLength, 'Model ID');
     if (modelId.codeUnits.any((unit) => unit < 0x20 || unit == 0x7f)) {
@@ -54,6 +86,9 @@ final class ModelCatalogEntry {
   final String modelId;
   final String? displayName;
   final String? description;
+
+  /// Null means unknown, not known-empty. Never describes a provider default.
+  final ModelCatalogReasoningEfforts? supportedReasoningEfforts;
 }
 
 /// One finite observation; empty success is distinct from failed discovery.
@@ -78,6 +113,10 @@ final class ModelCatalogSnapshot {
           model.modelId.length +
           (model.displayName?.length ?? 0) +
           (model.description?.length ?? 0);
+      for (final effort
+          in model.supportedReasoningEfforts?.values ?? const <String>[]) {
+        textLength += effort.length;
+      }
       if (textLength > modelCatalogMaxTextLength) {
         throw const FormatException(
           'Model catalog exceeds the total text limit.',

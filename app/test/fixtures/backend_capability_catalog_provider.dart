@@ -140,6 +140,11 @@ final class _Catalog implements ModelCatalogService {
               modelId: ScriptedCommonModelProvider.model,
               displayName: 'Scripted $account v$revision',
               description: null,
+              supportedReasoningEfforts: account != 'work'
+                  ? null
+                  : ModelCatalogReasoningEfforts(
+                      values: revision == 0 ? [] : ['none', 'high', 'max'],
+                    ),
             ),
           ],
         );
