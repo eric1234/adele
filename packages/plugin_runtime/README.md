@@ -290,7 +290,7 @@ versioned envelope:
 ```
 
 Each record type requires `id`, `collection`, `collectionLabel`, `label`, and
-`fields`; `description`, `displayField`, and `credentialSlots` are optional. When present,
+`fields`; `description`, `displayField`, `formBehavior`, and `credentialSlots` are optional. When present,
 `displayField` is a local field ID referencing a declared required `string` field,
 not an enum. The public record constructor validates that reference during
 discovery; an invalid reference rejects the whole record schema. Omission preserves
@@ -304,6 +304,10 @@ Only integers accept inclusive optional `minimum`/`maximum` native integer bound
 Only enums require nonempty `options`, with required stable `value` and optional
 display `label` per option. No unknown fields, nulls, coercion, defaults, secret
 values, validators, or executable hooks are accepted at any schema level.
+
+`formBehavior` is an extension ID directly within the declaring plugin's
+namespace, not inline code. An ordinary optional enum may specify `unsetLabel`
+to label absence in its dropdown; this does not add an enum value.
 
 Any scalar record field may reference a contributed editor with
 `"editor": {"extensionId": "org.example.plugin.field-editor"}`. The object accepts
@@ -650,6 +654,12 @@ up to eight distinct `{observe, invokeAssociated}` pairs. Both sides must name
 an `id`, positive `majorVersion`, and `serviceId`, for distinct capabilities.
 Absence means no access. It is not a `backendServices` or `capabilities` grant;
 see [associated access from field editors](../../docs/architecture/contracts-and-capabilities.md#associated-access-from-field-editors).
+
+Form behaviors declare `kind: 'settingsFormBehavior'` under `frontend.extensions`,
+with `extensionId`, `library`, and `entrypoint` only. The descriptor admits no
+service or Capability opt-ins. Activation validates the operation entrypoint;
+the [form host](../../docs/architecture/profiles-and-configuration.md#record-form-behavior)
+resolves the registration against the exact declaration.
 
 Session accessories declare `role: 'sessionAccessory'`, an `extensionId`,
 `location: 'execution-configuration'`, integer `order`, canonical `package:` Dart

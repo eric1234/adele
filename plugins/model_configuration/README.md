@@ -4,9 +4,9 @@
 to Global Settings. The host discovers its version-1 [record schema](records.schema.json)
 independently of backend activation, so editing does not require a running
 backend. Its [prepared frontend](packages/frontend/README.md) supplies the model
-reference editor and a separate Session selector. The selector changes the
-Session's choice; the [AOT backend](packages/backend/README.md) resolves that
-choice when a new Run is prepared.
+reference editor, preset form behavior, and a separate Session selector. The
+selector changes the Session's choice; the [AOT backend](packages/backend/README.md)
+resolves that choice when a new Run is prepared.
 
 ## Choosing a Model Preset
 
@@ -15,8 +15,8 @@ choice when a new Run is prepared.
    configured providers. Search the loaded results, filter by provider, or
    click a column header to change the sort. The same model on Work and
    Personal is two choices. Select a row and choose **Use model**. This changes
-   the unsaved pair; canceling the browser leaves it alone. Use **Include** for **Description** or
-   **Reasoning Effort** only if you want to supply them. **Create** or **Save**
+   the unsaved pair; canceling the browser leaves it alone. Leave **Reasoning Effort**
+   at **Provider default** or choose an explicit effort. **Create** or **Save**
    stores the draft; neither selects it for a Session.
 2. In a Session that shows execution configuration, open **Model Preset** and
    choose the saved preset. Opening the choices reads the current catalog.
@@ -35,6 +35,16 @@ offline references. Confirming a manual pair does not verify model support or
 authentication. If the plugin frontend is unavailable, Settings does not
 substitute a native control; unrelated fields and an existing valid reference
 remain intact.
+
+The effort dropdown stays disabled until you select a model. A catalog row can
+report supported efforts, including an empty list (Provider default only).
+Manual references, saved presets reopened without a fresh observation, and
+catalog rows without effort information allow all declared efforts, marked
+unverified. Browse and confirm the same pair to obtain its current observation.
+If the current effort is not supported, the form warns but retains it; you can
+leave it unchanged, choose a supported effort, or choose Provider default. Only
+changing to a **different** pair known not to support that effort resets it to
+Provider default, with an explanation. Cancel discards the change.
 
 **Missing Model Preset** means a complete catalog did not contain the selected
 ID. **Unresolved Model Preset** means the catalog was incomplete or unavailable
@@ -60,7 +70,7 @@ for draft retention and recovery.
 | `model` | Required struct | `provider-id` and `model-id`, both required strings. The pair is edited and validated as one field. |
 | `reasoning-effort` | Optional enum | Requested `ModelReasoningEffort`: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. |
 
-Omit `reasoning-effort` for no preference; `none` is an explicit request.
+Provider default omits `reasoning-effort`; `none` is an explicit request.
 The pair is persisted under `[values.model]`, distinct from the preset's own
 identity. Old top-level `provider-id` and `model-id` fields are not an alternative
 representation: a record without `model` is invalid, not silently migrated.

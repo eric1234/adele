@@ -223,6 +223,36 @@ persists an accepted edit. See the [public UI contract](../../packages/ui/lib/se
 The `markdown` hint edits an ordinary string as a document using a native
 control. Settings has no model/provider-specific field hints or discovery path.
 
+### Record Form Behavior
+
+A record type can reference one `settingsFormBehavior` operation from the exact
+frontend installation that supplied its declaration. Like a field editor, this
+requires an owned live registration, not just matching IDs. Unlike an editor,
+the operation receives a snapshot of **all declared ordinary values in this
+draft**, not a widget or field handle. It receives no store, credential slots,
+Session, Environment, Capability routes or backend services. A field editor's
+grants do not extend to its sibling form behavior.
+
+Settings evaluates the operation when presenting the form and on user edits,
+including accepted field proposals. Notifications follow changes to the draft,
+not transitions of its dirty flag. A field proposal may also replace that
+field's bounded, transient string-list context. Only an accepted revision can
+publish context; replacing the value without context removes it. Reconfirming
+an equal value can update the observation without reporting a change of value.
+
+Each synchronous result replaces the form's **presentation**, not its values:
+field enablement, a subset of declared enum choices, and guidance. An excluded
+current value remains authored, not an available choice. On an actual change
+the result may *separately* propose clearing one optional enum in this draft.
+The host validates the entire result before applying any of it, without feeding
+the clear back into the hook. Unavailable, failed or retired behavior leaves
+the ordinary declared controls and a diagnostic; it never chooses a substitute
+or clears a draft value. A new form scope starts without the old presentation
+or observations. None of this metadata changes schema validation, reaches a
+record write, or participates in execution.
+
+### Record Metadata
+
 A type may declare one `displayField` referencing a required string field. Discovery
 validates that reference; omission preserves existing declarations. Presentation uses
 the declared value when usable and otherwise the stable record ID, never a host
@@ -278,8 +308,9 @@ means present, not nonblank. Leaving a required string or Markdown document empt
 submits an empty string. In a new record, a required Boolean or enum has no
 preselected choice, and a required integer starts blank.
 
-Optional fields start excluded in Add. Select **Include** to supply one; clear
-it to omit the field on Create or remove it on Save. An included empty string,
+Optional fields start excluded in Add. An ordinary optional enum may label
+absence as a dropdown choice. Otherwise select **Include** to supply a field;
+clear it to omit the field on Create or remove it on Save. An included empty string,
 `false` or `0` is a value, not absence. **Create** and **Save** stay disabled
 while any included field has an error, such as an unchosen Boolean or an integer
 outside its declared bounds. Edit restores the saved values and optional field
@@ -364,6 +395,16 @@ manual entry. A catalog choice must still match its captured live association
 at confirmation. Once accepted into the draft, the reference is authored data:
 provider retirement cannot invalidate a Save or silently change the reference
 or reasoning effort. Separate top-level identifiers do not satisfy `model`.
+
+The confirmed browser row can carry its validated effort observation into this
+draft. Model Configuration uses it to configure the ordinary effort dropdown:
+no model disables it, known support offers only reported explicit choices, and
+a known empty list offers only **Provider default** (omission, not `none`). A
+saved or manually authored reference without an observation allows deliberate
+unverified choices. Changing to a different pair clears an explicit effort
+only if the observation excludes it, with an explanation. Fresh evidence for
+the *same* pair warns without erasing the authored preference. This is an
+authoring aid, not a fresh provider query or a Run admission check.
 
 Model Configuration owns both the live definition reader and the Session's
 choice. Its catalog RPC is a boundary for its own frontend, not the provider

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -169,6 +170,37 @@ final class PreparedFrontend {
     ).executeLib(library, entrypoint);
   }
 
+  /// Synchronous data operations share only bytes. No UI plugin, host bridge,
+  /// permission, or async callback survives or participates in the evaluation.
+  T evaluateData<T>({
+    required String library,
+    required String entrypoint,
+    required List<$Value> arguments,
+    required T Function(Object?) decodeResult,
+  }) {
+    final runtime = _DataRuntime(ByteData.sublistView(_requireBytes()));
+    Never rejectAsync() =>
+        throw const FormatException('Expected a synchronous data operation.');
+    return runZoned(
+      () {
+        final Object? result;
+        try {
+          result = runtime.executeLib(library, entrypoint, arguments);
+        } on Object {
+          // VM exceptions can retain the runtime/arguments and print raw draft
+          // values. Never publish those or try to stringify eval-owned objects.
+          throw const FormatException('Prepared data operation failed.');
+        }
+        return decodeResult(result);
+      },
+      zoneSpecification: ZoneSpecification(
+        scheduleMicrotask: (_, _, _, _) => rejectAsync(),
+        createTimer: (_, _, _, _, _) => rejectAsync(),
+        createPeriodicTimer: (_, _, _, _, _) => rejectAsync(),
+      ),
+    );
+  }
+
   /// Host-internal execution of a descriptor-selected operation.
   /// Each call gets a fresh runtime; the role adapter must copy/validate its
   /// result before any eval-owned value can escape. Do not eagerly reify unknown
@@ -312,6 +344,76 @@ final class _ValidationRuntime extends Runtime {
     }
     return null;
   }
+}
+
+/// dart_eval installs native SDK functions even when no EvalPlugin is added.
+/// Register only core data functions here, not I/O, clocks, print, or Futures.
+final class _DataRuntime extends Runtime {
+  _DataRuntime(super.bytes);
+
+  // The pin fetches every VM instruction (including callbacks) by indexing pr.
+  // Infer its element type: the public runtime exposes this list, not EvcOp.
+  late final _instructions = _BudgetedProgram(super.pr);
+  @override
+  get pr => _instructions;
+
+  @override
+  void registerBridgeFunc(
+    String library,
+    String name,
+    EvalCallableFunc fn, {
+    bool isBridge = false,
+  }) {
+    const dataTypes = {
+      'String',
+      'StringBuffer',
+      'List',
+      'Map',
+      'MapEntry',
+      'Set',
+      'Iterable',
+      'int',
+      'double',
+      'num',
+      'bool',
+      'RegExp',
+      'Object',
+      'Exception',
+      'ArgumentError',
+      'StateError',
+      'FormatException',
+      'RangeError',
+    };
+    if (library == 'dart:core' &&
+        (name == 'identical' || dataTypes.contains(name.split('.').first))) {
+      super.registerBridgeFunc(library, name, fn, isBridge: isBridge);
+    }
+  }
+}
+
+final class _BudgetedProgram<E> extends ListBase<E> {
+  _BudgetedProgram(this._program);
+  final List<E> _program;
+  int _remaining = 100000;
+
+  @override
+  E operator [](int index) {
+    if (--_remaining < 0) {
+      throw const FormatException(
+        'Prepared data operation exceeded its instruction limit.',
+      );
+    }
+    return _program[index];
+  }
+
+  @override
+  int get length => _program.length;
+  @override
+  set length(int length) => _program.length = length;
+  @override
+  void operator []=(int index, E value) => _program[index] = value;
+  @override
+  void add(E value) => _program.add(value);
 }
 
 class _PreparedPresentation extends StatefulWidget {

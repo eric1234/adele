@@ -19,6 +19,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../../../../../app/tool/model_configuration_frontend_compiler.dart';
+import '../../../../../tools/stock_frontend_descriptors.dart';
 
 const _library = 'package:adele_ui/capability_bridge.dart';
 const _work = {'provider-id': 'work', 'model-id': 'same'};
@@ -71,6 +72,88 @@ void main() {
     await tester.pumpAndSettle();
   }
 
+  // Invoke the published operation in the compiled frontend, with no browser,
+  // service, or field editor bridge installed in its runtime.
+  Map<String, Object?> evaluate({
+    Map<String, Object?> values = const {},
+    List<String>? efforts,
+    String? changedField,
+  }) {
+    final descriptor =
+        stockFrontendExtensionDescriptors['dev.adele.plugin.model-configuration']!
+            .singleWhere((item) => item['kind'] == 'settingsFormBehavior');
+    final result = Runtime(ByteData.sublistView(artifact)).executeLib(
+      descriptor['library']! as String,
+      descriptor['entrypoint']! as String,
+      [
+        wrapStructuredBridgeData(values),
+        wrapStructuredBridgeData({'model': ?efforts}),
+        wrapStructuredBridgeData(changedField),
+      ],
+    );
+    return copyStructuredBridgeData(result) as Map<String, Object?>;
+  }
+
+  Map<String, Object?> field(Map<String, Object?> result) =>
+      (result['fields'] as Map)['reasoning-effort'] as Map<String, Object?>;
+
+  test(
+    'preset behavior distinguishes default, explicit none and unknown support',
+    () {
+      final beforeModel = evaluate();
+      expect(field(beforeModel)['enabled'], isFalse);
+      expect(field(beforeModel)['choices'], isEmpty);
+      expect(beforeModel.containsKey('clear'), isFalse);
+
+      for (final choices in [
+        <String>[],
+        ['none', 'medium'],
+        ['low', 'high'],
+      ]) {
+        for (final requested in [null, 'none', 'high']) {
+          final values = {'model': _work, 'reasoning-effort': ?requested};
+          final unsupported = requested != null && !choices.contains(requested);
+          for (final change in [null, 'model', 'name', 'reasoning-effort']) {
+            final result = evaluate(
+              values: values,
+              efforts: choices,
+              changedField: change,
+            );
+            final presentation = field(result);
+            expect(presentation['enabled'], isTrue);
+            expect(presentation['choices'], choices);
+            if (unsupported && change == 'model') {
+              expect(result['clear'], 'reasoning-effort');
+              expect(
+                presentation['guidance'],
+                contains('Reset to Provider default'),
+              );
+            } else {
+              expect(result.containsKey('clear'), isFalse);
+              if (unsupported) {
+                expect(presentation['guidance'], contains('retained'));
+              }
+            }
+            if (choices.isEmpty) {
+              expect(
+                presentation['guidance'],
+                contains('no configurable explicit'),
+              );
+            }
+          }
+          // A manual choice, or another draft restored from disk, has no
+          // observation, even if the exact same pair just had known support.
+          final unknown = evaluate(values: values, changedField: 'model');
+          expect(unknown.containsKey('clear'), isFalse);
+          expect(field(unknown)['enabled'], isTrue);
+          expect(field(unknown).containsKey('choices'), isFalse);
+          expect(field(unknown)['guidance'], contains('unverified'));
+        }
+      }
+      expect(access.calls, isEmpty);
+    },
+  );
+
   testWidgets(
     'multi-account rows, local search, sorting and chips preserve the exact choice',
     (tester) async {
@@ -121,9 +204,55 @@ void main() {
       expect(access.calls, hasLength(4));
       await _tap(tester, 'Use model');
       expect(draft.proposals, [_home]);
+      expect(draft.contexts, [<String>[]]);
+      expect(access.calls, hasLength(4));
       expect(find.text('Model ID: same'), findsOneWidget);
       expect(find.text('Luna'), findsOneWidget);
       expect(access.handles, isEmpty);
+    },
+  );
+
+  testWidgets(
+    'same-model confirmation passes fresh evidence; manual confirmation drops it',
+    (tester) async {
+      draft.value = _work;
+      await mount(tester);
+      await _tap(tester, 'Browse models...');
+      await _tap(tester, 'Use model');
+      expect(draft.contexts.single, ['none', 'minimal', 'high']);
+      expect(access.calls, hasLength(4));
+
+      access.workEfforts = ['low'];
+      await _tap(tester, 'Browse models...');
+      await _tap(tester, 'Use model');
+      expect(draft.proposals, [_work, _work]);
+      expect(draft.contexts.last, ['low']);
+      final result = evaluate(
+        values: {'model': draft.value, 'reasoning-effort': 'high'},
+        efforts: draft.contexts.last,
+      );
+      expect(field(result)['guidance'], contains('high'));
+      expect(result.containsKey('clear'), isFalse);
+      expect(access.calls, hasLength(8));
+
+      await _tap(tester, 'Browse models...');
+      await _tap(tester, 'Artemis');
+      await _tap(tester, 'Use model');
+      expect(
+        draft.contexts.last,
+        isNull,
+        reason: 'Catalog row with unknown support',
+      );
+      await _tap(tester, 'Browse models...');
+      await _tap(tester, 'Enter manually');
+      await _tap(tester, 'Enter provider ID instead');
+      await _tap(tester, 'Use reference');
+      expect(draft.contexts.last, isNull);
+      expect(
+        access.calls,
+        hasLength(16),
+        reason: 'Only Browse starts requests',
+      );
     },
   );
 
@@ -241,6 +370,7 @@ void main() {
       expect(draft.proposals, [
         {'provider-id': 'offline', 'model-id': '  exact:manual  '},
       ]);
+      expect(draft.contexts, [null]);
       expect(access.calls.where((id) => id == 'offline'), isEmpty);
     },
   );
@@ -339,10 +469,12 @@ class _Draft implements SettingsFieldDraft {
   @override
   String? get error => null;
   final proposals = <Object?>[];
+  final contexts = <List<String>?>[];
   @override
-  String? propose(int revision, Object? value) {
+  String? propose(int revision, Object? value, {List<String>? context}) {
     expect(revision, this.revision++);
     proposals.add(value);
+    contexts.add(context);
     this.value = value;
     return null;
   }
@@ -364,6 +496,7 @@ class _Observations extends CapabilityAccessDeclarations
   final stale = <String>{};
   final gates = <String, Completer<void>>{};
   final calls = <String>[];
+  List<String> workEfforts = ['none', 'minimal', 'high'];
   Map<String, Object?>? workTail;
   int capture = 0;
   void retire(String id) =>
@@ -463,7 +596,7 @@ class _Channel implements AdeleRequestChannel {
             'displayName': 'Luna',
             'description': null,
             'supportedReasoningEfforts': {
-              'values': id == 'work' ? ['none', 'minimal', 'high'] : <String>[],
+              'values': id == 'work' ? access.workEfforts : <String>[],
             },
           },
         if (id == 'work')

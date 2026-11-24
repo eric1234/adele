@@ -1,6 +1,7 @@
 # Model Configuration frontend
 
-Model Configuration packages two independent presentations in `frontend.evc`.
+Model Configuration packages two independent presentations and a synchronous
+preset form behavior in `frontend.evc`.
 See [choosing a Model Preset](../../README.md#choosing-a-model-preset) for the
 user workflow.
 
@@ -28,8 +29,17 @@ catalog data is persisted, and no timer polls for availability.
 The interpreted editor validates each provider's [catalog](../../../../packages/model_provider/README.md#model-catalog)
 before offering any of its rows. Malformed reasoning-effort evidence rejects
 that provider's observation, not a healthy sibling's. Valid evidence (unknown,
-known empty, or an explicit ordered list) neither filters models nor changes
-the preset's reasoning effort: **Use model** still proposes only the ID pair.
+known empty, or an explicit ordered list) never filters models. **Use model**
+proposes the exact ID pair, with a bounded copy of the row's known efforts as
+transient field context. Unknown and manual selections propose no context. A
+refresh or a rejected confirmation cannot publish an observation to the form.
+
+[`configurePresetForm`](lib/preset_form.dart) is a separate operation, not a
+browser callback. Settings supplies the unsaved values and the accepted field
+context, with no catalog or backend access. The operation guides the ordinary
+effort dropdown; an incompatible effort is only proposed for clearing on an
+actual change of the model pair. On same-pair confirmation it instead explains
+the mismatch. Choices and observations never become part of a preset or Run.
 
 ## Session selector
 

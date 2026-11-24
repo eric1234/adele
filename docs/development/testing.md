@@ -577,15 +577,15 @@ Session selection. Run `dart tools/adele.dart test --target model_configuration_
 for the compiled selector: stable choices, incomplete observations, failed
 reads, unacknowledged changes, revision checks, and retired presentations.
 For the structured field editor, run `test/prepared_settings_field_editor_test.dart`
-from `app/` to exercise the compiled proposal boundary, draft lifetime and exact
-owner. The Model Configuration frontend target exercises the stock presentation;
+from `app/` to exercise the compiled proposal and form behavior boundaries,
+draft lifetime and exact owner. The Model Configuration frontend target exercises the stock presentation;
 the `adele_settings_host` target checks native subtable persistence and conflicts.
 Opening Settings or saving a preset must not authenticate or query a provider.
 For Model Browser integration, the `prepared Model Browser` case in
 `app/test/core/openai_record_startup_integration_test.dart` installs the compiled
 stock editor and real configured OpenAI backend against Work/Personal loopback
 endpoints. Use this fixture to check exact account headers, stale row rejection,
-draft versus disk, and the difference between an approval continuation and a
+row-specific effort choices and unsaved clears, draft versus disk, and the difference between an approval continuation and a
 fresh Run. The [local browser suite](../../plugins/model_configuration/packages/frontend/test/model_browser_eval_test.dart)
 checks the interpreted table against controlled successes, failures and delays.
 From `app/`, run

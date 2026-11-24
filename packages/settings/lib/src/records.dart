@@ -214,10 +214,7 @@ final class ContributedRecordFieldEditor extends RecordFieldEditor {
   final ExtensionId extensionId;
 
   /// Checks the declaration namespace, not installation or registration liveness.
-  bool isOwnedBy(PluginId owner) {
-    final id = extensionId.value;
-    return id.substring(0, id.lastIndexOf('.')) == owner.value;
-  }
+  bool isOwnedBy(PluginId owner) => isOwnedRecordExtension(extensionId, owner);
 
   @override
   bool operator ==(Object other) =>
@@ -226,6 +223,11 @@ final class ContributedRecordFieldEditor extends RecordFieldEditor {
   @override
   int get hashCode => extensionId.hashCode;
 }
+
+/// Field editor and form behavior references belong directly to their declaring
+/// plugin, not to a parent or nested plugin with a similar namespace.
+bool isOwnedRecordExtension(ExtensionId id, PluginId owner) =>
+    id.value.substring(0, id.value.lastIndexOf('.')) == owner.value;
 
 /// Ordered record field metadata with no default, coercion, or executable hooks.
 final class RecordFieldDefinition<T extends Object> {
@@ -236,8 +238,15 @@ final class RecordFieldDefinition<T extends Object> {
     required this.type,
     required this.required,
     this.editor,
+    this.unsetLabel,
   }) {
     _validatePresentation(label, 'label');
+    if (unsetLabel case final text?) {
+      if (required || type is! EnumSettingType || editor != null) {
+        throw ArgumentError('unsetLabel requires an ordinary optional enum.');
+      }
+      _validatePresentation(text, 'unsetLabel');
+    }
     if (editor is _BuiltinRecordFieldEditor && type is! StringSettingType) {
       throw ArgumentError.value(
         editor,
@@ -263,6 +272,9 @@ final class RecordFieldDefinition<T extends Object> {
   final RecordFieldType<T> type;
   final bool required;
   final RecordFieldEditor? editor;
+
+  /// Presentation of absence on an optional enum; never an option or a default.
+  final String? unsetLabel;
 
   /// Validation feedback for a present value, independent of field inclusion.
   String? valueError(Object? value) => type._checkedValue(value).$2;
@@ -313,11 +325,19 @@ final class RecordTypeDefinition {
     this.description,
     required Iterable<RecordFieldDefinition<Object>> fields,
     this.displayField,
+    this.formBehavior,
     Iterable<RecordCredentialSlotDefinition> credentialSlots = const [],
   }) : fields = List.unmodifiable(fields),
        credentialSlots = List.unmodifiable(credentialSlots) {
     if (!id.value.startsWith('${owner.value}.')) {
       throw ArgumentError.value(id, 'id', 'Must be within owner $owner.');
+    }
+    if (formBehavior case final id? when !isOwnedRecordExtension(id, owner)) {
+      throw ArgumentError.value(
+        id,
+        'formBehavior',
+        'Must be directly within owner $owner.',
+      );
     }
     _validatePresentation(collectionLabel, 'collectionLabel');
     _validatePresentation(label, 'label');
@@ -378,6 +398,10 @@ final class RecordTypeDefinition {
   ///
   /// This does not change record identity or constrain the field's string values.
   final RecordFieldId? displayField;
+
+  /// Optional presentation behavior of the exact owning frontend. This does not
+  /// change record validation or require the frontend to be active.
+  final ExtensionId? formBehavior;
 
   /// Validates known fields and returns an immutable projection in field order.
   ///

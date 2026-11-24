@@ -2668,7 +2668,16 @@ final class _ProviderFixture {
     final installation = await Directory(
       '$installationRoot/openai',
     ).create(recursive: true);
-    await artifact.copy('${installation.path}/backend.aot');
+    if (modelBrowser) {
+      // _publishBrowserInstallations compiled the stock entrypoint with a
+      // transport override. No endpoint other than these listeners is reachable.
+      startupArguments[_openai] = [
+        origin,
+        'http://${personalServer!.address.address}:${personalServer!.port}',
+      ];
+    } else {
+      await artifact.copy('${installation.path}/backend.aot');
+    }
     await publishStockPluginInstallation(
       repositoryRoot: repository,
       installationDirectory: installation,
@@ -2703,7 +2712,9 @@ final class _ProviderFixture {
         ConfigurationRecordId('$id-openai'),
         {
           'display-name': id == 'work' ? 'Work OpenAI' : 'Personal OpenAI',
-          'endpoint': '$endpointOrigin/$id/responses',
+          'endpoint': modelBrowser && id == 'work'
+              ? 'https://api.openai.com/v1/responses'
+              : '$endpointOrigin/$id/responses',
         },
       );
       records[id] = (await associations.attach(

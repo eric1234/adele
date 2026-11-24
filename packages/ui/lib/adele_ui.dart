@@ -16,6 +16,7 @@ export 'model_native_activity_presentation.dart';
 export 'session_accessory.dart';
 export 'session_content_inspection.dart';
 export 'settings_field_editor.dart';
+export 'settings_form_behavior.dart';
 export 'tool_activity_compact_presentation.dart';
 export 'tool_activity_inspection.dart';
 

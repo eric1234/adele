@@ -158,6 +158,37 @@ void main() {
     }
   }
 
+  test(
+    'form behavior and optional enum unset label need no live frontend',
+    () async {
+      await install(
+        'plugin',
+        components: {},
+        schema: _schema([
+          {
+            ..._type(),
+            'formBehavior': 'org.example.plugin.form',
+            'fields': [
+              {
+                ..._field(type: 'enum'),
+                'options': [
+                  {'value': 'option'},
+                ],
+                'unsetLabel': 'Use default',
+              },
+            ],
+          },
+        ]),
+      );
+      final catalog = await PreparedPluginCatalog.discover(root.path);
+      expect(catalog.issues, isEmpty);
+      expect(catalog.installations.single.frontend, isNull);
+      final type = catalog.records.definitions.single;
+      expect(type.formBehavior, ExtensionId('org.example.plugin.form'));
+      expect(type.fields.single.unsetLabel, 'Use default');
+    },
+  );
+
   test('empty and missing roots and empty record schemas are valid', () async {
     for (final path in ['', root.path, '${root.path}/missing']) {
       expect(
@@ -2115,6 +2146,16 @@ void main() {
     'description null': {..._type(), 'description': null},
     'description object': {..._type(), 'description': <String, Object?>{}},
     'editor on record type': {..._type(), 'editor': 'markdown'},
+    for (final invalid in <Object?>[
+      null,
+      true,
+      {},
+      '',
+      'org.example.other',
+      'org.example.plugin.nested.form',
+      'org.example.plugin.${'x' * 256}',
+    ])
+      'formBehavior $invalid': {..._type(), 'formBehavior': invalid},
     for (final displayField in <Object?>[
       null,
       false,
@@ -2199,6 +2240,8 @@ void main() {
       'options',
       'properties',
       'providerField',
+      'formBehavior',
+      'unsetLabel',
     ])
       'unsupported $key': {..._field(), key: true},
     for (final id in [null, 1, 'UPPER', 'a.b', 'a_b', 'a-', 'x' * 65])
@@ -2221,6 +2264,22 @@ void main() {
     for (final text in [null, 1, '', ' ', 'a\nb', 'a\u0000b'])
       'label $text': {..._field(), 'label': text},
     'null description': {..._field(), 'description': null},
+    for (final invalid in <Object?>[null, false, '', 'No\nvalue', 'x' * 161])
+      'unsetLabel $invalid': {
+        ..._field(type: 'enum'),
+        'options': [
+          {'value': 'x'},
+        ],
+        'unsetLabel': invalid,
+      },
+    'unsetLabel on required enum': {
+      ..._field(type: 'enum'),
+      'required': true,
+      'options': [
+        {'value': 'x'},
+      ],
+      'unsetLabel': 'Use default',
+    },
     for (final editor in <Object?>[
       null,
       false,

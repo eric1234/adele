@@ -493,12 +493,54 @@ void main() {
       const name = 'Offline review';
       final values = {..._values, 'name': name};
       expect(_key('record-presence-$collection-model'), findsNothing);
+      final effort = _key('record-input-$collection-reasoning-effort');
+      await _until(
+        tester,
+        () => effort.evaluate().isNotEmpty,
+        'prepared preset form',
+      );
+      DropdownButton<String> menu() =>
+          tester.widget<DropdownButton<String>>(effort);
+      expect(
+        _key('record-presence-$collection-reasoning-effort'),
+        findsNothing,
+      );
+      expect(menu().value, isNull);
+      expect(menu().onChanged, isNull, reason: 'No target model yet.');
+      expect(menu().items!.map((item) => item.value), [null]);
       await _enter(tester, _key('record-input-$collection-name'), name);
       await _authorReference(
         tester,
         _offlineModel['provider-id']!,
         _offlineModel['model-id']!,
       );
+      expect(menu().onChanged, isNotNull);
+      expect(menu().items!.map((item) => item.value), [
+        null,
+        'none',
+        'minimal',
+        'low',
+        'medium',
+        'high',
+        'xhigh',
+        'max',
+      ]);
+      expect(
+        find.textContaining('Explicit choices are unverified'),
+        findsOneWidget,
+      );
+      // Explicit None and absence must both be selectable through this one
+      // generic control, even with no provider and a manually entered model.
+      await _press(tester, effort);
+      await tester.pump(const Duration(milliseconds: 300));
+      await _press(tester, find.text('None').last);
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(menu().value, 'none');
+      await _press(tester, effort);
+      await tester.pump(const Duration(milliseconds: 300));
+      await _press(tester, find.text('Provider default').last);
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(menu().value, isNull);
       await _press(tester, _key('record-create-$collection'));
       await _until(
         tester,

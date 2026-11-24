@@ -2132,6 +2132,7 @@ exit "$CLIPPY_EXIT"
       expect(
         stockFrontendExtensionDescriptors.keys,
         containsAll([
+          'dev.adele.plugin.model-configuration',
           'dev.adele.source-editor',
           'dev.adele.plugin.terminal',
           'dev.adele.plugin.local-directory-project',
@@ -2201,6 +2202,8 @@ exit "$CLIPPY_EXIT"
               ('sessionAccessory', 'extensionId') => 'session-accessories',
               ('settingsFieldEditor', 'extensionId') =>
                 'settings-field-editors',
+              ('settingsFormBehavior', 'extensionId') =>
+                'settings-form-behaviors',
               ('sessionContentInspection', 'extensionId') =>
                 'session-content-inspections',
               ('toolActivity', 'inspectionExtensionId') =>
@@ -2302,6 +2305,8 @@ exit "$CLIPPY_EXIT"
                   RegExp(
                     (descriptor['kind'] == 'projectSelector'
                             ? r'\bFuture<String\?>\s+'
+                            : descriptor['kind'] == 'settingsFormBehavior'
+                            ? r'\bMap<String,\s*Object>\s+'
                             : field == 'initialize' ||
                                   descriptor['kind'] == 'command' ||
                                   descriptor['kind'] == 'sessionCommand'
@@ -2365,6 +2370,10 @@ exit "$CLIPPY_EXIT"
           (
             'settings-field-editors',
             'dev.adele.plugin.model-configuration.model-reference',
+          ),
+          (
+            'settings-form-behaviors',
+            'dev.adele.plugin.model-configuration.preset-form',
           ),
           ('main-content', 'dev.adele.diff-viewer.main-content'),
           ('main-content', 'dev.adele.source-editor.main-content'),

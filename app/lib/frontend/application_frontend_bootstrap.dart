@@ -24,6 +24,7 @@ import 'prepared_frontend.dart';
 import 'prepared_main_content_host.dart';
 import 'prepared_session_command.dart';
 import 'prepared_session_services.dart';
+import 'prepared_settings_form_behavior.dart';
 import 'prepared_task_browser_host.dart';
 import 'presentation_dialog_bridge.dart';
 import 'session_accessory_bridge.dart';
@@ -113,12 +114,35 @@ final class ApplicationFrontendBootstrap {
     RecordFieldDefinition<Object> field,
   ) {
     final editor = field.editor;
-    if (_state == ApplicationFrontendState.closing ||
-        editor is! ContributedRecordFieldEditor ||
+    if (editor is! ContributedRecordFieldEditor ||
         !type.fields.any((entry) => identical(entry, field))) {
       return null;
     }
-    final point = settingsFieldEditorContributions;
+    return _resolveRecordExtension(
+      type,
+      settingsFieldEditorContributions,
+      editor.extensionId,
+    );
+  }
+
+  ExtensionBinding<SettingsFormBehaviorContribution>?
+  resolveSettingsFormBehavior(RecordTypeDefinition type) =>
+      _resolveRecordExtension(
+        type,
+        settingsFormBehaviorContributions,
+        type.formBehavior,
+      );
+
+  ExtensionBinding<T>? _resolveRecordExtension<T extends Object>(
+    RecordTypeDefinition type,
+    ExtensionPoint<T> point,
+    ExtensionId? extensionId,
+  ) {
+    if (extensionId == null ||
+        _state == ApplicationFrontendState.closing ||
+        _state == ApplicationFrontendState.closed) {
+      return null;
+    }
     for (final generation in _generations) {
       final definitions = generation.installation.recordsSchema?.definitions;
       if (generation.state != InstalledFrontendState.active ||
@@ -128,7 +152,7 @@ final class ApplicationFrontendBootstrap {
       }
       for (final (pointId, id, registration) in generation._registrations) {
         if (pointId == point.value &&
-            id == editor.extensionId &&
+            id == extensionId &&
             !registration.isClosed) {
           return _extensions
               .discover(point)
@@ -344,6 +368,10 @@ final class InstalledFrontendActivation {
       for (final descriptor in component.extensions) {
         switch (descriptor) {
           case PreparedProjectSelectorExtension(
+                :final library,
+                :final entrypoint,
+              ) ||
+              PreparedSettingsFormBehaviorExtension(
                 :final library,
                 :final entrypoint,
               ) ||
@@ -732,6 +760,23 @@ final class InstalledFrontendActivation {
       for (final descriptor in component.extensions) {
         if (_closed) return;
         switch (descriptor) {
+          case PreparedSettingsFormBehaviorExtension():
+            _register(
+              point: settingsFormBehaviorContributions,
+              id: descriptor.extensionId,
+              contribution: (isActive) => SettingsFormBehaviorContribution(
+                evaluate: (values, contexts, changedField) {
+                  _requireActive(isActive);
+                  return evaluateSettingsFormBehavior(
+                    generation,
+                    descriptor,
+                    values,
+                    contexts,
+                    changedField,
+                  );
+                },
+              ),
+            );
           case PreparedConsoleActionCommandExtension():
             final (consoleRegistration, binding) =
                 consoles[consoleTargets[descriptor]]!;

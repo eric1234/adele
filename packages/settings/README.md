@@ -124,6 +124,11 @@ require an installed or active frontend. An editor never changes value validatio
 The only built-in hint, `RecordFieldEditor.markdown`, requests Markdown editing
 for `StringSettingType` (not a string-valued enum).
 
+`RecordTypeDefinition.formBehavior` can name an owned frontend operation for
+[form presentation](../../docs/architecture/profiles-and-configuration.md#record-form-behavior).
+On an optional ordinary enum, `unsetLabel` names the control's omission choice,
+not a stored default. These references and labels do not change `validate`.
+
 Optional `displayField: RecordFieldId?` identifies a declared required
 `StringSettingType` field for record display names. Construction rejects missing,
 optional, or other scalar-type references, including enum fields. Omission is null
