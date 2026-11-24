@@ -10,7 +10,7 @@ import '../../frontend/application_frontend_bootstrap.dart';
 import '../../frontend/prepared_frontend.dart';
 
 /// One mount in one visible form. The form changes the key when its draft,
-/// navigation scope, field presence or editing authority changes.
+/// navigation scope or editing authority changes, or the field is cleared.
 final class RecordFieldEditorHost extends StatefulWidget {
   const RecordFieldEditorHost({
     required super.key,
@@ -100,7 +100,12 @@ final class _RecordFieldEditorHostState extends State<RecordFieldEditorHost>
   int get revision => _revision;
 
   @override
-  String? get error => _current ? widget.field.valueError(value) : null;
+  String? get error {
+    if (!_current) return null;
+    final current = value;
+    if (!widget.field.required && current == null) return null;
+    return widget.field.valueError(current);
+  }
 
   @override
   String? propose(

@@ -263,15 +263,12 @@ void main() {
 
         // Replace retires the old record handle even though TOML bytes do not
         // change. The ordinary editor must use the acknowledged fresh handle.
+        final callsBeforeEdit = storage.calls.length;
         await _editProviderRecord(tester, workId);
         final name = find.byKey(
           ValueKey('record-input-providers-$workId-display-name'),
         );
         await tester.enterText(name, 'Work renamed after replacement');
-        await _settingsAction(
-          tester,
-          'record-presence-providers-$workId-endpoint',
-        );
         await tester.enterText(
           find.byKey(ValueKey('record-input-providers-$workId-endpoint')),
           'https://example.invalid/work/v1',
@@ -290,6 +287,7 @@ void main() {
         expect(await work.readAsString(), isNot(contains(replacement)));
         expect(await personal.readAsBytes(), personalBytes);
         expect(storage.values[personalReference], personalEnvelope);
+        expect(storage.calls, hasLength(callsBeforeEdit));
         expect(runtime.registry.providersFor(modelProviderCapability), isEmpty);
         expect(runtime.plugins.backends, isEmpty);
         expect(runtime.plugins.host, isNull);
@@ -579,14 +577,10 @@ void main() {
         );
 
         await _editProviderRecord(tester, workId);
-        await _settingsAction(
-          tester,
-          'record-presence-providers-$workId-endpoint',
+        final workEndpoint = find.byKey(
+          ValueKey('record-input-providers-$workId-endpoint'),
         );
-        await tester.enterText(
-          find.byKey(ValueKey('record-input-providers-$workId-endpoint')),
-          'https://example.invalid/v1',
-        );
+        await tester.enterText(workEndpoint, 'https://example.invalid/v1');
         await _settingsAction(tester, 'record-save-providers-$workId');
         await _settingsUntil(tester, () => workName.evaluate().isEmpty);
         expect(
@@ -595,18 +589,10 @@ void main() {
         );
         await _editProviderRecord(tester, workId);
         expect(
-          tester
-              .widget<TextField>(
-                find.byKey(ValueKey('record-input-providers-$workId-endpoint')),
-              )
-              .controller!
-              .text,
+          tester.widget<TextField>(workEndpoint).controller!.text,
           'https://example.invalid/v1',
         );
-        await _settingsAction(
-          tester,
-          'record-presence-providers-$workId-endpoint',
-        );
+        await tester.enterText(workEndpoint, '');
         await _settingsAction(tester, 'record-save-providers-$workId');
         await _settingsUntil(tester, () => workName.evaluate().isEmpty);
         expect(await work.readAsString(), isNot(contains('endpoint')));
@@ -625,14 +611,8 @@ void main() {
         );
         await _editProviderRecord(tester, workId);
         expect(
-          tester
-              .widget<CheckboxListTile>(
-                find.byKey(
-                  ValueKey('record-presence-providers-$workId-endpoint'),
-                ),
-              )
-              .value,
-          isFalse,
+          tester.widget<TextField>(workEndpoint).controller!.text,
+          isEmpty,
         );
         await _settingsAction(tester, 'record-cancel-providers-$workId');
 
@@ -2464,12 +2444,17 @@ Future<String> _createProviderRecord(
   );
   expect(tester.widget<TextField>(input).enabled, isTrue);
   expect(
-    tester
-        .widget<CheckboxListTile>(
-          find.byKey(const ValueKey('record-presence-providers-endpoint')),
-        )
-        .value,
-    isFalse,
+    find.byKey(const ValueKey('record-presence-providers-endpoint')),
+    findsNothing,
+  );
+  final endpoint = tester.widget<TextField>(
+    find.byKey(const ValueKey('record-input-providers-endpoint')),
+  );
+  expect(endpoint.enabled, isTrue);
+  expect(endpoint.controller!.text, isEmpty);
+  expect(
+    find.textContaining('https://api.openai.com/v1/responses'),
+    findsOneWidget,
   );
   await tester.ensureVisible(input);
   await tester.enterText(input, name);

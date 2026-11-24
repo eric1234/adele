@@ -630,7 +630,7 @@ executable host, as tested by `test/core/application_plugin_bootstrap_test.dart`
 
 `app/test/record_settings_dialog_test.dart` covers generic collection navigation,
 details, display-title fallback, shared create/edit multi-type forms, direct required
-inputs, optional field inclusion, scalar validation, retained drafts/focus (including
+inputs, direct optional editing and removal, scalar validation, retained drafts/focus (including
 collapsed editors), narrow layout, reentrant admission, exact-record delete confirmation,
 conflict/uncertain-outcome recovery, and confirmed persistence without a plugin
 executable, including the actual published Agent schema with a missing backend artifact.

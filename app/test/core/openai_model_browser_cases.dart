@@ -471,7 +471,15 @@ void _registerModelBrowserCases(Future<_ProviderFixture> Function() prepare) {
           await browse(ui);
           await select(ui, 'Work OpenAI', _highOnly);
           await use(ui);
+          const description = 'Review a proposed change';
+          expect(ui.key('record-presence-$_review-description'), findsNothing);
+          await ui._enter('record-input-$_review-description', description);
+          // Leave the text input before opening a dialog that restores focus.
+          await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+          await tester.pumpAndSettle();
+          expect(draft(), model('work', _highOnly));
           expectEffort(null, ['high']);
+          expectTraffic();
           await browse(ui);
           await select(ui, 'Personal OpenAI', _sharedModel);
           await use(ui);
@@ -484,7 +492,10 @@ void _registerModelBrowserCases(Future<_ProviderFixture> Function() prepare) {
           expect(await saved(), values(work, 'none'));
           expect(await toml.readAsBytes(), savedWork);
           await save(ui);
-          expect(await saved(), values(personal, null));
+          expect(await saved(), {
+            ...values(personal, null),
+            'description': description,
+          });
           expect(
             await toml.readAsString(),
             isNot(contains('reasoning-effort')),

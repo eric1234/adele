@@ -273,7 +273,10 @@ boolean, integer or string values (strings up to 64 Ki UTF-16 code units).
 There are no nested containers or implicit defaults. Null **as a result** means
 accepted; a non-null string explains rejection. Both the draft value and its
 revision stay unchanged on rejection. An accepted map is copied and frozen.
-Neither editing nor acceptance saves the record. Unmounting the view or retiring
+An unset optional scalar also reads as null, without a validation error. Its
+editor can propose a value immediately. The host removes optional values; a
+null proposal is not a removal. Neither editing nor acceptance saves the record.
+Unmounting the view or retiring
 its registration revokes this access, including callbacks retained by the widget.
 No record lookup, sibling field, credential, or backend service is exposed by
 the draft. A mounted editor can separately opt into
@@ -299,7 +302,7 @@ An accepted proposal without context drops the previous list.
 operation. Its interpreted ABI takes `(values, contexts, changedField)` and
 returns `fields` keyed by declared field ID with optional `enabled`, `choices`
 and `guidance`. `changedField` is null on opening and on equal-value proposals.
-Absent optional values are omitted; included but unrepresentable input is
+Absent optional values are omitted; entered but unrepresentable input is
 null. The optional top-level `clear` is a distinct request to unset one
 optional enum after a value change. Neither a dropdown restriction nor a
 warning changes the draft. See [ownership and lifecycle](../../docs/architecture/profiles-and-configuration.md#record-form-behavior).

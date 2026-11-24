@@ -109,6 +109,21 @@ void main() {
                     {'value': value},
                 ],
               },
+              {
+                'id': 'offset',
+                'label': 'Offset',
+                'type': 'integer',
+                'required': false,
+                'minimum': 1,
+                'maximum': 8,
+                'editor': {'extensionId': _editor},
+              },
+              {
+                'id': 'width',
+                'label': 'Width',
+                'type': 'integer',
+                'required': false,
+              },
             ],
           },
           {
@@ -297,6 +312,157 @@ void main() {
       });
       expect(file(id).readAsStringSync(), contains('recordType = "$_type"'));
       expect(file(id).readAsStringSync(), isNot(contains(_editor)));
+      await _dismiss(tester);
+    }),
+    skip: !Platform.isLinux,
+  );
+
+  testWidgets(
+    'optional compiled editor supplies an absent value; only the host clears it',
+    (tester) => tester.runAsync(() async {
+      const id = 'office';
+      const baseline = {'caption': 'Office', 'start': 2, 'end': 4};
+      await seed(id, baseline);
+      await mount(tester);
+      await _edit(tester, id, 'Office');
+      final offset = _input('offset', id);
+      final clear = _key('record-clear-$_collection-$id-offset');
+      final save = _key('record-save-$_collection-$id');
+      void expectUnset() {
+        expect(_within(offset, 'Draft: unset'), findsOneWidget);
+        expect(_within(offset, 'Validation: valid'), findsOneWidget);
+        expect(_within(offset, 'Build edit: rejected'), findsOneWidget);
+        expect(_enabled(tester, save), isTrue);
+      }
+
+      expect(_key('record-presence-$_collection-$id-offset'), findsNothing);
+      expectUnset();
+      final supply = _captureProposal(tester, offset);
+      await _tap(tester, _within(offset, 'Use 99'));
+      expect(_within(offset, 'Result: Must be at most 8.'), findsOneWidget);
+      expectUnset();
+      expect(supply(), 'accepted'); // Rejection did not consume the revision.
+      await tester.pump();
+      expect(find.text('Offset: 7 / offset / satin'), findsOneWidget);
+      expect(await saved(), {id: baseline});
+      await _tap(tester, save);
+      await _ready(tester, 'records-reload-$_collection');
+      expect(await saved(), {
+        id: {...baseline, 'offset': 7},
+      });
+
+      await _tap(tester, _key('record-edit-$_collection-$id'));
+      expect(_within(offset, 'Draft: 7'), findsOneWidget);
+      await _tap(tester, _within(offset, 'Propose null'));
+      expect(
+        _within(offset, 'Result: Expected a native Dart int.'),
+        findsOneWidget,
+      );
+      expect(_within(offset, 'Draft: 7'), findsOneWidget);
+      // Re-publish context on this form so the host clear must also remove it.
+      expect(
+        _captureProposal(tester, offset, label: 'Observe matte')(),
+        'accepted',
+      );
+      await tester.pump();
+      expect(find.text('Offset: 7 / initial / matte'), findsOneWidget);
+      final stale = _captureProposal(tester, offset);
+      await tester.ensureVisible(clear);
+      await tester.tap(clear);
+      _expectRejected(stale); // No rebuild or disposal has happened yet.
+      await tester.pump();
+      expectUnset();
+      expect(find.text('Offset: absent / offset / unknown'), findsOneWidget);
+      _expectRejected(stale);
+      expect(await saved(), {
+        id: {...baseline, 'offset': 7},
+      });
+      // A fresh editor can still supply a value; the retained one cannot.
+      await _tap(tester, _within(offset, 'Use 2'));
+      expect(_within(offset, 'Draft: 2'), findsOneWidget);
+      _expectRejected(stale);
+      await _tap(tester, clear);
+      expectUnset();
+      await _tap(tester, save);
+      await _ready(tester, 'records-reload-$_collection');
+      expect(await saved(), {id: baseline});
+      expect(file(id).readAsStringSync(), isNot(contains('offset =')));
+      await _dismiss(tester);
+    }),
+    skip: !Platform.isLinux,
+  );
+
+  testWidgets(
+    'compiled behavior distinguishes absence, zero and invalid optional input on every edit',
+    (tester) => tester.runAsync(() async {
+      const id = 'office';
+      const baseline = {
+        'caption': 'Office',
+        'start': 2,
+        'end': 4,
+        'width': 3,
+        'finish': 'satin',
+      };
+      await seed(id, baseline);
+      await mount(tester);
+      await _edit(tester, id, 'Office');
+      final width = _input('width', id);
+      final caption = _input('caption', id);
+      final save = _key('record-save-$_collection-$id');
+      expect(find.text('Width: 3 / initial'), findsOneWidget);
+      await _enter(
+        tester,
+        caption,
+        'Renamed',
+      ); // Keep the draft dirty throughout.
+      expect(find.text('Width: 3 / caption'), findsOneWidget);
+
+      final choose = _finish(tester, id).onChanged!;
+      await _enter(tester, width, '0');
+      expect(find.text('Width: 0 / width'), findsOneWidget);
+      expect(_choices(tester, id), unorderedEquals([null, 'gloss']));
+      choose('matte'); // The prior callback cannot bypass the new restriction.
+      await tester.pump();
+      expect(_finish(tester, id).value, 'satin');
+      expect(_enabled(tester, save), isTrue);
+      await _enter(tester, width, '');
+      expect(find.text('Width: absent / width'), findsOneWidget);
+      expect(_choices(tester, id), unorderedEquals([null, 'matte', 'satin']));
+      expect(_enabled(tester, save), isTrue);
+      await _enter(tester, width, 'broken');
+      expect(find.text('Width: invalid / width'), findsOneWidget);
+      expect(_enabled(tester, save), isFalse);
+      await _enter(tester, width, '3'); // Return to the original field value.
+      expect(find.text('Width: 3 / width'), findsOneWidget);
+      expect(_enabled(tester, save), isTrue);
+
+      final offset = _input('offset', id);
+      final beforePause = _captureProposal(tester, offset);
+      await _enter(tester, caption, 'paused');
+      expect(tester.widget<TextField>(width).enabled, isFalse);
+      expect(_finish(tester, id).onChanged, isNull);
+      expect(_within(offset, 'Editing disabled'), findsOneWidget);
+      _expectRejected(beforePause);
+      await _enter(tester, caption, 'bad field');
+      expect(find.text(_unavailable), findsOneWidget);
+      expect(find.textContaining('Width: 3 /'), findsNothing);
+      expect(tester.widget<TextField>(width).enabled, isTrue);
+      expect(tester.widget<TextField>(width).controller!.text, '3');
+      expect(_within(offset, 'Draft: unset'), findsOneWidget);
+      expect(_finish(tester, id).value, 'satin');
+      expect(
+        _choices(tester, id),
+        unorderedEquals([null, 'matte', 'satin', 'gloss']),
+      );
+      _finish(tester, id).onChanged!('gloss');
+      await tester.pump();
+      expect(_finish(tester, id).value, 'gloss');
+      expect(await saved(), {id: baseline});
+      await _tap(tester, save);
+      await _ready(tester, 'records-reload-$_collection');
+      expect(await saved(), {
+        id: {...baseline, 'caption': 'bad field', 'finish': 'gloss'},
+      });
       await _dismiss(tester);
     }),
     skip: !Platform.isLinux,
@@ -493,13 +659,20 @@ void main() {
       expect(_within(left, 'Draft: 4'), findsOneWidget);
       expect(_choices(tester), unorderedEquals([null, 'satin']));
       final cancelled = _captureProposal(tester, left);
+      final absent = _captureProposal(tester, _input('offset', 'early'));
       tester
           .widget<ButtonStyleButton>(_key('record-cancel-$_collection-early'))
           .onPressed!();
       _expectRejected(cancelled);
+      _expectRejected(absent);
       await tester.pump();
       await _tap(tester, _key('record-edit-$_collection-early'));
       expect(_within(left, 'Draft: 1'), findsOneWidget);
+      _expectRejected(absent);
+      expect(
+        _within(_input('offset', 'early'), 'Draft: unset'),
+        findsOneWidget,
+      );
       expect(
         _choices(tester, 'early'),
         unorderedEquals([null, 'matte', 'satin']),
@@ -745,14 +918,18 @@ void main() {
       await tester.pump();
       expect(_choices(tester, 'office'), unorderedEquals([null, 'matte']));
       final hidden = _captureProposal(tester, start);
+      final offset = _input('offset', 'office');
+      final hiddenOptional = _captureProposal(tester, offset);
       final select = tester
           .widget<DropdownButtonFormField<String>>(_key('settings-section'))
           .onChanged!;
       select('');
       select(_collection);
       _expectRejected(hidden); // No intervening frame is necessary.
+      _expectRejected(hiddenOptional);
       await tester.pumpAndSettle();
       expect(_within(start, 'Draft: 4'), findsOneWidget);
+      expect(_within(offset, 'Draft: unset'), findsOneWidget);
       expect(
         _choices(tester, 'office'),
         unorderedEquals([null, 'matte', 'satin']),
@@ -788,14 +965,20 @@ void main() {
         unorderedEquals([null, 'matte', 'satin', 'gloss']),
       );
       final retired = _captureProposal(tester, start);
+      final retiredOptional = _captureProposal(tester, offset);
       await frontends.generations.single.close();
       _expectRejected(retired);
+      _expectRejected(retiredOptional);
       await tester.pumpAndSettle();
       expect(
         _within(start, 'Field editor unavailable: $_editor'),
         findsOneWidget,
       );
       expect(_within(start, 'Use 2'), findsNothing);
+      expect(
+        _within(offset, 'Field editor unavailable: $_editor'),
+        findsOneWidget,
+      );
       expect(file('office').readAsBytesSync(), original);
       await _enter(tester, _input('caption', 'office'), 'After retirement');
       await _tap(tester, _key('record-save-$_collection-office'));
@@ -945,17 +1128,34 @@ String takeReceipt() {
 Widget editor() => StepEditor();
 Widget layoutEditor() => LayoutEditor();
 
+String describe(Map<String, Object?> values, String id) {
+  if (!values.containsKey(id)) return 'absent';
+  final value = values[id];
+  return value == null ? 'invalid' : value.toString();
+}
+
 Map<String, Object> finishes(Map<String, Object?> values, Map<String, List<String>> contexts, String? changedField) {
   final caption = values['caption'] as String? ?? '';
   final observed = contexts['start'];
-  final options = observed ?? <String>['matte', 'satin'];
+  final options = observed ?? (values['width'] == 0 ? <String>['gloss'] : <String>['matte', 'satin']);
   final which = changedField ?? 'initial';
   final field = <String, Object>{
     'enabled': caption != 'paused',
     'choices': options,
     'guidance': 'Window: ' + caption + ' / ' + which + ' / ' + (observed == null ? 'unknown' : observed.join(',')),
   };
-  final fields = <String, Object>{'finish': field};
+  final offsetContext = contexts['offset'];
+  final fields = <String, Object>{
+    'finish': field,
+    'width': <String, Object>{
+      'enabled': caption != 'paused',
+      'guidance': 'Width: ' + describe(values, 'width') + ' / ' + which,
+    },
+    'offset': <String, Object>{
+      'enabled': caption != 'paused',
+      'guidance': 'Offset: ' + describe(values, 'offset') + ' / ' + which + ' / ' + (offsetContext == null ? 'unknown' : offsetContext.join(',')),
+    },
+  };
   final result = <String, Object>{'fields': fields};
   if (caption == 'bad field') fields['foreign'] = <String, Object>{'enabled': false};
   if (caption == 'bad choices') field['choices'] = <String>['matte', 'undeclared'];
@@ -1045,6 +1245,7 @@ class StepEditorState extends State<StepEditor> {
           receipt = rejected == null ? 'accepted' : 'rejected: ' + rejected;
         }, child: Text('Delayed 7')),
       ]),
+      TextButton(onPressed: () => propose(revision, null), child: Text('Propose null')),
       Row(children: <Widget>[
         TextButton(onPressed: () {
           final observed = <String>['matte'];

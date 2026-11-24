@@ -58,9 +58,9 @@ The entrypoint reports only the validated record ID and fixed rejection code
 supplied endpoint, ordinary values or raw exception.
 
 In **Global Settings > Providers**, choose **Add**. If a type choice appears,
-select **OpenAI API**. Enter a nonblank **Name** directly. Leave **Include API
-endpoint (optional)** unchecked for the default Responses endpoint; select it
-only to enter a custom Responses URL. An included empty URL is not the default.
+select **OpenAI API**. Enter a nonblank **Name**. Leave **API endpoint** blank
+for the default Responses endpoint, or enter a custom Responses URL. To return
+to the default, clear the custom URL and save the record.
 Choose **Create**, expand the saved record and select **Check credential status**
 for its **API key** slot.
 Use **Set credential** and then **Store credential** to attach the key. Check
