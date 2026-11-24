@@ -2195,6 +2195,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
       );
       expect(preset.label, 'Model Preset');
       expect(preset.displayField?.value, 'name');
+      expect(preset.formBehavior?.value, '$_modelConfigurationId.preset-form');
       expect(preset.credentialSlots, isEmpty);
       final model = preset.fields.singleWhere((field) => field.editor != null);
       expect(model.id.value, 'model');
@@ -2224,6 +2225,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         everyElement(isA<StringSettingType>()),
       );
       final effort = preset.fields.last.type as EnumSettingType;
+      expect(preset.fields.last.unsetLabel, 'Provider default');
       expect(effort.options.map((option) => (option.value, option.label)), [
         ('none', 'None'),
         ('minimal', 'Minimal'),
@@ -2666,6 +2668,8 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         'app/tool/agent_configuration_frontend_compiler.dart',
         'plugins/model_configuration/packages/frontend/lib/model_configuration_frontend.dart',
         'plugins/model_configuration/packages/frontend/lib/model_reference_editor.dart',
+        'plugins/model_configuration/packages/frontend/lib/model_browser.dart',
+        'plugins/model_configuration/packages/frontend/lib/preset_form.dart',
         'app/$_modelConfigurationFrontendHarness',
         'app/tool/model_configuration_frontend_compiler.dart',
         _sessionEvaluatorEntrypoint,
@@ -3245,7 +3249,12 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           presetFrontend.artifactUri,
           installations.uri.resolve('model-configuration/frontend.evc'),
         );
-        expect(presetFrontend.extensions, isEmpty);
+        expect(presetFrontend.extensions.single.toJson(), {
+          'kind': 'settingsFormBehavior',
+          'extensionId': '$_modelConfigurationId.preset-form',
+          'library': 'package:model_configuration_frontend/preset_form.dart',
+          'entrypoint': 'configurePresetForm',
+        });
         final presetSelector = presetFrontend.presentations
             .whereType<PreparedSessionAccessoryPresentation>()
             .single;

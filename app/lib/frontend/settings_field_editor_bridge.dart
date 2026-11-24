@@ -47,6 +47,23 @@ class SettingsFieldEditorDeclarations implements EvalPlugin {
           BridgeParameter('value', value, false),
         ],
       ),
+      (
+        'proposeSettingsFieldValueWithContext',
+        message,
+        const [
+          BridgeParameter('revision', revision, false),
+          BridgeParameter('value', value, false),
+          BridgeParameter(
+            'context',
+            BridgeTypeAnnotation(
+              BridgeTypeRef(CoreTypes.list, [
+                BridgeTypeAnnotation(BridgeTypeRef(CoreTypes.string)),
+              ]),
+            ),
+            false,
+          ),
+        ],
+      ),
     ]) {
       registry.defineBridgeTopLevelFunction(
         BridgeFunctionDeclaration(
@@ -165,21 +182,53 @@ final class SettingsFieldEditorBridge extends SettingsFieldEditorDeclarations
         final draft = _liveDraft;
         return _message(draft == null ? _unavailable : draft.error);
       })
-      ..registerBridgeFunc(_library, 'proposeSettingsFieldValue', (_, _, args) {
-        final draft = _liveDraft;
-        if (draft == null || !draft.enabled) return $String(_unavailable);
-        if (args case [$int($value: final revision), final proposed]) {
-          if (revision != draft.revision) {
-            return $String('Field draft has changed.');
-          }
-          try {
-            return _message(draft.propose(revision, _proposal(proposed)));
-          } on Object {
+      ..registerBridgeFunc(
+        _library,
+        'proposeSettingsFieldValue',
+        (_, _, args) => _propose(args, withContext: false),
+      )
+      ..registerBridgeFunc(
+        _library,
+        'proposeSettingsFieldValueWithContext',
+        (_, _, args) => _propose(args, withContext: true),
+      );
+  }
+
+  $Value _propose(List<$Value?> args, {required bool withContext}) {
+    final draft = _liveDraft;
+    if (draft == null || !draft.enabled) return $String(_unavailable);
+    if (args.length != (withContext ? 3 : 2) || args[0] is! $int) {
+      return $String(_invalid);
+    }
+    final revision = (args[0]! as $int).$value;
+    if (revision != draft.revision) return $String('Field draft has changed.');
+    try {
+      List<String>? context;
+      if (withContext) {
+        final box = args[2];
+        if (box is! $List ||
+            box.$value.length > SettingsFieldDraft.maxContextItems) {
+          return $String(_invalid);
+        }
+        context = [];
+        for (final element in box.$value) {
+          if (element is! $String ||
+              element.$value.length > SettingsFieldDraft.maxContextItemLength) {
             return $String(_invalid);
           }
+          context.add(element.$value);
         }
-        return $String(_invalid);
-      });
+      }
+      return _message(
+        draft.propose(
+          revision,
+          _proposal(args[1]),
+          context: context == null ? null : List.unmodifiable(context),
+        ),
+      );
+    } on Object {
+      return $String(_invalid);
+    }
   }
 
   @override

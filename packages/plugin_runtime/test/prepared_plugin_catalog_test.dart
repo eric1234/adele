@@ -1565,6 +1565,66 @@ void main() {
     'library': 'package:example_frontend/editor.dart',
     'entrypoint': 'buildEditor',
   };
+  const behavior = {
+    'kind': 'settingsFormBehavior',
+    'extensionId': 'org.example.plugin.form',
+    'library': 'package:example_frontend/form.dart',
+    'entrypoint': 'evaluate',
+  };
+  Future<PreparedPluginCatalog> withBehaviors(List<Object?> extensions) async {
+    await install(
+      'form',
+      _manifest(
+        components: {
+          'frontend': {..._frontend(), 'extensions': extensions},
+        },
+      ),
+    );
+    return PreparedPluginCatalog.discover(root.path);
+  }
+
+  test(
+    'form behavior round trips without a backend or active record declaration',
+    () async {
+      final catalog = await withBehaviors([behavior]);
+      expect(catalog.issues, isEmpty);
+      final descriptor =
+          catalog.installations.single.frontend!.extensions.single
+              as PreparedSettingsFormBehaviorExtension;
+      expect(descriptor.toJson(), behavior);
+    },
+  );
+  for (final (name, entries) in <(String, List<Object?>)>[
+    ('duplicate', [behavior, behavior]),
+    for (final key in behavior.keys)
+      (
+        'missing $key',
+        [
+          {...behavior}..remove(key),
+        ],
+      ),
+    for (final (key, value) in <(String, Object?)>[
+      ('extensionId', 'org.example.other'),
+      ('extensionId', 'org.example.plugin.extra.form'),
+      ('library', 'package:example/../escape.dart'),
+      ('entrypoint', 'Factory.method'),
+      ('capabilities', []),
+      ('backendServices', []),
+      ('associatedAccess', []),
+    ])
+      (
+        '$key $value',
+        [
+          {...behavior, key: value},
+        ],
+      ),
+  ]) {
+    test('form behavior rejects $name', () async {
+      final catalog = await withBehaviors(entries);
+      expect(catalog.installations.single.frontend, isNull);
+      expect(catalog.issues.single.component, PreparedPluginComponent.frontend);
+    });
+  }
   const observe = {
     'id': 'example.source',
     'majorVersion': 1,

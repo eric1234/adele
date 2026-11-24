@@ -10,6 +10,7 @@ import 'package:adele_desktop/ui/settings/global_settings_dialog.dart';
 import 'package:adele_platform_storage/adele_platform_storage.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_settings/adele_settings.dart';
+import 'package:adele_ui/adele_ui.dart' show settingsFormBehaviorContributions;
 import 'package:dart_eval/dart_eval.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_eval/flutter_eval.dart';
@@ -23,6 +24,9 @@ const _plugin = 'dev.example.windows';
 const _library = 'package:window_controls/editor.dart';
 const _editor = '$_plugin.step';
 const _layoutEditor = '$_plugin.layout';
+const _behavior = '$_plugin.finishes';
+const _unavailable =
+    'Form customization unavailable. Showing declared controls.';
 const _missing = '$_plugin.uninstalled';
 const _collection = 'windows';
 final _type = RecordTypeId('$_plugin.window');
@@ -69,6 +73,7 @@ void main() {
             'collectionLabel': 'Windows',
             'label': 'Window',
             'displayField': 'caption',
+            'formBehavior': _behavior,
             'fields': [
               {
                 'id': 'caption',
@@ -93,6 +98,17 @@ void main() {
                 'required': false,
                 'editor': {'extensionId': _missing},
               },
+              {
+                'id': 'finish',
+                'label': 'Finish',
+                'type': 'enum',
+                'required': false,
+                'unsetLabel': 'No finish',
+                'options': [
+                  for (final value in ['matte', 'satin', 'gloss'])
+                    {'value': value},
+                ],
+              },
             ],
           },
           {
@@ -101,6 +117,7 @@ void main() {
             'collectionLabel': 'Windows',
             'label': 'Zoned window',
             'displayField': 'caption',
+            'formBehavior': '$_plugin.not-installed',
             'fields': [
               {
                 'id': 'caption',
@@ -138,6 +155,14 @@ void main() {
         'components': {
           'frontend': {
             'artifact': 'frontend.evc',
+            'extensions': [
+              {
+                'kind': 'settingsFormBehavior',
+                'extensionId': _behavior,
+                'library': _library,
+                'entrypoint': 'finishes',
+              },
+            ],
             'presentations': [
               {
                 'role': 'settingsFieldEditor',
@@ -234,6 +259,8 @@ void main() {
       final start = _input('start');
       final end = _input('end');
       final create = _key('record-create-$_collection');
+      expect(_within(start, 'Build edit: rejected'), findsOneWidget);
+      expect(_choices(tester), unorderedEquals([null, 'matte', 'satin']));
       await _enter(tester, _input('caption'), 'Morning');
       expect(_within(start, 'Draft: unset'), findsOneWidget);
       expect(
@@ -276,6 +303,138 @@ void main() {
   );
 
   testWidgets(
+    'compiled behavior observes initial values, every edit, reversion and copied same-value context',
+    (tester) => tester.runAsync(() async {
+      const id = 'office';
+      const baseline = {
+        'caption': 'Office',
+        'start': 2,
+        'end': 4,
+        'finish': 'gloss',
+      };
+      await seed(id, baseline);
+      await mount(tester);
+      await _edit(tester, id, 'Office');
+      void guidance(String caption, String changed, String observed) => expect(
+        find.text('Window: $caption / $changed / $observed'),
+        findsOneWidget,
+      );
+      final caption = _input('caption', id);
+      final start = _input('start', id);
+      guidance('Office', 'initial', 'unknown');
+      for (final next in ['First edit', 'Already dirty', 'paused', 'Office']) {
+        await _enter(tester, caption, next);
+        guidance(next, 'caption', 'unknown');
+        expect(_finish(tester, id).onChanged != null, next != 'paused');
+      }
+      final choose = _finish(tester, id).onChanged!;
+      final observe = _captureProposal(tester, start, label: 'Observe matte');
+      final bad = _captureProposal(tester, start, label: 'Invalid observation');
+      _expectRejected(bad);
+      expect(observe(), 'accepted'); // Rejection did not consume the revision.
+      // Now filtered out; even the pre-frame callback cannot set it.
+      choose('satin');
+      _expectRejected(observe);
+      await tester.pump();
+      guidance('Office', 'initial', 'matte'); // Value unchanged, fresh context.
+      expect(_within(start, 'Draft: 2'), findsOneWidget);
+      expect(_choices(tester, id), isNot(contains('satin')));
+      expect(_finish(tester, id).value, 'gloss');
+      await _enter(tester, caption, 'Later');
+      // Plugin mutated its list after submit.
+      guidance('Later', 'caption', 'matte');
+      _expectRejected(
+        _captureProposal(tester, start, label: 'Invalid observation'),
+      );
+      await tester.pump();
+      guidance('Later', 'caption', 'matte');
+      expect(_within(start, 'Draft: 2'), findsOneWidget);
+      // A same-value proposal with no context removes a previous observation.
+      await _tap(tester, _within(start, 'Use 2'));
+      guidance('Later', 'initial', 'unknown');
+      expect(_choices(tester, id), contains('satin'));
+      expect(await saved(), {id: baseline});
+      await _tap(tester, _key('record-save-$_collection-$id'));
+      await _ready(tester, 'records-reload-$_collection');
+      // Neither filtering nor editing other fields silently unsets an unsupported value.
+      expect(await saved(), {
+        id: {...baseline, 'caption': 'Later'},
+      });
+      expect(file(id).readAsStringSync(), isNot(contains('matte')));
+      await _dismiss(tester);
+    }),
+    skip: !Platform.isLinux,
+  );
+
+  testWidgets(
+    'malformed overrides and illegal clear requests fall back atomically; explicit clear is draft-only',
+    (tester) => tester.runAsync(() async {
+      const id = 'office';
+      const baseline = {
+        'caption': 'clear on open',
+        'start': 2,
+        'end': 4,
+        'finish': 'satin',
+      };
+      await seed(id, baseline);
+      await mount(tester);
+      await _edit(tester, id, 'clear on open');
+      final caption = _input('caption', id);
+      final save = _key('record-save-$_collection-$id');
+      final finish = _input('finish', id);
+      expect(_key('record-presence-$_collection-$id-finish'), findsNothing);
+      // Even a valid optional target cannot be cleared by opening a form.
+      expect(find.text(_unavailable), findsOneWidget);
+      expect(_finish(tester, id).value, 'satin');
+      await _enter(tester, caption, 'New caption');
+      expect(_choices(tester, id), unorderedEquals([null, 'matte', 'satin']));
+      for (final invalid in [
+        'bad field',
+        'bad choices',
+        'choices on text',
+        'duplicate choices',
+        'bad shape',
+        'bad clear',
+        'non-enum clear',
+        'foreign clear',
+      ]) {
+        await _enter(tester, caption, invalid);
+        expect(find.text(_unavailable), findsOneWidget, reason: invalid);
+        expect(find.textContaining('Window: $invalid'), findsNothing);
+        expect(
+          _choices(tester, id),
+          unorderedEquals([null, 'matte', 'satin', 'gloss']),
+        );
+        expect(_finish(tester, id).value, 'satin');
+        expect(_enabled(tester, save), isTrue);
+      }
+      await _enter(tester, caption, 'clear');
+      expect(find.text(_unavailable), findsNothing);
+      expect(_finish(tester, id).value, isNull);
+      expect(_choices(tester, id), unorderedEquals([null, 'matte', 'satin']));
+      await _tap(tester, finish);
+      await tester.pumpAndSettle();
+      await _tap(tester, find.text('satin').last);
+      await tester.pumpAndSettle();
+      expect(_finish(tester, id).value, 'satin');
+      await _tap(tester, finish);
+      await tester.pumpAndSettle();
+      await _tap(tester, find.text('No finish').last);
+      await tester.pumpAndSettle();
+      expect(_finish(tester, id).value, isNull);
+      expect(await saved(), {id: baseline});
+      await _tap(tester, save);
+      await _ready(tester, 'records-reload-$_collection');
+      expect(await saved(), {
+        id: {'caption': 'clear', 'start': 2, 'end': 4},
+      });
+      expect(file(id).readAsStringSync(), isNot(contains('finish =')));
+      await _dismiss(tester);
+    }),
+    skip: !Platform.isLinux,
+  );
+
+  testWidgets(
     'concurrent records isolate compiled controls, Save and Cancel despite a missing editor',
     (tester) => tester.runAsync(() async {
       const early = {
@@ -291,6 +450,7 @@ void main() {
       await mount(tester);
       await _edit(tester, 'early', 'Early');
       await _edit(tester, 'late', 'Late');
+      await _tap(tester, _key('records-add-$_collection'));
       final left = _input('start', 'early');
       final right = _input('end', 'late');
       final missing = _input('note', 'early');
@@ -309,6 +469,20 @@ void main() {
       expect(_within(_input('end', 'early'), 'Draft: 3'), findsOneWidget);
       expect(_within(right, 'Draft: 2'), findsOneWidget);
       await _enter(tester, _input('caption', 'late'), 'New title');
+      expect(
+        _captureProposal(tester, left, label: 'Observe matte')(),
+        'accepted',
+      );
+      await tester.pump();
+      expect(_choices(tester, 'early'), unorderedEquals([null, 'matte']));
+      expect(
+        _choices(tester, 'late'),
+        unorderedEquals([null, 'matte', 'satin']),
+      );
+      expect(_captureProposal(tester, _input('start'))(), 'accepted');
+      await tester.pump();
+      expect(_choices(tester), unorderedEquals([null, 'satin']));
+      expect(_choices(tester, 'early'), unorderedEquals([null, 'matte']));
       // Positive control for the very callback retained in the fencing tests.
       expect(_captureProposal(tester, right)(), 'accepted');
       expect(await saved(), {'early': early, 'late': lateWindow});
@@ -317,9 +491,19 @@ void main() {
       expect(file('early').readAsBytesSync(), original);
       expect(file('late').readAsStringSync(), contains('New title'));
       expect(_within(left, 'Draft: 4'), findsOneWidget);
-      await _tap(tester, _key('record-cancel-$_collection-early'));
+      expect(_choices(tester), unorderedEquals([null, 'satin']));
+      final cancelled = _captureProposal(tester, left);
+      tester
+          .widget<ButtonStyleButton>(_key('record-cancel-$_collection-early'))
+          .onPressed!();
+      _expectRejected(cancelled);
+      await tester.pump();
       await _tap(tester, _key('record-edit-$_collection-early'));
       expect(_within(left, 'Draft: 1'), findsOneWidget);
+      expect(
+        _choices(tester, 'early'),
+        unorderedEquals([null, 'matte', 'satin']),
+      );
       expect(file('early').readAsBytesSync(), original);
       // An unavailable editor does not disable generic controls or lose its value.
       await _enter(tester, _input('caption', 'early'), 'Rename only');
@@ -329,6 +513,16 @@ void main() {
         'early': {...early, 'caption': 'Rename only'},
         'late': {...lateWindow, 'caption': 'New title', 'end': 7},
       });
+      final reloaded = _captureProposal(tester, _input('start'));
+      tester
+          .widget<ButtonStyleButton>(_key('records-reload-$_collection'))
+          .onPressed!();
+      _expectRejected(reloaded); // Reload admission, before the next frame.
+      await tester.pump();
+      await _ready(tester, 'records-reload-$_collection');
+      expect(_within(_input('start'), 'Draft: 7'), findsOneWidget);
+      expect(_choices(tester), unorderedEquals([null, 'matte', 'satin']));
+      _expectRejected(reloaded);
       await _dismiss(tester);
     }),
     skip: !Platform.isLinux,
@@ -347,6 +541,7 @@ void main() {
       await tester.pumpAndSettle();
       final id = await inspectDraftId(tester);
       final layout = _input('layout');
+      expect(find.text(_unavailable), findsOneWidget);
       final create = _key('record-create-$_collection');
       expect(_enabled(tester, create), isFalse);
       expect(_within(layout, 'Layout: unset'), findsOneWidget);
@@ -543,6 +738,12 @@ void main() {
       await _edit(tester, 'office', 'Office');
       final start = _input('start', 'office');
       await _tap(tester, _within(start, 'Use 4'));
+      expect(
+        _captureProposal(tester, start, label: 'Observe matte')(),
+        'accepted',
+      );
+      await tester.pump();
+      expect(_choices(tester, 'office'), unorderedEquals([null, 'matte']));
       final hidden = _captureProposal(tester, start);
       final select = tester
           .widget<DropdownButtonFormField<String>>(_key('settings-section'))
@@ -552,6 +753,10 @@ void main() {
       _expectRejected(hidden); // No intervening frame is necessary.
       await tester.pumpAndSettle();
       expect(_within(start, 'Draft: 4'), findsOneWidget);
+      expect(
+        _choices(tester, 'office'),
+        unorderedEquals([null, 'matte', 'satin']),
+      );
 
       final dismissed = _captureProposal(tester, start);
       await tester.tap(find.byTooltip('Close Settings'));
@@ -564,6 +769,24 @@ void main() {
       expect(_within(start, 'Draft: 1'), findsOneWidget);
 
       await _tap(tester, _within(start, 'Use 2'));
+      expect(
+        _captureProposal(tester, start, label: 'Observe matte')(),
+        'accepted',
+      );
+      await tester.pump();
+      expect(_choices(tester, 'office'), unorderedEquals([null, 'matte']));
+      // Retiring just the behavior restores ordinary inputs; the field editor
+      // remains independently live and no previous observation is replayed.
+      await frontends.generations.single.retire(
+        settingsFormBehaviorContributions,
+        ExtensionId(_behavior),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text(_unavailable), findsOneWidget);
+      expect(
+        _choices(tester, 'office'),
+        unorderedEquals([null, 'matte', 'satin', 'gloss']),
+      );
       final retired = _captureProposal(tester, start);
       await frontends.generations.single.close();
       _expectRejected(retired);
@@ -612,6 +835,12 @@ final class _DialogService extends GlobalSettingsService {
 Finder _key(String key) => find.byKey(ValueKey(key));
 Finder _input(String field, [String? id]) =>
     _key('record-input-$_collection${id == null ? '' : '-$id'}-$field');
+DropdownButton<String> _finish(WidgetTester tester, [String? id]) =>
+    tester.widget<DropdownButton<String>>(_input('finish', id));
+Iterable<String?> _choices(WidgetTester tester, [String? id]) => _finish(
+  tester,
+  id,
+).items!.where((item) => item.enabled).map((item) => item.value);
 Finder _within(Finder field, String text) =>
     find.descendant(of: field, matching: find.text(text));
 
@@ -671,6 +900,7 @@ Future<void> _tap(WidgetTester tester, Finder finder) async {
   await tester.pumpAndSettle();
   await tester.tap(finder);
   await tester.pump();
+  await tester.pump(); // Initial behavior evaluation is admitted after mount.
 }
 
 Future<void> _enter(WidgetTester tester, Finder input, String text) async {
@@ -714,6 +944,33 @@ String takeReceipt() {
 }
 Widget editor() => StepEditor();
 Widget layoutEditor() => LayoutEditor();
+
+Map<String, Object> finishes(Map<String, Object?> values, Map<String, List<String>> contexts, String? changedField) {
+  final caption = values['caption'] as String? ?? '';
+  final observed = contexts['start'];
+  final options = observed ?? <String>['matte', 'satin'];
+  final which = changedField ?? 'initial';
+  final field = <String, Object>{
+    'enabled': caption != 'paused',
+    'choices': options,
+    'guidance': 'Window: ' + caption + ' / ' + which + ' / ' + (observed == null ? 'unknown' : observed.join(',')),
+  };
+  final fields = <String, Object>{'finish': field};
+  final result = <String, Object>{'fields': fields};
+  if (caption == 'bad field') fields['foreign'] = <String, Object>{'enabled': false};
+  if (caption == 'bad choices') field['choices'] = <String>['matte', 'undeclared'];
+  if (caption == 'duplicate choices') field['choices'] = <String>['matte', 'matte'];
+  if (caption == 'choices on text') fields['caption'] = <String, Object>{'choices': options};
+  if (caption == 'bad shape') field['enabled'] = 'yes';
+  if (caption == 'bad clear') result['clear'] = 'caption';
+  if (caption == 'non-enum clear') result['clear'] = 'note';
+  if (caption == 'foreign clear') result['clear'] = 'outside';
+  if (caption == 'bad field' || caption == 'bad choices' || caption == 'bad shape' ||
+      caption == 'duplicate choices' || caption == 'choices on text' ||
+      (caption == 'clear on open' && changedField == null) ||
+      (caption == 'clear' && changedField == 'caption')) result['clear'] = 'finish';
+  return result;
+}
 class LayoutEditor extends StatefulWidget {
   @override
   State<LayoutEditor> createState() => LayoutEditorState();
@@ -746,7 +1003,7 @@ class LayoutEditorState extends State<LayoutEditor> {
       TextButton(onPressed: () => setLayout(rev, <String, Object>{'columns':'3', 'locked':true, 'name':'new'}), child: Text('Wrong type')),
       TextButton(onPressed: () => setLayout(rev, <String, Object>{'columns':9, 'locked':true, 'name':'new'}), child: Text('Out of range')),
       TextButton(onPressed: () {
-        final rejected = proposeSettingsFieldValue(rev, <String, Object>{'locked':true, 'columns':2, 'name':'stacked'});
+        final rejected = proposeSettingsFieldValueWithContext(rev, <String, Object>{'locked':true, 'columns':2, 'name':'stacked'}, <String>['layout context']);
         receipt = rejected == null ? 'accepted' : 'rejected: ' + rejected;
       }, child: Text('Delayed layout')),
     ]);
@@ -768,7 +1025,13 @@ class StepEditorState extends State<StepEditor> {
     final value = readSettingsFieldValue();
     final error = readSettingsFieldError() ?? 'valid';
     if (!settingsFieldEditingEnabled()) return Text('Editing disabled');
+    String buildEdit = 'not attempted';
+    if (value == null) {
+      final rejected = proposeSettingsFieldValueWithContext(revision, 8, <String>['gloss']);
+      buildEdit = rejected == null ? 'accepted' : 'rejected';
+    }
     return Column(children: <Widget>[
+      Text('Build edit: ' + buildEdit),
       Text('Draft: ' + (value == null ? 'unset' : value.toString())),
       Text('Validation: ' + error),
       Text('Result: ' + result),
@@ -778,9 +1041,24 @@ class StepEditorState extends State<StepEditor> {
         TextButton(onPressed: () => propose(revision, 99), child: Text('Use 99')),
         TextButton(onPressed: () => propose(revision, '4'), child: Text('Use text')),
         TextButton(onPressed: () {
-          final rejected = proposeSettingsFieldValue(revision, 7);
+          final rejected = proposeSettingsFieldValueWithContext(revision, 7, <String>['satin']);
           receipt = rejected == null ? 'accepted' : 'rejected: ' + rejected;
         }, child: Text('Delayed 7')),
+      ]),
+      Row(children: <Widget>[
+        TextButton(onPressed: () {
+          final observed = <String>['matte'];
+          final error = proposeSettingsFieldValueWithContext(revision, value, observed);
+          receipt = error == null ? 'accepted' : 'rejected: ' + error;
+          observed[0] = 'gloss';
+          if (error == null) setState(() {});
+        }, child: Text('Observe matte')),
+        TextButton(onPressed: () {
+          final observed = <String>[];
+          for (int i = 0; i < 33; i++) observed.add('matte');
+          final error = proposeSettingsFieldValueWithContext(revision, 8, observed);
+          receipt = error == null ? 'accepted' : 'rejected: ' + error;
+        }, child: Text('Invalid observation')),
       ]),
     ]);
   }

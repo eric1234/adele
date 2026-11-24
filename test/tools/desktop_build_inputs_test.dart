@@ -173,6 +173,7 @@ dev_dependencies:
     write(
       'plugins/model_configuration/packages/frontend/lib/model_browser.dart',
     );
+    write('plugins/model_configuration/packages/frontend/lib/preset_form.dart');
     for (final plugin in [
       'agent_configuration',
       'model_configuration',
@@ -395,6 +396,7 @@ part 'public.g.dart';
               if (plugin == 'model_configuration') ...[
                 '$packages/frontend/lib/model_reference_editor.dart',
                 '$packages/frontend/lib/model_browser.dart',
+                '$packages/frontend/lib/preset_form.dart',
                 'app/lib/frontend/capability_access_bridge.dart',
                 'app/lib/frontend/presentation_dialog_bridge.dart',
                 'packages/ui/lib/capability_bridge.dart',

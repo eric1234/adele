@@ -50,10 +50,11 @@ class _Offer {
 }
 
 class _Model {
-  _Model(this.offer, this.id, this.name);
+  _Model(this.offer, this.id, this.name, this.efforts);
   final _Offer offer;
   final String id;
   final String name;
+  final List<String>? efforts;
 }
 
 const _stale = 'Catalog changed; refresh to browse again.';
@@ -233,12 +234,15 @@ class _BrowserState extends State<ModelBrowser> {
       final description = entry.description ?? '';
       catalogText += id.length + display.length + description.length;
       final efforts = entry.supportedReasoningEfforts;
+      List<String>? supported;
+      int effortText = 0;
       if (efforts != null) {
         final values = efforts.values;
         if (values.length > modelCatalogReasoningEffortNames.length) {
           offer.status = 'Invalid reasoning effort metadata.';
           return;
         }
+        supported = <String>[];
         int previous = -1;
         for (final value in values) {
           final index = modelCatalogReasoningEffortNames.indexOf(value);
@@ -247,8 +251,10 @@ class _BrowserState extends State<ModelBrowser> {
             return;
           }
           previous = index;
-          catalogText += value.length;
+          supported.add(value);
+          effortText += value.length;
         }
+        catalogText += effortText;
       }
       if (id.length > modelCatalogMaxModelIdLength ||
           id.trim().isEmpty ||
@@ -275,11 +281,11 @@ class _BrowserState extends State<ModelBrowser> {
       }
       seen[id] = true;
       final name = display.isEmpty ? id : display;
-      final cost = id.length + name.length;
+      final cost = id.length + name.length + effortText;
       if (models.length + accepted.length < _maxRows &&
           retainedText + size + cost <= _maxText) {
         size += cost;
-        accepted.add(_Model(offer, id, name));
+        accepted.add(_Model(offer, id, name, supported));
       }
     }
     for (final row in accepted) {
@@ -356,12 +362,16 @@ class _BrowserState extends State<ModelBrowser> {
     return false;
   }
 
-  void confirm(String provider, String id, String name) {
+  void confirm(String provider, String id, String name, List<String>? efforts) {
     if (!current() || provider.trim().isEmpty || id.trim().isEmpty) return;
-    final error = proposeSettingsFieldValue(
-      selection.revision,
-      <String, Object>{'provider-id': provider, 'model-id': id},
-    );
+    final pair = <String, Object>{'provider-id': provider, 'model-id': id};
+    final error = efforts == null
+        ? proposeSettingsFieldValue(selection.revision, pair)
+        : proposeSettingsFieldValueWithContext(
+            selection.revision,
+            pair,
+            efforts,
+          );
     if (error != null) {
       notice = error;
       setState(() {});
@@ -534,7 +544,7 @@ class _BrowserState extends State<ModelBrowser> {
                 !verify(row)) {
               return;
             }
-            confirm(row.offer.id, row.id, row.name);
+            confirm(row.offer.id, row.id, row.name, row.efforts);
           },
           child: Text('Use model'),
         ),
@@ -606,7 +616,7 @@ class _BrowserState extends State<ModelBrowser> {
                 manual &&
                 provider == (advanced ? providerInput.text : manualProvider) &&
                 id == modelInput.text) {
-              confirm(provider, id, '');
+              confirm(provider, id, '', null);
             }
           },
           child: Text('Use reference'),

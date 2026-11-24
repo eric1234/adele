@@ -290,6 +290,20 @@ An interpreted editor can show a child widget using
 own context with `isPresentationDialogCurrent` and dismisses only that exact
 route. Revoking the presentation removes its dialog, not an unrelated route.
 
+`proposeSettingsFieldValueWithContext` attaches a bounded string list to the
+same revision-checked edit. Its data is available only to the owning draft's
+[form behavior](lib/settings_form_behavior.dart), not to sibling editors.
+An accepted proposal without context drops the previous list.
+
+`settingsFormBehaviorContributions` resolves the record declaration's named
+operation. Its interpreted ABI takes `(values, contexts, changedField)` and
+returns `fields` keyed by declared field ID with optional `enabled`, `choices`
+and `guidance`. `changedField` is null on opening and on equal-value proposals.
+Absent optional values are omitted; included but unrepresentable input is
+null. The optional top-level `clear` is a distinct request to unset one
+optional enum after a value change. Neither a dropdown restriction nor a
+warning changes the draft. See [ownership and lifecycle](../../docs/architecture/profiles-and-configuration.md#record-form-behavior).
+
 The preparation harness adds `flutterEvalPlugin` and
 [`SettingsFieldEditorDeclarations`](../../app/lib/frontend/settings_field_editor_bridge.dart)
 to the EVC compiler. The plugin widget itself imports only Flutter and the public

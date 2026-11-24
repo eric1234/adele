@@ -2,9 +2,11 @@ import 'dart:async';
 import 'dart:math';
 
 import 'package:adele_configuration_store/adele_configuration_store.dart';
+import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_settings/adele_settings.dart';
 import 'package:adele_settings_host/adele_settings_host.dart'
     show ConfigurationRecordCredentialsPresent;
+import 'package:adele_ui/settings_form_behavior.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -16,6 +18,8 @@ import '../../frontend/application_frontend_bootstrap.dart';
 import 'record_credential_controls.dart';
 import 'record_field_editor_host.dart';
 import 'scalar_input.dart';
+
+part 'record_form_behavior.dart';
 
 final class RecordCollectionPanel extends StatefulWidget {
   const RecordCollectionPanel({
@@ -73,6 +77,7 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
   bool get _creationRequiresReload => _blockedCreation != null;
   bool _adding = false;
   int _formRevision = 0;
+  int _reloadRevision = 0;
   String? _error;
   String? _creationError;
   String? _message;
@@ -145,6 +150,7 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
       setState(() {
         _confirming = false;
         _error = null;
+        _reloadRevision++;
         _credentialStatuses.clear();
         _credentialErrors.clear();
       });
@@ -888,6 +894,7 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
           draft: draft,
           frontends: widget.frontends,
           formScope: _formScope,
+          reloadRevision: _reloadRevision,
           active: widget.active && _adding && type.id == _type,
           enabled: enabled && _adding && type.id == _type,
           onChanged: () => setState(() {}),
@@ -934,6 +941,7 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
               draft: draft,
               frontends: widget.frontends,
               formScope: _formScope,
+              reloadRevision: _reloadRevision,
               active: widget.active && expanded,
               enabled: enabled,
               onChanged: () => setState(() {}),
@@ -1083,6 +1091,7 @@ final class _RecordForm extends StatelessWidget {
     required this.draft,
     required this.frontends,
     required this.formScope,
+    required this.reloadRevision,
     required this.active,
     required this.enabled,
     required this.onChanged,
@@ -1093,6 +1102,7 @@ final class _RecordForm extends StatelessWidget {
   final _RecordDraft draft;
   final ApplicationFrontendBootstrap? frontends;
   final (int?, int) Function() formScope;
+  final int reloadRevision;
   final bool active;
   final bool enabled;
   final VoidCallback onChanged;
@@ -1101,20 +1111,33 @@ final class _RecordForm extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (draft.markdown.isEmpty) return _controls(context);
+    if (active && draft.definition.formBehavior != null) {
+      return _BehaviorHost(
+        key: ValueKey((draft, frontends, formScope().$1, reloadRevision)),
+        form: this,
+      );
+    }
+    return _body(context, null);
+  }
+
+  Widget _body(BuildContext context, _BehaviorHostState? behavior) {
+    if (draft.markdown.isEmpty) return _controls(context, behavior);
     for (final field in draft.definition.fields) {
       draft.markdown[field.id]?.setEditingEnabled(
-        active && enabled && draft.isIncluded(field),
+        active &&
+            enabled &&
+            draft.isIncluded(field) &&
+            (behavior?.allows(field) ?? true),
       );
     }
     // Composition completion can make Save safe without a document change.
     return ListenableBuilder(
       listenable: draft.markdownChanges,
-      builder: (context, _) => _controls(context),
+      builder: (context, _) => _controls(context, behavior),
     );
   }
 
-  Widget _controls(BuildContext context) {
+  Widget _controls(BuildContext context, _BehaviorHostState? behavior) {
     final definition = draft.definition;
     final record = draft.record;
     final suffix =
@@ -1130,13 +1153,24 @@ final class _RecordForm extends StatelessWidget {
         !draft.disposed &&
         (route?.isActive ?? true) &&
         formScope() == scope;
+    bool editable(RecordFieldDefinition<Object> field) =>
+        active && enabled && (behavior?.allows(field) ?? true);
+    void changed(RecordFieldDefinition<Object> field, [List<String>? context]) {
+      behavior?.changed(field, context);
+      onChanged();
+    }
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Text(definition.label),
         if (definition.description case final description?) Text(description),
+        if (behavior?.unavailable == true)
+          const Text(
+            'Form customization unavailable. Showing declared controls.',
+          ),
         for (final field in definition.fields) ...[
-          if (!field.required)
+          if (!field.required && field.unsetLabel == null)
             CheckboxListTile(
               key: ValueKey('record-presence-$suffix-${field.id}'),
               contentPadding: EdgeInsets.zero,
@@ -1146,11 +1180,11 @@ final class _RecordForm extends StatelessWidget {
                   ? null
                   : Text(field.description!),
               value: draft.isIncluded(field),
-              onChanged: active && enabled
+              onChanged: editable(field)
                   ? (present) {
-                      if (!current()) return;
+                      if (!current() || !editable(field)) return;
                       draft.setOptionalIncluded(field, present == true);
-                      onChanged();
+                      changed(field);
                     }
                   : null,
             ),
@@ -1161,14 +1195,20 @@ final class _RecordForm extends StatelessWidget {
               decoration: InputDecoration(
                 labelText: _label(field),
                 floatingLabelBehavior: FloatingLabelBehavior.always,
-                enabled: active && enabled && draft.isIncluded(field),
+                enabled: editable(field) && draft.isIncluded(field),
                 errorText: errors[field.id],
                 errorMaxLines: 4,
               ),
               child: switch (field.editor) {
                 final ContributedRecordFieldEditor editor =>
                   active && draft.isIncluded(field)
-                      ? _contributedEditor(field, editor, current)
+                      ? _contributedEditor(
+                          field,
+                          editor,
+                          current,
+                          behavior,
+                          changed,
+                        )
                       : const SizedBox.shrink(),
                 _ => SizedBox(
                   height: 220,
@@ -1183,19 +1223,35 @@ final class _RecordForm extends StatelessWidget {
               label: _label(field),
               value: draft.typedValues[field.id],
               text: draft.text[field.id]!,
-              enabled: active && enabled && draft.isIncluded(field),
+              enabled:
+                  editable(field) &&
+                  (draft.isIncluded(field) || field.unsetLabel != null),
+              choices: behavior?.fields[field.id.value]?.choices,
+              unsetLabel: field.unsetLabel,
               allowUnsetBoolean: true,
               error: errors[field.id],
               onChanged: (value) {
-                if (!current() || !draft.isIncluded(field)) return;
+                if (!current() || !editable(field)) return;
+                if (value != null &&
+                    !(behavior?.offers(field, value) ?? true)) {
+                  return;
+                }
+                if (field.unsetLabel != null) {
+                  draft.setOptionalIncluded(field, value != null);
+                } else if (!draft.isIncluded(field)) {
+                  return;
+                }
                 if (field.type is BooleanSettingType ||
                     field.type is EnumSettingType) {
                   draft.typedValues[field.id] = value;
                 }
-                onChanged();
+                changed(field);
               },
             ),
-          if (field.required && field.description != null)
+          if (behavior?.fields[field.id.value]?.guidance case final guidance?)
+            Semantics(liveRegion: true, child: Text(guidance))
+          else if ((field.required || field.unsetLabel != null) &&
+              field.description != null)
             Text(
               field.description!,
               style: Theme.of(context).textTheme.bodySmall,
@@ -1250,6 +1306,8 @@ final class _RecordForm extends StatelessWidget {
     RecordFieldDefinition<Object> field,
     ContributedRecordFieldEditor editor,
     bool Function() current,
+    _BehaviorHostState? behavior,
+    void Function(RecordFieldDefinition<Object>, [List<String>?]) changed,
   ) {
     final presence = draft.presenceRevisions[field.id];
     return RecordFieldEditorHost(
@@ -1259,19 +1317,24 @@ final class _RecordForm extends StatelessWidget {
         field.id,
         formScope(),
         enabled,
+        behavior?.allows(field),
         presence,
       )),
       definition: draft.definition,
       field: field,
       extensionId: editor.extensionId,
       frontends: frontends,
-      canEdit: enabled,
+      canEdit: enabled && (behavior?.allows(field) ?? true),
       isCurrent: () =>
           current() &&
+          (behavior == null || behavior.mounted) &&
           draft.isIncluded(field) &&
           draft.presenceRevisions[field.id] == presence,
       readValue: () => draft._value(field),
-      acceptValue: (value) {
+      permitsValue: (value) =>
+          (behavior?.allows(field) ?? true) &&
+          (behavior?.offers(field, value) ?? true),
+      acceptValue: (value, context) {
         if (field.type is StructuredRecordFieldType ||
             field.type is BooleanSettingType ||
             field.type is EnumSettingType) {
@@ -1279,7 +1342,7 @@ final class _RecordForm extends StatelessWidget {
         } else {
           draft.text[field.id]!.text = value.toString();
         }
-        onChanged();
+        changed(field, context);
       },
     );
   }

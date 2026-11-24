@@ -14,6 +14,8 @@ final class ScalarInput extends StatelessWidget {
     required this.onChanged,
     this.error,
     this.allowUnsetBoolean = false,
+    this.choices,
+    this.unsetLabel,
   });
 
   final Key inputKey;
@@ -25,6 +27,8 @@ final class ScalarInput extends StatelessWidget {
   final ValueChanged<Object?> onChanged;
   final String? error;
   final bool allowUnsetBoolean;
+  final List<String>? choices;
+  final String? unsetLabel;
 
   @override
   Widget build(BuildContext context) => switch (type) {
@@ -79,11 +83,20 @@ final class ScalarInput extends StatelessWidget {
         value: value as String?,
         hint: const Text('Choose a value'),
         items: [
+          if (unsetLabel != null)
+            DropdownMenuItem<String>(child: Text(unsetLabel!)),
           for (final option in options)
-            DropdownMenuItem(
-              value: option.value,
-              child: Text(option.label ?? option.value),
-            ),
+            if (choices == null || choices!.contains(option.value))
+              DropdownMenuItem(
+                value: option.value,
+                child: Text(option.label ?? option.value),
+              )
+            else if (value == option.value)
+              DropdownMenuItem(
+                value: option.value,
+                enabled: false,
+                child: Text('${option.label ?? option.value} (unavailable)'),
+              ),
         ],
         onChanged: enabled ? onChanged : null,
       ),

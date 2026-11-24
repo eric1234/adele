@@ -93,6 +93,7 @@ void main() {
       final title = find.widgetWithText(ExpansionTile, 'Writer');
       await _waitFor(tester, title);
       await _tap(tester, _key('records-add-model-presets'));
+      await _waitFor(tester, _key('record-input-model-presets-name'));
       await tester.enterText(
         _key('record-input-model-presets-name'),
         'Unfinished',
@@ -100,6 +101,11 @@ void main() {
       final create = _key('record-create-model-presets');
       expect(tester.widget<FilledButton>(create).onPressed, isNull);
       expect(find.text('No model selected.'), findsOneWidget);
+      DropdownButton<String> effort(String suffix) =>
+          tester.widget(_key('record-input-$suffix-reasoning-effort'));
+      expect(effort('model-presets').onChanged, isNull);
+      expect(effort('model-presets').items!.single.value, isNull);
+      expect(find.textContaining('Select a model before'), findsOneWidget);
       final dialogInputs = find.descendant(
         of: find.byType(Dialog),
         matching: find.byType(TextField),
@@ -123,6 +129,7 @@ void main() {
       await _tap(tester, title);
       final edit = _key('record-edit-$_suffix');
       await _tap(tester, edit);
+      await _waitFor(tester, find.text('Browse models...'));
       final inputs = find.descendant(
         of: _key('record-input-$_suffix-model'),
         matching: find.byType(TextField),
@@ -130,6 +137,19 @@ void main() {
       expect(inputs, findsNothing);
       expect(find.text('Configured provider: Local/Work'), findsOneWidget);
       expect(find.text('alpha'), findsOneWidget);
+      expect(effort(_suffix).value, 'high');
+      expect(effort(_suffix).onChanged, isNotNull);
+      expect(effort(_suffix).items!.map((item) => item.value), [
+        null,
+        'none',
+        'minimal',
+        'low',
+        'medium',
+        'high',
+        'xhigh',
+        'max',
+      ]);
+      expect(find.textContaining('choices are unverified'), findsOneWidget);
       await author();
       await tester.enterText(dialogInputs.first, 'other');
       await _tap(tester, find.text('Use reference'));
@@ -138,6 +158,7 @@ void main() {
       expect(file.readAsStringSync(), original);
 
       await _tap(tester, edit);
+      await _waitFor(tester, find.text('Browse models...'));
       expect(find.text('Configured provider: Local/Work'), findsOneWidget);
       const updated = {
         'provider-id': 'Offline/Account.2',
@@ -151,6 +172,7 @@ void main() {
       await _tap(tester, find.text('Use reference'));
       await tester.pumpAndSettle();
       expect(find.text(updated['model-id']!), findsOneWidget);
+      expect(effort(_suffix).value, 'high');
       expect(file.readAsStringSync(), original);
       await _tap(tester, _key('record-save-$_suffix'));
       await _waitFor(tester, find.text('Saved Writer.'));

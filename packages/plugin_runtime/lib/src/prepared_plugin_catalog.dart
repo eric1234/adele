@@ -39,7 +39,7 @@ final class PreparedPluginInstallation {
          authorizationPolicies: authorizationPolicies,
          authorizationPolicyEnabledSettings: authorizationPolicyEnabledSettings,
          runModelPreferenceSource: runModelPreferenceSource,
-         frontend: frontend?.._validateSettingsFieldEditors(metadata.id),
+         frontend: frontend?.._validateSettingsExtensions(metadata.id),
          settingsSchema: settingsSchema,
          recordsSchema: recordsSchema,
        );
@@ -362,20 +362,31 @@ final class PreparedFrontendComponent {
   final List<PreparedPresentationDescriptor> presentations;
   final List<PreparedFrontendExtension> extensions;
 
-  void _validateSettingsFieldEditors(PluginId owner) {
-    final ids = <ExtensionId>{};
-    for (final editor
-        in presentations.whereType<PreparedSettingsFieldEditorPresentation>()) {
-      final id = editor.extensionId;
-      if (!ContributedRecordFieldEditor(id).isOwnedBy(owner)) {
-        throw FormatException(
-          'Settings field editor $id must be directly within owner $owner.',
-        );
-      }
-      if (!ids.add(id)) {
-        throw FormatException('Duplicate settings field editor: $id.');
+  void _validateSettingsExtensions(PluginId owner) {
+    void validate(String role, Iterable<ExtensionId> ids) {
+      final seen = <ExtensionId>{};
+      for (final id in ids) {
+        if (!isOwnedRecordExtension(id, owner)) {
+          throw FormatException(
+            '$role $id must be directly within owner $owner.',
+          );
+        }
+        if (!seen.add(id)) throw FormatException('Duplicate $role: $id.');
       }
     }
+
+    validate(
+      'settings field editor',
+      presentations.whereType<PreparedSettingsFieldEditorPresentation>().map(
+        (e) => e.extensionId,
+      ),
+    );
+    validate(
+      'settings form behavior',
+      extensions.whereType<PreparedSettingsFormBehaviorExtension>().map(
+        (e) => e.extensionId,
+      ),
+    );
   }
 }
 
@@ -384,6 +395,31 @@ sealed class PreparedFrontendExtension {
   const PreparedFrontendExtension();
 
   Map<String, Object?> toJson();
+}
+
+/// A synchronous, data-only form operation. It has no capability grants.
+final class PreparedSettingsFormBehaviorExtension
+    extends PreparedFrontendExtension {
+  PreparedSettingsFormBehaviorExtension({
+    required this.extensionId,
+    required this.library,
+    required this.entrypoint,
+  }) {
+    _library(library, 'library');
+    _entrypoint(entrypoint, 'entrypoint');
+  }
+
+  final ExtensionId extensionId;
+  final String library;
+  final String entrypoint;
+
+  @override
+  Map<String, Object?> toJson() => {
+    'kind': 'settingsFormBehavior',
+    'extensionId': extensionId.value,
+    'library': library,
+    'entrypoint': entrypoint,
+  };
 }
 
 final class PreparedCommandExtension extends PreparedFrontendExtension {
@@ -1845,6 +1881,7 @@ RecordTypeDefinition _recordTypeDefinition(
     'description',
     'fields',
     'displayField',
+    'formBehavior',
     'credentialSlots',
   });
   final fields = definition['fields'];
@@ -1903,6 +1940,15 @@ RecordTypeDefinition _recordTypeDefinition(
             _text(definition['displayField'], '$label.displayField'),
           )
         : null,
+    formBehavior: definition.containsKey('formBehavior')
+        ? ExtensionId(
+            _schemaText(
+              definition['formBehavior'],
+              '$label.formBehavior',
+              PreparedRecordsSchema.maxIdLength,
+            ),
+          )
+        : null,
     credentialSlots: [
       for (var index = 0; index < credentialSlots.length; index++)
         _recordCredentialSlotDefinition(
@@ -1948,6 +1994,7 @@ RecordFieldDefinition<Object> _recordFieldDefinition(
     'type',
     'required',
     'editor',
+    if (kind == 'enum') 'unsetLabel',
     if (kind == 'struct') 'properties',
     ..._scalarConstraintKeys(kind),
   });
@@ -1973,6 +2020,13 @@ RecordFieldDefinition<Object> _recordFieldDefinition(
         ? _structuredRecordType(value['properties'], '$label.properties')
         : _recordScalarType(value, label),
     required: required,
+    unsetLabel: value.containsKey('unsetLabel')
+        ? _schemaText(
+            value['unsetLabel'],
+            '$label.unsetLabel',
+            PreparedRecordsSchema.maxLabelLength,
+          )
+        : null,
     editor: value.containsKey('editor')
         ? _recordFieldEditor(value['editor'], '$label.editor')
         : null,
@@ -2208,7 +2262,7 @@ Future<PreparedFrontendComponent> _frontend(
     ),
     presentations: descriptors,
     extensions: extensionDescriptors,
-  ).._validateSettingsFieldEditors(owner);
+  ).._validateSettingsExtensions(owner);
 }
 
 PreparedFrontendExtension _extension(Object? value, String label) {
@@ -2217,6 +2271,19 @@ PreparedFrontendExtension _extension(Object? value, String label) {
   }
   String text(String field) => _text(value[field], '$label.$field');
   switch (text('kind')) {
+    case 'settingsFormBehavior':
+      _object(value, label, {'kind', 'extensionId', 'library', 'entrypoint'});
+      return PreparedSettingsFormBehaviorExtension(
+        extensionId: ExtensionId(
+          _schemaText(
+            value['extensionId'],
+            '$label.extensionId',
+            PreparedRecordsSchema.maxIdLength,
+          ),
+        ),
+        library: text('library'),
+        entrypoint: text('entrypoint'),
+      );
     case 'command':
       _object(value, label, {
         'kind',

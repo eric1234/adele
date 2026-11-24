@@ -14,5 +14,14 @@ String? readSettingsFieldError() => _unavailable();
 String? proposeSettingsFieldValue(int revision, Object? value) =>
     _unavailable();
 
+/// As above, with copied, nonpersistent context for the owning form behavior.
+/// A rejected proposal publishes neither the value nor its context. At most
+/// 32 strings of at most 128 UTF-16 code units each; no handles or callbacks.
+String? proposeSettingsFieldValueWithContext(
+  int revision,
+  Object? value,
+  List<String> context,
+) => _unavailable();
+
 Never _unavailable() =>
     throw UnsupportedError('Interpreted Settings field editor bridge only.');

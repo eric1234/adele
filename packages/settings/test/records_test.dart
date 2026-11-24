@@ -168,6 +168,46 @@ void main() {
   final contributed = ContributedRecordFieldEditor(
     ExtensionId('org.example.editor'),
   );
+  test('form behavior belongs directly to the declared record owner', () {
+    final id = ExtensionId('org.example.form');
+    expect(_type().formBehavior, isNull);
+    expect(_type(formBehavior: id).formBehavior, id);
+    for (final text in [
+      'org.example',
+      'org.example.child.form',
+      'org.example-other.form',
+      'org.other.form',
+    ]) {
+      expect(() => _type(formBehavior: ExtensionId(text)), throwsArgumentError);
+    }
+  });
+
+  test('unsetLabel presents absence without adding a value or a default', () {
+    final type = EnumSettingType([SettingEnumOption('one')]);
+    final field = _field('choice', type, unsetLabel: 'Use default');
+    expect(field.unsetLabel, 'Use default');
+    expect(_field('choice', type).unsetLabel, isNull);
+    expect(_type(fields: [field]).validate(_record, {}), isEmpty);
+    expect(field.valueError('Use default'), isNotNull);
+    expect(
+      () => _field('choice', type, editor: contributed, unsetLabel: 'Default'),
+      throwsArgumentError,
+    );
+    expect(
+      () => _field('choice', type, required: true, unsetLabel: 'None'),
+      throwsArgumentError,
+    );
+    expect(
+      () => _field('choice', const StringSettingType(), unsetLabel: 'None'),
+      throwsArgumentError,
+    );
+    for (final invalid in ['', ' ', 'No\nvalue']) {
+      expect(
+        () => _field('choice', type, unsetLabel: invalid),
+        throwsArgumentError,
+      );
+    }
+  });
   for (final editor in [null, RecordFieldEditor.markdown, contributed]) {
     test('${editor ?? 'no editor'} preserves strings and presence', () {
       for (final required in [false, true]) {
@@ -774,6 +814,7 @@ RecordFieldDefinition<T> _field<T extends Object>(
   RecordFieldType<T> type, {
   bool required = false,
   RecordFieldEditor? editor,
+  String? unsetLabel,
 }) => RecordFieldDefinition(
   id: RecordFieldId(id),
   label: '  Field  ',
@@ -781,6 +822,7 @@ RecordFieldDefinition<T> _field<T extends Object>(
   type: type,
   required: required,
   editor: editor,
+  unsetLabel: unsetLabel,
 );
 
 RecordTypeDefinition _type({
@@ -791,6 +833,7 @@ RecordTypeDefinition _type({
   String label = '  API  ',
   Iterable<RecordFieldDefinition<Object>> fields = const [],
   RecordFieldId? displayField,
+  ExtensionId? formBehavior,
   Iterable<RecordCredentialSlotDefinition> credentialSlots = const [],
 }) => RecordTypeDefinition(
   id: RecordTypeId(id),
@@ -801,6 +844,7 @@ RecordTypeDefinition _type({
   description: 'Type\nexplanation',
   fields: fields,
   displayField: displayField,
+  formBehavior: formBehavior,
   credentialSlots: credentialSlots,
 );
 

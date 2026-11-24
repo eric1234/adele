@@ -214,6 +214,14 @@ const Map<String, List<Map<String, Object?>>> stockFrontendDescriptors = {
 /// Build-time non-presentation extension metadata, keyed by owning PluginId.
 const Map<String, List<Map<String, Object?>>>
 stockFrontendExtensionDescriptors = {
+  'dev.adele.plugin.model-configuration': [
+    {
+      'kind': 'settingsFormBehavior',
+      'extensionId': 'dev.adele.plugin.model-configuration.preset-form',
+      'library': 'package:model_configuration_frontend/preset_form.dart',
+      'entrypoint': 'configurePresetForm',
+    },
+  ],
   'dev.adele.plugin.session-evaluator': [
     {
       'kind': 'sessionCommand',

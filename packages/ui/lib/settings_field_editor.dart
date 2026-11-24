@@ -26,5 +26,11 @@ abstract interface class SettingsFieldDraft {
   /// Returns null on acceptance, or a user-facing rejection without changing
   /// the value or revision. A structured proposal supplies all its properties;
   /// the host validates and snapshots them, never retaining caller-owned data.
-  String? propose(int revision, Object? value);
+  /// Optional [context] is a transient list of at most 32 strings of at most
+  /// 128 code units each. It accompanies this accepted field revision only;
+  /// omitting it replaces any previous context. It is not a stored value.
+  String? propose(int revision, Object? value, {List<String>? context});
+
+  static const maxContextItems = 32;
+  static const maxContextItemLength = 128;
 }

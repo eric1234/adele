@@ -17,7 +17,11 @@ Future<Uint8List> compileModelConfigurationFrontend({
 }) => compileSessionAccessoryFrontend(
   repositoryRoot: repositoryRoot,
   plugin: 'model_configuration',
-  additionalLibraries: ['model_reference_editor.dart', 'model_browser.dart'],
+  additionalLibraries: [
+    'model_reference_editor.dart',
+    'model_browser.dart',
+    'preset_form.dart',
+  ],
   additionalUiSources: [
     'settings_field_editor_bridge.dart',
     'capability_bridge.dart',

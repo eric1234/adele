@@ -170,6 +170,7 @@ const _frontends =
           'model_configuration_frontend.dart',
           'model_reference_editor.dart',
           'model_browser.dart',
+          'preset_form.dart',
         ],
         ui: [
           'session_accessory_bridge.dart',

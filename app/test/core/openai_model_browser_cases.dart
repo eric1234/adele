@@ -2,7 +2,8 @@ part of 'openai_record_startup_integration_test.dart';
 
 const _modelConfiguration = 'dev.adele.plugin.model-configuration';
 const _browserStrategy = 'test.browser.orchestration';
-const _sharedModel = 'Vendor/MiX:v2+preview';
+const _sharedModel = 'gpt-5.4';
+const _highOnly = 'gpt-5-pro';
 const _review = 'model-presets-review';
 
 Future<void> _publishBrowserInstallations(
@@ -13,6 +14,10 @@ Future<void> _publishBrowserInstallations(
   final model = Directory('$root/model-configuration');
   final strategy = Directory('$root/strategy');
   for (final (entrypoint, directory) in [
+    (
+      'app/test/core/fixtures/openai_model_browser_loopback.dart',
+      Directory('$root/openai'),
+    ),
     (
       'plugins/model_configuration/packages/backend/bin/model_configuration_backend.dart',
       model,
@@ -61,7 +66,7 @@ Future<void> _publishBrowserInstallations(
 
 void _registerModelBrowserCases(Future<_ProviderFixture> Function() prepare) {
   testWidgets(
-    'prepared Model Browser keeps OpenAI accounts distinct through Save, restart and Run approval',
+    'prepared Model Browser carries effort choices through Save, restart and Run approval',
     (tester) => tester.runAsync(() async {
       final f = await prepare();
       final collection = RecordCollectionId('model-presets');
@@ -69,22 +74,24 @@ void _registerModelBrowserCases(Future<_ProviderFixture> Function() prepare) {
         'provider-id': '$_recordType.$id-openai',
         'model-id': name,
       };
-      final original = model('personal', 'old-unlisted');
+      // An authored, schema-valid preference can predate better catalog data.
+      final original = model('work', _highOnly);
       final work = model('work', _sharedModel);
       final personal = model('personal', _sharedModel);
-      final next = model('personal', 'personal-only');
-      Map<String, Object> values(Map<String, String> target) => {
-        'name': 'Review',
-        'model': target,
-        'reasoning-effort': 'high',
-      };
+      Map<String, Object> values(Map<String, String> target, String? effort) =>
+          {'name': 'Review', 'model': target, 'reasoning-effort': ?effort};
       await f.settings.createRecord(
         RecordTypeId('$_modelConfiguration.preset'),
         ConfigurationRecordId('review'),
-        values(original),
+        values(original, 'low'),
       );
-      f.catalogModels['/work/models'] = [_sharedModel, 'retiring'];
-      f.catalogModels['/personal/models'] = [_sharedModel, 'personal-only'];
+      final toml = File(
+        '${f.roots.configurationRoot}/model-presets/review.toml',
+      );
+      final originalBytes = await toml.readAsBytes();
+      const retiring = 'gpt-6-astra';
+      f.catalogModels['/work/models'] = [_sharedModel, _highOnly, retiring];
+      f.catalogModels['/personal/models'] = [_sharedModel];
       Future<Map<String, Object>> saved() async {
         // This independent Settings owner cannot invalidate the form's baseline.
         final record = (await f.settings.loadRecords(
@@ -99,6 +106,46 @@ void _registerModelBrowserCases(Future<_ProviderFixture> Function() prepare) {
             find.byType(RecordFieldEditorHost, skipOffstage: false),
           )
           .readValue();
+      final effort = find.byKey(
+        const ValueKey('record-input-$_review-reasoning-effort'),
+        skipOffstage: false,
+      );
+      const all = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+      const known = ['none', 'low', 'medium', 'high', 'xhigh'];
+      void expectEffort(String? selected, List<String> choices) {
+        final menu = tester.widget<DropdownButton<String>>(effort);
+        expect(menu.onChanged, isNotNull);
+        expect(menu.value, selected);
+        expect(
+          menu.items!.where((item) => item.enabled).map((item) => item.value),
+          [null, ...choices],
+        );
+        expect((menu.items!.first.child as Text).data, 'Provider default');
+        expect(
+          find.byKey(
+            const ValueKey('record-presence-$_review-reasoning-effort'),
+            skipOffstage: false,
+          ),
+          findsNothing,
+        );
+      }
+
+      var catalogRounds = 0;
+      var posts = 0;
+      void expectTraffic() {
+        expect(
+          f.requests.where((r) => r['method'] == 'GET'),
+          hasLength(catalogRounds * 2),
+        );
+        expect(f.requests, hasLength(catalogRounds * 2 + posts));
+        expect(f.storage.calls, List.filled(catalogRounds * 2 + posts, 'read'));
+      }
+
+      String authority(String account) => account == 'work'
+          ? Uri.parse(f.origin).authority
+          : Uri.parse(
+              f.records[account]!.values['endpoint']! as String,
+            ).authority;
       Future<void> edit(_ProviderSettings ui) async {
         await ui.section('Model Presets');
         await ui.until(
@@ -114,18 +161,20 @@ void _registerModelBrowserCases(Future<_ProviderFixture> Function() prepare) {
       }
 
       Future<void> save(_ProviderSettings ui) async {
-        final count = f.requests.length;
         await ui.press('record-save-$_review');
         await ui.until(
           () => ui._enabled('record-edit-$_review'),
           'Save acknowledgement',
         );
-        expect(f.requests, hasLength(count));
-        expect(f.storage.calls, hasLength(count));
+        expectTraffic();
       }
 
       Finder chip(String text) => find.widgetWithText(ChoiceChip, text);
-      Future<void> browse(_ProviderSettings ui, {bool refresh = false}) async {
+      Future<void> browse(
+        _ProviderSettings ui, {
+        bool refresh = false,
+        bool unavailable = false,
+      }) async {
         // Never start aggregate discovery against an ambient account.
         expect(
           f.registry
@@ -134,6 +183,7 @@ void _registerModelBrowserCases(Future<_ProviderFixture> Function() prepare) {
           unorderedEquals([work['provider-id'], personal['provider-id']]),
         );
         _expectCatalogAssociations(f.bootstrap, f.registry);
+        expectTraffic();
         final before = f.requests.length;
         final reads = f.storage.readReferences.length;
         await ui._tap(find.text(refresh ? 'Refresh' : 'Browse models...'));
@@ -142,19 +192,31 @@ void _registerModelBrowserCases(Future<_ProviderFixture> Function() prepare) {
           of: find.byType(Dialog).last,
           matching: find.text(_sharedModel),
         );
-        await ui.until(
-          () => rows.evaluate().length == 2,
-          'shared model on two configured accounts',
-        );
+        if (unavailable) {
+          await ui._tap(find.text('Provider status'));
+          await ui.until(
+            () =>
+                find
+                    .textContaining('Catalog request failed.')
+                    .evaluate()
+                    .length ==
+                2,
+            'both explicit catalog requests failed',
+          );
+          expect(rows, findsNothing);
+        } else {
+          await ui.until(
+            () => rows.evaluate().length == 2,
+            'shared model on two configured accounts',
+          );
+        }
         expect(
           f.requests.skip(before),
           unorderedEquals([
             for (final id in ['work', 'personal'])
               {
                 'method': 'GET',
-                'authority': Uri.parse(
-                  f.records[id]!.values['endpoint']! as String,
-                ).authority,
+                'authority': authority(id),
                 'path': '/$id/models',
                 'query': '',
                 'authorization': 'Bearer test-$id-key',
@@ -168,6 +230,8 @@ void _registerModelBrowserCases(Future<_ProviderFixture> Function() prepare) {
           f.storage.readReferences.skip(reads),
           unorderedEquals([f.reference('work'), f.reference('personal')]),
         );
+        catalogRounds++;
+        expectTraffic();
       }
 
       Future<void> select(
@@ -190,7 +254,15 @@ void _registerModelBrowserCases(Future<_ProviderFixture> Function() prepare) {
           () => find.text('Model Browser').evaluate().isEmpty,
           'confirmed model',
         );
+        expectTraffic();
       }
+
+      Future<void> cancelBrowser(_ProviderSettings ui) => ui._tap(
+        find.descendant(
+          of: find.byType(Dialog).last,
+          matching: find.text('Cancel'),
+        ),
+      );
 
       ModelPresetSelectionServiceClient selections() {
         final c = f.bootstrap.backends
@@ -229,15 +301,20 @@ void _registerModelBrowserCases(Future<_ProviderFixture> Function() prepare) {
       await f.withApplication(tester, first, (ui, _) async {
         await edit(ui);
         expect(draft(), original);
-        expect(f.requests, isEmpty);
-        expect(f.storage.calls, isEmpty);
+        expectEffort('low', all);
+        expectTraffic();
         await browse(ui);
-        await select(ui, 'Work OpenAI', 'retiring');
+        await select(ui, 'Work OpenAI', _sharedModel);
+        await cancelBrowser(ui);
+        expect(draft(), original);
+        expectEffort('low', all);
+        await browse(ui);
+        await select(ui, 'Work OpenAI', retiring);
         expect(draft(), original);
         // The already-highlighted row loses its exact registration, even though
         // both stable IDs and the owning OpenAI backend remain available.
         final old = f.capture('work');
-        f.catalogModels['/work/models'] = [_sharedModel];
+        f.catalogModels['/work/models'] = [_sharedModel, _highOnly];
         expect(await f.refresh(), _refreshResult('applied', 'replaced'));
         old.expectReplacement(f.capture('work'));
         await ui._tap(find.text('Use model'));
@@ -247,13 +324,31 @@ void _registerModelBrowserCases(Future<_ProviderFixture> Function() prepare) {
           findsOneWidget,
         );
         expect(draft(), original);
+        expectEffort('low', all);
         await browse(ui, refresh: true);
+        await select(ui, 'Work OpenAI', _highOnly);
+        await use(ui);
+        expect(draft(), original);
+        expectEffort('low', ['high']); // New evidence, not a change of model.
+        expect(
+          find.textContaining('not reported as supported'),
+          findsOneWidget,
+        );
+        await ui._tap(effort);
+        await ui._tap(find.text('High').last);
+        expectEffort('high', ['high']);
+        await browse(ui);
         await select(ui, 'Work OpenAI', _sharedModel);
         await use(ui);
         expect(draft(), work);
-        expect(await saved(), values(original));
+        expectEffort('high', known); // A supported explicit choice survives.
+        await ui._tap(effort);
+        await ui._tap(find.text('None').last);
+        expectEffort('none', known);
+        expect(await saved(), values(original, 'low'));
+        expect(await toml.readAsBytes(), originalBytes);
         await save(ui);
-        expect(await saved(), values(work));
+        expect(await saved(), values(work, 'none'));
         expect(
           (await selections().updateSessionSelection(
             id.value,
@@ -263,11 +358,20 @@ void _registerModelBrowserCases(Future<_ProviderFixture> Function() prepare) {
           1,
         );
         await ui.dismiss();
+        expectTraffic();
       });
 
       // New app, Settings worker, frontend and AOT generations; no catalog
       // observation is required to restore either the preset or Session choice.
-      final countBeforeRestart = f.requests.length;
+      final savedWork = await toml.readAsBytes();
+      expect(
+        utf8.decode(savedWork),
+        utf8
+            .decode(originalBytes)
+            .replaceFirst('"$_highOnly"', '"$_sharedModel"')
+            .replaceFirst('"low"', '"none"'),
+        reason: 'Only authored model and effort changed, not catalog evidence.',
+      );
       final (second, restored) = await openProject();
       expect(restored.id, project.id);
       await f.withApplication(tester, second, (ui, _) async {
@@ -275,8 +379,9 @@ void _registerModelBrowserCases(Future<_ProviderFixture> Function() prepare) {
         final selection = await selections().readSessionSelection(id.value);
         expect((selection.selectedPresetId, selection.revision), ('review', 1));
         expect(draft(), work);
-        expect(f.requests, hasLength(countBeforeRestart));
-        expect(f.storage.calls, hasLength(countBeforeRestart));
+        expectEffort('none', all); // Catalog hints were never persisted.
+        expect(await saved(), values(work, 'none'));
+        expectTraffic();
         final tool = ReviewExecutionFixture();
         final tools = second.extensions.register(
           point: modelToolContributions,
@@ -303,40 +408,70 @@ void _registerModelBrowserCases(Future<_ProviderFixture> Function() prepare) {
           return run;
         }
 
-        void expectInvocations(List<(String, String)> expected) {
-          final posts = f.requests.where((r) => r['method'] == 'POST');
+        void expectInvocations(List<(String, String, String?)> expected) {
+          posts = expected.length;
+          expectTraffic();
+          final requests = f.requests.where((r) => r['method'] == 'POST');
           expect(
-            posts.map((r) {
+            requests.map((r) {
               final body = r['body']! as Map;
+              final reasoning = body['reasoning'] as Map?;
               return (
                 r['authority'],
                 r['path'],
                 r['authorization'],
                 body['model'],
-                (body['reasoning'] as Map)['effort'],
+                reasoning?.containsKey('effort') ?? false,
+                reasoning?['effort'],
               );
             }),
             [
-              for (final (account, model) in expected)
+              for (final (account, model, effort) in expected)
                 (
-                  Uri.parse(
-                    f.records[account]!.values['endpoint']! as String,
-                  ).authority,
+                  authority(account),
                   '/$account/responses',
                   'Bearer test-$account-key',
                   model,
-                  'high',
+                  effort != null,
+                  effort,
                 ),
             ],
           );
-          expect(f.storage.calls, List.filled(f.requests.length, 'read'));
         }
 
         try {
           f.proposeReviewTool = true;
           final waiting = await advance(RunState.waiting);
-          expectInvocations([('work', _sharedModel)]);
+          expectInvocations([('work', _sharedModel, 'none')]);
           expect(tool.executedSessions, isEmpty);
+          // Failed discovery does not reinterpret the saved preference or retry.
+          f.catalogStatus = HttpStatus.serviceUnavailable;
+          await browse(ui, unavailable: true);
+          expect(find.text('Use model'), findsNothing);
+          await cancelBrowser(ui);
+          expectEffort('none', all);
+          expect(draft(), work);
+          f.catalogStatus = HttpStatus.ok;
+
+          await browse(ui);
+          await select(ui, 'Work OpenAI', _highOnly);
+          await use(ui);
+          expectEffort(null, ['high']); // None is not supported by this model.
+          expect(
+            find.textContaining('Reset to Provider default'),
+            findsOneWidget,
+          );
+          expect(draft(), model('work', _highOnly));
+          expect(await toml.readAsBytes(), savedWork);
+          await ui.press('record-cancel-$_review');
+          await ui.press('record-edit-$_review');
+          expect(draft(), work);
+          expectEffort('none', all);
+
+          await browse(ui);
+          await select(ui, 'Work OpenAI', _highOnly);
+          await use(ui);
+          expectEffort(null, ['high']);
           await browse(ui);
           await select(ui, 'Personal OpenAI', _sharedModel);
           await use(ui);
@@ -345,13 +480,15 @@ void _registerModelBrowserCases(Future<_ProviderFixture> Function() prepare) {
             personal,
             reason: 'The same model is a distinct reference on Personal.',
           );
-          expect(await saved(), values(work));
-          await browse(ui);
-          await select(ui, 'Personal OpenAI', 'personal-only');
-          await use(ui);
-          expect(draft(), next);
+          expectEffort(null, all); // Custom endpoint, even for the same ID.
+          expect(await saved(), values(work, 'none'));
+          expect(await toml.readAsBytes(), savedWork);
           await save(ui);
-          expect(await saved(), values(next));
+          expect(await saved(), values(personal, null));
+          expect(
+            await toml.readAsString(),
+            isNot(contains('reasoning-effort')),
+          );
 
           expect(
             owner.resolveApproval(owner.pendingApproval!, approved: true),
@@ -364,13 +501,16 @@ void _registerModelBrowserCases(Future<_ProviderFixture> Function() prepare) {
             reason: '${owner.failure}',
           );
           expect(tool.executedSessions, [id.value]);
-          expectInvocations([('work', _sharedModel), ('work', _sharedModel)]);
+          expectInvocations([
+            ('work', _sharedModel, 'none'),
+            ('work', _sharedModel, 'none'),
+          ]);
           expect(await advance(RunState.completed), isNot(waiting));
           expectInvocations([
-            ('work', _sharedModel),
-            ('work', _sharedModel),
-            ('personal', 'personal-only'),
-            ('personal', 'personal-only'),
+            ('work', _sharedModel, 'none'),
+            ('work', _sharedModel, 'none'),
+            ('personal', _sharedModel, null),
+            ('personal', _sharedModel, null),
           ]);
         } finally {
           await owner.close();
@@ -378,6 +518,7 @@ void _registerModelBrowserCases(Future<_ProviderFixture> Function() prepare) {
           await tools.close();
         }
         await ui.dismiss();
+        expectTraffic();
       });
     }),
   );

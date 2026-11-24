@@ -19,6 +19,7 @@ const _owner = 'test.editor';
 const _library = 'package:ed/main.dart';
 final _editor = ExtensionId('$_owner.view');
 final _other = ExtensionId('$_owner.other');
+final _behavior = ExtensionId('$_owner.form');
 
 void main() {
   late Uint8List bytes;
@@ -49,6 +50,24 @@ String? cycle() {
 }
 String? submit() => proposeSettingsFieldValue(0, 'edited');
 String? proposeObject(Object? value) => proposeSettingsFieldValue(readSettingsFieldRevision(), value);
+String? proposeContext(List<String> context) => proposeSettingsFieldValueWithContext(readSettingsFieldRevision(), 'observation', context);
+Future<String> deferred() async => 'not a synchronous presentation';
+Object behavior(Map<String, Object?> values, Map<String, List<String>> contexts, String? changed) {
+  if (changed == 'probe') {
+    // Sharing an artifact with an editor must not grant its bridge to a pure operation.
+    proposeSettingsFieldValue(0, 'attempted write');
+  }
+  if (changed == 'mutate') values['name'] = 'attempted write';
+  if (changed == 'async') return deferred();
+  if (changed == 'over budget') {
+    // Finite, so removing the host instruction budget cannot hang the suite.
+    int count = 0;
+    while (count < 150000) { count++; }
+  }
+  return <String, Object>{'fields': <String, Object>{
+    'name': <String, Object>{'guidance': values['name'] as String},
+  }};
+}
 Object? read() => readSettingsFieldValue();
 String? error() => readSettingsFieldError();
 bool enabled() => settingsFieldEditingEnabled();
@@ -76,6 +95,7 @@ bool enabled() => settingsFieldEditingEnabled();
   Future<PreparedPluginCatalog> install(
     List<ExtensionId> ids, {
     String entrypoint = 'editor',
+    String? behaviorEntrypoint,
   }) async {
     final directory = await Directory('${root.path}/owner').create();
     await File('${directory.path}/frontend.evc').writeAsBytes(bytes);
@@ -88,6 +108,7 @@ bool enabled() => settingsFieldEditingEnabled();
             'collection': 'records',
             'collectionLabel': 'Records',
             'label': 'Record',
+            'formBehavior': _behavior.value,
             'fields': [
               {
                 'id': 'name',
@@ -111,6 +132,15 @@ bool enabled() => settingsFieldEditingEnabled();
         'components': {
           'frontend': {
             'artifact': 'frontend.evc',
+            if (behaviorEntrypoint != null)
+              'extensions': [
+                {
+                  'kind': 'settingsFormBehavior',
+                  'extensionId': _behavior.value,
+                  'library': _library,
+                  'entrypoint': behaviorEntrypoint,
+                },
+              ],
             'presentations': [
               for (final id in ids)
                 {
@@ -133,6 +163,88 @@ bool enabled() => settingsFieldEditingEnabled();
     value: SettingsFieldEditorContribution(
       createPresentation: (_) => fail('Impostor factory invoked.'),
     ),
+  );
+
+  ExtensionRegistration spoofBehavior() => registry.register(
+    point: settingsFormBehaviorContributions,
+    id: _behavior,
+    value: SettingsFormBehaviorContribution(
+      evaluate: (_, _, _) => fail('Impostor behavior invoked.'),
+    ),
+  );
+
+  test(
+    'a behavior cannot adopt a matching registration without its owner descriptor',
+    () async {
+      final catalog = await install([_editor]);
+      final impostor = spoofBehavior();
+      addTearDown(impostor.close);
+      await frontends.start(catalog);
+      expect(frontends.generations.single.state, InstalledFrontendState.active);
+      final type = catalog.records.definitions.single;
+      expect(frontends.resolveSettingsFormBehavior(type), isNull);
+    },
+  );
+
+  test(
+    'pure behavior is bound to the exact schema, generation and authority',
+    () async {
+      final catalog = await install([_editor], behaviorEntrypoint: 'behavior');
+      expect(catalog.issues, isEmpty);
+      await frontends.start(catalog);
+      final type = catalog.records.definitions.single;
+      final copied = (await PreparedPluginCatalog.discover(
+        root.path,
+      )).records.definitions.single;
+      expect(copied.id, type.id);
+      expect(frontends.resolveSettingsFormBehavior(copied), isNull);
+      final binding = frontends.resolveSettingsFormBehavior(type)!;
+      final evaluate = binding.value.evaluate;
+      expect(
+        evaluate({'name': 'Own draft'}, {}, null).fields['name']!.guidance,
+        'Own draft',
+      );
+      final values = {'name': 'Own draft'};
+      for (final invalid in ['probe', 'mutate', 'async', 'over budget']) {
+        expect(
+          () => evaluate(values, {}, invalid),
+          throwsA(
+            isA<FormatException>().having(
+              (e) => e.message,
+              'message',
+              isNot(contains('Own draft')),
+            ),
+          ),
+          reason: invalid,
+        );
+        expect(values, {'name': 'Own draft'});
+        expect(
+          evaluate(values, {}, null).fields['name']!.guidance,
+          'Own draft',
+        );
+      }
+
+      await frontends.generations.single.retire(
+        settingsFormBehaviorContributions,
+        _behavior,
+      );
+      final replacement = spoofBehavior();
+      addTearDown(replacement.close);
+      expect(
+        replacement.owns(
+          registry.discover(settingsFormBehaviorContributions).single,
+        ),
+        isTrue,
+      );
+      expect(frontends.resolveSettingsFormBehavior(type), isNull);
+      expect(binding.validate, throwsA(isA<StaleExtensionBinding>()));
+      expect(() => evaluate({'name': 'New draft'}, {}, null), throwsStateError);
+      // The field editor in the very same artifact is independently owned.
+      expect(
+        frontends.resolveSettingsFieldEditor(type, type.fields.single),
+        isNotNull,
+      );
+    },
   );
 
   test(
@@ -300,12 +412,37 @@ bool enabled() => settingsFieldEditingEnabled();
     expect(read.$value[$String('k15')], isA<$int>());
     expect(() => read.$value.clear(), throwsUnsupportedError);
 
+    Object? proposeContext(List<$Value> context) {
+      final result = runtime.executeLib(_library, 'proposeContext', [
+        $List.wrap(context),
+      ]);
+      return result is $Value ? result.$value : result;
+    }
+
+    final context = List<$Value>.filled(32, $String('a' * 128));
+    for (final invalid in [
+      [...context, $String('extra')],
+      [$String('a' * 129)],
+      [$int(3)],
+    ]) {
+      expect(proposeContext(invalid), isA<String>());
+      expect(draft.calls, 2);
+      expect(draft.value, same(snapshot));
+    }
+    expect(proposeContext(context), isNull);
+    context[0] = $String('changed after the call');
+    expect(draft.context, List.filled(32, 'a' * 128));
+    expect(draft.context!.clear, throwsUnsupportedError);
+    expect(proposeContext([]), isNull);
+    expect(draft.context, isEmpty);
+
     final close = frontends.generations.single.registrations.single.close();
     expect(call('enabled'), false);
     // A retained callback with a valid revision still cannot reach the draft.
     draft.revision = 0;
     expect(call('submit'), isA<String>());
-    expect(draft.calls, 2);
+    expect(proposeContext([]), isA<String>());
+    expect(draft.calls, 4);
     await close;
     await tester.pump();
     expect(find.text('original'), findsNothing);
@@ -323,11 +460,13 @@ class _Draft implements SettingsFieldDraft {
   bool get enabled => true;
   @override
   String get error => 'x' * 300;
+  List<String>? context;
   @override
-  String? propose(int revision, Object? value) {
+  String? propose(int revision, Object? value, {List<String>? context}) {
     calls++;
     this.revision++;
     this.value = value;
+    this.context = context;
     return null;
   }
 }

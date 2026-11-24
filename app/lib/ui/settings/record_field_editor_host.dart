@@ -22,6 +22,7 @@ final class RecordFieldEditorHost extends StatefulWidget {
     required this.canEdit,
     required this.readValue,
     required this.acceptValue,
+    required this.permitsValue,
   });
 
   final ApplicationFrontendBootstrap? frontends;
@@ -31,7 +32,8 @@ final class RecordFieldEditorHost extends StatefulWidget {
   final bool Function() isCurrent;
   final bool canEdit;
   final Object? Function() readValue;
-  final ValueChanged<Object> acceptValue;
+  final void Function(Object value, List<String>? context) acceptValue;
+  final bool Function(Object value) permitsValue;
 
   @override
   State<RecordFieldEditorHost> createState() => _RecordFieldEditorHostState();
@@ -101,7 +103,11 @@ final class _RecordFieldEditorHostState extends State<RecordFieldEditorHost>
   String? get error => _current ? widget.field.valueError(value) : null;
 
   @override
-  String? propose(int expectedRevision, Object? value) {
+  String? propose(
+    int expectedRevision,
+    Object? value, {
+    List<String>? context,
+  }) {
     if (!enabled || expectedRevision != _revision) {
       return 'This field edit is no longer available.';
     }
@@ -113,9 +119,22 @@ final class _RecordFieldEditorHostState extends State<RecordFieldEditorHost>
     }
     final violation = widget.field.valueError(value);
     if (violation != null) return violation;
+    if (context != null &&
+        (context.length > SettingsFieldDraft.maxContextItems ||
+            context.any(
+              (s) => s.length > SettingsFieldDraft.maxContextItemLength,
+            ))) {
+      return 'Invalid field context.';
+    }
     final snapshot = widget.field.snapshotValue(value);
+    if (!widget.permitsValue(snapshot)) {
+      return 'This field choice is unavailable.';
+    }
     _revision++;
-    widget.acceptValue(snapshot);
+    widget.acceptValue(
+      snapshot,
+      context == null ? null : List.unmodifiable(context),
+    );
     return null;
   }
 
