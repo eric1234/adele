@@ -953,25 +953,27 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
   }
 }
 
-final class _RecordDraft {
+final class _RecordDraft extends ChangeNotifier {
   _RecordDraft(this.definition, {this.record}) : id = record?.id ?? _newId() {
     for (final field in definition.fields) {
       final value = record?.values[field.id.value];
-      if (!field.required && value != null) {
-        _includedOptional.add(field.id);
-      }
       if (field.editor == RecordFieldEditor.markdown) {
         markdown[field.id] = NativeRichDocumentEditor(
           markdown: value as String? ?? '',
-        );
-      } else if (field.type is StructuredRecordFieldType) {
-        if (value != null) typedValues[field.id] = field.snapshotValue(value);
-      } else {
-        if (field.type is BooleanSettingType || field.type is EnumSettingType) {
-          typedValues[field.id] = value;
-        }
+        )..addListener(notifyListeners);
+      } else if (field.editor == null &&
+          (field.type is StringSettingType ||
+              field.type is IntegerSettingType)) {
         text[field.id] = TextEditingController(text: value?.toString() ?? '');
+      } else {
+        if (value != null) {
+          _typed[field.id] = field.snapshotValue(value);
+        } else if (field.required && field.type is StringSettingType) {
+          _typed[field.id] = '';
+        }
+        continue;
       }
+      if (!field.required && value == '') _restoredEmpty.add(field.id);
     }
   }
 
@@ -979,46 +981,49 @@ final class _RecordDraft {
   final RecordView? record;
   final ConfigurationRecordId id;
   bool reconciled = false;
-  final _includedOptional = <RecordFieldId>{};
-  final presenceRevisions = <RecordFieldId, int>{};
-  // Non-text controls hold typed values, not a display string to parse later.
-  final typedValues = <RecordFieldId, Object?>{};
+  // Text and documents are read from their owners, never from a cached parse.
+  // Only a restored empty string needs distinguishing from an empty control.
+  final _restoredEmpty = <RecordFieldId>{};
+  final _typed = <RecordFieldId, Object>{};
+  final clearRevisions = <RecordFieldId, int>{};
   final text = <RecordFieldId, TextEditingController>{};
   final markdown = <RecordFieldId, NativeRichDocumentEditor>{};
-  late final markdownChanges = Listenable.merge(markdown.values.toList());
   bool disposed = false;
 
-  bool isIncluded(RecordFieldDefinition<Object> field) =>
-      field.required || _includedOptional.contains(field.id);
-
-  void setOptionalIncluded(RecordFieldDefinition<Object> field, bool included) {
+  void clear(RecordFieldDefinition<Object> field) {
     assert(!field.required);
-    if (included
-        ? _includedOptional.add(field.id)
-        : _includedOptional.remove(field.id)) {
-      presenceRevisions.update(field.id, (n) => n + 1, ifAbsent: () => 1);
+    clearRevisions.update(field.id, (n) => n + 1, ifAbsent: () => 1);
+    _typed.remove(field.id);
+    _restoredEmpty.remove(field.id);
+    if (markdown[field.id] case final editor?) {
+      // Explicit discard (including unsettled input) retires the owner. Normal
+      // deletion in the document keeps its owner and Undo history instead.
+      editor.dispose();
+      markdown[field.id] = NativeRichDocumentEditor(markdown: '')
+        ..addListener(notifyListeners);
     }
   }
 
-  bool get dirty => definition.fields.any((field) {
+  void editScalar(RecordFieldDefinition<Object> field, Object? value) {
+    if (text.containsKey(field.id)) {
+      _restoredEmpty.remove(field.id);
+    } else if (value != null) {
+      _typed[field.id] = value;
+    } else if (!field.required) {
+      clear(field);
+    }
+  }
+
+  bool get dirty {
     final before = record!.values;
-    if (isIncluded(field) != before.containsKey(field.id.value)) {
-      return true;
-    }
-    final value = before[field.id.value];
-    // Invalid or temporarily excluded text is still a draft worth retaining.
-    if (markdown[field.id] case final editor?) {
-      try {
-        return editor.snapshot()['markdown'] != (value ?? '');
-      } on FormatException {
-        return true;
-      }
-    }
-    if (field.type is StringSettingType || field.type is IntegerSettingType) {
-      return text[field.id]!.text != (value?.toString() ?? '');
-    }
-    return !recordFieldValuesEqual(typedValues[field.id], value);
-  });
+    final now = snapshot();
+    return before.length != now.length ||
+        now.entries.any(
+          (entry) =>
+              !before.containsKey(entry.key) ||
+              !recordFieldValuesEqual(entry.value, before[entry.key]),
+        );
+  }
 
   static ConfigurationRecordId _newId() {
     final random = Random.secure();
@@ -1029,51 +1034,53 @@ final class _RecordDraft {
     return ConfigurationRecordId('r-$hex');
   }
 
-  Object? _value(RecordFieldDefinition<Object> field) => switch (field.type) {
-    StringSettingType() when markdown.containsKey(field.id) => _snapshot(
-      field.id,
-    ),
-    StringSettingType() => text[field.id]!.text,
-    IntegerSettingType() => int.tryParse(text[field.id]!.text, radix: 10),
-    BooleanSettingType() ||
-    EnumSettingType() ||
-    StructuredRecordFieldType() => typedValues[field.id],
-  };
-
-  String? _fieldError(RecordFieldDefinition<Object> field) {
-    try {
-      return field.valueError(_value(field));
-    } on InvalidRecordValue catch (error) {
-      return error.message;
+  Map<String, Object?> snapshot({Map<RecordFieldId, String>? errors}) {
+    // Absent fields have no key. An unrepresentable draft is present with
+    // null, so behavior can observe it but record validation rejects it.
+    final values = <String, Object?>{};
+    for (final field in definition.fields) {
+      Object? value;
+      String? error;
+      if (text[field.id] case final controller?) {
+        final raw = controller.text;
+        if (!field.required &&
+            raw.isEmpty &&
+            !_restoredEmpty.contains(field.id)) {
+          continue;
+        }
+        value = field.type is IntegerSettingType
+            ? int.tryParse(raw, radix: 10)
+            : raw;
+      } else if (markdown[field.id] case final editor?) {
+        try {
+          value = editor.snapshot()['markdown'];
+          if (value == null) {
+            error = 'Finish composing text before saving.';
+          } else if (value == '' &&
+              !field.required &&
+              !(editor.revision == 0 && _restoredEmpty.contains(field.id))) {
+            continue;
+          }
+        } on FormatException catch (failure) {
+          error =
+              'Cannot save this Markdown: ${failure.message} Edit it or use Undo.';
+        }
+      } else {
+        value = _typed[field.id];
+        if (value == null && !field.required) continue;
+      }
+      values[field.id.value] = value;
+      if (errors != null) {
+        error ??= field.valueError(value);
+        if (error != null) errors[field.id] = error;
+      }
     }
+    return Map.unmodifiable(values);
   }
 
-  Map<String, Object> validate() => definition.validate(id, {
-    for (final field in definition.fields)
-      if (isIncluded(field)) field.id.value: _value(field),
-  });
+  Map<String, Object> validate() => definition.validate(id, snapshot());
 
-  String _snapshot(RecordFieldId fieldId) {
-    final editor = markdown[fieldId]!;
-    try {
-      final snapshot = editor.snapshot();
-      if (snapshot['markdown'] case final String current) return current;
-      throw InvalidRecordValue(
-        definition.collection,
-        id,
-        fieldId,
-        'Finish composing text before saving.',
-      );
-    } on FormatException catch (error) {
-      throw InvalidRecordValue(
-        definition.collection,
-        id,
-        fieldId,
-        'Cannot save this Markdown: ${error.message} Edit it or use Undo.',
-      );
-    }
-  }
-
+  @override
   void dispose() {
     disposed = true;
     for (final controller in text.values) {
@@ -1082,6 +1089,7 @@ final class _RecordDraft {
     for (final editor in markdown.values) {
       editor.dispose();
     }
+    super.dispose();
   }
 }
 
@@ -1124,15 +1132,12 @@ final class _RecordForm extends StatelessWidget {
     if (draft.markdown.isEmpty) return _controls(context, behavior);
     for (final field in draft.definition.fields) {
       draft.markdown[field.id]?.setEditingEnabled(
-        active &&
-            enabled &&
-            draft.isIncluded(field) &&
-            (behavior?.allows(field) ?? true),
+        active && enabled && (behavior?.allows(field) ?? true),
       );
     }
     // Composition completion can make Save safe without a document change.
     return ListenableBuilder(
-      listenable: draft.markdownChanges,
+      listenable: draft,
       builder: (context, _) => _controls(context, behavior),
     );
   }
@@ -1142,10 +1147,8 @@ final class _RecordForm extends StatelessWidget {
     final record = draft.record;
     final suffix =
         '${definition.collection}${record == null ? '' : '-${record.id}'}';
-    final errors = {
-      for (final field in definition.fields)
-        if (draft.isIncluded(field)) field.id: ?draft._fieldError(field),
-    };
+    final errors = <RecordFieldId, String>{};
+    final values = draft.snapshot(errors: errors);
     final scope = formScope();
     final route = ModalRoute.of(context);
     bool current() =>
@@ -1153,12 +1156,6 @@ final class _RecordForm extends StatelessWidget {
         !draft.disposed &&
         (route?.isActive ?? true) &&
         formScope() == scope;
-    bool editable(RecordFieldDefinition<Object> field) =>
-        active && enabled && (behavior?.allows(field) ?? true);
-    void changed(RecordFieldDefinition<Object> field, [List<String>? context]) {
-      behavior?.changed(field, context);
-      onChanged();
-    }
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1169,95 +1166,16 @@ final class _RecordForm extends StatelessWidget {
           const Text(
             'Form customization unavailable. Showing declared controls.',
           ),
-        for (final field in definition.fields) ...[
-          if (!field.required && field.unsetLabel == null)
-            CheckboxListTile(
-              key: ValueKey('record-presence-$suffix-${field.id}'),
-              contentPadding: EdgeInsets.zero,
-              controlAffinity: ListTileControlAffinity.leading,
-              title: Text('Include ${field.label} (optional)'),
-              subtitle: field.description == null
-                  ? null
-                  : Text(field.description!),
-              value: draft.isIncluded(field),
-              onChanged: editable(field)
-                  ? (present) {
-                      if (!current() || !editable(field)) return;
-                      draft.setOptionalIncluded(field, present == true);
-                      changed(field);
-                    }
-                  : null,
-            ),
-          if (field.editor is ContributedRecordFieldEditor ||
-              draft.markdown.containsKey(field.id))
-            InputDecorator(
-              key: ValueKey('record-input-$suffix-${field.id}'),
-              decoration: InputDecoration(
-                labelText: _label(field),
-                floatingLabelBehavior: FloatingLabelBehavior.always,
-                enabled: editable(field) && draft.isIncluded(field),
-                errorText: errors[field.id],
-                errorMaxLines: 4,
-              ),
-              child: switch (field.editor) {
-                final ContributedRecordFieldEditor editor =>
-                  active && draft.isIncluded(field)
-                      ? _contributedEditor(
-                          field,
-                          editor,
-                          current,
-                          behavior,
-                          changed,
-                        )
-                      : const SizedBox.shrink(),
-                _ => SizedBox(
-                  height: 220,
-                  child: active ? draft.markdown[field.id]!.buildView() : null,
-                ),
-              },
-            )
-          else if (field.type case final SettingType<Object> scalarType)
-            ScalarInput(
-              inputKey: ValueKey('record-input-$suffix-${field.id}'),
-              type: scalarType,
-              label: _label(field),
-              value: draft.typedValues[field.id],
-              text: draft.text[field.id]!,
-              enabled:
-                  editable(field) &&
-                  (draft.isIncluded(field) || field.unsetLabel != null),
-              choices: behavior?.fields[field.id.value]?.choices,
-              unsetLabel: field.unsetLabel,
-              allowUnsetBoolean: true,
-              error: errors[field.id],
-              onChanged: (value) {
-                if (!current() || !editable(field)) return;
-                if (value != null &&
-                    !(behavior?.offers(field, value) ?? true)) {
-                  return;
-                }
-                if (field.unsetLabel != null) {
-                  draft.setOptionalIncluded(field, value != null);
-                } else if (!draft.isIncluded(field)) {
-                  return;
-                }
-                if (field.type is BooleanSettingType ||
-                    field.type is EnumSettingType) {
-                  draft.typedValues[field.id] = value;
-                }
-                changed(field);
-              },
-            ),
-          if (behavior?.fields[field.id.value]?.guidance case final guidance?)
-            Semantics(liveRegion: true, child: Text(guidance))
-          else if ((field.required || field.unsetLabel != null) &&
-              field.description != null)
-            Text(
-              field.description!,
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
-          const SizedBox(height: 8),
-        ],
+        for (final field in definition.fields)
+          _field(
+            context,
+            field,
+            suffix,
+            values,
+            errors[field.id],
+            current,
+            behavior,
+          ),
         Wrap(
           spacing: 8,
           children: [
@@ -1299,51 +1217,127 @@ final class _RecordForm extends StatelessWidget {
     );
   }
 
-  String _label(RecordFieldDefinition<Object> field) =>
-      field.required ? '${field.label} (Required)' : field.label;
-
-  Widget _contributedEditor(
+  Widget _field(
+    BuildContext context,
     RecordFieldDefinition<Object> field,
-    ContributedRecordFieldEditor editor,
+    String suffix,
+    Map<String, Object?> values,
+    String? error,
     bool Function() current,
     _BehaviorHostState? behavior,
-    void Function(RecordFieldDefinition<Object>, [List<String>?]) changed,
   ) {
-    final presence = draft.presenceRevisions[field.id];
-    return RecordFieldEditorHost(
-      key: ValueKey((
-        frontends,
-        draft,
-        field.id,
-        formScope(),
-        enabled,
-        behavior?.allows(field),
-        presence,
-      )),
-      definition: draft.definition,
-      field: field,
-      extensionId: editor.extensionId,
-      frontends: frontends,
-      canEdit: enabled && (behavior?.allows(field) ?? true),
-      isCurrent: () =>
-          current() &&
-          (behavior == null || behavior.mounted) &&
-          draft.isIncluded(field) &&
-          draft.presenceRevisions[field.id] == presence,
-      readValue: () => draft._value(field),
-      permitsValue: (value) =>
-          (behavior?.allows(field) ?? true) &&
-          (behavior?.offers(field, value) ?? true),
-      acceptValue: (value, context) {
-        if (field.type is StructuredRecordFieldType ||
-            field.type is BooleanSettingType ||
-            field.type is EnumSettingType) {
-          draft.typedValues[field.id] = value;
-        } else {
-          draft.text[field.id]!.text = value.toString();
-        }
-        changed(field, context);
-      },
+    final id = field.id.value;
+    final revision = draft.clearRevisions[field.id];
+    bool fieldCurrent() =>
+        current() && draft.clearRevisions[field.id] == revision;
+    bool editable() => active && enabled && (behavior?.allows(field) ?? true);
+    void changed([List<String>? context]) {
+      behavior?.changed(field, context);
+      onChanged();
+    }
+
+    final label = field.required ? '${field.label} (Required)' : field.label;
+    final inputKey = ValueKey('record-input-$suffix-$id');
+    final editor = field.editor;
+    final controller = draft.text[field.id];
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (editor != null)
+          InputDecorator(
+            key: inputKey,
+            decoration: InputDecoration(
+              labelText: label,
+              floatingLabelBehavior: FloatingLabelBehavior.always,
+              enabled: editable(),
+              errorText: error,
+              errorMaxLines: 4,
+            ),
+            child: switch (editor) {
+              _ when !active => const SizedBox.shrink(),
+              ContributedRecordFieldEditor(:final extensionId) =>
+                RecordFieldEditorHost(
+                  key: ValueKey((
+                    frontends,
+                    draft,
+                    id,
+                    formScope(),
+                    editable(),
+                    revision,
+                  )),
+                  definition: draft.definition,
+                  field: field,
+                  extensionId: extensionId,
+                  frontends: frontends,
+                  canEdit: editable(),
+                  isCurrent: () =>
+                      fieldCurrent() && (behavior == null || behavior.mounted),
+                  readValue: () => draft._typed[field.id],
+                  permitsValue: (value) =>
+                      editable() && (behavior?.offers(field, value) ?? true),
+                  acceptValue: (value, context) {
+                    draft._typed[field.id] = value;
+                    changed(context);
+                  },
+                ),
+              _ => SizedBox(
+                height: 220,
+                child: draft.markdown[field.id]!.buildView(),
+              ),
+            },
+          )
+        else if (field.type case final SettingType<Object> scalar)
+          ScalarInput(
+            inputKey: inputKey,
+            type: scalar,
+            label: label,
+            value: values[id],
+            text: controller,
+            enabled: editable(),
+            choices: behavior?.fields[id]?.choices,
+            unsetLabel: field.required ? null : field.unsetLabel ?? 'Not set',
+            booleanDropdown: true,
+            error: error,
+            onChanged: (value) {
+              if (!fieldCurrent() || !editable()) return;
+              if (value != null && !(behavior?.offers(field, value) ?? true)) {
+                return;
+              }
+              draft.editScalar(field, value);
+              changed();
+            },
+          ),
+        if (!field.required &&
+            values.containsKey(id) &&
+            (editor != null || values[id] == ''))
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton(
+              key: ValueKey('record-clear-$suffix-$id'),
+              onPressed: editable()
+                  ? () {
+                      if (!fieldCurrent() ||
+                          !editable() ||
+                          (controller != null && controller.text.isNotEmpty)) {
+                        return;
+                      }
+                      draft.clear(field);
+                      changed();
+                    }
+                  : null,
+              child: Text(
+                values[id] == ''
+                    ? 'Remove empty value'
+                    : 'Remove ${field.label}',
+              ),
+            ),
+          ),
+        if (behavior?.fields[id]?.guidance case final guidance?)
+          Semantics(liveRegion: true, child: Text(guidance))
+        else if (field.description case final description?)
+          Text(description, style: Theme.of(context).textTheme.bodySmall),
+        const SizedBox(height: 8),
+      ],
     );
   }
 }

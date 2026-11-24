@@ -23,6 +23,7 @@ import 'support/record_draft_id.dart';
 final _collection = RecordCollectionId('jobs');
 final _job = RecordTypeId('dev.example.records.job');
 final _note = RecordTypeId('dev.example.records.note');
+final _memo = RecordTypeId('dev.example.records.memo');
 const _preference = 'dev.example.records.message';
 
 void main() {
@@ -440,8 +441,7 @@ void main() {
         expect(find.text('Agent'), findsOneWidget);
         // Both required fields accept empty strings, without any user input.
         expect(_enabled(tester, createButton), isTrue);
-        expect(_key('record-presence-agents-name'), findsNothing);
-        expect(_key('record-presence-agents-instructions'), findsNothing);
+        expect(find.byType(CheckboxListTile), findsNothing);
         final name = tester.widget<TextField>(_key('record-input-agents-name'));
         expect(name.enabled, isTrue);
         expect(name.decoration!.labelText, 'Name (Required)');
@@ -464,12 +464,10 @@ void main() {
           ('description', 'Description'),
           ('when-to-use', 'When to Use'),
         ]) {
-          final presence = _key('record-presence-agents-$field');
           final input = _key('record-input-agents-$field');
-          expect(tester.widget<CheckboxListTile>(presence).value, isFalse);
-          expect(tester.widget<TextField>(input).enabled, isFalse);
+          expect(tester.widget<TextField>(input).enabled, isTrue);
+          expect(_text(tester, input), isEmpty);
           expect(tester.widget<TextField>(input).decoration!.labelText, label);
-          await _tap(tester, presence);
           await _enter(tester, input, values[field]!);
         }
         final state = await _selectInstructions(tester, 'agents');
@@ -514,6 +512,7 @@ void main() {
           _key('record-input-$suffix-name'),
           'Renamed Reviewer',
         );
+        await _enter(tester, _key('record-input-$suffix-description'), '');
         final existing = _instructionsOwner(tester, suffix);
         final editing = await _selectInstructions(tester, suffix, offset: 9);
         final code = editing.document.root.children.first;
@@ -526,8 +525,8 @@ void main() {
         await _tap(tester, _key('records-reload-agents'));
         await loaded(tester);
         expect(await stored(), {
-          ...values,
           'name': 'Renamed Reviewer',
+          'when-to-use': values['when-to-use'],
           'instructions': markdown.replaceFirst(
             'report();',
             'report(); // tested',
@@ -808,39 +807,31 @@ void main() {
   }, skip: !Platform.isLinux);
 
   testWidgets(
-    'required empty Markdown persists; optional Markdown retains composition until committed or excluded',
+    'optional Markdown blocks Create during composition; settled edits persist and deleting text omits the field',
     (tester) => tester.runAsync(() async {
       await mount(tester);
       await openRecords(tester);
       await add(tester);
       await _choose(tester, _key('record-type-jobs'), 'Memo');
       final id = await inspectDraftId(tester);
-      expect(_presence('body'), findsNothing);
+      expect(find.byType(CheckboxListTile), findsNothing);
       final body = tester.widget<InputDecorator>(_input('body')).decoration;
       expect(body.labelText, 'Body (Required)');
       expect(body.enabled, isTrue);
       expect(body.errorText, isNull);
       expect(find.text('Memo text in Markdown.'), findsOneWidget);
       final owner = _instructionsOwner(tester, 'jobs');
-      final presence = _presence('instructions');
-      expect(tester.widget<CheckboxListTile>(presence).value, isFalse);
-      expect(owner.editingEnabled, isFalse);
-      await _tap(tester, presence);
+      expect(owner.editingEnabled, isTrue);
+      final button = _key('record-create-jobs');
+      final staleCreate = tester.widget<ButtonStyleButton>(button).onPressed!;
       await _selectInstructions(tester, 'jobs');
       final composing = await _compose(tester, 'x');
-      final button = _key('record-create-jobs');
       expect(_enabled(tester, button), isFalse);
-      await _richTap(tester, presence);
-      expect(owner.editingEnabled, isFalse);
-      expect(owner.snapshot()['error'], 'composition_pending');
-      // Excluding the optional field makes Create possible without committing it.
-      expect(_enabled(tester, button), isTrue);
-      await _richTap(tester, presence);
-      expect(_instructionsOwner(tester, 'jobs'), same(owner));
-      expect(owner.editingEnabled, isTrue);
-      expect(_enabled(tester, button), isFalse);
-      await _selectInstructions(tester, 'jobs', offset: 1);
-      await native_input.input(tester, composing);
+      staleCreate();
+      await native_input.frames(tester);
+      expect(find.textContaining('Finish composing'), findsOneWidget);
+      expect(service.creates, 0);
+      expect(file(id).existsSync(), isFalse);
       await native_input.input(
         tester,
         composing.copyWith(composing: TextRange.empty),
@@ -855,15 +846,182 @@ void main() {
       await _edit(tester, id);
       final editing = _instructionsOwner(tester, 'jobs-$id');
       expect(editing.snapshot()['markdown'], 'x');
-      final included = _editPresence(id, 'instructions');
-      expect(tester.widget<CheckboxListTile>(included).value, isTrue);
-      await _tap(tester, included);
-      expect(editing.editingEnabled, isFalse);
+      await _selectInstructions(tester, 'jobs-$id', offset: 1);
+      await tester.sendKeyEvent(LogicalKeyboardKey.backspace);
+      await native_input.frames(tester);
+      expect(editing.snapshot()['markdown'], '');
+      await native_input.control(tester, LogicalKeyboardKey.keyZ);
       expect(editing.snapshot()['markdown'], 'x');
-      await save(tester, id);
+      await native_input.control(tester, LogicalKeyboardKey.keyY);
+      expect(editing.snapshot()['markdown'], '');
+      await _richTap(tester, _key('record-save-jobs-$id'));
+      await _loaded(tester);
       final saved = (await service.loadRecords(_collection)).records.single;
       expect(saved.id, ConfigurationRecordId(id));
       expect(saved.values, {'body': ''});
+      await unmount(tester);
+    }),
+    skip: !Platform.isLinux,
+  );
+
+  testWidgets(
+    'explicit clear discards optional Markdown composition and fences the old input client',
+    (tester) => tester.runAsync(() async {
+      await mount(tester);
+      await openRecords(tester);
+      await add(tester);
+      await _choose(tester, _key('record-type-jobs'), 'Memo');
+      final id = await inspectDraftId(tester);
+      final suffix = 'jobs-$id';
+      await create(tester);
+      final original = file(id).readAsBytesSync();
+      expect(file(id).readAsStringSync(), isNot(contains('instructions')));
+      await _edit(tester, id);
+      final save = _key('record-save-$suffix');
+      final staleSave = tester.widget<ButtonStyleButton>(save).onPressed!;
+      final old = _instructionsOwner(tester, suffix);
+      final oldState = await _selectInstructions(tester, suffix);
+      final pending = await _compose(tester, 'pending');
+      final client = tester.testTextInput.log.lastWhere(
+        (call) => call.method == 'TextInput.setClient',
+      );
+      expect(_enabled(tester, save), isFalse);
+      staleSave();
+      await native_input.frames(tester);
+      expect(service.updates, 0);
+      expect(file(id).readAsBytesSync(), original);
+      await _richTap(tester, _key('records-reload-jobs'));
+      await _tap(tester, _key('records-reload-cancel-jobs'));
+      await _loaded(tester);
+      expect(old.snapshot()['error'], 'composition_pending');
+      await _richTap(tester, _key('record-clear-$suffix-instructions'));
+      final fresh = _instructionsOwner(tester, suffix);
+      expect(old.isDisposed, isTrue);
+      expect(fresh.editingEnabled, isTrue);
+      expect(fresh.snapshot()['markdown'], '');
+      await _selectInstructions(tester, suffix);
+      // A delayed native commit and selection from the retired view cannot
+      // restore the discarded text or detach the replacement's input client.
+      oldState.selection = rich.Selection.collapsed(
+        rich.Position(path: [0], offset: 0),
+      );
+      await tester.binding.defaultBinaryMessenger.handlePlatformMessage(
+        SystemChannels.textInput.name,
+        SystemChannels.textInput.codec.encodeMethodCall(
+          MethodCall('TextInputClient.updateEditingState', [
+            (client.arguments as List).first,
+            pending.copyWith(composing: TextRange.empty).toJSON(),
+          ]),
+        ),
+        (_) {},
+      );
+      await native_input.frames(tester);
+      expect(fresh.snapshot()['markdown'], '');
+      expect(_enabled(tester, save), isTrue);
+      expect(tester.testTextInput.hasAnyClients, isTrue);
+      await _richTap(tester, save);
+      await _loaded(tester);
+      expect(service.updates, 1);
+      expect(file(id).readAsBytesSync(), original);
+      final saved = (await service.loadRecords(_collection)).records.single;
+      expect(saved.values, {'body': ''});
+      await unmount(tester);
+    }),
+    skip: !Platform.isLinux,
+  );
+
+  for (final (kind, source) in [
+    ('empty', ''),
+    ('unsupported', 'See ![diagram](memo.png)\r\n'),
+  ]) {
+    testWidgets(
+      '$kind optional Markdown survives no-op and unrelated saves until explicitly removed',
+      (tester) => tester.runAsync(() async {
+        const suffix = 'jobs-preserved';
+        await service.createRecord(_memo, ConfigurationRecordId('preserved'), {
+          'body': '',
+          'instructions': source,
+        });
+        final original = file('preserved').readAsBytesSync();
+        await mount(tester);
+        await openRecords(tester);
+        await _edit(tester, 'preserved');
+        final save = _key('record-save-$suffix');
+        final editor = _instructionsOwner(tester, suffix);
+        expect(editor.snapshot()['markdown'], source);
+        expect(editor.readOnly, kind == 'unsupported');
+        await _richTap(tester, save);
+        await _loaded(tester);
+        expect(file('preserved').readAsBytesSync(), original);
+        await _tap(tester, _key('record-edit-$suffix'));
+        await _selectMarkdown(tester, _editInput('preserved', 'body'));
+        await native_input.insertAtSelection(tester, 'Other change');
+        await _richTap(tester, save);
+        await _loaded(tester);
+        await _tap(tester, _key('records-reload-jobs'));
+        await _loaded(tester);
+        expect(
+          find.text(
+            'Instructions: ${source.isEmpty ? '(empty string)' : source}',
+          ),
+          findsOneWidget,
+        );
+        await _tap(tester, _key('record-edit-$suffix'));
+        expect(
+          _instructionsOwner(tester, suffix).snapshot()['markdown'],
+          source,
+        );
+        await _richTap(tester, _key('record-clear-$suffix-instructions'));
+        expect(_instructionsOwner(tester, suffix).editingEnabled, isTrue);
+        await _richTap(tester, save);
+        await _loaded(tester);
+        final saved = (await service.loadRecords(_collection)).records.single;
+        expect(saved.values, {'body': 'Other change'});
+        await unmount(tester);
+      }),
+      skip: !Platform.isLinux,
+    );
+  }
+
+  testWidgets(
+    'Undo recovers an unserializable optional Markdown edit and reverting to absence is clean',
+    (tester) => tester.runAsync(() async {
+      const suffix = 'jobs-undo';
+      await service.createRecord(_memo, ConfigurationRecordId('undo'), {
+        'body': '',
+      });
+      final original = file('undo').readAsBytesSync();
+      await mount(tester);
+      await openRecords(tester);
+      await _edit(tester, 'undo');
+      final save = _key('record-save-$suffix');
+      final oldSave = tester.widget<ButtonStyleButton>(save).onPressed!;
+      final owner = _instructionsOwner(tester, suffix);
+      final state = await _selectInstructions(tester, suffix);
+      // The native shortcuts do not offer this unrepresentable attribute.
+      await state.apply(
+        state.transaction..insertText(
+          state.document.root.children.single,
+          0,
+          'x',
+          attributes: {'underline': true},
+        ),
+      );
+      await native_input.frames(tester);
+      expect(owner.snapshot, throwsFormatException);
+      expect(_enabled(tester, save), isFalse);
+      oldSave();
+      await native_input.frames(tester);
+      expect(service.updates, 0);
+      expect(file('undo').readAsBytesSync(), original);
+      await native_input.control(tester, LogicalKeyboardKey.keyZ);
+      expect(owner.snapshot()['markdown'], '');
+      expect(_enabled(tester, save), isTrue);
+      await _richTap(tester, _key('records-reload-jobs'));
+      expect(find.byType(AlertDialog), findsNothing);
+      await _loaded(tester);
+      expect(service.recordLoads, 2);
+      expect(file('undo').readAsBytesSync(), original);
       await unmount(tester);
     }),
     skip: !Platform.isLinux,
@@ -894,9 +1052,7 @@ void main() {
       await save(tester, 'original');
       expect(original.readAsBytesSync(), before);
       await _tap(tester, _key('record-edit-jobs-original'));
-      for (final field in ['caption', 'enabled', 'count', 'mode']) {
-        expect(_editPresence('original', field), findsNothing);
-      }
+      expect(find.byType(CheckboxListTile), findsNothing);
       await _enter(
         tester,
         _editInput('original', 'caption'),
@@ -926,27 +1082,10 @@ void main() {
       expect(original.readAsBytesSync(), before);
       await _enter(tester, _editInput('original', 'count'), '2');
       await _choose(tester, _editInput('original', 'mode'), 'Expanded label');
-      expect(
-        tester
-            .widget<CheckboxListTile>(
-              _editPresence('original', 'optional-text'),
-            )
-            .value,
-        isTrue,
-      );
-      await _tap(tester, _editPresence('original', 'optional-text'));
-      for (final field in ['optional-bool', 'optional-int', 'optional-enum']) {
-        await _tap(tester, _editPresence('original', field));
-      }
-      expect(
-        tester
-            .widget<DropdownButton<bool>>(
-              _editInput('original', 'optional-bool'),
-            )
-            .value,
-        isNull,
-      );
-      expect(_enabled(tester, _key('record-save-jobs-original')), isFalse);
+      final optionalText = _editInput('original', 'optional-text');
+      expect(_text(tester, optionalText), 'remove');
+      await _enter(tester, optionalText, '');
+      expect(_enabled(tester, _key('record-save-jobs-original')), isTrue);
       await _choose(tester, _editInput('original', 'optional-bool'), 'False');
       await _enter(tester, _editInput('original', 'optional-int'), '0');
       await _choose(
@@ -975,10 +1114,12 @@ void main() {
       expect(changed, isNot(contains('Expanded label')));
       await _tap(tester, _key('record-edit-jobs-original'));
       await _enter(tester, _editInput('original', 'caption'), '');
-      await _tap(tester, _editPresence('original', 'optional-text'));
+      await _choose(tester, _editInput('original', 'optional-bool'), 'True');
+      await _choose(tester, _editInput('original', 'optional-bool'), 'Not set');
+      await _choose(tester, _editInput('original', 'optional-enum'), 'Not set');
+      await _enter(tester, _editInput('original', 'optional-int'), '');
       await save(tester, 'original');
       expect(find.text('original'), findsOneWidget);
-      expect(find.text('Optional text: (empty string)'), findsOneWidget);
       final saved = (await service.loadRecords(_collection)).records.single;
       expect(saved.id, ConfigurationRecordId('original'));
       expect(saved.type, _job);
@@ -988,11 +1129,91 @@ void main() {
         'enabled': true,
         'count': 2,
         'mode': 'expanded',
-        'optional-text': '',
-        'optional-bool': false,
-        'optional-int': 0,
-        'optional-enum': 'compact',
       });
+      await unmount(tester);
+    }),
+    skip: !Platform.isLinux,
+  );
+
+  testWidgets(
+    'an explicitly stored empty text survives other edits; explicit removal is a dirty change',
+    (tester) => tester.runAsync(() async {
+      const id = 'empty';
+      await service.createRecord(_job, ConfigurationRecordId(id), {
+        ..._values(),
+        'optional-text': '',
+      });
+      final original = file(id).readAsBytesSync();
+      await mount(tester);
+      await openRecords(tester);
+      await _edit(tester, id);
+      final text = _editInput(id, 'optional-text');
+      expect(_text(tester, text), isEmpty);
+      await save(tester, id);
+      expect(file(id).readAsBytesSync(), original);
+      await _tap(tester, _key('record-edit-jobs-$id'));
+      await _enter(tester, _editInput(id, 'caption'), 'Unrelated');
+      await save(tester, id);
+      await _tap(tester, _key('records-reload-jobs'));
+      await _loaded(tester);
+      expect(find.text('Optional text: (empty string)'), findsOneWidget);
+      await _tap(tester, _key('record-edit-jobs-$id'));
+      await _tap(tester, _key('record-clear-jobs-$id-optional-text'));
+      expect(_text(tester, text), isEmpty);
+      await _tap(tester, _key('records-reload-jobs'));
+      expect(find.text('Reload jobs?'), findsOneWidget);
+      await _tap(tester, _key('records-reload-cancel-jobs'));
+      await _loaded(tester);
+      await save(tester, id);
+      final saved = (await service.loadRecords(_collection)).records.single;
+      expect(saved.values, _values(caption: 'Unrelated'));
+      await unmount(tester);
+    }),
+    skip: !Platform.isLinux,
+  );
+
+  testWidgets(
+    'malformed optional integer is dirty; reverting optional controls to absence needs no confirmation',
+    (tester) => tester.runAsync(() async {
+      const id = 'revert';
+      await seed(id);
+      final original = file(id).readAsBytesSync();
+      await mount(tester);
+      await openRecords(tester);
+      await _edit(tester, id);
+      final save = _key('record-save-jobs-$id');
+      final oldSave = tester.widget<ButtonStyleButton>(save).onPressed!;
+      final number = _editInput(id, 'optional-int');
+      await _enter(tester, number, 'bad');
+      expect(_scalarDecoration(tester, number).errorText, isNotNull);
+      expect(_enabled(tester, save), isFalse);
+      oldSave();
+      await tester.pump();
+      expect(service.updates, 0);
+      final reload = _key('records-reload-jobs');
+      await _tap(tester, reload);
+      expect(find.text('Reload jobs?'), findsOneWidget);
+      await _tap(tester, _key('records-reload-cancel-jobs'));
+      await _loaded(tester);
+      expect(_text(tester, number), 'bad');
+      await _enter(tester, number, '');
+      expect(_scalarDecoration(tester, number).errorText, isNull);
+      expect(_enabled(tester, save), isTrue);
+      final text = _editInput(id, 'optional-text');
+      await _enter(tester, text, 'draft');
+      await _enter(tester, text, '');
+      for (final (field, choice) in [
+        ('optional-bool', 'False'),
+        ('optional-enum', 'Expanded label'),
+      ]) {
+        await _choose(tester, _editInput(id, field), choice);
+        await _choose(tester, _editInput(id, field), 'Not set');
+      }
+      await _tap(tester, reload);
+      expect(find.byType(AlertDialog), findsNothing);
+      await _loaded(tester);
+      expect(service.recordLoads, 2);
+      expect(file(id).readAsBytesSync(), original);
       await unmount(tester);
     }),
     skip: !Platform.isLinux,
@@ -1115,7 +1336,7 @@ void main() {
       expect(_editInput('first', 'caption'), findsNothing);
       await _expectNoFocus(tester, [
         'record-input-jobs-first',
-        'record-presence-jobs-first',
+        'record-clear-jobs-first',
       ]);
       await _edit(tester, 'second');
       await _enter(tester, _editInput('second', 'caption'), 'Second draft');
@@ -1782,7 +2003,7 @@ void main() {
   }
 
   testWidgets(
-    'required scalar controls validate immediately and only included optional values persist',
+    'required controls validate immediately; optional inputs persist only supplied values',
     (tester) {
       return tester.runAsync(() async {
         await mount(tester);
@@ -1801,7 +2022,6 @@ void main() {
           ('count', 'Count'),
           ('mode', 'Mode'),
         ]) {
-          expect(_presence(field), findsNothing);
           final decoration = _scalarDecoration(tester, _input(field));
           expect(decoration.labelText, '$label (Required)');
           expect(find.text('Help for $label.'), findsOneWidget);
@@ -1818,18 +2038,25 @@ void main() {
           'optional-int',
           'optional-enum',
         ];
-        expect(find.byType(CheckboxListTile), findsNWidgets(optional.length));
+        expect(find.byType(CheckboxListTile), findsNothing);
         for (final field in optional) {
-          expect(
-            tester.widget<CheckboxListTile>(_presence(field)).value,
-            isFalse,
-          );
           expect(_scalarDecoration(tester, _input(field)).errorText, isNull);
         }
-        for (final field in ['caption', 'count']) {
+        for (final field in [
+          'caption',
+          'count',
+          'optional-text',
+          'optional-int',
+        ]) {
           final input = tester.widget<TextField>(_input(field));
           expect(input.enabled, isTrue);
           expect(input.controller!.text, '');
+        }
+        for (final field in ['optional-bool', 'optional-enum']) {
+          expect(
+            find.descendant(of: _input(field), matching: find.text('Not set')),
+            findsOneWidget,
+          );
         }
         final boolean = tester.widget<DropdownButton<bool>>(_input('enabled'));
         final enumeration = tester.widget<DropdownButton<String>>(
@@ -1839,6 +2066,14 @@ void main() {
         expect(enumeration.onChanged, isNotNull);
         expect(boolean.value, isNull);
         expect(enumeration.value, isNull);
+        expect(
+          boolean.items!.map((item) => item.value),
+          unorderedEquals([true, false]),
+        );
+        expect(enumeration.items!.map((item) => item.value), [
+          'compact',
+          'expanded',
+        ]);
         expect(_enabled(tester, _key('record-create-jobs')), isFalse);
         await _choose(tester, _input('enabled'), 'False');
         expect(_scalarDecoration(tester, _input('enabled')).errorText, isNull);
@@ -1887,25 +2122,35 @@ void main() {
         await add(tester);
         final explicitId = await inspectDraftId(tester);
         await fillRequired(tester, caption: 'Two lines\nSecond line');
-        for (final field in optional) {
-          await _include(tester, field);
-        }
-        for (final field in optional) {
+        final button = _key('record-create-jobs');
+        final staleCreate = tester.widget<ButtonStyleButton>(button).onPressed!;
+        for (final invalid in [
+          'not a number',
+          '1.5',
+          '-1',
+          '3',
+          '9223372036854775808',
+        ]) {
+          await _enter(tester, _input('optional-int'), invalid);
           expect(
-            _scalarDecoration(tester, _input(field)).errorText,
-            field == 'optional-text' ? isNull : isNotEmpty,
-            reason: field,
+            _scalarDecoration(tester, _input('optional-int')).errorText,
+            isNotNull,
+            reason: invalid,
           );
+          expect(_enabled(tester, button), isFalse);
         }
-        expect(_enabled(tester, _key('record-create-jobs')), isFalse);
+        staleCreate();
+        await tester.pump();
+        expect(service.creates, 1);
+        expect(file(explicitId).existsSync(), isFalse);
+        await _enter(tester, _input('optional-int'), '');
         expect(
-          tester.widget<DropdownButton<bool>>(_input('optional-bool')).value,
+          _scalarDecoration(tester, _input('optional-int')).errorText,
           isNull,
         );
-        expect(
-          tester.widget<DropdownButton<String>>(_input('optional-enum')).value,
-          isNull,
-        );
+        expect(_enabled(tester, button), isTrue);
+        const whitespace = ' \t ';
+        await _enter(tester, _input('optional-text'), whitespace);
         await _choose(tester, _input('optional-bool'), 'False');
         await _enter(tester, _input('optional-int'), '0');
         await _choose(tester, _input('optional-enum'), 'Expanded label');
@@ -1918,7 +2163,7 @@ void main() {
           'enabled': false,
           'count': 0,
           'mode': 'compact',
-          'optional-text': '',
+          'optional-text': whitespace,
           'optional-bool': false,
           'optional-int': 0,
           'optional-enum': 'expanded',
@@ -1951,7 +2196,6 @@ void main() {
       await _choose(tester, _key('record-type-jobs'), 'Note');
       final noteId = await inspectDraftId(tester);
       expect(noteId, isNot(jobId));
-      await _include(tester, 'display-name');
       await _enter(tester, _input('display-name'), 'Note draft');
       await _choose(tester, _key('record-type-jobs'), 'Job');
       expect(tester.element(_input('caption')), same(recordElement));
@@ -2008,7 +2252,11 @@ void main() {
         await openRecords(tester);
         await add(tester);
         final jobId = await inspectDraftId(tester);
-        await _include(tester, 'optional-text');
+        await _enter(
+          tester,
+          _input('optional-text'),
+          'Retained optional value',
+        );
         await fillRequired(tester, caption: 'Retained across sibling creation');
         final element = tester.element(_input('caption'));
         final controller = tester
@@ -2058,10 +2306,9 @@ void main() {
         expect(controller!.text, 'Retained across sibling creation');
         expect(await inspectDraftId(tester), jobId);
         expect(
-          tester.widget<CheckboxListTile>(_presence('optional-text')).value,
-          isTrue,
+          _text(tester, _input('optional-text')),
+          'Retained optional value',
         );
-        expect(_presence('caption'), findsNothing);
         expect(file(jobId).existsSync(), isFalse);
         await unmount(tester);
       });
@@ -2084,7 +2331,7 @@ void main() {
         await _expectNoFocus(tester, [
           'setting-',
           'record-input-jobs-caption',
-          'record-presence-jobs-optional-text',
+          'record-input-jobs-optional-',
         ]);
         await _choose(tester, _key('record-type-jobs'), 'Job');
         expect(
@@ -2181,7 +2428,7 @@ void main() {
   );
 
   testWidgets(
-    'narrow creation remains reachable with explicit optional absence',
+    'narrow creation remains reachable after clearing an optional input',
     (tester) {
       return tester.runAsync(() async {
         await mount(tester);
@@ -2190,16 +2437,11 @@ void main() {
         await tester.pumpAndSettle();
         await add(tester);
         await fillRequired(tester, caption: 'Narrow-screen draft');
-        await _include(tester, 'optional-text');
-        await _enter(
-          tester,
-          _input('optional-text'),
-          'Remember after exclusion',
-        );
-        await _include(tester, 'optional-text');
+        await _enter(tester, _input('optional-text'), 'Remove before creating');
+        await _enter(tester, _input('optional-text'), '');
         expect(
           tester.widget<TextField>(_input('optional-text')).enabled,
-          isFalse,
+          isTrue,
         );
         await create(tester);
         expect(tester.takeException(), isNull);
@@ -2738,12 +2980,16 @@ RecordCatalog _catalog() {
         field('mode', 'Mode', enumeration, required: true),
         field('optional-text', 'Optional text', const StringSettingType()),
         field('optional-bool', 'Optional boolean', const BooleanSettingType()),
-        field('optional-int', 'Optional integer', IntegerSettingType()),
+        field(
+          'optional-int',
+          'Optional integer',
+          IntegerSettingType(minimum: 0, maximum: 2),
+        ),
         field('optional-enum', 'Optional enumeration', enumeration),
       ],
     ),
     RecordTypeDefinition(
-      id: RecordTypeId('dev.example.records.memo'),
+      id: _memo,
       owner: PluginId('dev.example.records'),
       collection: _collection,
       collectionLabel: 'Jobs',
@@ -2903,11 +3149,8 @@ InputDecoration _scalarDecoration(WidgetTester tester, Finder input) {
 }
 
 Finder _input(String field) => _key('record-input-jobs-$field');
-Finder _presence(String field) => _key('record-presence-jobs-$field');
 Finder _editInput(String id, String field) =>
     _key('record-input-jobs-$id-$field');
-Finder _editPresence(String id, String field) =>
-    _key('record-presence-jobs-$id-$field');
 
 Finder _instructions(String suffix) =>
     _key('record-input-$suffix-instructions');
@@ -2928,8 +3171,13 @@ Future<rich.EditorState> _selectInstructions(
   WidgetTester tester,
   String suffix, {
   int offset = 0,
+}) => _selectMarkdown(tester, _instructions(suffix), offset: offset);
+
+Future<rich.EditorState> _selectMarkdown(
+  WidgetTester tester,
+  Finder field, {
+  int offset = 0,
 }) async {
-  final field = _instructions(suffix);
   await tester.ensureVisible(field);
   await native_input.frames(tester);
   final editor = tester.widget<rich.AppFlowyEditor>(
@@ -3003,9 +3251,6 @@ Future<void> _enter(WidgetTester tester, Finder finder, String text) async {
   await tester.enterText(finder, text);
   await tester.pump();
 }
-
-Future<void> _include(WidgetTester tester, String field) =>
-    _tap(tester, _presence(field));
 
 Future<void> _choose(WidgetTester tester, Finder finder, String label) async {
   await _tap(tester, finder);

@@ -39,7 +39,7 @@ final class _BehaviorHostState extends State<_BehaviorHost> {
   void initState() {
     super.initState();
     _resolve();
-    draft.markdownChanges.addListener(_markdownChanged);
+    draft.addListener(_markdownChanged);
   }
 
   void _resolve() {
@@ -70,19 +70,6 @@ final class _BehaviorHostState extends State<_BehaviorHost> {
     unawaited(_starting?.cancel());
   }
 
-  Map<String, Object?> _snapshot() {
-    final values = <String, Object?>{};
-    for (final field in draft.definition.fields.where(draft.isIncluded)) {
-      try {
-        values[field.id.value] = draft._value(field);
-      } on InvalidRecordValue {
-        // Included but not currently representable (such as IME composition).
-        values[field.id.value] = null;
-      }
-    }
-    return Map.unmodifiable(values);
-  }
-
   void _markdownChanged() {
     // The native host also notifies for selection/composition and enablement,
     // including during layout. Only process a changed snapshot outside build.
@@ -94,9 +81,11 @@ final class _BehaviorHostState extends State<_BehaviorHost> {
           !widget.form.enabled) {
         return;
       }
-      final values = _snapshot();
+      final values = draft.snapshot();
       for (final field in draft.markdown.keys) {
-        if (_previous[field.value] != values[field.value]) {
+        if (_previous.containsKey(field.value) !=
+                values.containsKey(field.value) ||
+            _previous[field.value] != values[field.value]) {
           setState(() => _evaluate(field.value));
           return;
         }
@@ -108,7 +97,7 @@ final class _BehaviorHostState extends State<_BehaviorHost> {
     if (!_current) return;
     final id = field.id.value;
     // Replace even on a same-value confirmation. A manual proposal, optional
-    // presence toggle or ordinary edit supplies no catalog-like evidence.
+    // removal or ordinary edit supplies no catalog-like evidence.
     if (context == null) {
       _contexts.remove(id);
     } else {
@@ -120,7 +109,7 @@ final class _BehaviorHostState extends State<_BehaviorHost> {
   void _evaluate(String? edited) {
     final binding = _binding;
     final revision = ++_revision;
-    final values = _snapshot();
+    final values = draft.snapshot();
     final changed =
         edited != null &&
         (_previous.containsKey(edited) != values.containsKey(edited) ||
@@ -166,9 +155,8 @@ final class _BehaviorHostState extends State<_BehaviorHost> {
       }
       binding.validate();
       if (!_current || revision != _revision) return;
-      if (clear != null) {
-        draft.setOptionalIncluded(clear, false);
-        draft.typedValues[clear.id] = null;
+      if (clear != null && values.containsKey(clear.id.value)) {
+        draft.clear(clear);
         _contexts.remove(clear.id.value);
         _previous = Map.unmodifiable({...values}..remove(clear.id.value));
       }
@@ -201,7 +189,7 @@ final class _BehaviorHostState extends State<_BehaviorHost> {
   void dispose() {
     _detach?.call();
     unawaited(_starting?.cancel());
-    draft.markdownChanges.removeListener(_markdownChanged);
+    draft.removeListener(_markdownChanged);
     super.dispose();
   }
 }

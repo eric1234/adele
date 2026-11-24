@@ -14,10 +14,10 @@ declares the `agents` collection (Agents) and record type
 | `instructions` | Agent instructions. Only this field declares `"editor": "markdown"`. | Required |
 
 In **Global Settings > Agents**, choose **Add**. Enter **Name** directly and
-write **Instructions** in the rich Markdown editor; neither needs an **Include**
-step. Both are strings and may be empty. Use **Include** only for **Description**
-or **When to Use**: leaving one unchecked omits it rather than saving an empty
-string. Choose **Create** to save the definition, not to select it for a Session.
+write **Instructions** in the rich Markdown editor. Both are required strings
+and may be empty. Enter **Description** or **When to Use** directly; leaving
+either blank omits it. Choose **Create** to save the definition, not to select
+it for a Session.
 Settings generates the Agent's immutable ID. To copy it, open **Advanced details**
 in Add or expand the saved Agent's details.
 

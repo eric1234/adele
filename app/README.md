@@ -419,14 +419,14 @@ Collection views list valid records in stable ID order, show declared display ti
 declared fields; the panel generates the record ID. Expand **Advanced details** to
 copy it, or expand a saved record's details to copy its immutable ID. See
 [creating and editing records](../docs/architecture/profiles-and-configuration.md#creating-and-editing-records)
-for required inputs, optional field inclusion and recovery after an unconfirmed
+for direct optional inputs, authored empty values and recovery after an unconfirmed
 Create. Creation and editing share `RecordTypeDefinition.validate`; the worker
 and host adapter validate again before persistence. Edits preserve unknown data
 and comments within the native document API's limits.
 
 [`RecordFieldEditorHost`](lib/ui/settings/record_field_editor_host.dart) mounts
 explicitly requested plugin controls through `ApplicationFrontendBootstrap` and
-`PreparedFrontend`, only for visible, included fields. Its bridge carries one
+`PreparedFrontend`, only for visible fields, including unset optional scalars. Its bridge carries one
 field draft, not the Settings service. A contributed editor can propose one
 scalar or one complete, bounded structure at its observed revision. The desktop
 does not implement a model picker. See [record editor authority](../docs/architecture/profiles-and-configuration.md#record-field-editors)
@@ -437,8 +437,9 @@ For a string field declared with `editor: "markdown"`, the draft owns a
 does not discard the document or its undo history. Create and Save use the
 current safe Markdown snapshot, preserving the original string when unedited.
 Unsupported restored Markdown is shown read-only; unfinished input composition
-or unrepresentable edits block writing the included field rather than saving an
-older value.
+or unrepresentable edits block saving, rather than saving an older value or
+treating the field as absent. Explicit removal of an optional document retires
+its owner; callbacks for discarded input do not target the new blank document.
 
 Malformed or unavailable records remain attributable filename diagnostics alongside
 healthy siblings, without Edit/Delete actions. Each existing record has a separate

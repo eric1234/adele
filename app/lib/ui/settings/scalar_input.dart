@@ -9,11 +9,11 @@ final class ScalarInput extends StatelessWidget {
     required this.type,
     required this.label,
     required this.value,
-    required this.text,
+    this.text,
     required this.enabled,
     required this.onChanged,
     this.error,
-    this.allowUnsetBoolean = false,
+    this.booleanDropdown = false,
     this.choices,
     this.unsetLabel,
   });
@@ -22,17 +22,17 @@ final class ScalarInput extends StatelessWidget {
   final SettingType<Object> type;
   final String label;
   final Object? value;
-  final TextEditingController text;
+  final TextEditingController? text;
   final bool enabled;
   final ValueChanged<Object?> onChanged;
   final String? error;
-  final bool allowUnsetBoolean;
+  final bool booleanDropdown;
   final List<String>? choices;
   final String? unsetLabel;
 
   @override
   Widget build(BuildContext context) => switch (type) {
-    BooleanSettingType() when !allowUnsetBoolean => Align(
+    BooleanSettingType() when !booleanDropdown => Align(
       alignment: Alignment.centerLeft,
       child: Semantics(
         label: label,
@@ -50,9 +50,11 @@ final class ScalarInput extends StatelessWidget {
         isExpanded: true,
         value: value as bool?,
         hint: const Text('Choose a value'),
-        items: const [
-          DropdownMenuItem(value: false, child: Text('False')),
-          DropdownMenuItem(value: true, child: Text('True')),
+        items: [
+          if (unsetLabel != null)
+            DropdownMenuItem<bool>(child: Text(unsetLabel!)),
+          const DropdownMenuItem(value: true, child: Text('True')),
+          const DropdownMenuItem(value: false, child: Text('False')),
         ],
         onChanged: enabled ? onChanged : null,
       ),

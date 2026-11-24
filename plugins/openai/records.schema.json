@@ -25,6 +25,7 @@
         {
           "id": "endpoint",
           "label": "API endpoint",
+          "description": "Default when not set: https://api.openai.com/v1/responses",
           "type": "string",
           "required": false
         }

@@ -1975,6 +1975,8 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         schemaFile.readAsBytesSync(),
         File('plugins/openai/records.schema.json').readAsBytesSync(),
       );
+      const endpointHint =
+          'Default when not set: https://api.openai.com/v1/responses';
       expect(jsonDecode(schemaFile.readAsStringSync()), {
         'schemaVersion': 1,
         'recordTypes': [
@@ -1998,6 +2000,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
               {
                 'id': 'endpoint',
                 'label': 'API endpoint',
+                'description': endpointHint,
                 'type': 'string',
                 'required': false,
               },
@@ -2035,7 +2038,10 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
       ]);
       expect(type.fields.map((field) => field.label), ['Name', 'API endpoint']);
       expect(type.fields.map((field) => field.required), [true, false]);
-      expect(type.fields.map((field) => field.description), [null, null]);
+      expect(type.fields.map((field) => field.description), [
+        null,
+        endpointHint,
+      ]);
       expect(commands.existsSync(), isFalse);
     },
   );

@@ -214,8 +214,10 @@ replacement against the revision it observed. A structured read returns a flat
 snapshot, not a mutable host map; the bridge copies and bounds proposals before
 declaration validation. There is no component patch or sibling access. The host checks the mount, editing
 state, revision, and field validator before accepting a proposal. A rejection
-leaves the value unchanged. The editor cannot select a different field or
-record, change inclusion, or submit the form. Navigation, dismissal, and
+leaves the value unchanged. An absent optional scalar is editable: the editor
+reads null and may propose a declared value. Removing a value is a host control,
+not a null proposal; it revokes the old editor's callbacks before remounting.
+The editor cannot select a different field or record or submit the form. Navigation, dismissal, and
 retirement revoke old callbacks; returning can create a fresh presentation
 over the retained draft. Only the form's ordinary Create/Save transaction
 persists an accepted edit. See the [public UI contract](../../packages/ui/lib/settings_field_editor.dart).
@@ -234,7 +236,9 @@ Session, Environment, Capability routes or backend services. A field editor's
 grants do not extend to its sibling form behavior.
 
 Settings evaluates the operation when presenting the form and on user edits,
-including accepted field proposals. Notifications follow changes to the draft,
+including removals and accepted field proposals. An absent optional field has
+no key; entered but unrepresentable input has a key with a null draft value,
+never a null to persist. Notifications follow changes to the draft,
 not transitions of its dirty flag. A field proposal may also replace that
 field's bounded, transient string-list context. Only an accepted revision can
 publish context; replacing the value without context removes it. Reconfirming
@@ -303,19 +307,25 @@ belongs to the panel: [headless callers](../../packages/settings_host/README.md#
 still supply an explicit, validated `ConfigurationRecordId` to `create`.
 
 Create and Edit use the same declaration-generated form. Required fields are
-marked **(Required)**. Edit them directly, without an **Include** checkbox. Required
+marked **(Required)**. Edit them directly. Required
 means present, not nonblank. Leaving a required string or Markdown document empty
 submits an empty string. In a new record, a required Boolean or enum has no
 preselected choice, and a required integer starts blank.
 
-Optional fields start excluded in Add. An ordinary optional enum may label
-absence as a dropdown choice. Otherwise select **Include** to supply a field;
-clear it to omit the field on Create or remove it on Save. An included empty string,
-`false` or `0` is a value, not absence. **Create** and **Save** stay disabled
-while any included field has an error, such as an unchosen Boolean or an integer
-outside its declared bounds. Edit restores the saved values and optional field
-selections without exposing unknown persisted fields. Malformed entries have no
-mutation UI.
+Optional fields start unset and are directly editable. Leaving a text or integer
+input empty, or clearing its contents, omits the field. Nonempty text is not
+trimmed; `0` is an integer value. Optional Booleans and enums offer **Not set**
+alongside their values, including `false`; an enum declaration can label absence
+more specifically. These choices never introduce a default or a stored sentinel.
+
+An already authored empty string survives unrelated edits. **Remove empty value**
+omits it without requiring the user to type first. An emptied optional Markdown
+document likewise means omission, but only on an authoritative snapshot. Normal
+document editing retains Undo; explicitly removing the field discards its native
+editor, including any pending input. **Create** and **Save** stay disabled for
+malformed or out-of-range integers, unavailable Markdown snapshots and other
+invalid inputs. Edit restores declared values without exposing unknown persisted
+fields. Malformed records have no mutation UI.
 
 **Back to records**, switching types and navigating between Settings sections keep
 the draft's original ID and field values. Only a confirmed **Create** automatically

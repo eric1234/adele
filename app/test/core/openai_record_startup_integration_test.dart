@@ -31,6 +31,7 @@ import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart' show Project;
 import 'package:adele_settings/adele_settings.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show LogicalKeyboardKey;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:model_configuration_contract/model_configuration_contract.dart';
 import 'package:plugin_builder/plugin_builder.dart';
@@ -2428,7 +2429,6 @@ final class _ProviderSettings {
   Future<String> draftAccount(String name, String endpoint) async {
     await press('records-add-providers');
     await _enter('record-input-providers-display-name', name);
-    await press('record-presence-providers-endpoint');
     await _enter('record-input-providers-endpoint', endpoint);
     return inspectDraftId(tester);
   }
