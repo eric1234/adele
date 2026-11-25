@@ -48,28 +48,21 @@ final class RemoteInferenceContextSourceAdapter
     };
     if (remote.exposure.serviceId ==
         remoteRunBoundInferenceContextSourceServiceId) {
-      // Acquiring the channel fences admission to this exact registration.
-      // Reject late results too, without opening a host-service invocation.
-      RemoteRunBoundInferenceContextSourceServiceClient client() =>
-          RemoteRunBoundInferenceContextSourceServiceClient(remote.channel);
       return InferenceContextSourceContribution.runBound(
         failureMode: failureMode,
         captureRun: (session, runId) async {
-          final binding = await client().captureRun(
-            session.id.value,
-            runId.value,
+          // Acquiring the channel validates this registration without opening
+          // a host-service invocation. Retirement also fences the pending reply.
+          final client = RemoteRunBoundInferenceContextSourceServiceClient(
+            remote.channel,
           );
-          remote.validate();
-          return binding;
-        },
-        snapshot: (context, binding) async {
-          final instructions = await client().snapshot(
-            context.session.id.value,
-            context.runId.value,
-            binding,
-          );
-          remote.validate();
-          return _material(instructions);
+          try {
+            return _material(
+              await client.captureRun(session.id.value, runId.value),
+            );
+          } finally {
+            remote.validate();
+          }
         },
       );
     }

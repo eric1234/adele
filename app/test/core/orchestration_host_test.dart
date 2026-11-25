@@ -1580,26 +1580,21 @@ void main() {
   });
 
   test(
-    'Chat approval continuation uses its prepared binding and fresh text',
+    'Chat approval continuation reuses instructions from Run preparation',
     () async {
       var selection = 'first';
       var revision = 'initial';
       final captures = <(Session, RunId)>[];
-      final snapshots = <String?>[];
       final fixture = await _fixture(
         ToolPolicyDecision.ask,
         source: InferenceContextSourceContribution.runBound(
           failureMode: InferenceContextFailureMode.required,
           captureRun: (session, runId) async {
             captures.add((session, runId));
-            return selection;
-          },
-          snapshot: (context, binding) async {
-            snapshots.add(binding);
             return [
               InferenceInstructionMaterial(
                 key: 'note',
-                text: '$binding:$revision',
+                text: '$selection:$revision',
               ),
             ];
           },
@@ -1607,7 +1602,6 @@ void main() {
       );
       expect(captures.single.$1, same(fixture.session));
       expect(captures.single.$2, fixture.run.id);
-      expect(snapshots, isEmpty);
       selection = 'second';
       await fixture.strategy.start();
       expect(fixture.run.state, RunState.waiting);
@@ -1622,11 +1616,9 @@ void main() {
       expect(fixture.model.sawCorrelatedContinuation, isTrue);
       expect(fixture.executable.executions, 1);
       expect(captures, hasLength(1));
-      expect(snapshots, ['first', 'first']);
-      expect(first.instructions, endsWith('first:initial'));
       expect(
         fixture.model.requests.last.instructions,
-        endsWith('first:updated'),
+        endsWith('first:initial'),
       );
     },
   );
@@ -1662,7 +1654,7 @@ void main() {
       addTearDown(topology.lifecycle.close);
       final session = topology.createSession(strategyId);
       final entered = Completer<void>();
-      final release = Completer<String?>();
+      final release = Completer<List<InferenceContextMaterial>>();
       addTearDown(
         extensions
             .register(
@@ -1673,10 +1665,6 @@ void main() {
                 captureRun: (_, _) {
                   entered.complete();
                   return release.future;
-                },
-                snapshot: (_, _) async {
-                  calls.add('snapshot');
-                  return [];
                 },
               ),
             )
@@ -1708,9 +1696,13 @@ void main() {
       );
       if (failure == 'exit during capture') {
         fence.interruptForApplicationExit();
-        release.complete('late');
+        release.complete([
+          InferenceInstructionMaterial(key: 'note', text: 'late'),
+        ]);
       } else if (failure == 'materialization') {
-        release.complete('captured');
+        release.complete([
+          InferenceInstructionMaterial(key: 'note', text: 'captured'),
+        ]);
       } else {
         release.completeError(StateError('Capture failed.'));
       }

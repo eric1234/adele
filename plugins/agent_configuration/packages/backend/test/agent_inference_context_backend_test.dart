@@ -11,104 +11,86 @@ void main() {
     catalog = _Catalog();
     source = AgentInferenceContextBackend(selection, catalog);
   });
+  tearDown(() => expect(selection.writes, 0));
 
-  test('a Run that captured no Agent never needs a definition', () async {
+  test('no selection succeeds without reading the catalog', () async {
     catalog.unavailable = true;
-    final binding = await source.captureRun('session', 'run');
-    expect(binding, isNull);
-    selection.id = 'later';
-    expect(await source.snapshot('session', 'run', binding), isEmpty);
+    expect(await source.captureRun('session', 'run'), isEmpty);
     expect(selection.reads, ['session']);
     expect(catalog.reads, 0);
   });
 
-  test('capture reads selection, not configuration or revision', () async {
-    selection.id = 'stable-id';
-    catalog.unavailable = true;
-    expect(await source.captureRun('session', 'run'), 'stable-id');
-    expect(selection.reads, ['session']);
-    expect(catalog.reads, 0);
-  });
-
-  test('failed selection read is not an empty or cached binding', () async {
-    selection.id = 'stable-id';
-    await source.captureRun('one', 'first');
+  test('failed selection read is not empty or cached success', () async {
+    selection.id = 'work';
+    catalog.agents = [_agent('work', 'Previous instructions')];
+    await source.captureRun('session', 'first');
     selection.unavailable = true;
     await expectLater(
-      source.captureRun('two', 'second'),
+      source.captureRun('session', 'second'),
       _failsSafely('Agent selection could not be read.'),
     );
-    expect(selection.reads, ['one', 'two']);
-    expect(catalog.reads, 0);
-  });
-
-  test('snapshots follow the bound ID but use its current Markdown', () async {
-    const markdown = '  # Review\r\n\r\n```dart\ncheck();\n```  \n';
-    selection.id = 'work';
-    final binding = await source.captureRun('session', 'run');
-    final other = _agent('other', 'Other instructions', name: 'Original');
-    catalog.agents = [other, _agent('work', markdown, name: 'Original')];
-    final first = (await source.snapshot('session', 'run', binding)).single;
-    expect(
-      (first.key, first.text, first.revision),
-      ('instructions', markdown, null),
-    );
-
-    selection.id = other.id;
-    catalog.agents = [
-      _agent('work', 'New instructions', name: 'Renamed'),
-      other,
-    ];
-    catalog.complete = false;
-    final next = (await source.snapshot('session', 'run', binding)).single;
-    expect(
-      (next.key, next.text, next.revision),
-      ('instructions', 'New instructions', null),
-    );
-    expect(first.text, markdown);
-    expect(selection.reads, ['session']);
-    expect(catalog.reads, 2);
-  });
-
-  test('blank instructions are a successful empty contribution', () async {
-    for (final blank in ['', ' \r\n\t ']) {
-      catalog.agents = [_agent('work', blank)];
-      expect(await source.snapshot('session', 'run', 'work'), isEmpty);
-    }
+    expect(selection.reads, ['session', 'session']);
+    expect(catalog.reads, 1);
   });
 
   test(
-    'missing and unobserved IDs fail; re-created IDs resolve anew',
+    'capture resolves the stable ID once, returning only its exact Markdown',
     () async {
+      const markdown = '  # Review\r\n\r\n```dart\ncheck();\n```  \n';
       selection.id = 'work';
-      final binding = await source.captureRun('session', 'run');
-      catalog.agents = [_agent('other', 'private Markdown', name: 'work')];
-      await expectLater(
-        source.snapshot('session', 'run', binding),
-        _failsSafely('The captured Agent does not exist.'),
-      );
+      final other = _agent('other', 'Other instructions', name: 'work');
+      catalog.agents = [other, _agent('work', markdown)];
       catalog.complete = false;
-      await expectLater(
-        source.snapshot('session', 'run', binding),
-        _failsSafely(
-          'The captured Agent was not observed in the incomplete catalog.',
-        ),
-      );
-      catalog.agents = [_agent('work', 'Replacement instructions')];
+      final first = (await source.captureRun('session', 'run')).single;
       expect(
-        (await source.snapshot('session', 'run', binding)).single.text,
-        'Replacement instructions',
+        (first.key, first.text, first.revision),
+        ('instructions', markdown, null),
       );
+
       expect(selection.reads, ['session']);
+      expect(catalog.reads, 1);
     },
   );
 
+  test('blank instructions are a successful empty contribution', () async {
+    selection.id = 'work';
+    for (final blank in ['', ' \r\n\t ']) {
+      catalog.agents = [_agent('work', blank)];
+      expect(await source.captureRun('session', 'run'), isEmpty);
+    }
+    expect(catalog.reads, 2);
+  });
+
+  test('missing and unobserved IDs fail; recreated IDs resolve anew', () async {
+    selection.id = 'work';
+    catalog.agents = [_agent('other', 'private Markdown', name: 'work')];
+    await expectLater(
+      source.captureRun('session', 'one'),
+      _failsSafely('The selected Agent does not exist.'),
+    );
+    catalog.complete = false;
+    await expectLater(
+      source.captureRun('session', 'two'),
+      _failsSafely(
+        'The selected Agent was not observed in the incomplete catalog.',
+      ),
+    );
+    catalog.agents = [_agent('work', 'Replacement instructions')];
+    expect(
+      (await source.captureRun('session', 'three')).single.text,
+      'Replacement instructions',
+    );
+    expect(selection.reads, ['session', 'session', 'session']);
+    expect(catalog.reads, 3);
+  });
+
   test('catalog failure does not reuse text or disclose the cause', () async {
+    selection.id = 'work';
     catalog.agents = [_agent('work', 'private Markdown')];
-    await source.snapshot('session', 'run', 'work');
+    await source.captureRun('session', 'run');
     catalog.unavailable = true;
     await expectLater(
-      source.snapshot('session', 'run', 'work'),
+      source.captureRun('session', 'run'),
       _failsSafely('Agent configuration could not be read.'),
     );
     expect(catalog.reads, 2);
@@ -135,6 +117,7 @@ final class _Selection implements AgentSelectionService {
   String? id;
   bool unavailable = false;
   final reads = <String>[];
+  int writes = 0;
 
   @override
   Future<AgentSelectionSnapshot> readSessionSelection(String sessionId) async {
@@ -152,7 +135,10 @@ final class _Selection implements AgentSelectionService {
     String sessionId,
     String? selectedAgentId,
     int expectedRevision,
-  ) => throw UnsupportedError('Inference cannot change selection.');
+  ) async {
+    writes++;
+    throw UnsupportedError('Inference cannot change selection.');
+  }
 }
 
 final class _Catalog implements AgentCatalogService {

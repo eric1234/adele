@@ -38,9 +38,9 @@ mixed-schema compatibility fallbacks.
 
 The application adapter captures effort immutably alongside its selected model
 and forwards it for every invocation, including tool continuations; new adapters
-capture independently. This adds no Session preference, model preset, persistence,
-selection UI, or catalog support inference. See the
-[model invocation boundary](../../docs/architecture/execution-model.md#model-invocation).
+capture independently. The provider receives the requested effort, not a Session
+selection or Model Preset ID. Preference capture and provider binding belong to
+the [Run host](../../docs/architecture/execution-model.md#run-model-preferences).
 
 ## Model Catalog
 

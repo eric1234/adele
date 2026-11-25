@@ -71,14 +71,15 @@ for the shared host lifecycle boundary.
 
 The ready advertisement contributes `dev.adele.plugin.agent-configuration.instructions`
 to `dev.adele.extension.inference-context-sources` with `failureMode: required`.
-`AgentInferenceContextBackend.captureRun` reads the selection once; a storage
-failure stops preparation. `snapshot` needs no catalog for a null binding. For
-a captured ID it calls `readAgents()` afresh, returning at most one material
-with key `instructions` and no revision. See the [plugin map](../../README.md#instructions-during-a-run)
-for edit, deletion, and partial-observation behavior.
+`AgentInferenceContextBackend.captureRun` reads `AgentSelectionService` once. A
+null selection returns an empty list without a catalog read. Otherwise it calls
+`AgentCatalogService.readAgents()` once and resolves the exact record ID. Nonblank
+instructions return one `RemoteInferenceInstruction` with key `instructions`, the
+original Markdown, and null revision; blank instructions return an empty list.
+Read failures and unresolved IDs fail the capture without a selection write.
 
 Both reads use existing generation-scoped infrastructure. There is no host
 invocation token, Environment access, private Run map, or executable Run handle.
-The [host's Run-binding lifecycle](../../../../docs/architecture/execution-model.md#inference-preparation)
-keeps the binding on this exact registration. Retirement fails the next snapshot;
-a same-ID replacement can serve a new Run but not the retired registration's Run.
+The [host owns the capture](../../../../docs/architecture/execution-model.md#inference-preparation);
+continuations make no request to this backend. See the [plugin map](../../README.md#instructions-during-a-run)
+for selection and definition changes during a Run.

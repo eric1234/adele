@@ -4,6 +4,98 @@ import 'package:test/test.dart';
 
 void main() {
   test(
+    'captureRun roundtrips ordered instructions with only semantic IDs',
+    () async {
+      final source = _Source();
+      final dispatcher = RemoteRunBoundInferenceContextSourceServiceDispatcher(
+        source,
+      );
+      addTearDown(dispatcher.close);
+      final channel = _Channel(dispatcher);
+      final client = RemoteRunBoundInferenceContextSourceServiceClient(channel);
+
+      final captured = await client.captureRun('session-1', 'run-1');
+      expect(channel.method, 'runBoundInferenceContextSource.captureRun');
+      expect(channel.payload, {'sessionId': 'session-1', 'runId': 'run-1'});
+      expect(source.capture, ('session-1', 'run-1'));
+      expect(channel.response!['payload'], [
+        {'key': 'semantics', 'text': 'User first.', 'revision': null},
+        {
+          'key': 'file',
+          'text': '  exact\ntext\n',
+          'revision': 'opaque-revision',
+        },
+      ]);
+      expect(captured.map((i) => (i.key, i.text, i.revision)), [
+        ('semantics', 'User first.', null),
+        ('file', '  exact\ntext\n', 'opaque-revision'),
+      ]);
+      expect(captured.clear, throwsUnsupportedError);
+
+      source.instructions = [];
+      expect(await client.captureRun('session-1', 'run-2'), isEmpty);
+    },
+  );
+
+  test(
+    'run-bound service rejects extra fields and has no snapshot method',
+    () async {
+      final source = _Source();
+      final dispatcher = RemoteRunBoundInferenceContextSourceServiceDispatcher(
+        source,
+      );
+      addTearDown(dispatcher.close);
+      const ids = {'sessionId': 'session', 'runId': 'run'};
+      Future<String?> errorCode(
+        String method,
+        Map<String, Object?> payload,
+      ) async {
+        final response = await dispatcher.dispatch({
+          'kind': 'request',
+          'requestId': 1,
+          'method': method,
+          'payload': payload,
+        });
+        expect(response['ok'], isFalse);
+        return (response['error']! as Map<Object?, Object?>)['code'] as String?;
+      }
+
+      for (final extra in ['hostInvocationContext', 'binding']) {
+        expect(
+          await errorCode(
+            remoteRunBoundInferenceContextSourceServiceCaptureRunId,
+            {...ids, extra: 'unexpected'},
+          ),
+          'invalid_request',
+        );
+      }
+      expect(
+        await errorCode('runBoundInferenceContextSource.snapshot', ids),
+        'unknown_method',
+      );
+      expect(source.capture, isNull);
+    },
+  );
+
+  test('captureRun rejects bindings and malformed instruction lists', () async {
+    for (final invalid in <Object?>[
+      null,
+      'opaque-binding',
+      [
+        {'key': 'file', 'text': 'text'},
+      ],
+    ]) {
+      final client = RemoteRunBoundInferenceContextSourceServiceClient(
+        _ResponseChannel(invalid),
+      );
+      await expectLater(
+        client.captureRun('session', 'run'),
+        throwsA(isA<AdeleProtocolException>()),
+      );
+    }
+  });
+
+  test(
     'snapshot roundtrips ordered instructions with only invocation data',
     () async {
       final _Source source = _Source();
@@ -156,7 +248,10 @@ void main() {
   );
 }
 
-final class _Source implements RemoteInferenceContextSourceService {
+final class _Source
+    implements
+        RemoteInferenceContextSourceService,
+        RemoteRunBoundInferenceContextSourceService {
   List<RemoteInferenceInstruction> instructions =
       const <RemoteInferenceInstruction>[
         RemoteInferenceInstruction(
@@ -171,7 +266,17 @@ final class _Source implements RemoteInferenceContextSourceService {
         ),
       ];
   (String, String, String)? invocation;
+  (String, String)? capture;
   Object? failure;
+
+  @override
+  Future<List<RemoteInferenceInstruction>> captureRun(
+    String sessionId,
+    String runId,
+  ) async {
+    capture = (sessionId, runId);
+    return instructions;
+  }
 
   @override
   Future<List<RemoteInferenceInstruction>> snapshot(

@@ -33,6 +33,7 @@ import 'package:adele_desktop/ui/commands/command_palette.dart';
 import 'package:adele_desktop/ui/console/console_controller.dart';
 import 'package:adele_desktop/ui/console/workbench_console.dart';
 import 'package:adele_desktop/ui/execution/run_execution_status.dart';
+import 'package:adele_desktop/ui/execution/session_execution_controller.dart';
 import 'package:adele_desktop/ui/inspection/inspection_host.dart';
 import 'package:adele_desktop/ui/inspection/tool_activity_inspection_host.dart';
 import 'package:adele_desktop/ui/main_content/main_content_host.dart';
@@ -47,6 +48,7 @@ import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:adele_settings/adele_settings.dart';
 import 'package:adele_ui/adele_ui.dart';
+import 'package:agent_configuration_contract/agent_configuration_contract.dart';
 import 'package:appflowy_editor/appflowy_editor.dart' as rich;
 import 'package:chat_strategy_backend/chat_strategy_backend.dart'
     show chatDefaultInstructions, chatToolNarrationGuidance;
@@ -6128,7 +6130,7 @@ printf '%s\n' 'S2B_SHELL_DONE'
   );
 
   testWidgets(
-    'normal Chat binds the selected Agent across tool continuation and later Runs',
+    'normal Chat freezes Agent instructions through approval and reads current definitions for later Runs',
     (tester) => tester.runAsync(() async {
       await tester.binding.setSurfaceSize(const Size(1800, 1400));
       addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -6140,9 +6142,16 @@ printf '%s\n' 'S2B_SHELL_DONE'
       const original =
           '\n# reviewer-v1\r\n\r\n```dart\r\n  check();\r\n```\r\n  ';
       const edited = '  ## reviewer-v2\n\n- Check `git diff`.  \n';
+      const definitionOnlyEdit = '\n## reviewer-v3\n\nKeep this final edit.\n';
       const writer = '\t# writer-v1\n\nKeep **both** alternatives.\n';
       const chatInstructions =
           '$chatToolNarrationGuidance\n\n$chatDefaultInstructions';
+      const agentsMdGuidance =
+          'The following AGENTS.md material is project guidance from the '
+          'Session Environment root. Explicit user instructions and direct '
+          'user requests take precedence over AGENTS.md guidance.';
+      const freshEnvironment =
+          'Updated Environment guidance during approval.\n';
       const firstPrompt = 'Propose git diff --check and report the result.';
       final call = _call('check', 'run_command', _commandArguments);
       final outbound = <Map<String, Object?>>[];
@@ -6200,6 +6209,22 @@ printf '%s\n' 'S2B_SHELL_DONE'
         await _tap(tester, 'New Chat Session');
         await _pumpUntil(tester, () => _composer().evaluate().isNotEmpty);
         final session = _session(tester);
+        PluginBackendConnection backend(String id) => runtime.plugins.backends
+            .singleWhere((entry) => entry.installation.metadata.id.value == id)
+            .connection!;
+        final agent = backend(agentConfigurationPluginId);
+        final selection = AgentSelectionServiceClient(
+          agent.channelFor(
+            agent.defaultConfigurationContext,
+            agentSelectionServiceId,
+          ),
+        );
+        Future<(String?, int)> readSelection() async {
+          final saved = await selection.readSessionSelection(session.id.value);
+          expect(saved.sessionId, session.id.value);
+          return (saved.selectedAgentId, saved.revision);
+        }
+
         Future<void> choose(String previous, String next) async {
           await _tap(tester, 'Agent: $previous');
           await _tap(tester, next);
@@ -6222,6 +6247,50 @@ printf '%s\n' 'S2B_SHELL_DONE'
           );
         }
 
+        final prompts = [firstPrompt];
+        void expectWire(String? instructions, String environment) {
+          final body = outbound.last;
+          expect(body['model'], 'gpt-6-astra');
+          expect(
+            body['instructions'],
+            [
+              chatInstructions,
+              ?instructions,
+              agentsMdGuidance,
+              environment,
+            ].join('\n\n'),
+          );
+          final input = (body['input']! as List).cast<Map<String, Object?>>();
+          expect(
+            input.where((item) => item['role'] == 'user'),
+            prompts.map(_userInput),
+          );
+          // Also catch instruction injection into replayed history, user input or tools.
+          final wire = jsonEncode(body);
+          for (final (version, marker) in [
+            (original, 'reviewer-v1'),
+            (edited, 'reviewer-v2'),
+            (definitionOnlyEdit, 'reviewer-v3'),
+            (writer, 'writer-v1'),
+          ]) {
+            expect(
+              marker.allMatches(wire),
+              hasLength(instructions == version ? 1 : 0),
+              reason: 'request ${outbound.length}: $marker',
+            );
+          }
+        }
+
+        Future<void> newRun(String prompt, String? instructions) async {
+          final n = outbound.length + 1;
+          final runCount = fixture.runIds.values.length;
+          prompts.add(prompt);
+          await _send(tester, prompt);
+          await expectAnswer(n);
+          expect(fixture.runIds.values, hasLength(runCount + 1));
+          expectWire(instructions, freshEnvironment);
+        }
+
         await choose('No Agent', 'Review Agent');
         expect(fixture.runIds.values, isEmpty);
         expect(runtime.lifecycle.runActivitiesForSession(session.id), isEmpty);
@@ -6240,22 +6309,26 @@ printf '%s\n' 'S2B_SHELL_DONE'
         final first = outbound.single;
         final firstWire = jsonEncode(first);
         expect(first['input'], [_userInput(firstPrompt)]);
-        expect(
-          first['instructions'],
-          startsWith('$chatInstructions\n\n$original\n\n'),
-        );
+        expectWire(original, _agentsText);
 
         // The first request has settled. Approval gates the next inference until
         // both the Project-backed selection and the Settings edit are acknowledged.
-        await choose('Review Agent', 'Writing Agent');
-        await settings.updateRecord(a, {
+        final editedA = await settings.updateRecord(a, {
           'name': 'Review Agent',
           'instructions': edited,
         });
+        await choose('Review Agent', 'Writing Agent');
+        expect(await readSelection(), ('writer', 2));
+        final worktree = gitWorktreeFixturePath(
+          fixture.shell(tester).project!,
+          fixture.shell(tester).environment!,
+        );
+        await File('$worktree/AGENTS.md').writeAsString(freshEnvironment);
         expect(outbound, hasLength(1));
         expect(fixture.runIds.values, [firstRun]);
         await _tap(tester, 'Allow once');
         await expectAnswer(2);
+        expectWire(original, freshEnvironment);
         final result = _toolOutput(outbound[1], 'check');
         expect(result, contains('Exit code: 0'));
         expect(outbound[1]['input'], [
@@ -6273,60 +6346,82 @@ printf '%s\n' 'S2B_SHELL_DONE'
         expect(activity.models, hasLength(2));
         expect(activity.tools.single.providerCallId, 'check');
 
-        await _send(tester, 'Start a new Run with the current selection.');
-        await expectAnswer(3);
-        await choose('Writing Agent', 'No Agent');
-        await _send(tester, 'Continue without an Agent.');
-        await expectAnswer(4);
-        expect(fixture.runIds.values, hasLength(3));
+        await newRun('Start a new Run with the current selection.', writer);
+        await choose('Writing Agent', 'Review Agent');
+        final selectedA = await readSelection();
+        expect(selectedA, ('reviewer', 3));
+        await newRun('Review again with the saved instructions.', edited);
+        await settings.updateRecord(editedA, {
+          'name': 'Review Agent',
+          'instructions': definitionOnlyEdit,
+        });
+        expect(await readSelection(), selectedA);
+        await newRun('Read the revised definition.', definitionOnlyEdit);
+        expect(await readSelection(), selectedA);
+        await choose('Review Agent', 'No Agent');
+        await newRun('Continue without an Agent.', null);
+        expect(fixture.runIds.values, hasLength(5));
         expect(_session(tester), same(session));
 
-        // The no-Agent control includes the normal Chat and AGENTS.md groups.
-        // All other wire instructions must differ by exactly one intact group.
-        final control = outbound.last['instructions']! as String;
-        const prefix = '$chatInstructions\n\n';
-        expect(control, startsWith(prefix));
-        expect(control, endsWith('\n\n$_agentsText'));
-        final environment = control.substring(prefix.length);
-        for (final (i, text) in [original, edited, writer, null].indexed) {
-          final body = outbound[i];
-          expect(
-            body['instructions'],
-            text == null ? control : '$prefix$text\n\n$environment',
-          );
-          // Also catch an injection into replayed history, user input or tools.
-          for (final (version, marker) in [
-            (original, 'reviewer-v1'),
-            (edited, 'reviewer-v2'),
-            (writer, 'writer-v1'),
-          ]) {
-            expect(
-              marker.allMatches(jsonEncode(body)),
-              hasLength(text == version ? 1 : 0),
-              reason: 'request ${i + 1}: $marker',
-            );
-          }
-        }
-
         await choose('No Agent', 'Writing Agent');
+        final selectedB = await readSelection();
+        expect(selectedB, ('writer', 5));
         await settings.deleteRecord(b);
-        await _send(tester, 'This missing Agent must fail before inference.');
+        const rejected = 'This missing Agent must fail before inference.';
+        await _send(tester, rejected);
         await _terminalUntil(
           tester,
           () =>
-              fixture.runIds.values.length == 4 &&
-              runtime.store.runRecord(fixture.runIds.values.last)?.state ==
-                  RunTerminalState.failed &&
+              fixture.runIds.values.length == 6 &&
+              !fixture.status(tester).isAdvancing &&
               fixture.status(tester).failureMessage != null,
           'explicit failure for the deleted selected Agent',
         );
-        final failed = runtime.lifecycle.runActivity(
-          fixture.runIds.values.last,
-        )!;
-        expect(failed.models, isEmpty);
-        expect(failed.tools, isEmpty);
+        // Inspect the normal status widget's execution owner, not a second
+        // capture attempt or a generic failure message from the presentation.
+        final owner = tester
+            .widgetList<ListenableBuilder>(
+              find.ancestor(
+                of: find.byType(RunExecutionStatus),
+                matching: find.byType(ListenableBuilder),
+              ),
+            )
+            .map((widget) => widget.listenable)
+            .whereType<SessionExecutionController>()
+            .single;
+        final failed = fixture.runIds.values.last;
+        expect(owner.latestRunId, failed);
+        expect(owner.stateForRun(failed), RunState.failed);
+        expect(
+          owner.failure,
+          isA<InferenceContextSourceFailed>()
+              .having(
+                (failure) => failure.sourceId.value,
+                'source',
+                '$agentConfigurationPluginId.instructions',
+              )
+              .having(
+                (failure) => failure.cause,
+                'remote capture',
+                isA<PluginRemoteFailure>(),
+              ),
+        );
+        expect(owner.currentRun, isNull);
+        expect(owner.activityForRun(failed), isNull);
+        expect(runtime.lifecycle.hasSessionExecution(session), isFalse);
+        expect(runtime.lifecycle.runActivity(failed), isNull);
+        expect(runtime.store.runRecord(failed), isNull);
+        final chat = _chatClient(backend(_chatPluginId));
+        final submitted = (await chat.snapshot(session.id.value)).entries.last;
+        expect(
+          (submitted.role, submitted.content, submitted.runId),
+          ('user', _plainMarkdown(rejected), null),
+          reason:
+              'Chat accepted the request but never materialized it for a Run.',
+        );
+        expect(await readSelection(), selectedB);
         _rethrowEndpointFailure(failures);
-        expect(outbound, hasLength(4));
+        expect(outbound, hasLength(6));
         expect(tester.takeException(), isNull);
         expect(
           await tester.binding.handleRequestAppExit(),

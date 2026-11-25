@@ -763,7 +763,10 @@ Configuration can define an Initial Agent, with a likely stock default of Requir
 
 The Agent plugin may provide a model-callable tool such as `set_agent`/`select_agent` that changes the selected Agent for the **next user invocation**.
 
-This is primarily workflow routing. A Requirements Agent can finish a user turn by selecting Plan so the composer is ready for the next phase when the user submits again. If the current turn requires another model continuation after `set_agent`, that continuation still uses the Agent that owns the current user invocation rather than silently switching roles mid-turn. Directionally, stock Chat accomplishes this by snapshotting/binding the effective Agent when the user-submitted turn begins; the exact storage/API is left to the Chat/orchestration implementation.
+For example, a Requirements Agent could select Plan so the composer is ready
+for the next submission. A continuation in the current Run would still receive
+the original Requirements instructions. Changing the selection would not be a
+handoff, and Chat would not need to know which Agent was selected.
 
 Agent instructions can recommend fixed transitions or let the model choose dynamically. The tool should target stable Agent IDs rather than display names.
 
@@ -800,7 +803,12 @@ Agent selection is relatively prominent. Provider/model/reasoning are visually s
 
 ## 16.1 Persistent overrides
 
-If the user overrides a future Agent default preset or its reasoning effort, the override can persist until changed/reset or the Agent changes. Model/reasoning state affects subsequent inference resolution, never an already-resolved invocation. Agent selection follows the next-user-invocation workflow semantics described above rather than automatically changing a continuation within the current turn.
+Editing or selecting an Agent or Model Preset applies to the **next Run**.
+For example, changing either control while Chat is waiting for tool approval
+does not switch the instructions, model, or reasoning effort on resume. See
+[inference preparation](../../architecture/execution-model.md#inference-preparation).
+A future override of an Agent's default preset could persist until reset or
+until the user selects another Agent.
 
 ## 16.2 Model Presets
 
@@ -810,11 +818,11 @@ identifies one configured provider instance and one exact model, with optional
 reasoning effort. Users need not define an equivalent for any other provider.
 Renaming a preset does not change its ID.
 
-Global Settings starts with no presets and accepts typed provider and model IDs.
-Stock definitions are deferred until ADELE has general configuration defaults.
-Future work starts with a read-only live catalog of user presets. Discovery of
-available providers and their models can then guide editing. Session selection
-and integration with execution come later; saving a preset selects nothing.
+Global Settings starts with no presets. Users can browse available models or
+enter provider and model IDs directly. Saving a preset selects nothing; the
+[Session selector](../../../plugins/model_configuration/README.md#choosing-a-model-preset)
+is a separate choice. Stock definitions are deferred until ADELE has general
+configuration defaults.
 
 ## 16.3 Custom model
 
@@ -1626,7 +1634,9 @@ For SCM-backed behavior, derive state from SCM whenever practical instead of mai
 
 ## 58.5 Configuration/plugins define workflow
 
-Requirements → Plan → Code should be easy out of the box but arise from configurable Agent instructions, model-callable Agent/Model tools, Commands, and plugins rather than hard-coded Chat strategy workflow logic. Stock `set_agent` routing selects the Agent for the next user invocation; it does not silently change the role of a continuation still serving the current turn.
+Requirements → Plan → Code should arise from configurable instructions, Commands,
+and plugins rather than hard-coded Chat transitions. A future [Agent-selection
+tool](#142-agent-selection-tool) could help route that workflow.
 
 ## 58.6 Progressive disclosure
 

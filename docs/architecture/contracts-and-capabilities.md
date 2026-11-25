@@ -1223,17 +1223,15 @@ Remote inference sources register through the extension model, not Capability
 provider selection. Snapshot execution receives only the host services authorized
 by that point. The current AGENTS.md source receives read-only Session/Environment
 authority; transported Session/Run IDs cannot reconstruct or redirect it. The
-separate Run-bound source service captures a value and snapshots instructions
-through ordinary generation-bound requests. Neither operation receives an
-invocation token or an Environment grant.
+Run-scoped service instead returns instructions in one exact-generation request
+during Run preparation. It receives no host invocation token or Environment,
+process, model-provider, or tool-execution grant. Separate generation-scoped
+infrastructure grants remain subject to their own revocation.
 
-Executable bindings are validated through capture. Safely captured immutable
-material may outlive source registration according to the owning extension
-contract; that does not keep the executable binding or invocation authority alive.
-The next inference can discover a replacement unbound source. A Run-bound
-replacement must wait for a new Run. See [`orchestration`](../../packages/orchestration/README.md#inference-context)
-and the [AGENTS.md plugin](../../plugins/agents_md/README.md) for source semantics,
-transport contracts, and their tests.
+Reusing captured data does not call the backend or renew any grant. See
+[inference preparation](execution-model.md#inference-preparation) for capture
+and retirement semantics and the [orchestration transport](../../packages/orchestration/README.md#remote-source-transport)
+for the two service contracts.
 
 ## Generation-scoped infrastructure access
 

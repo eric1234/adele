@@ -2040,10 +2040,11 @@ app-owned Chat storage or codecs, and native editability grants no Run authority
 
 `SessionExecutionController` resolves the currently selected provider binding and
 builds a Session-authorized tool catalog for each new Run. Continuations reuse
-that provider and catalog; each inference snapshots tools and captures current
-instruction sources. The retained strategy selection passes into
-`createSessionOrchestrationRun`. Detailed capture/continuation semantics belong to
-the [execution model](../docs/architecture/execution-model.md) and [Chat README](../plugins/chat_strategy/README.md).
+that provider and catalog; each inference snapshots tools. The controller passes
+the retained strategy selection to `createSessionOrchestrationRun`, which captures
+Run-scoped instruction material before strategy materialization. See
+[inference preparation](../docs/architecture/execution-model.md#inference-preparation)
+for composition with fresh per-inference context.
 
 `SessionExecutionController` supplies the app-private
 [`ToolAuthorizationPolicyComposer`](lib/core/tool_authorization_policy_composer.dart)

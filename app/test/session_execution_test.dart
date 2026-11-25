@@ -219,6 +219,48 @@ void main() {
     },
   );
 
+  test(
+    'required instruction capture fails before feedback association',
+    () async {
+      final sourceId = ExtensionId('dev.adele.test.feedback.instructions');
+      final source = fixture.runtime.extensions.register(
+        point: inferenceContextSources,
+        id: sourceId,
+        value: InferenceContextSourceContribution.runBound(
+          failureMode: InferenceContextFailureMode.required,
+          captureRun: (_, _) async =>
+              throw StateError('Instructions unavailable.'),
+        ),
+      );
+      addTearDown(source.close);
+      final controller = fixture.controller();
+      final feedback = receipt();
+      final id = await controller.startRun(expectedFeedback: feedback);
+      final admission = controller.feedbackRunFor(feedback)!;
+      await admission.preparationSettled;
+      expect(
+        admission.state,
+        SessionFeedbackRunAdmissionState.failedBeforeAssociation,
+      );
+      expect(
+        admission.failure,
+        isA<InferenceContextSourceFailed>().having(
+          (e) => e.sourceId,
+          'source',
+          sourceId,
+        ),
+      );
+      expect(fixture.materializing.isCompleted, isFalse);
+      expect(fixture.model.calls, isEmpty);
+      expect(fixture.tool.executions, 0);
+      expect(fixture.runtime.store.runRecord(id), isNull);
+      expect(
+        fixture.runtime.lifecycle.hasSessionExecution(fixture.session),
+        isFalse,
+      );
+    },
+  );
+
   for (final retire in [false, true]) {
     test(
       'feedback materialization uncertainty never reschedules (retire=$retire)',

@@ -739,33 +739,46 @@ void main() {
     late Directory source;
     late _Fixture fixture;
     late Session session;
-    late RunId runId;
     late InferenceContextComposer composer;
+    final firstRun = RunId('agent-run');
+    final nextRun = RunId('next-agent-run');
 
     setUp(() async {
       fixture = await start();
       source = await _temporary('agent-inference-project-');
       session = (await fixture.createGraph(source)).session;
       composer = InferenceContextComposer(fixture.runtime.extensions);
-      runId = RunId('agent-run');
     });
 
-    Future<InferenceContextRunBindings> capture() =>
+    Future<InferenceContextRunCapture> capture(RunId runId) =>
         composer.captureRun(session, runId).timeout(_bound);
 
     Future<InferenceContextSnapshot> compose(
-      InferenceContextRunBindings bindings,
+      RunId runId,
+      InferenceContextRunCapture runCapture,
     ) async {
+      final recordReads = fixture.recordReads;
+      final storageCalls = fixture.probe.calls.length;
       final context = _NoHostServices(session, runId);
       try {
         return await composer
             .compose(
               strategyMaterial: StrategyInferenceMaterial(input: const []),
               sourceContext: context,
-              runBindings: bindings,
+              runCapture: runCapture,
             )
             .timeout(_bound);
       } finally {
+        expect(
+          fixture.recordReads,
+          recordReads,
+          reason: 'Composition must not reread the catalog.',
+        );
+        expect(
+          fixture.probe.calls,
+          hasLength(storageCalls),
+          reason: 'Composition must not reread selection.',
+        );
         expect(
           context.requests,
           isEmpty,
@@ -775,22 +788,34 @@ void main() {
       }
     }
 
-    Matcher requiredFailure(Matcher cause) => throwsA(
+    Future<String> instructions(
+      RunId runId,
+      InferenceContextRunCapture capture,
+    ) async => renderInferenceInstructions(await compose(runId, capture));
+
+    final captureFailure = throwsA(
       isA<InferenceContextSourceFailed>()
           .having((e) => e.sourceId.value, 'source', _instructionsSource)
-          .having((e) => e.cause, 'cause', cause),
+          .having(
+            (e) => e.cause,
+            'cause',
+            isA<PluginRemoteFailure>()
+                .having((e) => e.code, 'code', 'internal_error')
+                .having((e) => e.details, 'details', isEmpty),
+          ),
     );
 
     test(
-      'Run captures the Project selection and rereads its instructions after a Settings edit',
+      'Run captures exact instructions once; edits and reselection wait for a new Run',
       () async {
-        const firstText = '\n# Review\n\n```dart\nreturn true;\n```\n';
+        final firstText =
+            '\n# Review\n\n${'```dart\nreturn true;\n```\n' * 64}';
         const secondText = '  Revised reviewer instructions.\n';
         final reviewer = await fixture.createAgent(
           'reviewer',
           instructions: firstText,
         );
-        await fixture.createAgent('writer');
+        await fixture.createAgent('writer', instructions: 'Write a summary.');
         await fixture.client.updateSessionSelection(
           session.id.value,
           'reviewer',
@@ -804,22 +829,13 @@ void main() {
 
         final reads = fixture.recordReads;
         final before = fixture.probe.calls.length;
-        final bindings = await capture();
-        expect(
-          fixture.probe.calls
-              .skip(before)
-              .where(
-                (method) => method == projectStorageServiceQueryForSessionId,
-              ),
-          hasLength(1),
-        );
-        expect(
-          fixture.recordReads,
-          reads,
-          reason: 'Capture reads identity, not instructions.',
-        );
-        final first = await compose(bindings);
+        final original = await capture(firstRun);
+        expect(fixture.probe.calls.skip(before), [
+          projectStorageServiceEnsureSchemaForSessionId,
+          projectStorageServiceQueryForSessionId,
+        ]);
         expect(fixture.recordReads, reads + 1);
+        final first = await compose(firstRun, original);
         final result = first.sourceResults.single;
         expect(result.sourceId.value, _instructionsSource);
         expect(result.status, InferenceContextSourceStatus.contributed);
@@ -827,33 +843,55 @@ void main() {
         expect(result.materials.single.revision, isNull);
         expect(renderInferenceInstructions(first), firstText);
 
+        await fixture.settings.updateRecord(reviewer, {
+          'name': 'Renamed reviewer',
+          'instructions': secondText,
+        });
+        expect(await instructions(firstRun, original), firstText);
+        final edited = await capture(nextRun);
+        expect(await instructions(nextRun, edited), secondText);
+
         await fixture.client.updateSessionSelection(
           session.id.value,
           'writer',
           1,
         );
-        await fixture.settings.updateRecord(reviewer, {
-          'name': 'Renamed reviewer',
-          'instructions': secondText,
-        });
-        final afterSelection = fixture.probe.calls.length;
-        final beforeSnapshot = fixture.recordReads;
+        expect(await instructions(firstRun, original), firstText);
+        final writerRun = RunId('writer-run');
         expect(
-          renderInferenceInstructions(await compose(bindings)),
-          secondText,
+          await instructions(writerRun, await capture(writerRun)),
+          'Write a summary.',
         );
-        expect(fixture.recordReads, beforeSnapshot + 1);
-        expect(
-          fixture.probe.calls,
-          hasLength(afterSelection),
-          reason: 'Snapshot must not reread selection.',
-        );
-        expect(renderInferenceInstructions(first), firstText);
       },
     );
 
     test(
-      'partial catalog uses the captured record; partial and complete absence fail without clearing selection',
+      'capture with no Agent remains empty after a later selection',
+      () async {
+        final empty = await capture(firstRun);
+        expect(fixture.recordReads, 0);
+        expect(fixture.probe.calls, [
+          projectStorageServiceEnsureSchemaForSessionId,
+          projectStorageServiceQueryForSessionId,
+        ]);
+        expect(_inspect(source, _selectionRows), isEmpty);
+        await fixture.createAgent('reviewer');
+        await fixture.client.updateSessionSelection(
+          session.id.value,
+          'reviewer',
+          0,
+        );
+        final first = await compose(firstRun, empty);
+        expect(
+          first.sourceResults.single.status,
+          InferenceContextSourceStatus.empty,
+        );
+        expect(renderInferenceInstructions(first), isEmpty);
+      },
+    );
+
+    test(
+      'deletion and recreation change fresh capture, not existing Run material',
       () async {
         final reviewer = await fixture.createAgent(
           'reviewer',
@@ -865,17 +903,14 @@ void main() {
           'reviewer',
           0,
         );
-        final bindings = await capture();
         final selected = _inspect(source, _selectionRows);
         final broken = await File(
           '${fixture.roots.configurationRoot}/agents/broken.toml',
         ).writeAsString('invalid = [');
         final catalog = fixture.catalog;
         expect((await catalog.readAgents()).isComplete, isFalse);
-        expect(
-          renderInferenceInstructions(await compose(bindings)),
-          'Original reviewer.',
-        );
+        final original = await capture(firstRun);
+        expect(await instructions(firstRun, original), 'Original reviewer.');
 
         await fixture.settings.deleteRecord(reviewer);
         for (final complete in [false, true]) {
@@ -884,24 +919,63 @@ void main() {
           expect(observed.isComplete, complete);
           expect(observed.agents.map((a) => a.id), ['writer']);
           await expectLater(
-            compose(bindings),
-            requiredFailure(isA<PluginRemoteFailure>()),
+            capture(RunId('missing-$complete')),
+            captureFailure,
           );
           expect(_inspect(source, _selectionRows), selected);
+          expect(await instructions(firstRun, original), 'Original reviewer.');
         }
         await fixture.createAgent(
           'reviewer',
           instructions: 'Re-created reviewer.',
         );
         expect(
-          renderInferenceInstructions(await compose(bindings)),
+          await instructions(nextRun, await capture(nextRun)),
           'Re-created reviewer.',
         );
+        expect(await instructions(firstRun, original), 'Original reviewer.');
       },
     );
 
     test(
-      'retirement fences the old Run; a new Run captures the same-ID replacement',
+      'catalog and selection read failures abort fresh capture without writes or fallback',
+      () async {
+        await fixture.createAgent(
+          'reviewer',
+          instructions: 'Original reviewer.',
+        );
+        await fixture.client.updateSessionSelection(
+          session.id.value,
+          'reviewer',
+          0,
+        );
+        final original = await capture(firstRun);
+        final rows = _inspect(source, _selectionRows);
+        final agents = Directory('${fixture.roots.configurationRoot}/agents');
+        await agents.rename('${agents.path}-saved');
+        await File(agents.path).writeAsString('private obstruction');
+        final reads = fixture.recordReads;
+        await expectLater(capture(nextRun), captureFailure);
+        expect(fixture.recordReads, reads + 1);
+        expect(_inspect(source, _selectionRows), rows);
+
+        fixture.runtime.lifecycle.databaseForSession(session.id)!.close();
+        await expectLater(
+          capture(RunId('storage-unavailable')),
+          captureFailure,
+        );
+        expect(
+          fixture.recordReads,
+          reads + 1,
+          reason: 'Failed selection must not consult the catalog.',
+        );
+        expect(_inspect(source, _selectionRows), rows);
+        expect(await instructions(firstRun, original), 'Original reviewer.');
+      },
+    );
+
+    test(
+      'retirement preserves captured data; a new Run captures the same-ID replacement',
       () async {
         await fixture.createAgent(
           'first',
@@ -919,9 +993,7 @@ void main() {
         final original = fixture.runtime.extensions
             .discover(inferenceContextSources)
             .single;
-        final bindings = await capture();
-        final first = await compose(bindings);
-        final stale = requiredFailure(isA<StaleExtensionBinding>());
+        final prepared = await capture(firstRun);
 
         await fixture.agent.close();
         await fixture.agent.terminated.timeout(_bound);
@@ -929,42 +1001,28 @@ void main() {
           fixture.runtime.extensions.discover(inferenceContextSources),
           isEmpty,
         );
-        await expectLater(compose(bindings), stale);
+        expect(
+          await instructions(firstRun, prepared),
+          'First generation selection.',
+        );
         await fixture.replaceAgent();
         final replacement = fixture.runtime.extensions
             .discover(inferenceContextSources)
             .single;
         expect(replacement.id, original.id);
-        expect(
-          replacement.registrationIdentity,
-          isNot(same(original.registrationIdentity)),
-        );
         expect(original.validate, throwsA(isA<StaleExtensionBinding>()));
-        final reads = fixture.recordReads;
-        await expectLater(compose(bindings), stale);
-        expect(
-          fixture.probe.calls,
-          isEmpty,
-          reason: 'The old Run never recaptured selection on the replacement.',
-        );
-        expect(
-          fixture.recordReads,
-          reads,
-          reason: 'The old Run never called the replacement catalog.',
-        );
-        expect(
-          renderInferenceInstructions(first),
-          'First generation selection.',
-        );
 
         await fixture.client.updateSessionSelection(
           session.id.value,
           'next',
           1,
         );
-        runId = RunId('agent-replacement-run');
         expect(
-          renderInferenceInstructions(await compose(await capture())),
+          await instructions(firstRun, prepared),
+          'First generation selection.',
+        );
+        expect(
+          await instructions(nextRun, await capture(nextRun)),
           'Replacement selection.',
         );
       },
