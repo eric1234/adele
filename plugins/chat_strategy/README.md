@@ -210,27 +210,13 @@ execution-evidence checks belong to the host adapter's tests.
 
 Chat submits `StrategyInferenceMaterial` with its composed Chat guidance and
 Session instructions, ordered history projection, and Run-local replay. It
-neither registers nor discovers context sources in production. The host's
-`InferenceContextComposer` discovers current sources through the existing
-`ExtensionRegistry` on every new inference, including Chat continuation, and
-captures instruction material without changing
-Chat's semantic input. Normal prepared startup
-activates the independent stock [`agents_md_backend`](../agents_md/README.md) through
-generic remote-source adapters, reusing `agents_md_plugin` semantics. It rereads
-root `AGENTS.md` through generated authorized reads backed by the captured Session's
-Environment read facet each snapshot, without a direct app plugin dependency.
-Chat remains AGENTS-unaware and activates no source. Independent source material
-composes normally after Chat's strategy instructions; zero-source rendering
-retains the exact bytes of Chat's composed instructions.
-
-Context-source freshness belongs to each source, not Chat. Chat still owns only
-its conversation/instructions, historical execution projection, Run-local replay,
-and bounded sequencing; tool availability, policy, model controls, and Environment
-authority retain their existing owners. The host captures context before allocating
-model invocation identity or recording model-start evidence. A required source
-failure stops composition; an optional failure omits that source with diagnostics.
-Safely captured data survives later source retirement, unlike the unchanged exact-binding
-requirements on executable strategies and tools.
+neither registers nor discovers context sources in production. A continuation
+receives Chat's own instructions followed by independent source material, without
+changing Chat's semantic input. For example, the host can reuse the selected
+Agent's instructions while the [root `AGENTS.md` source](../agents_md/README.md)
+rereads the Session Environment. Chat neither reads Agent Settings nor controls
+source freshness. See [inference preparation](../../docs/architecture/execution-model.md#inference-preparation)
+for ordering, capture lifetimes, and failure semantics.
 
 ## Main Content Presentation
 
@@ -385,7 +371,7 @@ Missing or failed presentation does not invalidate the Session or backend execut
 
 The current context projection combines canonical conversation, recorded historical
 execution observations, and current-Run items. Rich context selection, context
-truncation and summarization, context sources beyond root AGENTS.md, provider-aware
+truncation and summarization, provider-aware
 projection/cache planning, token budgets, richer Chat UI, broader tool/provider
 activity presentation, reasoning deltas, arbitrary plugin drill-down, active Run
 recovery, profiles,

@@ -1,7 +1,7 @@
 import 'package:adele_orchestration/remote_inference_context.dart';
 import 'package:agent_configuration_contract/agent_configuration_contract.dart';
 
-/// The host retains the Agent ID for the Run, never the definition or its text.
+/// Returns only the selected Agent's instructions; the host owns the Run capture.
 final class AgentInferenceContextBackend
     implements RemoteRunBoundInferenceContextSourceService {
   const AgentInferenceContextBackend(this._selection, this._catalog);
@@ -10,21 +10,19 @@ final class AgentInferenceContextBackend
   final AgentCatalogService _catalog;
 
   @override
-  Future<String?> captureRun(String sessionId, String runId) async {
+  Future<List<RemoteInferenceInstruction>> captureRun(
+    String sessionId,
+    String runId,
+  ) async {
+    final String? selectedId;
     try {
-      return (await _selection.readSessionSelection(sessionId)).selectedAgentId;
+      final selection = await _selection.readSessionSelection(sessionId);
+      selectedId = selection.selectedAgentId;
     } on Object {
       throw StateError('Agent selection could not be read.');
     }
-  }
+    if (selectedId == null) return const [];
 
-  @override
-  Future<List<RemoteInferenceInstruction>> snapshot(
-    String sessionId,
-    String runId,
-    String? binding,
-  ) async {
-    if (binding == null) return const [];
     final AgentCatalogSnapshot catalog;
     try {
       catalog = await _catalog.readAgents();
@@ -32,7 +30,7 @@ final class AgentInferenceContextBackend
       throw StateError('Agent configuration could not be read.');
     }
     for (final agent in catalog.agents) {
-      if (agent.id != binding) continue;
+      if (agent.id != selectedId) continue;
       if (agent.instructions.trim().isEmpty) return const [];
       return [
         RemoteInferenceInstruction(
@@ -44,8 +42,8 @@ final class AgentInferenceContextBackend
     }
     throw StateError(
       catalog.isComplete
-          ? 'The captured Agent does not exist.'
-          : 'The captured Agent was not observed in the incomplete catalog.',
+          ? 'The selected Agent does not exist.'
+          : 'The selected Agent was not observed in the incomplete catalog.',
     );
   }
 }

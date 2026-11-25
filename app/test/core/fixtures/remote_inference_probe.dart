@@ -22,7 +22,12 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
     detachedReads: options['detachedReads'] == true,
     inspectReadAuthority: options['inspectReadAuthority'] == true,
   );
-  final bound = options['runBound'] == true ? _BoundProbe(options) : null;
+  final bound = options['runBound'] == true
+      ? _BoundProbe(
+          holdCapture: options['holdCapture'] == true,
+          failCapture: options['failCapture'] == true,
+        )
+      : null;
   final serviceId = bound == null
       ? remoteInferenceContextSourceServiceId
       : remoteRunBoundInferenceContextSourceServiceId;
@@ -90,21 +95,20 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
   }
 }
 
-// No lookup by Run ID: the only identity used to construct instructions is
-// the binding supplied to the generated snapshot dispatcher by the host.
 final class _BoundProbe implements RemoteRunBoundInferenceContextSourceService {
-  _BoundProbe(this.options);
+  _BoundProbe({required this.holdCapture, required this.failCapture});
 
-  final Map<String, Object?> options;
+  final bool holdCapture;
+  final bool failCapture;
   final requests = <Object?>[];
   final ready = Completer<void>();
   final _release = Completer<void>();
-  String? selection = 'selection-one';
   String instructions = 'first guidance';
+  String? revision = 'first-revision';
 
   bool update(Map<String, Object?> payload) {
-    selection = payload['selection'] as String?;
     instructions = payload['instructions']! as String;
+    revision = payload['revision'] as String?;
     return true;
   }
 
@@ -113,34 +117,21 @@ final class _BoundProbe implements RemoteRunBoundInferenceContextSourceService {
     return true;
   }
 
-  Future<void> _enter(String operation) async {
-    if (options['hold'] == operation) {
+  @override
+  Future<List<RemoteInferenceInstruction>> captureRun(
+    String sessionId,
+    String runId,
+  ) async {
+    if (holdCapture) {
       if (!ready.isCompleted) ready.complete();
       await _release.future;
     }
-    if (options['fail'] == operation) {
-      throw StateError('Probe $operation failed.');
-    }
-  }
-
-  @override
-  Future<String?> captureRun(String sessionId, String runId) async {
-    await _enter('captureRun');
-    return selection;
-  }
-
-  @override
-  Future<List<RemoteInferenceInstruction>> snapshot(
-    String sessionId,
-    String runId,
-    String? binding,
-  ) async {
-    await _enter('snapshot');
+    if (failCapture) throw StateError('Probe captureRun failed.');
     return [
       RemoteInferenceInstruction(
         key: 'guidance',
-        text: '$binding: $instructions',
-        revision: null,
+        text: instructions,
+        revision: revision,
       ),
     ];
   }

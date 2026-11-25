@@ -3,7 +3,7 @@ import 'package:adele_product/adele_product.dart';
 
 import 'model.dart';
 
-/// Instruction sources with fresh per-inference material and optional Run capture.
+/// Instruction sources captured either once per Run or afresh per inference.
 final ExtensionPoint<InferenceContextSourceContribution>
 inferenceContextSources = ExtensionPoint<InferenceContextSourceContribution>(
   'dev.adele.extension.inference-context-sources',
@@ -18,9 +18,9 @@ abstract interface class InferenceContextSourceContext {
   Future<T> requireHostService<T extends Object>();
 }
 
-/// Determines whether a source capture failure aborts composition.
+/// Determines whether a source failure aborts Run or inference preparation.
 enum InferenceContextFailureMode {
-  /// Abort composition with [InferenceContextSourceFailed].
+  /// Abort the current preparation with [InferenceContextSourceFailed].
   required,
 
   /// Omit the entire source and retain its failure in the source result.
@@ -32,31 +32,26 @@ final class InferenceContextSourceContribution {
   const InferenceContextSourceContribution({
     required this.failureMode,
     required this.snapshot,
-  }) : captureRun = null,
-       _boundSnapshot = null;
+  }) : captureRun = null;
 
-  /// Opts into capture during Run preparation. [snapshot] is still called
-  /// afresh for every inference, with only this registration's captured value.
+  /// Supplies instruction material once during preparation of a new Run.
+  /// Inferences reuse the copied result without calling the source again.
   const InferenceContextSourceContribution.runBound({
     required this.failureMode,
-    required Future<String?> Function(Session session, RunId runId)
-    this.captureRun,
     required Future<Iterable<InferenceContextMaterial>> Function(
-      InferenceContextSourceContext context,
-      String? binding,
+      Session session,
+      RunId runId,
     )
-    snapshot,
-  }) : _boundSnapshot = snapshot,
-       snapshot = _missingRunCapture;
+    this.captureRun,
+  }) : snapshot = _missingRunCapture;
 
-  /// Null for ordinary sources. The result is opaque: null and empty are both
-  /// valid, and a non-null value may contain at most 1024 UTF-16 code units.
-  final Future<String?> Function(Session session, RunId runId)? captureRun;
+  /// Null for ordinary per-inference sources. The host consumes and validates
+  /// the full iterable during preparation; an empty result is a success.
   final Future<Iterable<InferenceContextMaterial>> Function(
-    InferenceContextSourceContext,
-    String?,
+    Session session,
+    RunId runId,
   )?
-  _boundSnapshot;
+  captureRun;
 
   static Never _missingRunCapture(InferenceContextSourceContext _) =>
       throw StateError('Run-bound inference source requires Run capture.');
@@ -65,11 +60,11 @@ final class InferenceContextSourceContribution {
 
   /// Returns ordered material; an empty iterable is a successful empty result.
   /// Direct calls on a Run-bound contribution throw [StateError]; compose with
-  /// the Run's prepared bindings instead.
+  /// the Run's captured material instead.
   ///
-  /// Each new inference asks for current material according to this source's own
-  /// freshness policy. Rereading, watching, caching, or reusing captured state is
-  /// the source's choice, not a host refresh schedule.
+  /// Each new inference asks ordinary sources for current material according
+  /// to their own freshness policy. Rereading, watching, caching, or reusing
+  /// captured state is the source's choice, not a host refresh schedule.
   ///
   /// The host consumes and copies the entire iterable before accepting it.
   /// Callback failures, lazy iteration failures, invalid material, duplicate
@@ -223,26 +218,19 @@ String renderInferenceInstructions(InferenceContextSnapshot snapshot) =>
 
 /// Host-owned preparation results, usable only with the original registry,
 /// canonical Session and Run. Contains no source callbacks or live bindings.
-final class InferenceContextRunBindings {
-  InferenceContextRunBindings._(
+final class InferenceContextRunCapture {
+  InferenceContextRunCapture._(
     this._registry,
     this._session,
     this._runId,
-    Map<ExtensionId, _CapturedSource> sources,
+    Map<ExtensionId, InferenceContextSourceResult> sources,
   ) : _sources = Map.unmodifiable(sources);
 
   final ExtensionRegistry _registry;
   final Session _session;
   final RunId _runId;
-  final Map<ExtensionId, _CapturedSource> _sources;
+  final Map<ExtensionId, InferenceContextSourceResult> _sources;
 }
-
-typedef _CapturedSource = ({
-  Object identity,
-  InferenceContextFailureMode mode,
-  String? value,
-  InferenceContextSourceFailed? failure,
-});
 
 /// Captures current instruction sources into a host-owned immutable snapshot.
 final class InferenceContextComposer {
@@ -251,8 +239,9 @@ final class InferenceContextComposer {
   final ExtensionRegistry _registry;
 
   /// Discovers opted-in registrations once before any callback, then captures
-  /// their values sequentially in source-ID order. Does not read instructions.
-  Future<InferenceContextRunBindings> captureRun(
+  /// their instruction material sequentially in source-ID order. Ordinary
+  /// per-inference sources are not invoked during Run preparation.
+  Future<InferenceContextRunCapture> captureRun(
     Session session,
     RunId runId,
   ) async {
@@ -261,35 +250,15 @@ final class InferenceContextComposer {
         if (binding.value.captureRun case final capture?)
           (binding: binding, capture: capture, mode: binding.value.failureMode),
     ]..sort((a, b) => a.binding.id.value.compareTo(b.binding.id.value));
-    final captured = <ExtensionId, _CapturedSource>{};
+    final captured = <ExtensionId, InferenceContextSourceResult>{};
     for (final source in pending) {
-      final binding = source.binding;
-      String? value;
-      InferenceContextSourceFailed? failure;
-      try {
-        binding.validate();
-        final result = await source.capture(session, runId);
-        binding.validate();
-        if (result != null && result.length > 1024) {
-          throw const FormatException(
-            'Run binding exceeds 1024 UTF-16 code units.',
-          );
-        }
-        value = result;
-      } catch (cause, stackTrace) {
-        failure = InferenceContextSourceFailed(binding.id, cause, stackTrace);
-        if (source.mode == InferenceContextFailureMode.required) {
-          Error.throwWithStackTrace(failure, stackTrace);
-        }
-      }
-      captured[binding.id] = (
-        identity: binding.registrationIdentity,
-        mode: source.mode,
-        value: value,
-        failure: failure,
+      captured[source.binding.id] = await _captureSource(
+        source.binding,
+        source.mode,
+        () => source.capture(session, runId),
       );
     }
-    return InferenceContextRunBindings._(_registry, session, runId, captured);
+    return InferenceContextRunCapture._(_registry, session, runId, captured);
   }
 
   /// Discovers once and captures every contribution and policy before awaits,
@@ -302,30 +271,31 @@ final class InferenceContextComposer {
   /// replacement fallback occurs. Required failures throw
   /// [InferenceContextSourceFailed]; optional failures retain omission evidence.
   ///
-  /// With [runBindings], only Run-bound sources present at preparation can
-  /// contribute, even if a new registration now uses the same ID. Ordinary
-  /// registrations are still discovered on every call. Without [runBindings],
+  /// With [runCapture], every prepared result (including empty and omitted)
+  /// reserves its source ID for this Run, independent of registration lifetime.
+  /// Late Run-bound sources wait for a new Run; other ordinary registrations
+  /// are still discovered on every call. Without [runCapture],
   /// each discovered Run-bound source fails according to its declared policy.
   Future<InferenceContextSnapshot> compose({
     required StrategyInferenceMaterial strategyMaterial,
     required InferenceContextSourceContext sourceContext,
-    InferenceContextRunBindings? runBindings,
+    InferenceContextRunCapture? runCapture,
   }) async {
-    if (runBindings != null &&
-        (!identical(_registry, runBindings._registry) ||
-            !identical(sourceContext.session, runBindings._session) ||
-            sourceContext.runId != runBindings._runId)) {
+    if (runCapture != null &&
+        (!identical(_registry, runCapture._registry) ||
+            !identical(sourceContext.session, runCapture._session) ||
+            sourceContext.runId != runCapture._runId)) {
       throw StateError(
-        'Inference context Run bindings do not match this execution.',
+        'Inference context Run capture does not match this execution.',
       );
     }
     final captured =
-        runBindings?._sources ?? const <ExtensionId, _CapturedSource>{};
+        runCapture?._sources ??
+        const <ExtensionId, InferenceContextSourceResult>{};
     final pending = {
       for (final binding in _registry.discover(inferenceContextSources))
-        if (runBindings == null ||
-            binding.value.captureRun == null ||
-            captured.containsKey(binding.id))
+        if (!captured.containsKey(binding.id) &&
+            (runCapture == null || binding.value.captureRun == null))
           binding.id: (binding: binding, contribution: binding.value),
     };
     final ids = {...pending.keys, ...captured.keys}.toList()
@@ -333,79 +303,15 @@ final class InferenceContextComposer {
     final List<InferenceContextSourceResult> results =
         <InferenceContextSourceResult>[];
     for (final sourceId in ids) {
-      final source = pending.remove(sourceId);
-      final prepared = captured[sourceId];
-      final InferenceContextFailureMode failureMode =
-          prepared?.mode ?? source!.contribution.failureMode;
-      if (prepared?.failure case final failure?) {
+      if (captured[sourceId] case final result?) {
+        results.add(result);
+      } else {
+        final source = pending[sourceId]!;
         results.add(
-          InferenceContextSourceResult._(
-            sourceId: sourceId,
-            failureMode: failureMode,
-            failure: failure,
-          ),
-        );
-        continue;
-      }
-      try {
-        if (source == null ||
-            (prepared != null &&
-                !identical(
-                  source.binding.registrationIdentity,
-                  prepared.identity,
-                ))) {
-          throw StaleExtensionBinding(sourceId);
-        }
-        source.binding.validate();
-        final Iterable<InferenceContextMaterial> supplied = prepared == null
-            ? await source.contribution.snapshot(sourceContext)
-            : await source.contribution._boundSnapshot!(
-                sourceContext,
-                prepared.value,
-              );
-        final List<InferenceInstructionMaterial> materials =
-            <InferenceInstructionMaterial>[];
-        final Set<String> keys = <String>{};
-        for (final InferenceContextMaterial material in supplied) {
-          final InferenceInstructionMaterial copied = switch (material) {
-            InferenceInstructionMaterial(
-              :final key,
-              :final text,
-              :final revision,
-            ) =>
-              InferenceInstructionMaterial(
-                key: key,
-                text: text,
-                revision: revision,
-              ),
-          };
-          if (!keys.add(copied.key)) {
-            throw FormatException(
-              'Duplicate inference instruction key ${copied.key} in $sourceId.',
-            );
-          }
-          materials.add(copied);
-        }
-        // Lazy iteration is source execution too. Commit nothing until it ends.
-        source.binding.validate();
-        results.add(
-          InferenceContextSourceResult._(
-            sourceId: sourceId,
-            failureMode: failureMode,
-            materials: materials,
-          ),
-        );
-      } catch (cause, stackTrace) {
-        final InferenceContextSourceFailed failure =
-            InferenceContextSourceFailed(sourceId, cause, stackTrace);
-        if (failureMode == InferenceContextFailureMode.required) {
-          Error.throwWithStackTrace(failure, stackTrace);
-        }
-        results.add(
-          InferenceContextSourceResult._(
-            sourceId: sourceId,
-            failureMode: failureMode,
-            failure: failure,
+          await _captureSource(
+            source.binding,
+            source.contribution.failureMode,
+            () => source.contribution.snapshot(sourceContext),
           ),
         );
       }
@@ -414,6 +320,60 @@ final class InferenceContextComposer {
       strategyMaterial: strategyMaterial,
       sourceResults: results,
     );
+  }
+
+  static Future<InferenceContextSourceResult> _captureSource(
+    ExtensionBinding<InferenceContextSourceContribution> binding,
+    InferenceContextFailureMode failureMode,
+    Future<Iterable<InferenceContextMaterial>> Function() capture,
+  ) async {
+    try {
+      binding.validate();
+      final supplied = await capture();
+      final materials = <InferenceInstructionMaterial>[];
+      final keys = <String>{};
+      for (final material in supplied) {
+        final copied = switch (material) {
+          InferenceInstructionMaterial(
+            :final key,
+            :final text,
+            :final revision,
+          ) =>
+            InferenceInstructionMaterial(
+              key: key,
+              text: text,
+              revision: revision,
+            ),
+        };
+        if (!keys.add(copied.key)) {
+          throw FormatException(
+            'Duplicate inference instruction key ${copied.key} in ${binding.id}.',
+          );
+        }
+        materials.add(copied);
+      }
+      // Lazy iteration is source execution too. Commit nothing until it ends.
+      binding.validate();
+      return InferenceContextSourceResult._(
+        sourceId: binding.id,
+        failureMode: failureMode,
+        materials: materials,
+      );
+    } catch (cause, stackTrace) {
+      final failure = InferenceContextSourceFailed(
+        binding.id,
+        cause,
+        stackTrace,
+      );
+      if (failureMode == InferenceContextFailureMode.required) {
+        Error.throwWithStackTrace(failure, stackTrace);
+      }
+      return InferenceContextSourceResult._(
+        sourceId: binding.id,
+        failureMode: failureMode,
+        failure: failure,
+      );
+    }
   }
 }
 

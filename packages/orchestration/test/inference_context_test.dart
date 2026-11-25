@@ -7,68 +7,52 @@ import 'package:test/test.dart';
 
 void main() {
   test(
-    'Run capture fixes identity, not instructions, in source order',
+    'Run instructions stay fixed while strategy and ordinary material refresh',
     () async {
       final f = _Fixture();
-      String? selection = 'first';
       var text = 'original';
       final calls = <String>[];
       for (final name in ['zulu', 'alpha']) {
-        f.bound(
-          name,
-          (session, runId) async {
-            expect(session, same(f.context.session));
-            calls.add('prepare/$runId/$name');
-            return name == 'alpha' ? null : selection;
-          },
-          (context, binding) async {
-            calls.add('snapshot/${context.runId}/$name/$binding');
-            return [_instruction('$name:$binding:$text')];
-          },
-        );
+        f.bound(name, (session, runId) async {
+          expect(session, same(f.context.session));
+          calls.add('prepare/$runId/$name');
+          return [_instruction('$name:$text')];
+        });
       }
       f.register('middle', (_) async {
         calls.add('ordinary');
-        return [];
+        return [_instruction('middle:$text')];
       });
       final prepared = await f.capture();
       expect(calls, ['prepare/run-1/alpha', 'prepare/run-1/zulu']);
-      selection = 'second';
       final first = await f.compose(prepared);
       text = 'fresh';
-      final second = await f.compose(prepared);
+      final second = await f.composer.compose(
+        strategyMaterial: StrategyInferenceMaterial(
+          instructions: 'continuation',
+          input: [],
+        ),
+        sourceContext: f.context,
+        runCapture: prepared,
+      );
       expect(
         renderInferenceInstructions(first),
-        'strategy\n\nalpha:null:original\n\nzulu:first:original',
+        'strategy\n\nalpha:original\n\nmiddle:original\n\nzulu:original',
       );
       expect(
         renderInferenceInstructions(second),
-        'strategy\n\nalpha:null:fresh\n\nzulu:first:fresh',
+        'continuation\n\nalpha:original\n\nmiddle:fresh\n\nzulu:original',
       );
-      expect(calls.skip(2), [
-        for (var i = 0; i < 2; i++) ...[
-          'snapshot/run-1/alpha/null',
-          'ordinary',
-          'snapshot/run-1/zulu/first',
-        ],
-      ]);
-      final nextContext = _SourceContext(
-        session: f.context.session,
-        runId: RunId('run-2'),
-      );
-      final next = await f.composer.captureRun(
-        nextContext.session,
-        nextContext.runId,
-      );
-      final snapshot = await f.composer.compose(
-        strategyMaterial: f.material,
-        sourceContext: nextContext,
-        runBindings: next,
-      );
+      expect(calls.skip(2), ['ordinary', 'ordinary']);
       expect(
-        renderInferenceInstructions(snapshot),
-        'strategy\n\nalpha:null:fresh\n\nzulu:second:fresh',
+        renderInferenceInstructions(await f.composeNextRun()),
+        'strategy\n\nalpha:fresh\n\nmiddle:fresh\n\nzulu:fresh',
       );
+      expect(calls.skip(4), [
+        'prepare/run-2/alpha',
+        'prepare/run-2/zulu',
+        'ordinary',
+      ]);
     },
   );
 
@@ -76,7 +60,7 @@ void main() {
     'rejects foreign registry, lookalike Session and wrong Run before callbacks',
     () async {
       final f = _Fixture();
-      final bindings = await f.capture();
+      final prepared = await f.capture();
       var calls = 0;
       f.register('ordinary', (_) async {
         calls++;
@@ -94,7 +78,7 @@ void main() {
           composer.compose(
             strategyMaterial: f.material,
             sourceContext: context,
-            runBindings: bindings,
+            runCapture: prepared,
           ),
           throwsStateError,
         );
@@ -104,31 +88,30 @@ void main() {
   );
 
   test(
-    'late bound registration waits for next Run; ordinary joins next inference',
+    'registrations added during preparation respect their capture lifetime',
     () async {
       final f = _Fixture();
-      final bindings = await f.capture();
       var captures = 0;
-      f.bound(
-        'alpha',
-        (_, _) async {
-          captures++;
-          return '';
-        },
-        (_, binding) async {
-          expect(binding, '');
-          return [_instruction('bound')];
-        },
-      );
-      f.register('ordinary', (_) async => [_instruction('ordinary')]);
-      expect(
-        renderInferenceInstructions(await f.compose(bindings)),
-        'strategy\n\nordinary',
-      );
+      f.bound('alpha', (_, runId) async {
+        if (runId == f.context.runId) {
+          f.bound('late', (_, _) async {
+            captures++;
+            return [_instruction('late')];
+          });
+          f.register('ordinary', (_) async => [_instruction('ordinary')]);
+        }
+        return [];
+      });
+      final first = await f.compose(await f.capture());
+      expect(first.sourceResults.map((r) => r.sourceId), [
+        _id('alpha'),
+        _id('ordinary'),
+      ]);
+      expect(renderInferenceInstructions(first), 'strategy\n\nordinary');
       expect(captures, 0);
       expect(
-        renderInferenceInstructions(await f.compose(await f.capture())),
-        'strategy\n\nbound\n\nordinary',
+        renderInferenceInstructions(await f.composeNextRun()),
+        'strategy\n\nlate\n\nordinary',
       );
       expect(captures, 1);
     },
@@ -137,12 +120,7 @@ void main() {
   for (final mode in InferenceContextFailureMode.values) {
     test('$mode missing preparation never implicitly captures', () async {
       final f = _Fixture();
-      f.bound(
-        'alpha',
-        (_, _) => fail('unexpected capture'),
-        (_, _) => fail('unexpected snapshot'),
-        mode: mode,
-      );
+      f.bound('alpha', (_, _) => fail('unexpected capture'), mode: mode);
       await _expectSourceFailure(
         f.compose(),
         mode,
@@ -151,145 +129,227 @@ void main() {
       );
     });
 
-    test(
-      '$mode capture failure has original cause and never retries',
-      () async {
-        final f = _Fixture();
-        final cause = StateError('storage unavailable');
-        var calls = 0;
-        var laterCalls = 0;
-        f.bound('zulu', (_, _) async {
-          laterCalls++;
-          return null;
-        }, (_, _) async => []);
-        f.bound(
-          'alpha',
-          (_, _) async {
+    for (final kind in [
+      'callback throw',
+      'duplicate keys',
+      'lazy throw after valid',
+      'lazy invalid text after valid',
+    ]) {
+      test(
+        '$mode Run capture: $kind rejects the whole source without retry',
+        () async {
+          final f = _Fixture();
+          final cause = StateError(kind);
+          final stack = StackTrace.fromString('original Run capture stack');
+          var calls = 0;
+          var laterCalls = 0;
+          f.bound('zulu', (_, _) async {
+            laterCalls++;
+            return [];
+          });
+          f.bound('alpha', (_, _) async {
             calls++;
-            throw cause;
-          },
-          (_, _) => fail('unexpected snapshot'),
-          mode: mode,
-        );
-        if (mode == InferenceContextFailureMode.required) {
-          await expectLater(
-            f.capture(),
-            throwsA(
-              isA<InferenceContextSourceFailed>()
-                  .having((e) => e.sourceId, 'sourceId', _id('alpha'))
-                  .having((e) => e.cause, 'cause', same(cause)),
-            ),
-          );
-          expect(laterCalls, 0);
-        } else {
-          final bindings = await f.capture();
-          for (var i = 0; i < 2; i++) {
-            await _expectSourceFailure(
-              f.compose(bindings),
-              mode,
-              _id('alpha'),
-              same(cause),
-            );
-          }
-          expect(laterCalls, 1);
-        }
-        expect(calls, 1);
-      },
-    );
-
-    test(
-      '$mode retirement during capture rejects the returned value',
-      () async {
-        final f = _Fixture();
-        late ExtensionRegistration registration;
-        registration = f.bound(
-          'alpha',
-          (_, _) async {
-            await registration.close();
-            return 'obsolete';
-          },
-          (_, _) => fail('unexpected snapshot'),
-          mode: mode,
-        );
-        if (mode == InferenceContextFailureMode.required) {
-          await expectLater(
-            f.capture(),
-            throwsA(
-              isA<InferenceContextSourceFailed>().having(
-                (e) => e.cause,
-                'cause',
-                isA<StaleExtensionBinding>(),
-              ),
-            ),
-          );
-        } else {
-          await _expectSourceFailure(
-            f.compose(await f.capture()),
+            return switch (kind) {
+              'callback throw' => Error.throwWithStackTrace(cause, stack),
+              'duplicate keys' => [
+                _instruction('first'),
+                _instruction('second'),
+              ],
+              _ => _invalidMaterials(kind, cause, stack),
+            };
+          }, mode: mode);
+          final thrown = kind.contains('throw');
+          await _expectPreparationFailure(
+            f,
             mode,
             _id('alpha'),
-            isA<StaleExtensionBinding>(),
+            thrown ? same(cause) : isA<FormatException>(),
+            stackTrace: thrown ? stack : null,
           );
-        }
+          expect(
+            laterCalls,
+            mode == InferenceContextFailureMode.required ? 0 : 1,
+          );
+          expect(calls, 1);
+        },
+      );
+    }
+
+    test(
+      '$mode retirement during pending Run capture rejects the late result',
+      () async {
+        final f = _Fixture();
+        final entered = Completer<void>();
+        final release = Completer<void>();
+        final registration = f.bound('alpha', (_, _) async {
+          entered.complete();
+          await release.future;
+          return [_instruction('obsolete')];
+        }, mode: mode);
+        final checked = _expectPreparationFailure(
+          f,
+          mode,
+          _id('alpha'),
+          isA<StaleExtensionBinding>(),
+        );
+        await entered.future;
+        await registration.close();
+        f.bound('alpha', (_, _) => fail('retried replacement'));
+        release.complete();
+        await checked;
       },
     );
 
     test(
-      '$mode retirement and same-object re-registration never transfer a binding',
+      '$mode Run source retired before its turn is not invoked or replaced',
       () async {
         final f = _Fixture();
-        final contribution = InferenceContextSourceContribution.runBound(
-          failureMode: mode,
-          captureRun: (_, _) async => 'private',
-          snapshot: (_, _) => fail('unexpected snapshot'),
+        final original = f.bound(
+          'zulu',
+          (_, _) => fail('invoked retired registration'),
+          mode: mode,
         );
-        ExtensionRegistration register() => f.registry.register(
-          point: inferenceContextSources,
-          id: _id('alpha'),
-          value: contribution,
+        f.bound('alpha', (_, _) async {
+          await original.close();
+          f.bound(
+            'zulu',
+            (_, _) => fail('invoked replacement'),
+            mode: _opposite(mode),
+          );
+          return [];
+        });
+        await _expectPreparationFailure(
+          f,
+          mode,
+          _id('zulu'),
+          isA<StaleExtensionBinding>(),
         );
-        final original = register();
-        final bindings = await f.capture();
-        await original.close();
-        await _expectSourceFailure(
-          f.compose(bindings),
+      },
+    );
+
+    test(
+      '$mode retirement during lazy Run capture rejects all material',
+      () async {
+        final f = _Fixture();
+        late final ExtensionRegistration registration;
+        Future<void>? retirement;
+        Iterable<InferenceContextMaterial> materialize() sync* {
+          yield _instruction('partial');
+          retirement = registration.close();
+        }
+
+        registration = f.bound(
+          'alpha',
+          (_, _) async => materialize(),
+          mode: mode,
+        );
+        await _expectPreparationFailure(
+          f,
           mode,
           _id('alpha'),
           isA<StaleExtensionBinding>(),
         );
-        register();
-        await _expectSourceFailure(
-          f.compose(bindings),
-          mode,
-          _id('alpha'),
-          isA<StaleExtensionBinding>(),
-        );
+        await retirement;
       },
     );
   }
 
-  test('opaque Run binding limit uses UTF-16 code units', () async {
-    final f = _Fixture();
-    var value = '\u{1f600}' * 512;
-    f.bound('alpha', (_, _) async => value, (_, binding) async {
-      expect(binding, value);
-      return [];
-    });
-    expect(
-      (await f.compose(await f.capture())).sourceResults.single.status,
-      InferenceContextSourceStatus.empty,
-    );
-    value += 'x';
-    await expectLater(
-      f.capture(),
-      throwsA(
-        isA<InferenceContextSourceFailed>().having(
-          (e) => e.cause,
-          'cause',
-          isA<FormatException>(),
-        ),
-      ),
-    );
-  });
+  for (final status in InferenceContextSourceStatus.values) {
+    for (final ordinaryReplacement in [false, true]) {
+      test(
+        'Run reserves $status result against ${ordinaryReplacement ? 'ordinary' : 'Run-scoped'} replacement',
+        () async {
+          final f = _Fixture();
+          final cause = StateError('unavailable');
+          final mode = status == InferenceContextSourceStatus.omitted
+              ? InferenceContextFailureMode.optional
+              : InferenceContextFailureMode.required;
+          final original = f.bound(
+            'alpha',
+            (_, _) async => switch (status) {
+              InferenceContextSourceStatus.contributed => [
+                _instruction('original'),
+              ],
+              InferenceContextSourceStatus.empty => [],
+              InferenceContextSourceStatus.omitted => throw cause,
+            },
+            mode: mode,
+          );
+          final prepared = await f.capture();
+          await original.close();
+
+          Future<void> expectRetained() async {
+            final snapshot = await f.compose(prepared);
+            final result = snapshot.sourceResults.single;
+            expect(result.sourceId, _id('alpha'));
+            expect(result.failureMode, mode);
+            expect(result.status, status);
+            expect(
+              result.failure?.cause,
+              status == InferenceContextSourceStatus.omitted
+                  ? same(cause)
+                  : isNull,
+            );
+            expect(
+              renderInferenceInstructions(snapshot),
+              status == InferenceContextSourceStatus.contributed
+                  ? 'strategy\n\noriginal'
+                  : 'strategy',
+            );
+          }
+
+          await expectRetained();
+          var calls = 0;
+          Future<List<InferenceContextMaterial>> replacement() async {
+            calls++;
+            return [_instruction('replacement')];
+          }
+
+          if (ordinaryReplacement) {
+            f.register('alpha', (_) => replacement());
+          } else {
+            f.bound('alpha', (_, _) => replacement());
+          }
+          await expectRetained();
+          expect(calls, 0);
+          expect(
+            renderInferenceInstructions(await f.composeNextRun()),
+            'strategy\n\nreplacement',
+          );
+          expect(calls, 1);
+        },
+      );
+    }
+  }
+
+  test(
+    'Run capture copies long exact instructions, keys, order and revision',
+    () async {
+      final f = _Fixture();
+      final text = ' \t${'\u{1f600}' * 600}\r\n';
+      final original = InferenceInstructionMaterial(
+        key: ' z ',
+        text: text,
+        revision: ' v1 ',
+      );
+      final supplied = [original, _instruction('last', key: 'a')];
+      f.bound('alpha', (_, _) async => supplied);
+      final prepared = await f.capture();
+      supplied.clear();
+      final snapshot = await f.compose(prepared);
+      final materials = snapshot.sourceResults.single.materials;
+      expect(materials.map((m) => m.key), [' z ', 'a']);
+      expect(materials.first, isNot(same(original)));
+      expect(materials.first.revision, ' v1 ');
+      expect(materials.first.text, text);
+      expect(() => materials.clear(), throwsUnsupportedError);
+      expect(() => materials[0] = original, throwsUnsupportedError);
+      expect(
+        renderInferenceInstructions(snapshot),
+        'strategy\n\n$text\n\nlast',
+      );
+    },
+  );
 
   test('source point has the agreed typed public identity', () {
     expect(
@@ -965,6 +1025,55 @@ Iterable<InferenceContextMaterial> _invalidMaterials(
   );
 }
 
+Matcher _sourceFailure(
+  ExtensionId sourceId,
+  Matcher cause,
+  StackTrace? stackTrace,
+) => isA<InferenceContextSourceFailed>()
+    .having((error) => error.sourceId, 'sourceId', sourceId)
+    .having((error) => error.cause, 'cause', cause)
+    .having(
+      (error) => error.stackTrace,
+      'stackTrace',
+      stackTrace == null ? isA<StackTrace>() : same(stackTrace),
+    )
+    .having(
+      (error) => error.stackTrace.toString(),
+      'nonempty stack',
+      isNotEmpty,
+    )
+    .having(
+      (error) => error.toString(),
+      'diagnostic',
+      contains(sourceId.value),
+    );
+
+Future<void> _expectPreparationFailure(
+  _Fixture fixture,
+  InferenceContextFailureMode mode,
+  ExtensionId sourceId,
+  Matcher cause, {
+  StackTrace? stackTrace,
+}) async {
+  if (mode == InferenceContextFailureMode.required) {
+    await expectLater(
+      fixture.capture(),
+      throwsA(_sourceFailure(sourceId, cause, stackTrace)),
+    );
+    return;
+  }
+  final prepared = await fixture.capture();
+  for (var i = 0; i < 2; i++) {
+    await _expectSourceFailure(
+      fixture.compose(prepared),
+      mode,
+      sourceId,
+      cause,
+      stackTrace: stackTrace,
+    );
+  }
+}
+
 Future<void> _expectSourceFailure(
   Future<InferenceContextSnapshot> pending,
   InferenceContextFailureMode mode,
@@ -973,24 +1082,7 @@ Future<void> _expectSourceFailure(
   StackTrace? stackTrace,
   String instructions = 'strategy',
 }) async {
-  final Matcher failure = isA<InferenceContextSourceFailed>()
-      .having((error) => error.sourceId, 'sourceId', sourceId)
-      .having((error) => error.cause, 'cause', cause)
-      .having(
-        (error) => error.stackTrace,
-        'stackTrace',
-        stackTrace == null ? isA<StackTrace>() : same(stackTrace),
-      )
-      .having(
-        (error) => error.stackTrace.toString(),
-        'nonempty stack',
-        isNotEmpty,
-      )
-      .having(
-        (error) => error.toString(),
-        'diagnostic',
-        contains(sourceId.value),
-      );
+  final failure = _sourceFailure(sourceId, cause, stackTrace);
   if (mode == InferenceContextFailureMode.required) {
     await expectLater(pending, throwsA(failure));
     return;
@@ -1030,25 +1122,33 @@ final class _Fixture {
   final StrategyInferenceMaterial material;
   final InferenceContextSourceContext context;
 
-  Future<InferenceContextRunBindings> capture() =>
+  Future<InferenceContextRunCapture> capture() =>
       composer.captureRun(context.session, context.runId);
 
   Future<InferenceContextSnapshot> compose([
-    InferenceContextRunBindings? bindings,
+    InferenceContextRunCapture? runCapture,
   ]) => composer.compose(
     strategyMaterial: material,
     sourceContext: context,
-    runBindings: bindings,
+    runCapture: runCapture,
   );
+
+  Future<InferenceContextSnapshot> composeNextRun() async {
+    final next = _SourceContext(
+      session: context.session,
+      runId: RunId('run-2'),
+    );
+    return composer.compose(
+      strategyMaterial: material,
+      sourceContext: next,
+      runCapture: await composer.captureRun(next.session, next.runId),
+    );
+  }
 
   ExtensionRegistration bound(
     String name,
-    Future<String?> Function(Session, RunId) captureRun,
-    Future<Iterable<InferenceContextMaterial>> Function(
-      InferenceContextSourceContext,
-      String?,
-    )
-    snapshot, {
+    Future<Iterable<InferenceContextMaterial>> Function(Session, RunId)
+    captureRun, {
     InferenceContextFailureMode mode = InferenceContextFailureMode.required,
   }) => registry.register(
     point: inferenceContextSources,
@@ -1056,7 +1156,6 @@ final class _Fixture {
     value: InferenceContextSourceContribution.runBound(
       failureMode: mode,
       captureRun: captureRun,
-      snapshot: snapshot,
     ),
   );
 

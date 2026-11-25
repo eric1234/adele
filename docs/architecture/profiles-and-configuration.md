@@ -1275,9 +1275,11 @@ boundaries preserve that invariant without requiring every change to wait for th
 same event.
 
 Stability does not keep retired executable bindings alive or authorize silent
-replacement. The [execution model](execution-model.md#generation-bound-execution)
-owns executable snapshot and binding lifetimes; inference/context composition is
-not another settings cascade.
+replacement. For example, saving an Agent definition or selecting a Model Preset
+changes the input to the next Run's preparation, not the active Run. See
+[inference preparation](execution-model.md#inference-preparation) for the
+distinction from per-inference observations, and [generation-bound execution](execution-model.md#generation-bound-execution)
+for executable lifetimes. Neither is another settings cascade.
 
 ### Chat invocation budget
 

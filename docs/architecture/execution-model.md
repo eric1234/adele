@@ -200,57 +200,51 @@ not internal kernel ports, executable catalogs, policies, or journal objects.
 
 ## Inference preparation
 
-The strategy supplies `StrategyInferenceMaterial`: its semantic instructions and
-ordered input, before host preparation. Each genuinely new inference, including a
-continuation, follows:
+Instruction sources choose one of two capture lifetimes:
 
-```text
-strategy material
-    -> capture current inference-context sources
-    -> immutable InferenceContextSnapshot
-    -> model invocation
-```
+| Lifetime | When the host reads the source | Stock example |
+| --- | --- | --- |
+| Run-scoped | Once during preparation of a new Run, before strategy materialization. Every inference in that Run reuses the result, including after a tool or approval wait. | [Agent Configuration](../../plugins/agent_configuration/README.md#instructions-during-a-run) resolves the Session's selected definition and supplies its instructions. |
+| Per-inference | At each new inference, including continuations. The host discovers ordinary sources afresh; each source owns how it observes current state. | The [root `AGENTS.md` source](../../plugins/agents_md/README.md) rereads the file through the Session-authorized Environment. |
 
-Run preparation fixes the membership of **Run-bound sources only**.
-`createSessionOrchestrationRun` retains the canonical Session for execution, then
-captures one opaque value per opted-in registration before materializing the
-selected strategy. Each callback observes state at its own asynchronous read;
-this is not a transaction with Settings edits or with other source reads. No
-instruction snapshot runs at this point. Required capture failure stops Run
-creation; optional capture failure remains an attributable omission without retry.
+Agent instructions and [Model Preset preferences](#run-model-preferences) are both
+Run-scoped execution configuration, supplied through separate extension points.
+The next Run reads current saved configuration during its own preparation. These
+asynchronous reads are not one transaction with Settings or with each other.
 
-Inference preparation discovers unbound sources anew and asks each eligible
-source for current instructions. Run-bound sources receive their own original
-value, including across tool continuations and approval waits. Capture finishes before
-allocation of that model invocation's identity, its tool snapshot, model-start
-evidence, or provider work. Earlier Run setup may already have materialized tool
-contributions. Capture preserves strategy input and source provenance; deterministic
-source ordering is not instruction trust or authority.
+`createSessionOrchestrationRun` retains the canonical Session. Its composer
+discovers the exact Run-scoped registrations before any asynchronous capture,
+then invokes them in lexical Extension ID order. The host keeps their copied
+results only for that registry, Session object, and Run ID. Each captured ID is
+reserved for the Run, even for an empty result or an optional omission: a same-ID
+replacement cannot contribute under either lifetime. Run-scoped sources registered
+later wait for a new Run.
 
-Each discovered source declares required or optional failure semantics. Required
-failure aborts preparation; optional failure omits that entire source with
-diagnostics. Successful empty material is not failure. Required status governs a
-discovered source, not a promise that a named plugin is installed; zero sources
-are valid.
+At either boundary the exact registration must be live before its callback and
+after the host has copied and validated the complete result. Failure, including
+retirement during capture, publishes no partial material and never retries a
+replacement. A required failure aborts preparation at that boundary; an optional
+failure records an omission with the source ID. A Run-scoped omission is not
+retried on later inferences. An empty contribution is a success; required status
+applies to a discovered source, not to installation. A required Run-scoped
+capture failure releases Session occupancy without attempting strategy
+materialization or creating a terminal Run record.
 
-For example, [Agent Configuration](../../plugins/agent_configuration/README.md#instructions-during-a-run)
-captures a selected record ID for the Run and resolves its current instructions
-per inference. Neither the strategy nor core reads Agent settings. The root
-`AGENTS.md` source remains independent.
+For each invocation the strategy supplies its current `StrategyInferenceMaterial`.
+The host preserves its ordered input and puts strategy instructions first, then
+merges retained and fresh source groups in lexical Extension ID order, preserving
+each source's material order. Capture lifetime gives no source precedence or
+authority. The immutable `InferenceContextSnapshot` is complete before the host
+allocates the invocation ID, snapshots its tools, records model-start evidence,
+or calls the provider.
 
-Capture validates the exact source binding through callback completion and
-copying/validation of its material. Safely captured immutable data can survive
-source retirement, including during the model call. A later inference can discover
-new unbound sources. Retiring a prepared source instead fails or omits that
-exact source according to its policy. A newly registered Run-bound source first
-participates in a new Run; it cannot inherit a retired binding. Bindings are
-execution-local, discarded on preparation failure or close, and never restored
-from activity history. Freshness is source-owned, with no universal refresh API.
-Capture is not an atomic snapshot of all external state.
-
-Maintained composition is instruction-focused. Broader Reference/Observation
-material is not defined here. Exact contracts and rendering belong to the
-[orchestration API map](../../packages/orchestration/README.md#inference-context).
+After acceptance, retirement cannot invalidate instruction data already copied
+for that Run or inference. Reusing it requires no source call and does not
+preserve an executable strategy, provider, tool, policy registration, or
+Environment grant. Run-scoped results are discarded if materialization fails
+or the execution ends; they are not stored or restored from history. See the
+[orchestration API map](../../packages/orchestration/README.md#inference-context)
+for material validation, diagnostics, and rendering.
 
 ## Model invocation
 
@@ -283,8 +277,8 @@ reasoning output or native continuation state. Application composition captures 
 with the Run's model adapter; every model/tool continuation retains that value,
 while a fresh adapter captures independently. Providers own exact lowering and
 support failures under the [request contract](../../packages/model_provider/README.md#reasoning-effort),
-not silent substitution. This does not introduce Session preferences or strategy-owned
-model configuration.
+not silent substitution. A [Run model preference](#run-model-preferences) may
+supply that effort; the strategy does not own model configuration.
 
 ## Tools and proposals
 
@@ -615,8 +609,7 @@ provider can still reject an unsupported request. Model/tool continuations and
 approval resume use the same adapter; no preference polling or provider lookup
 occurs on their behalf. The source may retire after successful capture, but a
 retired provider binding cannot be replaced to continue the Run. A later Run
-can capture a different preference and a new live provider binding. This
-does not change how Agent instructions are captured for an inference.
+can capture a different preference and a new live provider binding.
 
 The [Session Model Preset selector](../../plugins/model_configuration/README.md#choosing-a-model-preset)
 edits the input to a future capture. It has no execution authority and does not

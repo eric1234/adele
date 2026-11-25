@@ -99,23 +99,22 @@ already admitted by its backend.
 ## Instructions during a Run
 
 Selecting an Agent does not start a Run and is not a model-callable operation.
-When you submit a request, the active Agent backend captures the Session's
-selected record ID for that Run. Changing or clearing the selection while the
-Run is working or awaiting approval affects the **next Run**, not this one.
-If it started with **No Agent**, it contributes no Agent instructions throughout.
+When a new Run is prepared, the Agent backend resolves the Session's selected
+ID in the current catalog. Only `instructions` enter inference, not the Agent's
+name, description, or when-to-use guidance. Nonblank Markdown is preserved
+verbatim. **No Agent** and blank instructions both contribute nothing for the Run.
 
-For each model inference the backend resolves the captured ID in the current
-catalog. Only its `instructions` enter the context, alongside the strategy's
-instructions and other sources such as root `AGENTS.md`. Nonblank Markdown is
-passed verbatim; empty or whitespace-only instructions contribute nothing.
-Editing the effective Agent in Settings changes what the **next inference**
-receives, even within the same Run. Already prepared requests do not change.
+For example, if a Run using Agent A is awaiting approval, editing A and selecting
+B leaves its continuation on A's original instructions. The next Run uses B. If
+you edit A without changing the selection from A, the next Run uses A's edited
+text without a reselect. Deleting or recreating A also leaves the active Run
+unchanged. This is [Run-scoped instruction capture](../../docs/architecture/execution-model.md#inference-preparation),
+independent of root `AGENTS.md`, model routing, and tool authority.
 
-A partial catalog can supply a valid definition. If the captured ID is absent
-from a complete or partial catalog, or the catalog cannot be read, inference
-fails before calling the model. Nothing clears the Session preference or uses a
-different Agent. A record re-created under the captured ID supplies its current
-instructions. Agent selection changes neither model routing nor tool authority.
+A partial catalog suffices if it contains the selected ID. If selection cannot
+be read, or if the selected definition cannot be read or found, preparation
+fails before strategy materialization. Nothing clears the stored preference,
+substitutes another Agent, or reuses previous instructions.
 
 Stock default records and their one-time provisioning and Model Preset references
 remain deferred. Collections may remain empty; no records are provisioned,

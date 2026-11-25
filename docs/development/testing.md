@@ -609,8 +609,9 @@ shared-host AOT startup and live Settings CRUD on one backend generation.
 `test/core/agent_selection_integration_test.dart` adds ordinary compiled Agent
 selection over real host-mediated Project transactions, durable reopen and
 temporary backing, revision conflicts, corruption, and lost-acknowledgement
-reconciliation. Its compiled inference-source cases exercise capture, live Settings
-edits, incomplete observations, and replacement without Environment services.
+reconciliation. Its compiled inference-source cases distinguish the active Run's
+captured Markdown from what a fresh Run reads after edits, deletion, recreation,
+or backend replacement, without Environment services.
 Its compiled selector cases also mount a non-Chat pane with and
 without the accessory location, and retire or navigate away from a selector
 while a committed write is awaiting acknowledgement. These tests use isolated
@@ -621,12 +622,21 @@ unacknowledged-write behavior. The `normal Chat restores rich Markdown` case in
 `test/core/normal_chatgpt_run_integration_test.dart` installs the stock selector
 beside a second accessory: a choice created through Global Settings survives
 departure/return without changing the submitted Draft Request. Check this suite
-for the outbound Agent instructions, including a model/tool continuation after
-editing the effective Agent and selecting another for the next Run, and for
-missing-definition failure before the provider call.
+for outbound Agent instructions: a continuation after approval must still carry
+the original Markdown, while a new Run observes current selection and definition.
+An unresolved selected ID fails before strategy materialization, not as a
+terminal Run or model invocation.
 `test/core/durable_chat_session_integration_test.dart` covers Chat and Project
 reopen when Agent activation fails. Declaration-only installations still need no
 executable host, as tested by `test/core/application_plugin_bootstrap_test.dart`.
+
+For the generic lifetime boundary, use the `adele_orchestration` target's
+`inference_context_test.dart` (native material capture and composition) and
+`remote_inference_context_test.dart` (wire contract). From `app/`, run
+`flutter test --no-pub test/core/remote_inference_context_integration_test.dart`
+for compiled AOT capture, retirement during a pending request, and fresh
+per-inference `AGENTS.md` reads. `test/core/orchestration_host_test.dart` checks
+Run preparation and release independently of stock Agent behavior.
 
 `app/test/record_settings_dialog_test.dart` covers generic collection navigation,
 details, display-title fallback, shared create/edit multi-type forms, direct required

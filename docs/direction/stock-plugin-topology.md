@@ -532,9 +532,10 @@ Likely provides:
 
 Chat does not call an `AgentSelector`; the Agent plugin independently participates wherever its state matters.
 
-In the expected stock workflow, a model-callable `set_agent`/selection tool routes the user to the Agent used for the **next user invocation**. It does not implicitly change the Agent for a model continuation that still belongs to the current user turn. A future orchestration strategy may deliberately define an explicit intra-Run Agent handoff, but that is separate orchestration behavior rather than an accidental consequence of changing the selected Agent.
-
-The [Agent plugin's Run-bound source](../../plugins/agent_configuration/README.md#instructions-during-a-run), not Chat, captures the effective Agent. A future `set_agent` would change Session selection for a later Run, not replace the binding during a continuation. Treatment of queued/new-turn input remains strategy-specific.
+The [Agent plugin](../../plugins/agent_configuration/README.md#instructions-during-a-run),
+not Chat, supplies the selected Agent's instructions. A future `set_agent` tool
+could route the next user submission by changing the Session selection. An
+intra-Run handoff would be a separate strategy operation, not selection.
 
 ## 6.2 Model Routing / Control
 
@@ -554,7 +555,8 @@ Those future controls may consume active ModelProviders and provider metadata/ca
 
 Without this plugin, a strategy can still invoke a configured provider using that provider's own default model/options.
 
-Model/reasoning changes can affect a subsequent inference after the current resolved invocation settles. This timing is intentionally distinct from the stock Agent-selection workflow above.
+Changing a Model Preset affects [preparation of a new Run](../architecture/execution-model.md#run-model-preferences),
+not model resolution on continuation.
 
 ---
 
@@ -912,13 +914,12 @@ selection/presentation composition, but is not required by this flow.
 
 ```text
 user submits Chat turn
-    -> Run preparation captures the Agent source's selected ID, if registered
+    -> prepare the Run: resolve its model configuration and capture Run-scoped instructions
     -> Chat strategy calls public orchestration/execution service
     -> core structured composition gathers
         Chat strategy/history material
-        Agent instructions/tool constraints from the turn binding
-        Model routing/reasoning preferences
-        context/compaction material
+        captured instructions, including Agent Markdown when supplied
+        fresh per-inference context, including root AGENTS.md when supplied
         materialized tools
         other typed contributions
     -> host resolves stable inference snapshot
@@ -927,22 +928,14 @@ user submits Chat turn
 
 The public service is backed by `agent_kernel` internally; Chat does not import the kernel package.
 
-Each model continuation may still receive a newly resolved inference snapshot, but stock Chat uses the same turn-scoped effective Agent until that user-submitted turn ends. Prompt widgets and model-callable controls modify plugin-owned state according to that plugin's lifecycle semantics. Model/reasoning changes may affect a later inference once the current invocation settles; stock Agent selection normally routes a later user invocation rather than changing the bound Agent inside the current turn.
+See [inference preparation](../architecture/execution-model.md#inference-preparation)
+for how continuations combine captured instructions with fresh context.
 
 ## 12.6 Model changes model/Agent
 
-```text
-model invokes model/reasoning control tool
-    -> plugin-owned state changes
-    -> current resolved inference remains unchanged
-    -> a subsequent inference may use the new model/reasoning state
-
-model invokes set_agent / Agent-selection tool
-    -> selected Agent for a later user invocation changes
-    -> current Chat turn retains its snapshotted effective Agent
-```
-
-An orchestration strategy could later define an explicit intra-Run Agent handoff, but that is separate from the stock selection tool. Exact handling of queued or steering input at turn boundaries remains strategy-specific rather than being fixed here.
+Model-callable controls, if provided, would edit the same plugin-owned Session
+choices as the prompt controls. Neither would reconfigure an active Run. Queued
+or steering input at turn boundaries remains strategy-specific.
 
 ## 12.7 Source operation
 

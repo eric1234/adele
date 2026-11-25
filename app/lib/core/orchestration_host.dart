@@ -146,7 +146,7 @@ Future<SessionOrchestrationRun> createSessionOrchestrationRun({
   try {
     // Only opted-in sources capture here. Keep the result private to preparation
     // until materialization succeeds; plugins may retain a failed factory's host.
-    final runBindings = await contextComposer.captureRun(session, runId);
+    final runCapture = await contextComposer.captureRun(session, runId);
     exitFence.throwIfInterrupted();
     lifecycle.validateSessionInput(session);
     lifecycle.validateResolvedStrategy(session.strategyId, binding);
@@ -169,7 +169,7 @@ Future<SessionOrchestrationRun> createSessionOrchestrationRun({
       }
       rethrow;
     }
-    host._runBindings = runBindings;
+    host._runCapture = runCapture;
     return SessionOrchestrationRun._(
       host,
       execution,
@@ -218,7 +218,7 @@ final class SessionOrchestrationRun implements OrchestrationExecution {
 
   void _interruptForApplicationExit() {
     _closed = true;
-    _host._runBindings = null;
+    _host._runCapture = null;
     try {
       // An actual terminal state may precede pending strategy persistence. Keep
       // that evidence now, while storage is still open, then seal all late writes.
@@ -348,7 +348,7 @@ final class SessionOrchestrationRun implements OrchestrationExecution {
       if (_host._operationSettled case final Completer<void> operation) {
         await operation.future;
       }
-      _host._runBindings = null;
+      _host._runCapture = null;
       // Detached mechanics can settle a deferred failure after advancement ends.
       // Release resources even if recording that terminal state fails.
       var recordingFailed = false;
@@ -406,7 +406,7 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
   final Session _session;
   final ResolvedOrchestrationStrategy _strategy;
   final InferenceContextComposer _contextComposer;
-  InferenceContextRunBindings? _runBindings;
+  InferenceContextRunCapture? _runCapture;
   final InferenceContextSourceContext Function() _sourceContextFactory;
   final ModelPort _model;
   final ToolCatalog _toolCatalog;
@@ -595,7 +595,7 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
     final InferenceContextSnapshot context = await _contextComposer.compose(
       strategyMaterial: material,
       sourceContext: sourceContext,
-      runBindings: _runBindings,
+      runCapture: _runCapture,
     );
     // Preparation may await plugin code; executable strategy authority is still
     // required, unlike the pure data copied from context-source bindings.
