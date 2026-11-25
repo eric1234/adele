@@ -427,10 +427,13 @@ class _BrowserState extends State<ModelBrowser> {
   }
 
   Widget header(bool provider, String label) {
-    final direction = descending ? 'descending' : 'ascending';
-    return TextButton(
-      onPressed: () => sort(provider),
-      child: Text(byProvider == provider ? '$label ($direction)' : label),
+    final direction = descending ? 'Z-A' : 'A-Z';
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: TextButton(
+        onPressed: () => sort(provider),
+        child: Text(byProvider == provider ? '$label ($direction)' : label),
+      ),
     );
   }
 
@@ -441,32 +444,46 @@ class _BrowserState extends State<ModelBrowser> {
     ],
   );
 
+  Widget actionBar(List<Widget> actions) {
+    final buttons = <Widget>[];
+    for (final action in actions) {
+      buttons.add(Expanded(flex: 1, child: action));
+    }
+    return Align(
+      alignment: Alignment.centerRight,
+      child: Container(
+        constraints: BoxConstraints(maxWidth: 144.0 * actions.length),
+        child: Row(children: buttons),
+      ),
+    );
+  }
+
   Widget tableRow(_Model row, int offeredEpoch) {
     final active = row == selected;
-    final modelCell = <Widget>[
-      Text(
-        inspectionDisplayText(row.name),
-        style: TextStyle(
-          fontWeight: active ? FontWeight.bold : FontWeight.normal,
-        ),
-      ),
-    ];
+    final modelCell = <Widget>[Text(inspectionDisplayText(row.name))];
     if (row.id != row.name) {
       modelCell.add(
         Text(inspectionDisplayText(row.id), style: TextStyle(fontSize: 12)),
       );
     }
-    return TextButton(
-      onPressed: () {
-        if (!current() || manual || epoch != offeredEpoch || !verify(row)) {
-          return;
-        }
-        selected = row;
-        setState(() {});
-      },
-      child: Container(
-        padding: EdgeInsets.all(8),
-        child: cells(
+    return Container(
+      color: active
+          ? Theme.of(dialogContext).primaryColor.withValues(alpha: 0.12)
+          : Colors.transparent,
+      child: ListTile(
+        selected: active,
+        leading: Icon(
+          active ? Icons.radio_button_checked : Icons.radio_button_unchecked,
+          size: 20,
+        ),
+        onTap: () {
+          if (!current() || manual || epoch != offeredEpoch || !verify(row)) {
+            return;
+          }
+          selected = row;
+          setState(() {});
+        },
+        title: cells(
           Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: modelCell,
@@ -491,7 +508,10 @@ class _BrowserState extends State<ModelBrowser> {
     );
     parts.add(chips());
     parts.add(
-      cells(header(false, 'Model'), header(true, 'Configured provider')),
+      ListTile(
+        leading: SizedBox(width: 20),
+        title: cells(header(false, 'Model'), header(true, 'Provider')),
+      ),
     );
     final offered = visible;
     final offeredEpoch = epoch;
@@ -520,7 +540,10 @@ class _BrowserState extends State<ModelBrowser> {
     final row = selected;
     if (row != null) {
       parts.add(
-        Text('Selected: ${compactDisplayText(row.id)} / ${row.offer.label}'),
+        Text(
+          'Selected: ${compactDisplayText(row.id)} / ${row.offer.label}'
+          '${visible.contains(row) ? '' : ' (hidden by filter)'}',
+        ),
       );
     }
     final actions = <Widget>[
@@ -552,7 +575,7 @@ class _BrowserState extends State<ModelBrowser> {
       );
     }
     actions.add(TextButton(onPressed: () => close(), child: Text('Cancel')));
-    parts.add(Row(mainAxisAlignment: MainAxisAlignment.end, children: actions));
+    parts.add(actionBar(actions));
   }
 
   void manualWidgets(List<Widget> parts) {
@@ -629,7 +652,7 @@ class _BrowserState extends State<ModelBrowser> {
       );
     }
     actions.add(TextButton(onPressed: () => close(), child: Text('Cancel')));
-    parts.add(Row(mainAxisAlignment: MainAxisAlignment.end, children: actions));
+    parts.add(actionBar(actions));
   }
 
   void manualChanged() {
@@ -642,34 +665,33 @@ class _BrowserState extends State<ModelBrowser> {
   Widget build(BuildContext context) {
     dialogContext = context;
     if (epoch == 0 && !closed) capture();
-    final toolbar = <Widget>[
-      Expanded(
-        flex: 1,
-        child: Text(
-          manual ? 'Manual model reference' : 'Model Browser',
-          style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
-        ),
-      ),
-    ];
+    final title = Text(
+      manual ? 'Manual model reference' : 'Model Browser',
+      style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+    );
+    final toolbar = <Widget>[Expanded(flex: 2, child: title)];
     if (!manual) {
       toolbar.add(
-        TextButton(
-          onPressed: () {
-            if (!current() || manual) return;
-            details = !details;
-            setState(() {});
-          },
-          child: Text('Provider status'),
-        ),
-      );
-      toolbar.add(
-        TextButton(
-          onPressed: () {
-            if (!current() || manual) return;
-            capture();
-            setState(() {});
-          },
-          child: Text('Refresh'),
+        Expanded(
+          flex: 3,
+          child: actionBar(<Widget>[
+            TextButton(
+              onPressed: () {
+                if (!current() || manual) return;
+                details = !details;
+                setState(() {});
+              },
+              child: Text('Provider status'),
+            ),
+            TextButton(
+              onPressed: () {
+                if (!current() || manual) return;
+                capture();
+                setState(() {});
+              },
+              child: Text('Refresh'),
+            ),
+          ]),
         ),
       );
     }

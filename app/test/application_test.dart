@@ -580,14 +580,33 @@ void main() {
         final workEndpoint = find.byKey(
           ValueKey('record-input-providers-$workId-endpoint'),
         );
-        await tester.enterText(workEndpoint, '   ');
-        await tester.pump();
         final save = find.byKey(ValueKey('record-save-providers-$workId'));
-        expect(tester.widget<FilledButton>(save).onPressed, isNull);
-        expect(
-          tester.widget<TextField>(workEndpoint).decoration!.errorText,
-          isNotEmpty,
-        );
+        for (final (invalid, message) in [
+          ('   ', 'Must not be blank.'),
+          (
+            'https://example.inva\nlid/v1',
+            'Must not contain ASCII control characters.',
+          ),
+        ]) {
+          await tester.enterText(workEndpoint, invalid);
+          await tester.pump();
+          expect(
+            tester.widget<TextField>(workEndpoint).controller!.text,
+            invalid,
+          );
+          expect(tester.widget<FilledButton>(save).onPressed, isNull);
+          final endpointDecoration = find.ancestor(
+            of: workEndpoint,
+            matching: find.byType(InputDecorator),
+          );
+          expect(
+            tester
+                .widget<InputDecorator>(endpointDecoration)
+                .decoration
+                .errorText,
+            message,
+          );
+        }
         await tester.enterText(workEndpoint, 'https://example.invalid/v1');
         await tester.pumpAndSettle();
         expect(tester.widget<FilledButton>(save).onPressed, isNotNull);
@@ -2472,7 +2491,7 @@ Future<String> _createProviderRecord(
   await tester.enterText(input, '   ');
   await tester.pump();
   expect(tester.widget<FilledButton>(create).onPressed, isNull);
-  expect(tester.widget<TextField>(input).decoration!.errorText, isNotEmpty);
+  expect(find.text('Must not be blank.'), findsOneWidget);
   await tester.enterText(input, name);
   await tester.pump();
   expect(tester.widget<FilledButton>(create).onPressed, isNotNull);

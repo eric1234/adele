@@ -166,6 +166,27 @@ void main() {
       );
       expect(access.calls, isEmpty);
       await _tap(tester, 'Browse models...');
+      final selectedRow = find.byWidgetPredicate(
+        (w) => w is ListTile && w.selected,
+      );
+      void expectSelected(String provider) {
+        expect(selectedRow, findsOneWidget);
+        for (final label in ['Luna', 'same', provider]) {
+          expect(
+            find.descendant(of: selectedRow, matching: find.text(label)),
+            findsOneWidget,
+          );
+        }
+        expect(
+          find.descendant(
+            of: selectedRow,
+            matching: find.byIcon(Icons.radio_button_checked),
+          ),
+          findsOneWidget,
+        );
+      }
+
+      expectSelected('Account (test.work)');
       expect(find.text('Selected: same / Account (test.work)'), findsOneWidget);
       expect(find.text('Luna'), findsNWidgets(2));
       expect(
@@ -181,12 +202,13 @@ void main() {
       );
       double y(String label) => tester.getTopLeft(find.text(label).first).dy;
       expect(y('Artemis'), lessThan(y('Luna')));
-      await _tap(tester, 'Model (ascending)');
+      await _tap(tester, 'Model (A-Z)');
       expect(y('Luna'), lessThan(y('Artemis')));
-      await _tap(tester, 'Configured provider');
-      expect(find.text('Configured provider (ascending)'), findsOneWidget);
-      await _tap(tester, 'Configured provider (ascending)');
-      expect(find.text('Configured provider (descending)'), findsOneWidget);
+      await _tap(tester, 'Provider');
+      expect(find.text('Provider (A-Z)'), findsOneWidget);
+      await _tap(tester, 'Provider (A-Z)');
+      expect(find.text('Provider (Z-A)'), findsOneWidget);
+      expectSelected('Account (test.work)');
       final search = find.byType(TextField);
       for (final (query, count) in [
         ('LuNa', 2),
@@ -201,17 +223,83 @@ void main() {
       await tester.enterText(search, '');
       await tester.tap(_chip('Account (test.home)'));
       await tester.pumpAndSettle();
+      expect(selectedRow, findsNothing);
+      expect(
+        find.text('Selected: same / Account (test.work) (hidden by filter)'),
+        findsOneWidget,
+      );
       await _tap(tester, 'Luna');
+      expectSelected('Account (test.home)');
       expect(find.text('Selected: same / Account (test.home)'), findsOneWidget);
       expect(draft.value, _work);
       expect(access.calls, hasLength(4));
+      await tester.tap(_chip('All'));
+      await tester.pumpAndSettle();
+      expect(find.text('Luna'), findsNWidgets(2));
+      expectSelected('Account (test.home)');
+      await tester.enterText(search, 'Artemis');
+      await tester.pumpAndSettle();
+      expect(selectedRow, findsNothing);
+      expect(
+        find.text('Selected: same / Account (test.home) (hidden by filter)'),
+        findsOneWidget,
+      );
       await _tap(tester, 'Use model');
       expect(draft.proposals, [_home]);
       expect(draft.contexts, [<String>[]]);
       expect(access.calls, hasLength(4));
-      expect(find.text('Model ID: same'), findsOneWidget);
       expect(find.text('Luna'), findsOneWidget);
+      expect(
+        find.text('Configured provider: Account (test.home)'),
+        findsOneWidget,
+      );
+      expect(find.text('Model ID: same'), findsNothing);
+      await _tap(tester, 'Show IDs');
+      expect(find.text('Model ID: same'), findsOneWidget);
+      expect(find.text('Provider ID: test.home'), findsOneWidget);
       expect(access.handles, isEmpty);
+    },
+  );
+
+  testWidgets(
+    'unique provider and catalog names lead; IDs remain inspectable',
+    (tester) async {
+      draft.value = _work;
+      access.providers['work'] = 'Work';
+      await mount(tester);
+      expect(find.text('same'), findsOneWidget);
+      expect(find.text('Model not verified.'), findsOneWidget);
+      expect(find.text('Configured provider: Work'), findsOneWidget);
+      expect(find.textContaining('test.work'), findsNothing);
+      expect(access.calls, isEmpty);
+      await _tap(tester, 'Browse models...');
+      // Keep the chosen row and both commit/dismiss actions reachable after a
+      // desktop resize, including the narrow viewport used by Settings tests.
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      for (final size in [const Size(1100, 760), const Size(400, 700)]) {
+        tester.view.physicalSize = size;
+        await tester.pumpAndSettle();
+        await tester.ensureVisible(find.byIcon(Icons.radio_button_checked));
+        await tester.pumpAndSettle();
+        expect(
+          find.byIcon(Icons.radio_button_checked).hitTestable(),
+          findsOneWidget,
+        );
+        expect(find.text('Use model').hitTestable(), findsOneWidget);
+        expect(find.text('Cancel').hitTestable(), findsOneWidget);
+      }
+      await _tap(tester, 'Use model');
+      expect(find.text('Luna'), findsOneWidget);
+      expect(find.text('Model not verified.'), findsNothing);
+      expect(find.textContaining('test.work'), findsNothing);
+      await _tap(tester, 'Show IDs');
+      expect(find.text('Provider ID: test.work'), findsOneWidget);
+      expect(find.text('Model ID: same'), findsOneWidget);
+      await _tap(tester, 'Hide IDs');
+      expect(find.textContaining('test.work'), findsNothing);
+      expect(draft.proposals, [_work]);
+      expect(access.calls, hasLength(4));
     },
   );
 

@@ -462,10 +462,10 @@ void main() {
         expect(find.text('Agent'), findsOneWidget);
         expect(_enabled(tester, createButton), isFalse);
         expect(find.byType(CheckboxListTile), findsNothing);
-        final name = tester.widget<TextField>(_key('record-input-agents-name'));
-        expect(name.enabled, isTrue);
-        expect(name.decoration!.labelText, 'Name (Required)');
-        expect(name.decoration!.errorText, isNotEmpty);
+        final name = _key('record-input-agents-name');
+        expect(tester.widget<TextField>(name).enabled, isTrue);
+        expect(_scalarDecoration(tester, name).labelText, 'Name (Required)');
+        expect(_scalarDecoration(tester, name).errorText, isNotEmpty);
         await _enter(tester, _key('record-input-agents-name'), '   ');
         expect(_enabled(tester, createButton), isFalse);
         final instructions = tester.widget<InputDecorator>(
@@ -3166,7 +3166,7 @@ String _text(WidgetTester tester, Finder input) =>
 
 InputDecoration _scalarDecoration(WidgetTester tester, Finder input) {
   final control = tester.widget(input);
-  if (control is TextField) return control.decoration!;
+  if (control case TextField(decoration: final decoration?)) return decoration;
   return tester
       .widget<InputDecorator>(
         find.ancestor(of: input, matching: find.byType(InputDecorator)),
