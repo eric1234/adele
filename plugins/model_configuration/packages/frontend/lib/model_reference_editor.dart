@@ -15,6 +15,7 @@ class _ModelReferenceEditor extends StatefulWidget {
 class _ModelReferenceEditorState extends State<_ModelReferenceEditor> {
   bool disposed = false;
   bool browsing = false;
+  bool showIds = false;
   String knownProvider = '';
   String knownId = '';
   String knownName = '';
@@ -37,6 +38,7 @@ class _ModelReferenceEditorState extends State<_ModelReferenceEditor> {
     if (disposed) return;
     browsing = false;
     if (selection.confirmed) {
+      showIds = false;
       knownProvider = selection.provider;
       knownId = selection.model;
       knownName = selection.name;
@@ -59,19 +61,38 @@ class _ModelReferenceEditorState extends State<_ModelReferenceEditor> {
       final name = provider == knownProvider && model == knownId
           ? knownName
           : '';
-      widgets.add(Text(inspectionDisplayText(name.isEmpty ? model : name)));
-      if (name.isNotEmpty && name != model) {
-        widgets.add(Text('Model ID: ${inspectionDisplayText(model)}'));
-      }
-      widgets.add(Text('Configured provider: ${providerLabel(provider)}'));
-    }
-    if (settingsFieldEditingEnabled()) {
       widgets.add(
+        Text(
+          inspectionDisplayText(name.isEmpty ? model : name),
+          style: TextStyle(fontWeight: FontWeight.bold),
+        ),
+      );
+      widgets.add(Text(providerSummary(provider)));
+      if (name.isEmpty) widgets.add(Text('Model not verified.'));
+    }
+    final actions = <Widget>[];
+    if (settingsFieldEditingEnabled()) {
+      actions.add(
         TextButton(
           onPressed: () => browse(context, revision, provider, model),
           child: Text('Browse models...'),
         ),
       );
+    }
+    if (value != null) {
+      actions.add(
+        TextButton(
+          onPressed: () => setState(() {
+            showIds = !showIds;
+          }),
+          child: Text(showIds ? 'Hide IDs' : 'Show IDs'),
+        ),
+      );
+    }
+    widgets.add(Row(children: actions));
+    if (value != null && showIds) {
+      widgets.add(Text('Model ID: ${inspectionDisplayText(model)}'));
+      widgets.add(Text('Provider ID: ${inspectionDisplayText(provider)}'));
     }
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -86,19 +107,25 @@ class _ModelReferenceEditorState extends State<_ModelReferenceEditor> {
     super.dispose();
   }
 
-  String providerLabel(String id) {
-    final label = inspectionDisplayText(id);
+  String providerSummary(String id) {
     final metadata = observeModelProviders(false);
     if (metadata != null) {
       for (final entry in metadata) {
         if (entry['providerId'] == id) {
           final display = entry['displayName'] as String;
-          if (display.isNotEmpty && display != id) {
-            return '${inspectionDisplayText(display)} ($label)';
+          if (display.trim().isEmpty) {
+            return 'Configured provider: ${inspectionDisplayText(id)}';
           }
+          final name = inspectionDisplayText(display);
+          for (final peer in metadata) {
+            if (peer['providerId'] != id && peer['displayName'] == display) {
+              return 'Configured provider: $name (${inspectionDisplayText(id)})';
+            }
+          }
+          return 'Configured provider: $name';
         }
       }
     }
-    return label;
+    return 'Unverified provider: ${inspectionDisplayText(id)}';
   }
 }

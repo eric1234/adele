@@ -2377,9 +2377,24 @@ final class _ProviderSettings {
   );
 
   Future<void> _tap(Finder finder) async {
+    // A focused field can still be scrolling the form to reveal its caret.
+    // Wait before positioning the target; a zero-duration pump is not enough.
+    final scroll = Scrollable.maybeOf(
+      tester.element(finder),
+      axis: Axis.vertical,
+    );
+    await until(
+      () => scroll?.position.isScrollingNotifier.value != true,
+      'scroll to settle before tapping $finder',
+    );
     await tester.ensureVisible(finder);
-    await tester.pump();
-    await tester.tap(finder);
+    final target = finder.hitTestable();
+    await until(() {
+      if (target.evaluate().isEmpty) return false;
+      final control = tester.widget(target);
+      return control is! ButtonStyleButton || control.enabled;
+    }, 'enabled, hit-testable $finder');
+    await tester.tap(target);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
   }

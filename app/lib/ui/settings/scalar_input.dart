@@ -67,6 +67,10 @@ final class ScalarInput extends StatelessWidget {
       decoration: InputDecoration(labelText: label, errorText: error),
       onChanged: (value) => onChanged(int.tryParse(value, radix: 10)),
     ),
+    StringSettingType(rejectAsciiControls: true) ||
+    StringSettingType(
+      format: StringSettingFormat.adelePublicId,
+    ) => _SingleLineString(key: ValueKey(inputKey), input: this),
     StringSettingType() => TextField(
       key: inputKey,
       controller: text,
@@ -104,4 +108,70 @@ final class ScalarInput extends StatelessWidget {
       ),
     ),
   };
+}
+
+final class _SingleLineString extends StatefulWidget {
+  const _SingleLineString({super.key, required this.input});
+
+  final ScalarInput input;
+
+  @override
+  State<_SingleLineString> createState() => _SingleLineStringState();
+}
+
+final class _SingleLineStringState extends State<_SingleLineString> {
+  final _focus = FocusNode();
+
+  @override
+  void dispose() {
+    _focus.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final input = widget.input;
+    return GestureDetector(
+      onTap: input.enabled ? _focus.requestFocus : null,
+      excludeFromSemantics: true,
+      child: ListenableBuilder(
+        listenable: _focus,
+        builder: (context, child) => InputDecorator(
+          decoration: InputDecoration(
+            labelText: input.label,
+            errorText: input.error,
+            enabled: input.enabled,
+          ),
+          isEmpty: (input.text?.text ?? input.value ?? '') == '',
+          isFocused: _focus.hasFocus,
+          child: child,
+        ),
+        // maxLines: 1 strips LF before onChanged or any custom formatter.
+        // Scroll valid text horizontally, but expose a hard break for repair
+        // rather than silently submitting a different ID or endpoint.
+        child: LayoutBuilder(
+          builder: (context, bounds) => SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: ConstrainedBox(
+              constraints: BoxConstraints(minWidth: bounds.maxWidth),
+              child: IntrinsicWidth(
+                child: TextField(
+                  key: input.inputKey,
+                  controller: input.text,
+                  enabled: input.enabled,
+                  focusNode: _focus,
+                  decoration: null,
+                  minLines: 1,
+                  maxLines: 2,
+                  keyboardType: TextInputType.text,
+                  textInputAction: TextInputAction.done,
+                  onChanged: input.onChanged,
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }

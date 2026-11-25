@@ -94,6 +94,12 @@ void main() {
       await _waitFor(tester, title);
       await _tap(tester, _key('records-add-model-presets'));
       await _waitFor(tester, _key('record-input-model-presets-name'));
+      expect(
+        tester
+            .widget<TextField>(_key('record-input-model-presets-name'))
+            .keyboardType,
+        TextInputType.text,
+      );
       await tester.enterText(
         _key('record-input-model-presets-name'),
         'Unfinished',
@@ -155,8 +161,9 @@ void main() {
         matching: find.byType(TextField),
       );
       expect(inputs, findsNothing);
-      expect(find.text('Configured provider: local.work'), findsOneWidget);
+      expect(find.text('Unverified provider: local.work'), findsOneWidget);
       expect(find.text('alpha'), findsOneWidget);
+      expect(find.text('Model not verified.'), findsOneWidget);
       expect(effort(_suffix).value, 'high');
       expect(effort(_suffix).onChanged, isNotNull);
       expect(effort(_suffix).items!.map((item) => item.value), [
@@ -173,13 +180,13 @@ void main() {
       await author();
       await tester.enterText(dialogInputs.first, 'local.other');
       await _tap(tester, find.text('Use reference'));
-      expect(find.text('Configured provider: local.other'), findsOneWidget);
+      expect(find.text('Unverified provider: local.other'), findsOneWidget);
       await _tap(tester, _key('record-cancel-$_suffix'));
       expect(file.readAsStringSync(), original);
 
       await _tap(tester, edit);
       await _waitFor(tester, find.text('Browse models...'));
-      expect(find.text('Configured provider: local.work'), findsOneWidget);
+      expect(find.text('Unverified provider: local.work'), findsOneWidget);
       const updated = {
         'provider-id': 'offline.account-2',
         'model-id': ' Org/Model:v2+custom ',
