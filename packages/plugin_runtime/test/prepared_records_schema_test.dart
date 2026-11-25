@@ -1648,6 +1648,56 @@ void main() {
   );
 
   test(
+    'fields and struct properties accept the same string constraints',
+    () async {
+      const constrained = {
+        'type': 'string',
+        'nonBlank': true,
+        'rejectAsciiControls': true,
+        'maxLength': 3,
+        'format': 'adele-public-id',
+      };
+      await install(
+        'plugin',
+        schema: _schema([
+          {
+            ..._type(),
+            'fields': [
+              {..._field(id: 'route'), ...constrained},
+              {
+                ..._structField(),
+                'properties': [
+                  {'id': 'route', ...constrained},
+                ],
+              },
+            ],
+          },
+        ]),
+      );
+      final catalog = await PreparedPluginCatalog.discover(root.path);
+      expect(catalog.issues, isEmpty);
+      final fields = catalog.records.definitions.single.fields;
+      final property = (fields.last.type as StructuredRecordFieldType)
+          .properties
+          .values
+          .single;
+      for (final type in [
+        fields.first.type,
+        property,
+      ].cast<StringSettingType>()) {
+        expect(type.nonBlank, isTrue);
+        expect(type.rejectAsciiControls, isTrue);
+        expect(type.maxLength, 3);
+        expect(type.format, StringSettingFormat.adelePublicId);
+      }
+      expect(fields.first.valueError('a.b'), isNull);
+      expect(fields.first.valueError('abc'), isNotNull);
+      expect(fields.last.valueError({'route': 'a.b'}), isNull);
+      expect(fields.last.valueError({'route': 'a.bc'}), contains('route'));
+    },
+  );
+
+  test(
     'any scalar field may reference the same contributed editor without a frontend',
     () async {
       const editorId = 'org.example.plugin.draft-editor';
@@ -2264,6 +2314,27 @@ void main() {
     for (final text in [null, 1, '', ' ', 'a\nb', 'a\u0000b'])
       'label $text': {..._field(), 'label': text},
     'null description': {..._field(), 'description': null},
+    for (final invalid in [
+      {'nonBlank': 'false'},
+      {'maxLength': 0},
+      {'rejectAsciiControls': null},
+      {'format': 'provider-id'},
+      {'format': 'adele-public-id', 'maxLength': 2},
+      {'type': 'integer', 'maxLength': 3},
+      {'type': 'boolean', 'nonBlank': false},
+    ]) ...{
+      'invalid string declaration $invalid on field': {..._field(), ...invalid},
+      'invalid string declaration $invalid on property': {
+        ..._structField(),
+        'properties': [
+          {'id': 'route', 'type': 'string', ...invalid},
+        ],
+      },
+    },
+    'misplaced string constraint on struct': {
+      ..._structField(),
+      'format': 'adele-public-id',
+    },
     for (final invalid in <Object?>[null, false, '', 'No\nvalue', 'x' * 161])
       'unsetLabel $invalid': {
         ..._field(type: 'enum'),

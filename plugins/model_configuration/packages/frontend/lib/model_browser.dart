@@ -363,7 +363,7 @@ class _BrowserState extends State<ModelBrowser> {
   }
 
   void confirm(String provider, String id, String name, List<String>? efforts) {
-    if (!current() || provider.trim().isEmpty || id.trim().isEmpty) return;
+    if (!current()) return;
     final pair = <String, Object>{'provider-id': provider, 'model-id': id};
     final error = efforts == null
         ? proposeSettingsFieldValue(selection.revision, pair)
@@ -400,6 +400,7 @@ class _BrowserState extends State<ModelBrowser> {
         if (!current() || epoch != offeredEpoch) return;
         if (manual) {
           manualProvider = id;
+          notice = '';
         } else {
           filter = id;
           project();
@@ -577,6 +578,7 @@ class _BrowserState extends State<ModelBrowser> {
         onPressed: () {
           if (!current() || !manual) return;
           advanced = !advanced;
+          notice = '';
           setState(() {});
         },
         child: Text(
@@ -603,12 +605,15 @@ class _BrowserState extends State<ModelBrowser> {
         onPressed: () {
           if (!current() || !manual) return;
           manual = false;
+          notice = '';
           setState(() {});
         },
         child: Text('Back to catalog'),
       ),
     ];
-    if (provider.trim().isNotEmpty && id.trim().isNotEmpty) {
+    // A configured instance must be chosen. Once the inputs are offered,
+    // propose them verbatim; only the field declaration validates the pair.
+    if (advanced || manualProvider.isNotEmpty) {
       actions.add(
         TextButton(
           onPressed: () {
@@ -628,7 +633,9 @@ class _BrowserState extends State<ModelBrowser> {
   }
 
   void manualChanged() {
-    if (current() && manual) setState(() {});
+    if (!current() || !manual) return;
+    notice = '';
+    setState(() {});
   }
 
   @override

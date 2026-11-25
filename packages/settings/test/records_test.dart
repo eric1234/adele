@@ -242,6 +242,38 @@ void main() {
     });
   }
 
+  test('constrained fields distinguish absence from present invalid text', () {
+    for (final required in [false, true]) {
+      final field = _field(
+        'name',
+        StringSettingType.constrained(nonBlank: true),
+        required: required,
+      );
+      final type = _type(fields: [field]);
+      if (required) {
+        expect(
+          () => type.validate(_record, {}),
+          throwsA(_invalid('name', 'Required field is missing.')),
+        );
+      } else {
+        expect(type.validate(_record, {}), isEmpty);
+      }
+      const valid = {'name': '  Text\n'};
+      expect(type.validate(_record, valid), valid);
+      for (final (value, message) in [
+        (null, 'Expected a string.'),
+        ('', 'Must not be blank.'),
+        ('\u00a0', 'Must not be blank.'),
+      ]) {
+        expect(field.valueError(value), message);
+        expect(
+          () => type.validate(_record, {'name': value}),
+          throwsA(_invalid('name', message)),
+        );
+      }
+    }
+  });
+
   test('markdown rejects boolean, integer and string-enum fields', () {
     for (final type in <SettingType<Object>>[
       const BooleanSettingType(),
@@ -345,12 +377,76 @@ void main() {
     test('bounds structured strings in UTF-16 code units, not code points', () {
       final atLimit = '\u{1f600}' * (64 * 1024 ~/ 2);
       expect(field.snapshotValue({...valid, 'name': atLimit})['name'], atLimit);
-      expect(field.valueError({...valid, 'name': '${atLimit}a'}), isNotNull);
+      final tooLong = {...valid, 'name': '${atLimit}a'};
+      const error = 'Property name exceeds 65536 UTF-16 code units.';
+      expect(field.valueError(tooLong), error);
+      expect(
+        () => type.validate(_record, {'target': tooLong}),
+        throwsA(_invalid('target', error)),
+      );
       expect(
         _field('text', const StringSettingType()).valueError('${atLimit}a'),
         isNull,
       );
     });
+
+    test(
+      'attributes constrained component failures to the field and property',
+      () {
+        final selection = _field(
+          'selection',
+          StructuredRecordFieldType({
+            RecordFieldId('provider'): StringSettingType.constrained(
+              format: StringSettingFormat.adelePublicId,
+            ),
+            RecordFieldId('model'): StringSettingType.constrained(
+              nonBlank: true,
+              maxLength: 4,
+              rejectAsciiControls: true,
+            ),
+          }),
+          required: true,
+          editor: contributed,
+        );
+        final declaration = _type(fields: [selection]);
+        const value = {'provider': 'a.b', 'model': ' \u{1f680} '};
+        expect(
+          declaration.validate(_record, {'selection': value})['selection'],
+          value,
+        );
+        for (final (property, invalid, reason) in [
+          ('provider', 'private input', 'ADELE public ID'),
+          ('model', ' \u00a0', 'blank'),
+          ('model', '\u{1f680}\u{1f680}x', '4 UTF-16 code units'),
+          ('model', 'a\x7fb', 'ASCII control'),
+        ]) {
+          final input = {...value, property: invalid};
+          final error = selection.valueError(input);
+          expect(
+            error,
+            allOf(
+              contains('Property $property:'),
+              contains(reason),
+              isNot(contains(invalid)),
+            ),
+          );
+          expect(
+            () => selection.snapshotValue(input),
+            throwsA(
+              isA<ArgumentError>().having(
+                (e) => e.message,
+                'message',
+                'Field selection: $error',
+              ),
+            ),
+          );
+          expect(
+            () => declaration.validate(_record, {'selection': input}),
+            throwsA(_invalid('selection', error!)),
+          );
+        }
+      },
+    );
 
     test('compares field snapshots by presence, keys and scalar values', () {
       expect(recordFieldValuesEqual(valid, field.snapshotValue(valid)), isTrue);

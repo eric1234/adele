@@ -121,8 +121,8 @@ same catalog instance and exact file path; successful updates return the next
 baseline. Reconstructing the store and explicitly loading recovers persisted data.
 
 Updates supply the complete desired known-field set. Required fields must remain
-present; omitted optional fields are removed, not defaulted. False, zero and empty
-strings remain explicit values. Unknown desired fields are rejected, while unknown
+present; omitted optional fields are removed, not defaulted. False, zero and
+permitted empty strings remain explicit values. Unknown desired fields are rejected, while unknown
 persisted keys, tables and comments are retained by the native scalar editor. A
 snapshot cannot change its record type, collection or ID. Delete removes just that
 file, not credentials, other records, a mask or a cascading exclusion. It rejects
@@ -302,8 +302,8 @@ dart tools/adele.dart test --target adele_settings_host
 Run `dart analyze --fatal-infos` in this package for focused analysis. Tests use
 isolated temporary roots and the actual CFG2 store with Rust TOML, not mocks. The
 public semantic target `adele_settings` needs no Rust/native preparation.
-`configuration_records_test.dart` publishes the actual OpenAI schema through the
-maintained stock preparation helper, discovers it without executable startup, and
+`configuration_records_test.dart` publishes the OpenAI, Agent and Model Preset
+schemas through the stock preparation helper, discovers them without executable startup, and
 exercises independent records using real native TOML and conditional persistence.
 It also covers credential-reference edits, unknown-content preservation, malformed
 known entries, deletion guards, and conflicts shared with ordinary value edits.

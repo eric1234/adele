@@ -188,6 +188,15 @@ distinct from false, zero and empty strings. There are no field defaults, explic
 nulls, executable validators or cross-record validation. Unknown
 persisted data remains untouched, including when an owner is unavailable.
 
+A string declaration may require nonblank content, bound its UTF-16 length,
+reject ASCII controls, or require an ADELE public ID. These predicates are
+independent of presence and never rewrite the text. The same declaration governs
+ordinary Settings, scalar fields and structured properties. Editor feedback is not
+the authority: the host validates before writing and again when reading persisted
+values for enumeration or authorized backend observations. Invalid records remain
+on disk with attributable diagnostics; they are neither repaired nor projected as
+valid records.
+
 A required record field may instead declare a fixed structure. Its ordered,
 required properties have local IDs and ordinary scalar types. A supplied value
 must contain exactly those properties; validation identifies the field and the
@@ -214,7 +223,8 @@ replacement against the revision it observed. A structured read returns a flat
 snapshot, not a mutable host map; the bridge copies and bounds proposals before
 declaration validation. There is no component patch or sibling access. The host checks the mount, editing
 state, revision, and field validator before accepting a proposal. A rejection
-leaves the value unchanged. An absent optional scalar is editable: the editor
+leaves the value, revision and transient field context unchanged. An absent
+optional scalar is editable: the editor
 reads null and may propose a declared value. Removing a value is a host control,
 not a null proposal; it revokes the old editor's callbacks before remounting.
 The editor cannot select a different field or record or submit the form. Navigation, dismissal, and
@@ -308,8 +318,8 @@ still supply an explicit, validated `ConfigurationRecordId` to `create`.
 
 Create and Edit use the same declaration-generated form. Required fields are
 marked **(Required)**. Edit them directly. Required
-means present, not nonblank. Leaving a required string or Markdown document empty
-submits an empty string. In a new record, a required Boolean or enum has no
+means present, not nonblank. A required string or Markdown document can be empty
+if its declaration permits that content. In a new record, a required Boolean or enum has no
 preselected choice, and a required integer starts blank.
 
 Optional fields start unset and are directly editable. Leaving a text or integer
@@ -318,7 +328,7 @@ trimmed; `0` is an integer value. Optional Booleans and enums offer **Not set**
 alongside their values, including `false`; an enum declaration can label absence
 more specifically. These choices never introduce a default or a stored sentinel.
 
-An already authored empty string survives unrelated edits. **Remove empty value**
+A legal, already authored empty string survives unrelated edits. **Remove empty value**
 omits it without requiring the user to type first. An emptied optional Markdown
 document likewise means omission, but only on an authoritative snapshot. Normal
 document editing retains Undo; explicitly removing the field discards its native
@@ -397,8 +407,10 @@ provider-id = "dev.adele.openai.api-key.work"
 model-id = "review-v2"
 ```
 
-Both properties must be present strings. Ordinary string validation does not
-prove a usable execution identifier or live availability. Opening Settings,
+The provider ID uses ADELE's public-ID grammar. The provider-local model ID
+must be nonblank and free of ASCII controls, but retains its exact spelling.
+Both have the same length bounds as a Run model preference. These checks do
+not prove availability or inference compatibility. Opening Settings,
 rendering the reference or saving does not request a catalog. Only browsing or
 refreshing asks the providers; the plugin owns the search, sort, filters and
 manual entry. A catalog choice must still match its captured live association

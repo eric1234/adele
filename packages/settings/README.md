@@ -24,8 +24,18 @@ Defaults and subsequent values pass the same validation, with no coercion:
 | --- | --- |
 | `BooleanSettingType` | Dart `bool`. |
 | `IntegerSettingType` | Native Dart signed 64-bit `int`, from -9223372036854775808 through 9223372036854775807; optional inclusive `minimum` and `maximum`. No `double`, `BigInt`, or numeric string conversion. This is a native-runtime contract, not JavaScript integer portability. |
-| `StringSettingType` | Any Dart `String`, including empty or multiline content. |
+| `StringSettingType` | Any Dart `String` unless the declaration specifies content constraints. |
 | `EnumSettingType` | Exactly one declared stable string, not a separate TOML scalar type. Options are copied and immutable, nonempty, and unique by value. Values must be trimmed, nonblank, and free of controls/line breaks. Optional labels are nonblank single-line display text. |
+
+`const StringSettingType()` permits empty and multiline text. Use
+`StringSettingType.constrained` to combine any of these checks:
+
+| Constraint | Valid when |
+| --- | --- |
+| `nonBlank: true` | `value.trim().isNotEmpty`. The original string, including leading/trailing whitespace, is returned. |
+| `maxLength: n` | `value.length <= n`, in UTF-16 code units (not bytes or displayed characters). Declare a positive integer. |
+| `rejectAsciiControls: true` | No U+0000 through U+001F or U+007F. |
+| `format: StringSettingFormat.adelePublicId` | The shared `validateAdelePublicId` accepts the exact value. If also specified, `maxLength` must accommodate at least `a.b`. |
 
 `definition.validate(value)` returns `T` or throws `InvalidSettingValue` with the
 setting ID and a message. Invalid defaults fail during construction with that same
@@ -134,7 +144,7 @@ Optional `displayField: RecordFieldId?` identifies a declared required
 optional, or other scalar-type references, including enum fields. Omission is null
 and makes no display-field assumption; presentation can fall back to the record ID.
 This metadata neither changes record identity nor adds string-value constraints:
-empty and multiline values remain ordinary strings.
+use explicit string constraints if the field requires a nonblank display label.
 
 `RecordCredentialSlotDefinition` requires `id`, `label`, and `kind`; the only
 `RecordCredentialKind` is `secretText`. Labels use the existing nonblank single-line

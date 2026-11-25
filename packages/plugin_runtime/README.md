@@ -210,13 +210,16 @@ Each definition requires `id`, `type`, `default`, `label`, `category`, and `sect
 `enum`. Only integers accept optional inclusive `minimum`/`maximum`. Only enums
 require `options`, a nonempty array of objects with required stable `value` and
 optional display `label`. No other fields, nulls, coercions, or executable hooks
-are accepted. Ordinary string defaults remain unconstrained text within the asset
-byte bound. Description may be empty or multiline.
+are accepted. Only `string` accepts the optional Boolean flags `nonBlank` and
+`rejectAsciiControls`, a positive integer `maxLength` (UTF-16 code units), and
+`format` with the literal value `"adele-public-id"`. Defaults must satisfy all
+declared constraints. Omitting them leaves string content unrestricted within
+the asset byte bound. Description may be empty or multiline.
 
 Ownership is derived from `metadata.id` as `SettingOwnerId`, never accepted from
 the asset. Every setting ID must be beneath that PluginId's namespace at a dot
 boundary. The public [`adele_settings`](../settings/README.md) constructors own
-identity, presentation, enum uniqueness, integer bounds, and default validation;
+identity, presentation, scalar constraints, and default validation;
 discovery does not implement a second settings semantic model or depend on TOML
 or native persistence. Categories/sections are product organization, not ownership.
 
@@ -299,7 +302,8 @@ fall back to record identity. The metadata adds no string-value constraints and
 does not change record identity. Each field requires `id`, `label`, `type`, and
 an explicit Boolean `required`; `description` is optional. Field arrays retain
 authored order. Empty `recordTypes` and `fields` arrays are valid. Scalar field
-types are `boolean`, `integer`, `string`, or `enum`, reusing settings' constructors.
+types are `boolean`, `integer`, `string`, or `enum`, reusing settings' constructors
+and constraint keys, including for scalar properties of a structured field.
 Only integers accept inclusive optional `minimum`/`maximum` native integer bounds.
 Only enums require nonempty `options`, with required stable `value` and optional
 display `label` per option. No unknown fields, nulls, coercion, defaults, secret

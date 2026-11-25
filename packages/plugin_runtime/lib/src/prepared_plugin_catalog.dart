@@ -2151,6 +2151,7 @@ SettingDefinition<Object> _settingDefinition(
 
 List<String> _scalarConstraintKeys(String kind) => switch (kind) {
   'integer' => const ['minimum', 'maximum'],
+  'string' => const ['nonBlank', 'maxLength', 'rejectAsciiControls', 'format'],
   'enum' => const ['options'],
   _ => const [],
 };
@@ -2171,6 +2172,15 @@ SettingType<Object> _scalarType(
     return value;
   }
 
+  bool flag(String field) {
+    if (!definition.containsKey(field)) return false;
+    final value = definition[field];
+    if (value is! bool) {
+      throw FormatException('$label.$field must be a boolean.');
+    }
+    return value;
+  }
+
   final SettingType<Object> type;
   switch (kind) {
     case 'boolean':
@@ -2181,7 +2191,19 @@ SettingType<Object> _scalarType(
         maximum: bound('maximum'),
       );
     case 'string':
-      type = const StringSettingType();
+      type = StringSettingType.constrained(
+        nonBlank: flag('nonBlank'),
+        maxLength: bound('maxLength'),
+        rejectAsciiControls: flag('rejectAsciiControls'),
+        format: !definition.containsKey('format')
+            ? null
+            : switch (definition['format']) {
+                'adele-public-id' => StringSettingFormat.adelePublicId,
+                _ => throw FormatException(
+                  '$label.format must be adele-public-id.',
+                ),
+              },
+      );
     case 'enum':
       final options = definition['options'];
       if (options is! List<Object?> || options.length > maxEnumOptions) {

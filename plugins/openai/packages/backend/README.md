@@ -46,9 +46,10 @@ API or native keyring access are exposed to the AOT plugin.
 [`OpenAiApiKeyConfiguration.fromRecords`](lib/src/openai_configured_provider.dart)
 interprets only `providers` records of type `dev.adele.openai.api-key`. It retains
 each stable record ID and configured display name. Display names must be nonblank
-and contain no ASCII control characters;
-unknown fields and invalid ordinary values reject that instance rather than repair
-it. An absent `endpoint` uses `https://api.openai.com/v1/responses`. An explicit
+and contain no ASCII control characters. The Settings schema checks these two
+conditions for the name and for any supplied endpoint. The backend independently
+rejects invalid values and unknown fields rather than repairing the instance.
+An absent `endpoint` uses `https://api.openai.com/v1/responses`. An explicit
 endpoint must be an absolute HTTP(S) URI with a valid nonempty host, no user
 information or fragment, and HTTP only for loopback destinations. An invalid supplied
 endpoint never becomes the default. Rejection leaves healthy siblings and the

@@ -19,6 +19,12 @@ void main() {
   final openai = RecordTypeId('dev.adele.openai.api-key');
   final agents = RecordCollectionId('agents');
   final agent = RecordTypeId('dev.adele.plugin.agent-configuration.agent');
+  final presets = RecordCollectionId('model-presets');
+  final preset = RecordTypeId('dev.adele.plugin.model-configuration.preset');
+  const reference = {
+    'model-id': '  Team-A/Research:V2  ',
+    'provider-id': 'dev.example.provider.work',
+  };
   final work = ConfigurationRecordId('work-openai');
   final personal = ConfigurationRecordId('personal-openai');
   final apiKey = RecordCredentialSlotId('api-key');
@@ -56,6 +62,19 @@ void main() {
       pluginId: 'dev.adele.plugin.agent-configuration',
       displayName: 'Agent Configuration',
     );
+    final modelInstallation = Directory(
+      p.join(installations.path, 'model-configuration'),
+    );
+    await publishStockPluginInstallation(
+      repositoryRoot: repository,
+      installationDirectory: modelInstallation,
+      pluginId: 'dev.adele.plugin.model-configuration',
+      displayName: 'Model Configuration',
+      backend: true,
+    );
+    // The stock preference-source declaration needs a discoverable backend,
+    // but reading and writing records must never execute it.
+    await File.fromUri(modelInstallation.uri.resolve('backend.aot')).create();
     final prepared = await PreparedPluginCatalog.discover(installations.path);
     expect(prepared.issues, isEmpty);
     catalog = prepared.records;
@@ -83,12 +102,22 @@ void main() {
   });
   tearDown(() => temporary.deleteSync(recursive: true));
 
-  File file(ConfigurationRecordId id) =>
-      File(p.join(roots.configurationRoot, 'providers', '${id.value}.toml'));
+  File file(ConfigurationRecordId id, [RecordCollectionId? collection]) => File(
+    p.join(
+      roots.configurationRoot,
+      (collection ?? providers).value,
+      '${id.value}.toml',
+    ),
+  );
 
-  void seed(ConfigurationRecordId id, String source) {
-    file(id).parent.createSync(recursive: true);
-    file(id).writeAsStringSync(source);
+  void seed(
+    ConfigurationRecordId id,
+    String source, [
+    RecordCollectionId? collection,
+  ]) {
+    final target = file(id, collection);
+    target.parent.createSync(recursive: true);
+    target.writeAsStringSync(source);
   }
 
   String source(String values, {String type = 'dev.adele.openai.api-key'}) =>
@@ -217,7 +246,7 @@ void main() {
       seed(personal, 'not valid TOML = [');
       final invalidUtf8 = ConfigurationRecordId('invalid-utf8');
       file(invalidUtf8).writeAsBytesSync([0xff]);
-      seed(ConfigurationRecordId('missing-name'), source('endpoint = ""\n'));
+      seed(ConfigurationRecordId('missing-name'), source('endpoint = "old"\n'));
       final result = await host.enumerate(providers);
       expect(result.records.single.id, work);
       expect(result.diagnostics.map((failure) => failure.fileName), [
@@ -347,175 +376,179 @@ void main() {
     skip: !Platform.isLinux,
   );
 
-  group('structured record values', () {
+  group('stock Model Preset structured values', () {
     final model = RecordFieldId('model');
     final id = ConfigurationRecordId('sample');
-    final type = RecordTypeDefinition(
-      id: RecordTypeId('dev.example.providers.config'),
-      owner: PluginId('dev.example.providers'),
-      collection: providers,
-      collectionLabel: 'Providers',
-      label: 'Example',
-      fields: [
-        RecordFieldDefinition(
-          id: model,
-          label: 'Model',
-          type: StructuredRecordFieldType({
-            RecordFieldId('provider-id'): const StringSettingType(),
-            RecordFieldId('model-id'): const StringSettingType(),
-          }),
-          required: true,
-          editor: ContributedRecordFieldEditor(
-            ExtensionId('dev.example.providers.model'),
-          ),
-        ),
-      ],
-    );
-    const reference = {'model-id': 'manual/A', 'provider-id': 'work'};
-    final invalidModel = throwsA(
-      isA<InvalidRecordValue>().having((e) => e.fieldId, 'field', model),
-    );
-    setUp(() {
-      host = ConfigurationRecordStore(
-        store: persistence,
-        catalog: RecordCatalog([type]),
-      );
-    });
+    const values = {'name': '  Preset  ', 'model': reference};
+    final invalidModel = isA<InvalidRecordValue>()
+        .having((e) => e.collection, 'collection', presets)
+        .having((e) => e.fieldId, 'field', model);
+
+    String presetSource(String fields) =>
+        source("name = '  Preset  '\n$fields", type: preset.value);
 
     test('create writes a regular subtable in declaration order', () async {
       final input = Map.of(reference);
-      final created = await host.create(type.id, id, {'model': input});
+      final created = await host.create(preset, id, {
+        ...values,
+        'model': input,
+      });
       input.clear();
-      expect(created.values, {'model': reference});
+      expect(created.values, values);
       expect((created.values['model'] as Map).clear, throwsUnsupportedError);
       expect(
-        file(id).readAsStringSync(),
+        file(id, presets).readAsStringSync(),
         contains(
-          '[values.model]\nprovider-id = "work"\nmodel-id = "manual/A"\n',
+          '[values.model]\nprovider-id = "dev.example.provider.work"\nmodel-id = "  Team-A/Research:V2  "\n',
         ),
       );
-      expect((await host.load(providers, id)).values, created.values);
+      expect((await host.load(presets, id)).values, values);
     });
 
     test('update changes only known leaves in the original document', () async {
-      final original = source('''unknown = 1979-05-27 # outside
+      final original = presetSource('''unknown = 1979-05-27 # outside
 
 [values.model] # keep table
-model-id = 'manual/A' # model note
+model-id = '  Team-A/Research:V2  ' # model note
 future = { enabled = true, ids = [1, 2] } # unknown component
-provider-id = 'work' # provider note
+provider-id = 'dev.example.provider.work' # provider note
 
 [values.model.extra.deep]
 flag = true # keep nested table
 
 [credentials]
 future = ["untouched"]
-''', type: type.id.value);
-      seed(id, original);
-      final loaded = await host.load(providers, id);
-      expect(loaded.values, {'model': reference});
+''');
+      seed(id, original, presets);
+      final loaded = await host.load(presets, id);
+      expect(loaded.values, values);
       expect(loaded.hasCredentialEntries, isTrue);
 
       final desired = {
-        'model': {...reference, 'model-id': 'manual/B'},
+        ...values,
+        'model': {...reference, 'model-id': '  Custom/Model B:v3  '},
       };
       final updated = await host.update(loaded, desired);
       expect(updated.values, desired);
       expect(
-        file(id).readAsStringSync(),
-        original.replaceFirst("'manual/A'", '"manual/B"'),
+        file(id, presets).readAsStringSync(),
+        original.replaceFirst(
+          "'  Team-A/Research:V2  '",
+          '"  Custom/Model B:v3  "',
+        ),
       );
-      expect((await host.load(providers, id)).values, desired);
-      expect(loaded.values, {'model': reference});
+      expect((await host.load(presets, id)).values, desired);
+      expect(loaded.values, values);
     });
 
-    test(
-      'missing or malformed known components invalidate the record',
-      () async {
-        await host.create(type.id, personal, {'model': reference});
-        for (final malformed in [
-          '',
-          'model = "not a table"',
-          'model = {provider-id = "work", model-id = "manual/A"}',
-          '[[values.model]]\nprovider-id = "work"\nmodel-id = "manual/A"',
-          '[values.model]\nprovider-id = "work"',
-          '[values.model]\nprovider-id = true\nmodel-id = "manual/A"',
-          '[values.model]\nprovider-id = "work"\nmodel-id = ["manual/A"]',
-        ]) {
-          final original = source(malformed, type: type.id.value);
-          seed(id, original);
-          await expectLater(
-            host.load(providers, id),
-            invalidModel,
-            reason: malformed,
-          );
-          final listing = await host.enumerate(providers);
-          expect(listing.records.single.id, personal);
-          expect(listing.diagnostics.single.recordId, id);
-          expect(file(id).readAsStringSync(), original);
-        }
-      },
-    );
+    test('missing or malformed known components invalidate the record', () async {
+      await host.create(preset, personal, values);
+      final healthyBytes = file(personal, presets).readAsBytesSync();
+      for (final malformed in [
+        '',
+        'model = "not a table"',
+        'model = {provider-id = "dev.example.work", model-id = "manual/A"}',
+        '[[values.model]]\nprovider-id = "dev.example.work"\nmodel-id = "manual/A"',
+        '[values.model]\nprovider-id = "dev.example.work"',
+        '[values.model]\nprovider-id = true\nmodel-id = "manual/A"',
+        '[values.model]\nprovider-id = "dev.example.work"\nmodel-id = ["manual/A"]',
+        '[values.model]\nprovider-id = "bad provider"\nmodel-id = "manual/A"',
+        '[values.model]\nprovider-id = "dev.example.work"\nmodel-id = "  "',
+        '[values.model]\nprovider-id = "dev.example.work"\nmodel-id = "A\\tB"',
+      ]) {
+        final original = presetSource(malformed);
+        seed(id, original, presets);
+        await expectLater(
+          host.load(presets, id),
+          throwsA(invalidModel),
+          reason: malformed,
+        );
+        final listing = await host.enumerate(presets);
+        expect(listing.records.single.id, personal);
+        expect(listing.records.single.values, values);
+        expect(listing.diagnostics.single.recordId, id);
+        expect(listing.diagnostics.single.error, invalidModel);
+        expect(file(id, presets).readAsStringSync(), original);
+        expect(file(personal, presets).readAsBytesSync(), healthyBytes);
+      }
+    });
 
-    test(
-      'invalid whole-field replacements are correctable before save',
-      () async {
-        final original = await host.create(type.id, id, {'model': reference});
-        final bytes = file(id).readAsBytesSync();
-        for (final invalid in <Object?>[
-          null,
-          'manual/A',
-          {'model-id': 'manual/A'},
-          {...reference, 'model-id': 1},
-          {...reference, 'unexpected': true},
-          {
-            ...reference,
-            'model-id': {'nested': true},
-          },
-        ]) {
-          await expectLater(
-            host.update(original, {'model': invalid}),
-            invalidModel,
-          );
-          expect(file(id).readAsBytesSync(), bytes);
-        }
-        final saved = await host.update(original, {
-          'model': {...reference, 'provider-id': 'local'},
-        });
-        expect((await host.load(providers, id)).values, saved.values);
-      },
-    );
+    test('invalid models cannot create or partially update a preset', () async {
+      final original = await host.create(preset, id, values);
+      final bytes = file(id, presets).readAsBytesSync();
+      for (final invalid in <Object?>[
+        null,
+        'manual/A',
+        {'model-id': 'manual/A'},
+        {...reference, 'model-id': 1},
+        {...reference, 'unexpected': true},
+        {...reference, 'provider-id': 'DEV.example.work'},
+        {...reference, 'provider-id': 'dev.${'a' * 1021}'},
+        {...reference, 'model-id': '   '},
+        {...reference, 'model-id': 'manual/A\u007f'},
+        {...reference, 'model-id': 'a${'\u{1f680}' * 512}'},
+        {
+          ...reference,
+          'model-id': {'nested': true},
+        },
+      ]) {
+        final desired = {
+          'name': 'Renamed',
+          'model': invalid,
+          'reasoning-effort': 'low',
+        };
+        await expectLater(
+          host.create(preset, personal, desired),
+          throwsA(invalidModel),
+        );
+        expect(file(personal, presets).existsSync(), isFalse);
+        await expectLater(
+          host.update(original, desired),
+          throwsA(invalidModel),
+        );
+        expect(file(id, presets).readAsBytesSync(), bytes);
+      }
+      final corrected = {
+        'name': 'Renamed',
+        'model': {
+          'provider-id': 'dev.${'a' * 1020}',
+          'model-id': '\u{1f680}' * 512,
+        },
+        'reasoning-effort': 'low',
+      };
+      await host.update(original, corrected);
+      expect((await host.load(presets, id)).values, corrected);
+    });
 
     test(
       'no-op preserves exact bytes but still checks the whole baseline',
       () async {
-        final original = source(
-          "[values.model]\nmodel-id = 'manual/A'\nprovider-id = 'work' # retained\n",
-          type: type.id.value,
+        final original = presetSource(
+          "[values.model]\nmodel-id = '  Team-A/Research:V2  '\nprovider-id = 'dev.example.provider.work' # retained\n",
         ).replaceAll('\n', '\r\n');
-        seed(id, original);
+        seed(id, original, presets);
         final mtime = DateTime.utc(2001);
-        file(id).setLastModifiedSync(mtime);
-        final loaded = await host.load(providers, id);
+        file(id, presets).setLastModifiedSync(mtime);
+        final loaded = await host.load(presets, id);
         expect(
-          await host.update(loaded, {'model': Map.of(reference)}),
+          await host.update(loaded, {...values, 'model': Map.of(reference)}),
           same(loaded),
         );
-        expect(file(id).readAsStringSync(), original);
-        expect(file(id).lastModifiedSync().toUtc(), mtime);
+        expect(file(id, presets).readAsStringSync(), original);
+        expect(file(id, presets).lastModifiedSync().toUtc(), mtime);
         expect(Directory(roots.localStateRoot).existsSync(), isFalse);
 
         final external = '${original}unknown = 42\r\n';
-        seed(id, external);
+        seed(id, external, presets);
         for (final desired in [
           reference,
           {...reference, 'model-id': 'new'},
         ]) {
           await expectLater(
-            host.update(loaded, {'model': desired}),
+            host.update(loaded, {...values, 'model': desired}),
             throwsA(isA<ConfigurationConflictException>()),
           );
-          expect(file(id).readAsStringSync(), external);
+          expect(file(id, presets).readAsStringSync(), external);
         }
       },
     );
@@ -561,14 +594,15 @@ future = ["untouched"]
         expect(record.hasCredentialEntries, isTrue);
         expect(record.values, {'display-name': 'Work'});
         expect(() => record.credentials.clear(), throwsUnsupportedError);
-        record = await host.update(record, {
+        const renamed = {
           'display-name': 'Renamed',
-          'endpoint': '',
-        });
+          'endpoint': 'https://work.example/v1',
+        };
+        record = await host.update(record, renamed);
         expect(record.id, work);
         expect(record.credentials, {apiKey: reference});
         expect(record.hasCredentialEntries, isTrue);
-        expect(record.values, {'display-name': 'Renamed', 'endpoint': ''});
+        expect(record.values, renamed);
         var text = file(work).readAsStringSync();
         for (final retained in [
           '# header',
@@ -600,7 +634,7 @@ future = ["untouched"]
         expect(text, isNot(contains(reference.value)));
         expect(text, isNot(contains(replacement.value)));
         expect((await host.load(providers, work)).credentials, isEmpty);
-        expect(record.values, {'display-name': 'Renamed', 'endpoint': ''});
+        expect(record.values, renamed);
         await host.delete(record);
         expect(file(work).existsSync(), isFalse);
       },
@@ -923,6 +957,59 @@ future = ["untouched"]
   }, skip: !Platform.isLinux);
 
   group('conditional record CRUD', () {
+    for (final (type, collection, field, values) in [
+      (agent, agents, 'name', {'name': '  Reviewer  ', 'instructions': ''}),
+      (preset, presets, 'name', {'name': '  Preset  ', 'model': reference}),
+      (openai, providers, 'display-name', {'display-name': '  Work  '}),
+      // The host enforces string constraints, not a provider's URL policy.
+      (
+        openai,
+        providers,
+        'endpoint',
+        {'display-name': 'Work', 'endpoint': '  Custom Endpoint  '},
+      ),
+    ]) {
+      test(
+        '$type $field rejects invalid writes and diagnoses legacy bytes',
+        () async {
+          final invalidField = isA<InvalidRecordValue>()
+              .having((error) => error.collection, 'collection', collection)
+              .having((error) => error.fieldId, 'field', RecordFieldId(field));
+          for (final invalid in ['', '   ', 'a\tb', 'a\u007fb']) {
+            await expectLater(
+              host.create(type, personal, {...values, field: invalid}),
+              throwsA(invalidField),
+            );
+          }
+          expect(temporary.listSync(), isEmpty);
+
+          final healthy = await host.create(type, work, values);
+          final bytes = file(work, collection).readAsBytesSync();
+          await expectLater(
+            host.update(healthy, {...values, field: '   '}),
+            throwsA(invalidField),
+          );
+          // Seed parseable legacy TOML directly, bypassing the validating writer.
+          final original = healthy.document.setScalar([
+            'values',
+            field,
+          ], '   ').source;
+          seed(personal, original, collection);
+          await expectLater(
+            host.load(collection, personal),
+            throwsA(invalidField),
+          );
+          final listing = await host.enumerate(collection);
+          expect(listing.records.single.id, work);
+          expect(listing.records.single.values, values);
+          expect(listing.diagnostics.single.recordId, personal);
+          expect(listing.diagnostics.single.error, invalidField);
+          expect(file(personal, collection).readAsStringSync(), original);
+          expect(file(work, collection).readAsBytesSync(), bytes);
+        },
+      );
+    }
+
     test(
       'real Agent definitions retain Markdown and identity across rename deletion and restart',
       () async {
@@ -1025,13 +1112,13 @@ Return **findings** before the summary.
     );
 
     test(
-      'Agent required strings use presence and both optional strings preserve absence versus empty',
+      'Agent fields distinguish missing values from permitted empty strings',
       () async {
         final id = ConfigurationRecordId('minimal');
         for (final missing in ['name', 'instructions']) {
           await expectLater(
             host.create(agent, id, {
-              if (missing != 'name') 'name': '',
+              if (missing != 'name') 'name': 'Agent',
               if (missing != 'instructions') 'instructions': '',
             }),
             throwsA(
@@ -1045,7 +1132,7 @@ Return **findings** before the summary.
         }
         expect(temporary.listSync(), isEmpty);
 
-        const requiredValues = {'name': '', 'instructions': ''};
+        const requiredValues = {'name': 'Agent', 'instructions': ''};
         var record = await host.create(agent, id, requiredValues);
         expect((await host.load(agents, id)).values, requiredValues);
         record = await host.update(record, {
@@ -1556,11 +1643,12 @@ Return **findings** before the summary.
         expect(text, contains('unknown = { nested = [1, 2] } # retained'));
         expect(text, contains('[future]\nflag = true # future'));
         expect(text, isNot(contains('endpoint')));
-        loaded = await host.update(loaded, {
-          'display-name': '',
-          'endpoint': '',
-        });
-        expect(loaded.values, {'display-name': '', 'endpoint': ''});
+        const edited = {
+          'display-name': '  Work  ',
+          'endpoint': '  Custom Endpoint  ',
+        };
+        loaded = await host.update(loaded, edited);
+        expect((await host.load(providers, work)).values, edited);
         expect(() => loaded.values.clear(), throwsUnsupportedError);
       },
     );

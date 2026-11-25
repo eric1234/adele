@@ -236,6 +236,45 @@ void main() {
     expect(catalog.settings.definitions.single.defaultValue, text);
   });
 
+  test('string constraints survive discovery and apply to overrides', () async {
+    final id = SettingId('org.example.plugin.provider');
+    await install(
+      'strings',
+      schema: _schema([
+        {
+          ..._definition(id: id.value, type: 'string', defaultValue: 'a.b'),
+          'format': 'adele-public-id',
+          'maxLength': 3,
+          'nonBlank': true,
+          'rejectAsciiControls': true,
+        },
+        {
+          ..._definition(type: 'string', defaultValue: '\n'),
+          'nonBlank': false,
+          'rejectAsciiControls': false,
+        },
+      ]),
+    );
+    final catalog = await PreparedPluginCatalog.discover(root.path);
+    expect(catalog.issues, isEmpty);
+    final settings = catalog.settings;
+    final type = settings.definition(id).type as StringSettingType;
+    expect(type.nonBlank, isTrue);
+    expect(type.rejectAsciiControls, isTrue);
+    expect(type.maxLength, 3);
+    expect(type.format, StringSettingFormat.adelePublicId);
+    expect(
+      settings.resolve<String>(id, globalOverrides: {id: 'x.y'}).value,
+      'x.y',
+    );
+    for (final invalid in ['a.bc', 'abc']) {
+      expect(
+        () => settings.resolve<String>(id, globalOverrides: {id: invalid}),
+        throwsA(isA<InvalidSettingOverride>()),
+      );
+    }
+  });
+
   test(
     'nested setting IDs and one-sided integer bounds use CFG3 semantics',
     () async {
@@ -552,6 +591,7 @@ void main() {
     });
   }
 
+  final stringDefinition = _definition(type: 'string', defaultValue: 'a.b');
   final badDefinitions = <String, Object?>{
     'not an object': [],
     'null definition': null,
@@ -597,6 +637,36 @@ void main() {
         type: 'string',
         defaultValue: value,
       ),
+    for (final key in ['nonBlank', 'rejectAsciiControls'])
+      for (final value in [null, 'true', 1])
+        '$key ${jsonEncode(value)}': {...stringDefinition, key: value},
+    for (final value in [null, 3.0, '3', true, 0, -1])
+      'maxLength ${jsonEncode(value)}': {
+        ...stringDefinition,
+        'maxLength': value,
+      },
+    for (final value in [null, true, 'adelePublicId', ' adele-public-id'])
+      'format ${jsonEncode(value)}': {...stringDefinition, 'format': value},
+    'unknown string constraint': {...stringDefinition, 'pattern': '.*'},
+    'blank default': {...stringDefinition, 'nonBlank': true, 'default': '  '},
+    'default with control': {
+      ...stringDefinition,
+      'rejectAsciiControls': true,
+      'default': 'a\tb',
+    },
+    'default too long': {...stringDefinition, 'maxLength': 2},
+    'default with wrong format': {
+      ...stringDefinition,
+      'format': 'adele-public-id',
+      'default': 'a/b',
+    },
+    for (final key in const {
+      'nonBlank': false,
+      'maxLength': 3,
+      'rejectAsciiControls': false,
+      'format': 'adele-public-id',
+    }.entries)
+      'misplaced ${key.key} on boolean': {..._definition(), key.key: key.value},
     for (final bound in ['minimum', 'maximum'])
       for (final value in <Object?>[null, true, '1', 1.0, [], {}])
         '$bound ${jsonEncode(value)}': {

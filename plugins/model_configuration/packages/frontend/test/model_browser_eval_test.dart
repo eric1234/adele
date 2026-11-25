@@ -22,8 +22,8 @@ import '../../../../../app/tool/model_configuration_frontend_compiler.dart';
 import '../../../../../tools/stock_frontend_descriptors.dart';
 
 const _library = 'package:adele_ui/capability_bridge.dart';
-const _work = {'provider-id': 'work', 'model-id': 'same'};
-const _home = {'provider-id': 'home', 'model-id': 'same'};
+const _work = {'provider-id': 'test.work', 'model-id': 'same'};
+const _home = {'provider-id': 'test.home', 'model-id': 'same'};
 
 void main() {
   late Uint8List artifact;
@@ -160,17 +160,20 @@ void main() {
       draft.value = _work;
       await mount(tester);
       expect(find.text('same'), findsOneWidget);
-      expect(find.text('Configured provider: Account (work)'), findsOneWidget);
+      expect(
+        find.text('Configured provider: Account (test.work)'),
+        findsOneWidget,
+      );
       expect(access.calls, isEmpty);
       await _tap(tester, 'Browse models...');
-      expect(find.text('Selected: same / Account (work)'), findsOneWidget);
+      expect(find.text('Selected: same / Account (test.work)'), findsOneWidget);
       expect(find.text('Luna'), findsNWidgets(2));
       expect(
         find.descendant(of: find.byType(Dialog), matching: find.text('same')),
         findsNWidgets(2),
       );
-      expect(_chip('Account (work)'), findsOneWidget);
-      expect(_chip('Account (home)'), findsOneWidget);
+      expect(_chip('Account (test.work)'), findsOneWidget);
+      expect(_chip('Account (test.home)'), findsOneWidget);
       expect(draft.proposals, isEmpty);
       expect(
         access.calls,
@@ -188,7 +191,7 @@ void main() {
       for (final (query, count) in [
         ('LuNa', 2),
         ('sAmE', 2),
-        ('Account (home)', 1),
+        ('Account (test.home)', 1),
       ]) {
         await tester.enterText(search, query);
         await tester.pumpAndSettle();
@@ -196,10 +199,10 @@ void main() {
         expect(find.text('Artemis'), findsNothing);
       }
       await tester.enterText(search, '');
-      await tester.tap(_chip('Account (home)'));
+      await tester.tap(_chip('Account (test.home)'));
       await tester.pumpAndSettle();
       await _tap(tester, 'Luna');
-      expect(find.text('Selected: same / Account (home)'), findsOneWidget);
+      expect(find.text('Selected: same / Account (test.home)'), findsOneWidget);
       expect(draft.value, _work);
       expect(access.calls, hasLength(4));
       await _tap(tester, 'Use model');
@@ -303,7 +306,7 @@ void main() {
           ...field,
         };
         await _tap(tester, 'Refresh');
-        expect(find.text('Account (work): $status'), findsOneWidget);
+        expect(find.text('Account (test.work): $status'), findsOneWidget);
         expect(find.text('Use model'), findsNothing);
         expect(find.textContaining('private'), findsNothing);
         expect(find.text('Luna'), findsOneWidget, reason: 'Healthy sibling');
@@ -331,7 +334,7 @@ void main() {
       expect(find.text('Artemis'), findsOneWidget);
       await _tap(tester, 'Provider status');
       for (final label in [
-        'Account (home): Loading...',
+        'Account (test.home): Loading...',
         'Empty: Empty catalog.',
         'Broken: Catalog request failed.',
         'Offline: No catalog.',
@@ -339,7 +342,7 @@ void main() {
         expect(find.text(label), findsOneWidget);
       }
       await tester.drag(
-        find.text('Account (home): Loading...'),
+        find.text('Account (test.home): Loading...'),
         const Offset(0, -100),
       );
       await tester.pumpAndSettle();
@@ -368,7 +371,7 @@ void main() {
       await tester.pumpAndSettle();
       await _tap(tester, 'Use reference');
       expect(draft.proposals, [
-        {'provider-id': 'offline', 'model-id': '  exact:manual  '},
+        {'provider-id': 'test.offline', 'model-id': '  exact:manual  '},
       ]);
       expect(draft.contexts, [null]);
       expect(access.calls.where((id) => id == 'offline'), isEmpty);
@@ -507,7 +510,7 @@ class _Observations extends CapabilityAccessDeclarations
     final result = <Map<String, Object?>>[];
     for (final provider in providers.entries) {
       final entry = <String, Object?>{
-        'providerId': provider.key,
+        'providerId': 'test.${provider.key}',
         'displayName': provider.value,
       };
       if (capturing) {

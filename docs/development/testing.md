@@ -374,8 +374,8 @@ authoritative stock OpenAI schema. The tooling
 target exercises actual stock schema publication through the maintained installation
 helper, not just a hand-authored manifest.
 
-`packages/settings_host/test/configuration_records_test.dart` uses the real OpenAI
-and Agent record schemas published by that helper and discovered through the
+`packages/settings_host/test/configuration_records_test.dart` uses the real OpenAI,
+Agent and Model Preset record schemas published by that helper and discovered through the
 prepared catalog, without backend startup or credentials. It checks independently
 named records, rename without identity changes, optional absence, sibling byte preservation,
 delete/reconstruction, stale baselines including no-ops, unknown/comment retention,
@@ -389,8 +389,8 @@ real TOML, not a keyring: absent/empty tables, known reference edits, unknown ne
 content preservation, malformed entries, shared value/reference conflicts and
 whole-record deletion guards. TOML tests own `ensureTable` and `tableKeys` behavior.
 
-Agent cases additionally check Markdown string round-trips, required presence rather
-than nonblank validation, both optional fields' absence versus empty strings, and
+Agent cases additionally check Markdown string round-trips, nonblank names versus
+required but possibly empty Instructions, both optional fields' absence versus empty strings, and
 an empty collection after deleting all records and reconstructing the store.
 
 `app/test/prepared_settings_test.dart` loads the real Source declaration with

@@ -371,20 +371,27 @@ void _registerRunCases(
   );
 
   testWidgets(
-    'invalid authored provider fails capture; valid unregistered ID fails exact binding resolution',
+    'malformed persisted provider blocks capture; valid unregistered ID fails exact binding resolution',
     (tester) => tester.runAsync(() async {
       final runs = await start(selector: true);
       final f = runs.fixture;
-      final record = await f.create('saved', {
-        ..._secondValues,
-        'model': {'provider-id': 'not a provider', 'model-id': _sharedModel},
-      });
+      final record = await f.create('saved', _secondValues);
       await _startFrontends(f);
       await _SelectorPane(f).present(tester, runs.owner.session);
       await _choose(tester, _noPreset, 'Review', 'Model Preset: Review');
+      // An external edit can invalidate a selected preset, but must not change
+      // the selection, invoke a fallback provider or repair the file.
+      final file = File(
+        '${f.roots.configurationRoot}/model-presets/saved.toml',
+      );
+      final original = await file.readAsString();
+      final malformed = original.replaceFirst(_second, 'not a provider');
+      await file.writeAsString(malformed);
       await runs.expectPreparationFailure(isA<RunModelPreferenceFailure>());
+      expect(await file.readAsString(), malformed);
 
       const absent = 'test.preset.unregistered';
+      await file.writeAsString(original);
       await f.settings.updateRecord(record, {
         ..._secondValues,
         'model': {'provider-id': absent, 'model-id': _sharedModel},

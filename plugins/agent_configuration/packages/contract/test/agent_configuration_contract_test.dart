@@ -28,7 +28,7 @@ void main() {
           'agents': [
             {
               'id': 'author',
-              'name': '',
+              'name': 'Writer',
               'description': null,
               'whenToUse': '',
               'instructions': markdown,
@@ -42,7 +42,7 @@ void main() {
       final agent = snapshot.agents.single;
       expect(snapshot.isComplete, isFalse);
       expect(agent.id, 'author');
-      expect(agent.name, '');
+      expect(agent.name, 'Writer');
       expect(agent.description, isNull);
       expect(agent.whenToUse, '');
       expect(agent.instructions, markdown);

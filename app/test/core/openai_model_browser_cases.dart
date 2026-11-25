@@ -337,6 +337,34 @@ void _registerModelBrowserCases(Future<_ProviderFixture> Function() prepare) {
         await ui._tap(effort);
         await ui._tap(find.text('High').last);
         expectEffort('high', ['high']);
+
+        // An invalid manual proposal from another account cannot replace the
+        // accepted Work pair or its known effort choices, even transiently.
+        await browse(ui);
+        await ui._tap(find.text('Enter manually'));
+        await ui._tap(chip('Personal OpenAI'));
+        final manualModel = find.descendant(
+          of: find.byType(Dialog).last,
+          matching: find.byType(TextField),
+        );
+        const invalid = 'model\u007fid';
+        await tester.enterText(manualModel, invalid);
+        await tester.pump();
+        await ui._tap(find.text('Use reference'));
+        expect(find.textContaining('Property model-id:'), findsOneWidget);
+        expect(tester.widget<TextField>(manualModel).controller!.text, invalid);
+        expect(
+          tester.widget<ChoiceChip>(chip('Personal OpenAI')).selected,
+          isTrue,
+        );
+        expect(draft(), original);
+        expectEffort('high', ['high']);
+        await cancelBrowser(ui);
+        expect(draft(), original);
+        expectEffort('high', ['high']);
+        expect(await toml.readAsBytes(), originalBytes);
+        expectTraffic();
+
         await browse(ui);
         await select(ui, 'Work OpenAI', _sharedModel);
         await use(ui);

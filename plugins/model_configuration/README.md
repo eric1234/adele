@@ -31,8 +31,10 @@ Only explicit browsing and refresh request catalogs. One provider's missing or
 failed catalog does not prevent using a healthy sibling. If the provider has no
 catalog, choose **Enter manually**, choose the configured instance and enter the
 exact model ID. **Enter provider ID instead** also works for unresolved or
-offline references. Confirming a manual pair does not verify model support or
-authentication. If the plugin frontend is unavailable, Settings does not
+offline references. A syntax error identifies the invalid property and leaves
+the browser open for correction or Cancel, without changing the accepted pair
+or effort choices. Confirmation does not verify model support or authentication.
+If the plugin frontend is unavailable, Settings does not
 substitute a native control; unrelated fields and an existing valid reference
 remain intact.
 
@@ -65,7 +67,7 @@ for draft retention and recovery.
 
 | Field | Presence | Meaning |
 | --- | --- | --- |
-| `name` | Required string | Display name for the preset. |
+| `name` | Required string | Nonblank display name without ASCII controls. |
 | `description` | Optional string | Purpose or guidance. |
 | `model` | Required struct | `provider-id` and `model-id`, both required strings. The pair is edited and validated as one field. |
 | `reasoning-effort` | Optional enum | Requested `ModelReasoningEffort`: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. |
@@ -74,7 +76,9 @@ Provider default omits `reasoning-effort`; `none` is an explicit request.
 The pair is persisted under `[values.model]`, distinct from the preset's own
 identity. Old top-level `provider-id` and `model-id` fields are not an alternative
 representation: a record without `model` is invalid, not silently migrated.
-Settings validates the declared shape, types and enum membership, not whether
+The provider ID must be an ADELE public ID, and the model ID must be nonblank
+and free of ASCII controls. Each is limited to 1,024 UTF-16 code units; neither
+is normalized. Settings validates these declarations, not whether
 a provider is running, a model exists, or an effort is supported. Saving does
 not read credentials, choose a preset for a Session, or run inference.
 

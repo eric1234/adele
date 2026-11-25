@@ -634,6 +634,20 @@ void main() {
         'reasoning-effort': 'none',
       };
       final reference = {...minimal['model']! as Map<String, String>};
+      await expectLater(
+        presets.createRecord(type, first, {...minimal, 'name': '  '}),
+        throwsA(
+          isA<InvalidRecordValue>().having(
+            (e) => e.fieldId,
+            'field',
+            RecordFieldId('name'),
+          ),
+        ),
+      );
+      expect(
+        Directory(presets.collectionPath(collection)).existsSync(),
+        isFalse,
+      );
       final creating = presets.createRecord(type, first, {
         ...minimal,
         'model': reference,
@@ -670,6 +684,20 @@ void main() {
       expect(loaded.map((record) => record.id), [first, second]);
       expect(loaded.first.values, minimal);
       expect(loaded.last.values, none);
+      await expectLater(
+        presets.updateRecord(loaded.first, {
+          ...edited,
+          'model': {
+            ...edited['model']! as Map<String, String>,
+            'provider-id': 'Not a public ID',
+          },
+        }),
+        throwsA(
+          isA<InvalidRecordValue>()
+              .having((e) => e.fieldId, 'field', RecordFieldId('model'))
+              .having((e) => e.message, 'violation', contains('provider-id')),
+        ),
+      );
       await expectLater(
         presets.updateRecord(loaded.first, {
           ...edited,
