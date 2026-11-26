@@ -166,7 +166,7 @@ void main() {
 
   Future<RecordView> create(String id, Map<String, Object?> values) =>
       settings.createRecord(_type, ConfigurationRecordId(id), values);
-  File recordFile(String id) => File('${agents.path}/$id.toml');
+  File recordFile(String stem) => File('${agents.path}/$stem.toml');
 
   test(
     'same client re-reads trusted Settings CRUD without broadening scope or writing',
@@ -193,8 +193,9 @@ void main() {
         'description': '',
         'instructions': markdown,
       });
-      final file = recordFile('alpha');
+      final file = recordFile('z');
       final bytes = await file.readAsBytes();
+      expect(utf8.decode(bytes), contains('recordId = "alpha"'));
       final modified = DateTime.utc(2001);
       await file.setLastModified(modified);
       final created = await client.readAgents();
@@ -253,6 +254,7 @@ void main() {
         ('alpha', 'Renamed', null, 'On review', 'Updated'),
       );
       expect(created.agents.first.instructions, markdown);
+      expect(await file.readAsString(), contains('name = "Renamed"'));
       await settings.deleteRecord(edited);
       expect((await client.readAgents()).agents.map((agent) => agent.id), [
         'zulu',

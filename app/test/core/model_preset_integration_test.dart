@@ -215,8 +215,17 @@ void main() {
         ConfigurationRecordId('private'),
         {..._values, 'description': 'Peer only'},
       );
-      await f.create('zulu');
-      final alpha = await f.create('alpha', {
+      // Distinct initial files can carry the same label, even across owners.
+      final zulu = await f.create('zulu', {
+        ..._values,
+        'name': 'Second preset',
+      });
+      await f.settings.updateRecord(zulu, _values);
+      final first = await f.create('alpha', {
+        ..._values,
+        'name': 'First preset',
+      });
+      final alpha = await f.settings.updateRecord(first, {
         ..._values,
         'reasoning-effort': 'none',
       });
@@ -490,7 +499,7 @@ void main() {
         'empty Model Presets collection',
       );
       await _press(tester, add);
-      const name = 'Offline review';
+      const name = 'Fast';
       final values = {..._values, 'name': name};
       expect(_key('record-presence-$collection-model'), findsNothing);
       final effort = _key('record-input-$collection-reasoning-effort');
@@ -549,6 +558,11 @@ void main() {
       );
       final saved = (await f.settings.loadRecords(collection)).records.single;
       expect(saved.values, values);
+      expect(saved.id.value, isNot('fast'));
+      final file = File('${f.settings.collectionPath(collection)}/fast.toml');
+      final contents = await file.readAsString();
+      expect(contents, contains('recordId = "${saved.id.value}"'));
+      expect(contents, contains('name = "$name"'));
       final catalog = await f.catalog.readPresets();
       expect(catalog.isComplete, isTrue);
       final preset = catalog.presets.single;
@@ -582,6 +596,19 @@ void main() {
         saved.id.value,
         1,
       ));
+      const renamed = 'Renamed offline preset';
+      await f.settings.updateRecord(saved, {...saved.values, 'name': renamed});
+      await _tapText(tester, 'Refresh');
+      await _waitForText(tester, 'Model Preset: $renamed');
+      expect(_selection(await f.selections.readSessionSelection(session)), (
+        session,
+        saved.id.value,
+        1,
+      ));
+      expect(
+        await file.readAsString(),
+        contents.replaceFirst('name = "$name"', 'name = "$renamed"'),
+      );
       _expectNoInference(f, graph);
       expect(tester.takeException(), isNull);
     }),

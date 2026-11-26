@@ -8,6 +8,7 @@
       "label": "Agent",
       "description": "A named Agent definition, independent of selection or execution.",
       "displayField": "name",
+      "filenameField": "name",
       "fields": [
         {
           "id": "name",

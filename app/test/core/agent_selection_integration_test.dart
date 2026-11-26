@@ -809,7 +809,11 @@ void main() {
       'persisted Session selection resolves after an external rename',
       () async {
         const markdown = '# Review\n\nCheck the acceptance criteria.';
-        await fixture.createAgent('reviewer', instructions: markdown);
+        await fixture.createAgent(
+          'reviewer',
+          name: 'Architecture Reviewer',
+          instructions: markdown,
+        );
         await fixture.createAgent('editor', instructions: 'Edit the wording.');
         await fixture.client.updateSessionSelection(
           session.id.value,
@@ -824,8 +828,9 @@ void main() {
         });
 
         final file = File(
-          '${fixture.roots.configurationRoot}/agents/reviewer.toml',
+          '${fixture.roots.configurationRoot}/agents/architecture-reviewer.toml',
         );
+        expect(await file.readAsString(), contains('recordId = "reviewer"'));
         await file.rename('${file.parent.path}/acceptance-review.toml');
 
         final observed = await fixture.catalog.readAgents();
@@ -962,8 +967,20 @@ void main() {
           expect(_inspect(source, _selectionRows), selected);
           expect(await instructions(firstRun, original), 'Original reviewer.');
         }
+        // Reusing the path with a different ID cannot repair the selection.
+        final replacement = await fixture.createAgent(
+          'replacement',
+          name: 'reviewer',
+          instructions: 'Not the selected definition.',
+        );
+        await expectLater(capture(RunId('same-filename')), captureFailure);
+        expect(_inspect(source, _selectionRows), selected);
+        expect(await instructions(firstRun, original), 'Original reviewer.');
+        await fixture.settings.deleteRecord(replacement);
+        // Only explicitly restoring the same semantic ID resolves it again.
         await fixture.createAgent(
           'reviewer',
+          name: 'Restored reviewer',
           instructions: 'Re-created reviewer.',
         );
         expect(
@@ -1356,11 +1373,14 @@ final class _Fixture {
     return {projectStorageServiceId: probe};
   }
 
-  Future<RecordView> createAgent(String id, {String? instructions}) =>
-      settings.createRecord(_type, ConfigurationRecordId(id), {
-        'name': id,
-        'instructions': instructions ?? '# $id\n\nReview the changes.',
-      });
+  Future<RecordView> createAgent(
+    String id, {
+    String? name,
+    String? instructions,
+  }) => settings.createRecord(_type, ConfigurationRecordId(id), {
+    'name': name ?? id,
+    'instructions': instructions ?? '# $id\n\nReview the changes.',
+  });
 
   Future<void> replaceAgent() async {
     final catalog = bootstrap.catalog!;

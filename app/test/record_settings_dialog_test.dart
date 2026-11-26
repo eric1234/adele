@@ -362,8 +362,8 @@ void main() {
     final type = RecordTypeId('$pluginId.agent');
     late _ControlledService settings;
     late GlobalSettingsService reader;
-    File agentFile([String id = 'reviewer']) =>
-        File('${roots.configurationRoot}/agents/$id.toml');
+    File agentFile([String stem = 'reviewer']) =>
+        File('${roots.configurationRoot}/agents/$stem.toml');
     setUp(() async {
       await publishStockPluginInstallation(
         repositoryRoot: Directory.current.parent,
@@ -427,22 +427,53 @@ void main() {
     }
 
     testWidgets(
-      'duplicate names and empty required Instructions save as distinct Agents',
+      'correcting an occupied Agent filename retains the draft; saved Names can still match',
       (tester) => tester.runAsync(() async {
         await seedAgent('Existing');
+        final original = agentFile().readAsBytesSync();
         await open(tester);
         await _tap(tester, _key('records-add-agents'));
-        await _enter(tester, _key('record-input-agents-name'), 'Reviewer');
         final id = await inspectDraftId(tester);
+        final name = _key('record-input-agents-name');
+        final description = _key('record-input-agents-description');
+        await _enter(tester, description, 'Retained description');
+        await _enter(tester, name, 'Reviewer!');
+        expect(_scalarDecoration(tester, name).errorText, contains('in use'));
+        expect(_enabled(tester, createButton), isFalse);
+        await _enter(tester, name, 'CON');
+        expect(
+          _scalarDecoration(tester, name).errorText,
+          contains('Filename:'),
+        );
+        expect(_enabled(tester, createButton), isFalse);
+        expect(settings.creates, 1); // Only the seed reached storage.
+        expect(agentFile().readAsBytesSync(), original);
+
+        await _enter(tester, name, 'Second Reviewer');
+        expect(_scalarDecoration(tester, name).errorText, isNull);
+        expect(_text(tester, description), 'Retained description');
+        expect(await inspectDraftId(tester), id);
         await submit(tester, createButton);
+        final second = agentFile('second-reviewer');
+        expect(second.readAsStringSync(), contains('recordId = "$id"'));
+        expect(second.readAsStringSync(), contains('name = "Second Reviewer"'));
+        await _edit(tester, id, collection: 'agents');
+        await _enter(tester, _key('record-input-agents-$id-name'), 'Reviewer');
+        await submit(tester, _key('record-save-agents-$id'));
         final byId = {
           for (final record in (await reader.loadRecords(agents)).records)
             record.id.value: record.values,
         };
         expect(byId, {
           'reviewer': {'name': 'Reviewer', 'instructions': 'Existing'},
-          id: {'name': 'Reviewer', 'instructions': ''},
+          id: {
+            'name': 'Reviewer',
+            'description': 'Retained description',
+            'instructions': '',
+          },
         });
+        expect(second.readAsStringSync(), contains('name = "Reviewer"'));
+        expect(agentFile().readAsBytesSync(), original);
         await unmount(tester);
       }),
     );
@@ -459,7 +490,7 @@ void main() {
         await _tap(tester, _key('records-add-agents'));
         final id = await inspectDraftId(tester);
         final suffix = 'agents-$id';
-        final recordFile = agentFile(id);
+        final recordFile = agentFile('architecture-reviewer');
         expect(find.text('Agent'), findsOneWidget);
         expect(_enabled(tester, createButton), isFalse);
         expect(find.byType(CheckboxListTile), findsNothing);
@@ -478,7 +509,7 @@ void main() {
         expect(creation.snapshot()['markdown'], '');
         const markdown = '```dart\nreport();\n```\n\nReview **risks**';
         const values = {
-          'name': 'Reviewer',
+          'name': 'Architecture Reviewer',
           'description': 'Reviews changes.',
           'when-to-use': 'Before merging.',
           'instructions': markdown,
@@ -516,10 +547,12 @@ void main() {
         await submit(tester, createButton);
         expect(creation.isDisposed, isTrue);
         expect(await stored(), values);
-        expect(recordFile.existsSync(), isTrue);
-        expect(recordFile.readAsStringSync(), contains('recordType = "$type"'));
-        expect(find.text('Reviewer'), findsOneWidget);
-        await _tap(tester, find.text('Reviewer'));
+        final created = recordFile.readAsStringSync();
+        expect(created, contains('recordVersion = 2'));
+        expect(created, contains('recordId = "$id"'));
+        expect(created, contains('recordType = "$type"'));
+        expect(agentFile(id).existsSync(), isFalse);
+        await _tap(tester, find.text('Architecture Reviewer'));
         await tester.pumpAndSettle();
         expect(find.text('Collection: agents'), findsOneWidget);
         expect(find.text('Record ID: $id'), findsOneWidget);
@@ -577,6 +610,19 @@ void main() {
         expect(
           find.text('No readable records in this collection.'),
           findsOneWidget,
+        );
+        await _tap(tester, _key('records-add-agents'));
+        final replacement = await inspectDraftId(tester);
+        expect(replacement, isNot(id));
+        await _enter(tester, name, 'Architecture Reviewer');
+        await submit(tester, createButton);
+        expect(
+          recordFile.readAsStringSync(),
+          contains('recordId = "$replacement"'),
+        );
+        expect(
+          (await reader.loadRecords(agents)).records.single.id.value,
+          replacement,
         );
         expect(File(settings.filePath).existsSync(), isFalse);
         await unmount(tester);
@@ -750,7 +796,7 @@ void main() {
       (tester) => tester.runAsync(() async {
         await open(tester);
         await _tap(tester, _key('records-add-agents'));
-        final id = await inspectDraftId(tester);
+        final file = agentFile('writer');
         await _enter(tester, _key('record-input-agents-name'), 'Writer');
         final create = tester
             .widget<ButtonStyleButton>(createButton)
@@ -764,7 +810,7 @@ void main() {
         await native_input.frames(tester);
         expect(find.textContaining('Finish composing'), findsOneWidget);
         expect(settings.creates, 0);
-        expect(agentFile(id).existsSync(), isFalse);
+        expect(file.existsSync(), isFalse);
         expect(_instructionsOwner(tester, 'agents'), same(owner));
         // Leaving the active form suspends input; it does not commit the IME.
         await _richTap(tester, find.text('Back to records'));
@@ -783,7 +829,7 @@ void main() {
         );
         await submit(tester, createButton);
         expect(await stored(), {'name': 'Writer', 'instructions': 'x'});
-        expect(agentFile(id).existsSync(), isTrue);
+        expect(file.existsSync(), isTrue);
         expect(settings.creates, 1);
         await unmount(tester);
       }),

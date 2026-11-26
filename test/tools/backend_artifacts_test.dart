@@ -1994,6 +1994,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
             'label': 'OpenAI API',
             'description': 'An OpenAI API-key provider configuration.',
             'displayField': 'display-name',
+            'filenameField': 'display-name',
             'credentialSlots': [
               {'id': 'api-key', 'label': 'API key', 'kind': 'secret-text'},
             ],
@@ -2040,6 +2041,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
       expect(type.label, 'OpenAI API');
       expect(type.description, 'An OpenAI API-key provider configuration.');
       expect(type.displayField?.value, 'display-name');
+      expect(type.filenameField?.value, 'display-name');
       expect(type.credentialSlots.single.id.value, 'api-key');
       expect(type.credentialSlots.single.label, 'API key');
       expect(type.credentialSlots.single.kind.name, 'secretText');
@@ -2146,6 +2148,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
     expect(catalog.records.collectionLabel(type.collection), 'Agents');
     expect(type.label, 'Agent');
     expect(type.displayField?.value, 'name');
+    expect(type.filenameField?.value, 'name');
     expect(type.credentialSlots, isEmpty);
     expect(type.fields.map((field) => field.id.value), [
       'name',
@@ -2227,6 +2230,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
       );
       expect(preset.label, 'Model Preset');
       expect(preset.displayField?.value, 'name');
+      expect(preset.filenameField?.value, 'name');
       expect(preset.formBehavior?.value, '$_modelConfigurationId.preset-form');
       expect(preset.credentialSlots, isEmpty);
       final model = preset.fields.singleWhere((field) => field.editor != null);

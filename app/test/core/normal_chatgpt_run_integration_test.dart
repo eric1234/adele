@@ -628,8 +628,8 @@ void main() {
         expect(settingsRoute.isCurrent, isTrue);
         expect(await savedRecord.readAsBytes(), savedRecordBytes);
         expect(
-          await File('${savedRecord.parent.path}/$draftId.toml').exists(),
-          isFalse,
+          await savedRecord.parent.list().map((entry) => entry.path).toList(),
+          [savedRecord.path],
         );
         expect(await inspectDraftId(tester), draftId);
         retainedAcrossSettings();
@@ -1084,7 +1084,6 @@ void main() {
         final savedRecord = await _seedProviderRecord(fixture);
         final savedRecordBytes = await savedRecord.readAsBytes();
         final draftId = await _providerRecordDraft(tester, 'Work OpenAI draft');
-        final unsavedIds = [draftId];
         await _providerRecordEditDraft(tester);
         final recordInputs = [
           for (final key in [
@@ -1120,12 +1119,10 @@ void main() {
         Future<void> expectUnchangedSettings() async {
           expect(await settingsFile.exists(), isFalse);
           expect(await savedRecord.readAsBytes(), savedRecordBytes);
-          for (final id in unsavedIds) {
-            expect(
-              await File('${savedRecord.parent.path}/$id.toml').exists(),
-              isFalse,
-            );
-          }
+          expect(
+            await savedRecord.parent.list().map((entry) => entry.path).toList(),
+            [savedRecord.path],
+          );
         }
 
         await expectUnchangedSettings();
@@ -1344,7 +1341,6 @@ void main() {
           'Work OpenAI draft',
         );
         expect(freshDraftId, isNot(draftId));
-        unsavedIds.add(freshDraftId);
         await _providerRecordEditDraft(tester);
         final acceptedRecordController = tester
             .widget<TextField>(existingName)
@@ -6535,12 +6531,68 @@ printf '%s\n' 'S2B_SHELL_DONE'
           }),
         );
         await fixture.launch(tester, prepared, root: root, endpoint: server);
-        final settings = await _globalSettings(tester);
-        await settings.createRecord(
-          RecordTypeId('$agentConfigurationPluginId.agent'),
-          ConfigurationRecordId('reviewer'),
-          {'name': 'Reviewer', 'instructions': agentInstructions},
+        Finder key(String value) => find.byKey(ValueKey(value));
+        Future<void> openAgents() async {
+          await _terminalTap(tester, key('settings-button'));
+          final reload = key('settings-reload');
+          await _terminalUntil(
+            tester,
+            () =>
+                reload.evaluate().isNotEmpty &&
+                tester.widget<ButtonStyleButton>(reload).onPressed != null,
+            'Global Settings loaded',
+          );
+          await _settingsSection(tester, 'Agents');
+          final add = key('records-add-agents');
+          await _terminalUntil(
+            tester,
+            () =>
+                add.evaluate().isNotEmpty &&
+                tester.widget<ButtonStyleButton>(add).onPressed != null,
+            'Agent collection loaded',
+          );
+        }
+
+        const name = 'Architecture Reviewer';
+        const renamed = 'Design Reviewer';
+        await openAgents();
+        await _terminalTap(tester, key('records-add-agents'));
+        final agentId = await inspectDraftId(tester);
+        await tester.enterText(key('record-input-agents-name'), name);
+        final field = key('record-input-agents-instructions');
+        await tester.ensureVisible(field);
+        final editor = tester.widget<rich.AppFlowyEditor>(
+          find.descendant(
+            of: field,
+            matching: find.byType(rich.AppFlowyEditor),
+          ),
         );
+        editor.focusNode!.requestFocus();
+        editor.editorState.selection = rich.Selection.collapsed(
+          rich.Position(path: [0], offset: 0),
+        );
+        await _composerFrames(tester);
+        await _composerInput(tester, agentInstructions);
+        await _terminalTap(tester, key('record-create-agents'));
+        await _terminalUntil(
+          tester,
+          () => key('record-agents-$agentId').evaluate().isNotEmpty,
+          'Agent creation acknowledged',
+        );
+        await _terminalTap(tester, find.byTooltip('Close Settings'));
+        final file = File(
+          '${fixture.configurationRoots.configurationRoot}/agents/architecture-reviewer.toml',
+        );
+        Future<void> expectSavedAgent(String expectedName) async {
+          final toml = await file.readAsString();
+          expect(toml, contains('recordId = "$agentId"'));
+          expect(toml, contains('name = "$expectedName"'));
+          expect(toml, contains('instructions = "$agentInstructions"'));
+          expect(file.parent.listSync().map((e) => e.path), [file.path]);
+        }
+
+        expect(agentId, isNot('architecture-reviewer'));
+        await expectSavedAgent(name);
         await fixture.openTask(tester);
         await _tap(tester, 'New Chat Session');
         await _pumpUntil(tester, () => _composer().evaluate().isNotEmpty);
@@ -6548,10 +6600,49 @@ printf '%s\n' 'S2B_SHELL_DONE'
         final accessory = find.text('Local ${session.id.value}');
         expect(accessory, findsOneWidget);
         await _tap(tester, 'Agent: No Agent');
-        await _tap(tester, 'Reviewer');
-        final selectedAgent = find.text('Agent: Reviewer');
-        await _pumpUntil(tester, () => selectedAgent.evaluate().isNotEmpty);
+        await _tap(tester, name);
+        await _pumpUntil(
+          tester,
+          () => find.text('Agent: $name').evaluate().isNotEmpty,
+        );
         final runtime = fixture.runtime;
+        final agent = runtime.plugins.backends
+            .singleWhere(
+              (entry) =>
+                  entry.installation.metadata.id.value ==
+                  agentConfigurationPluginId,
+            )
+            .connection!;
+        final selections = AgentSelectionServiceClient(
+          agent.channelFor(
+            agent.defaultConfigurationContext,
+            agentSelectionServiceId,
+          ),
+        );
+        Future<void> expectSelection() async {
+          final saved = await selections.readSessionSelection(session.id.value);
+          expect((saved.selectedAgentId, saved.revision), (agentId, 1));
+        }
+
+        await expectSelection();
+        await openAgents();
+        await _terminalTap(tester, find.text(name));
+        await _terminalTap(tester, key('record-edit-agents-$agentId'));
+        await tester.enterText(
+          key('record-input-agents-$agentId-name'),
+          renamed,
+        );
+        await _terminalTap(tester, key('record-save-agents-$agentId'));
+        await _terminalUntil(
+          tester,
+          () =>
+              key('record-input-agents-$agentId-name').evaluate().isEmpty &&
+              find.text(renamed).evaluate().isNotEmpty,
+          'Agent Name edit acknowledged',
+        );
+        await _terminalTap(tester, find.byTooltip('Close Settings'));
+        await expectSavedAgent(renamed);
+        await expectSelection();
         final chat = _chatClient(
           runtime.plugins.backends
               .singleWhere(
@@ -6563,14 +6654,17 @@ printf '%s\n' 'S2B_SHELL_DONE'
         await _breadcrumb(tester, 'task-breadcrumb');
         await _pumpUntil(tester, () => _composer().evaluate().isEmpty);
         expect(accessory, findsNothing);
-        expect(selectedAgent, findsNothing);
+        expect(find.textContaining('Agent: '), findsNothing);
         await chat.setDraftRequest(session.id.value, restored);
         await _openSession(tester, session.id);
         await _pumpUntil(tester, () => _composer().evaluate().isNotEmpty);
         final owner = _composerOwner(tester);
         final state = _composerState(tester);
         expect(accessory, findsOneWidget);
-        await _pumpUntil(tester, () => selectedAgent.evaluate().isNotEmpty);
+        await _pumpUntil(
+          tester,
+          () => find.text('Agent: $renamed').evaluate().isNotEmpty,
+        );
         expect(owner.snapshot()['markdown'], restored);
         expect(owner.revision, 0);
         expect(state.editable, isTrue);

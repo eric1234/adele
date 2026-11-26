@@ -60,8 +60,11 @@ Refresh to see what was actually saved; the selector will not retry the write.
 
 Each `dev.adele.plugin.model-configuration.preset` record in `model-presets`
 has an immutable record ID, distinct from its editable provider and model IDs.
-Settings generates the preset ID. Copy it from **Advanced details** in Add or
-from the saved preset's details; the display name need not be unique. See the
+Settings generates the preset ID independently of the Name. A new preset named
+`Fast` starts at `model-presets/fast.toml`; if that filename is occupied, choose
+a different Name. Editing a saved Name never moves the file, so presets in
+different files can share a display name. Copy the ID from **Advanced details**
+in Add or from the saved preset's details. See the
 [record editing guide](../../docs/architecture/profiles-and-configuration.md#creating-and-editing-records)
 for draft retention and recovery.
 
@@ -93,8 +96,9 @@ The backend stores only the selected preset ID (or null) and revision for each
 Session in its own Project storage table. An untouched Session has no row and
 revision zero. Explicit updates, including reselecting or clearing, advance
 the revision conditionally. Clearing and reading work without the catalog.
-Deleting a definition leaves the stored ID intact; recreating that ID makes
-it resolvable again. Durable Project storage survives reopen; volatile storage
+Deleting a definition leaves the stored ID intact. Creating a new preset with
+the same Name in Settings generates a new ID and does not repair that selection.
+Durable Project storage survives reopen; volatile storage
 has only its Project lifetime.
 
 The plugin's [catalog and selection services](packages/contract/README.md) are

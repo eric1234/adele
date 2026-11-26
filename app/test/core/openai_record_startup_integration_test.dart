@@ -165,9 +165,8 @@ void main() {
         'Third account',
         '${fixture.origin}/third/responses',
       );
-      final file = File(
-        '${fixture.roots.configurationRoot}/providers/$id.toml',
-      );
+      final file = fixture.providerFile('third-account.toml');
+      expect(id, isNot('third-account'));
       expect(file.existsSync(), isFalse);
       expect(() => fixture.client(id), throwsA(isA<ProviderUnavailable>()));
 
@@ -193,10 +192,11 @@ void main() {
       );
       final created = await current();
       expect(created.catalog.provider.displayName, 'Third account');
-      expect(
-        file.readAsStringSync(),
-        contains('${fixture.origin}/third/responses'),
-      );
+      final contents = file.readAsStringSync();
+      expect(contents, contains('recordId = "$id"'));
+      expect(contents, contains('display-name = "Third account"'));
+      expect(contents, contains('${fixture.origin}/third/responses'));
+      expect(fixture.providerFile('$id.toml').existsSync(), isFalse);
       await fixture.expectFailure('not_configured', recordId: id);
       expect(fixture.requests, isEmpty);
       expect(fixture.storage.calls, isEmpty);
@@ -208,6 +208,10 @@ void main() {
       created.expectReplacement(attached);
       final reference = fixture.storage.values.keys.singleWhere(
         (key) => file.readAsStringSync().contains(key.value),
+      );
+      expect(
+        (jsonDecode(fixture.storage.values[reference]!) as Map)['record'],
+        id,
       );
       await fixture.expectRoutes(
         attached,
@@ -224,6 +228,11 @@ void main() {
       final edited = await current();
       attached.expectReplacement(edited);
       await attached.expectRetired(fixture);
+      final updatedContents = file.readAsStringSync();
+      expect(updatedContents, contains('recordId = "$id"'));
+      expect(updatedContents, contains('display-name = "Renamed third"'));
+      expect(updatedContents, contains(reference.value));
+      expect(fixture.providerFile('renamed-third.toml').existsSync(), isFalse);
       expect(edited.inference.provider.displayName, 'Renamed third');
       expect(edited.catalog.provider.displayName, 'Renamed third');
       await fixture.expectRoutes(
@@ -315,7 +324,7 @@ void main() {
       final connection = fixture.connection;
       final old = fixture.capture('work');
       final personal = fixture.capture('personal');
-      final file = fixture.recordFile('work');
+      final file = fixture.workFile;
       final endpoint = '${fixture.origin}/retry/responses';
       await ui.expand(id);
       await ui.update(id, 'Saved work', endpoint);
@@ -399,7 +408,7 @@ void main() {
       await ui.status(id, 'Applying...');
       await ui.update(id, 'Latest edit', '${fixture.origin}/latest/responses');
       expect(
-        fixture.recordFile('work').readAsStringSync(),
+        fixture.workFile.readAsStringSync(),
         contains('/latest/responses'),
       );
       original.expectSame(fixture.capture('work'));
@@ -468,10 +477,7 @@ void main() {
       expect(fixture.bootstrap.state, ApplicationPluginState.closed);
       expect(gate.returned.isCompleted, isTrue);
       expect(application.outcome(key)?.status, RecordApplyStatus.unavailable);
-      expect(
-        fixture.recordFile('work').readAsStringSync(),
-        contains('/exit/responses'),
-      );
+      expect(fixture.workFile.readAsStringSync(), contains('/exit/responses'));
       expect(fixture.requests, isEmpty);
     },
     heldCaptures: 1,
@@ -995,7 +1001,7 @@ void main() {
                 (entry) => entry.providerId == '$_recordType.work-openai',
               )
               .displayName,
-          'Work OpenAI',
+          'OpenAI Work',
         );
 
         await fixture.restart();
@@ -1149,7 +1155,7 @@ void main() {
     _expectCatalogFailure(await fixture.listModels('old-work'), 'unavailable');
     expect(fixture.requests, isEmpty);
     expect(fixture.storage.calls, isEmpty);
-    expect(old.inference.provider.displayName, 'Work OpenAI');
+    expect(old.inference.provider.displayName, 'OpenAI Work');
     expect(await fixture.refresh(), _refreshResult('applied', 'replaced'));
     final fresh = fixture.capture('work');
     old.expectReplacement(fresh);
@@ -1234,8 +1240,9 @@ void main() {
     final protected = fixture.storage.values[reference]!;
     await fixture.expectRoutes(old, 'work', 'test-work-key', reference);
 
-    final file = fixture.recordFile('work');
+    final file = fixture.workFile;
     final bytes = await file.readAsBytes();
+    expect(utf8.decode(bytes), contains('recordId = "work-openai"'));
     final renamed = await file.rename('${file.parent.path}/engineering.toml');
 
     old.expectSame(fixture.capture('work'));
@@ -1268,7 +1275,7 @@ void main() {
     await fixture.selectCatalog('work', slot: 'old-work');
     _expectCompleted(await fixture.invoke('work').toList(), '/work/responses');
     final reference = fixture.reference('work');
-    final bytes = await fixture.recordFile('work').readAsBytes();
+    final bytes = await fixture.workFile.readAsBytes();
     final values = fixture.records['work']!.values;
     final protected = fixture.storage.values[reference];
     fixture.records['work'] = (await fixture.associations.replace(
@@ -1276,7 +1283,7 @@ void main() {
       RecordCredentialSlotId('api-key'),
       CredentialSecret('test-replacement-key'),
     )).record;
-    expect(await fixture.recordFile('work').readAsBytes(), bytes);
+    expect(await fixture.workFile.readAsBytes(), bytes);
     expect(fixture.records['work']!.values, values);
     expect(fixture.storage.values.keys, contains(reference));
     expect(fixture.storage.values[reference], isNot(protected));
@@ -1397,7 +1404,7 @@ void main() {
       final old = fixture.capture('work');
       final personal = fixture.capture('personal');
       await fixture.selectCatalog('work');
-      final malformed = fixture.recordFile('malformed');
+      final malformed = fixture.providerFile('malformed.toml');
       await malformed.writeAsString(
         'invalid = [ # test-work-key ${fixture.origin}',
       );
@@ -1530,14 +1537,14 @@ void main() {
     );
     var previous = fixture.capture('work');
     final reference = fixture.reference('work');
-    final bytes = await fixture.recordFile('work').readAsBytes();
+    final bytes = await fixture.workFile.readAsBytes();
     for (var revision = 0; revision < 12; revision++) {
       fixture.records['work'] = (await fixture.associations.replace(
         fixture.records['work']!,
         RecordCredentialSlotId('api-key'),
         CredentialSecret('test-rotation-$revision-key'),
       )).record;
-      expect(await fixture.recordFile('work').readAsBytes(), bytes);
+      expect(await fixture.workFile.readAsBytes(), bytes);
       fixture.storage.calls.clear();
       fixture.storage.readReferences.clear();
       expect(await fixture.refresh(), _refreshResult('applied', 'replaced'));
@@ -1668,7 +1675,7 @@ void main() {
     );
     old.expectSame(fixture.capture('work'));
     personal.expectSame(fixture.capture('personal'));
-    expect(old.inference.provider.displayName, 'Work OpenAI');
+    expect(old.inference.provider.displayName, 'OpenAI Work');
     _expectCatalogAssociations(fixture.bootstrap, fixture.registry);
     expect(fixture.requests, isEmpty);
     expect(fixture.storage.calls, isEmpty);
@@ -1913,9 +1920,9 @@ void main() {
         records[id] = attached.record;
       }
       expect(storage.values, hasLength(2));
-      final personalFile = File(
-        '${settings.collectionPath(definition.collection)}/personal-openai.toml',
-      );
+      File accountFile(String stem) =>
+          File('${settings.collectionPath(definition.collection)}/$stem.toml');
+      final personalFile = accountFile('personal');
       final personalBytes = await personalFile.readAsBytes();
       records['work'] = await settings.updateRecord(records['work']!, {
         ...records['work']!.values,
@@ -1925,10 +1932,8 @@ void main() {
       expect(await personalFile.readAsBytes(), personalBytes);
       final persisted = <String, String>{};
       for (final id in ['work', 'personal']) {
-        final file = File(
-          '${settings.collectionPath(definition.collection)}/$id-openai.toml',
-        );
-        persisted[id] = await file.readAsString();
+        persisted[id] = await accountFile(id).readAsString();
+        expect(persisted[id], contains('recordId = "$id-openai"'));
         expect(persisted[id], contains('[credentials]'));
         expect(persisted[id], isNot(contains('test-only-')));
       }
@@ -2133,12 +2138,7 @@ void main() {
       });
       expect(storage.calls, isEmpty);
       for (final id in ['work', 'personal']) {
-        expect(
-          await File(
-            '${settings.collectionPath(definition.collection)}/$id-openai.toml',
-          ).readAsString(),
-          persisted[id],
-        );
+        expect(await accountFile(id).readAsString(), persisted[id]);
       }
 
       // Read-only projection did not retire this owner's existing edit handle,
@@ -2563,8 +2563,9 @@ final class _ProviderFixture {
 
   CredentialReference reference(String id) => references[id]!;
 
-  File recordFile(String id) =>
-      File('${roots.configurationRoot}/providers/$id-openai.toml');
+  File providerFile(String fileName) =>
+      File('${roots.configurationRoot}/providers/$fileName');
+  File get workFile => providerFile('openai-work.toml');
 
   Future<void> prepare(
     Directory repository,
@@ -2760,7 +2761,7 @@ final class _ProviderFixture {
         RecordTypeId(_recordType),
         ConfigurationRecordId('$id-openai'),
         {
-          'display-name': id == 'work' ? 'Work OpenAI' : 'Personal OpenAI',
+          'display-name': id == 'work' ? 'OpenAI Work' : 'OpenAI Personal',
           'endpoint': modelBrowser && id == 'work'
               ? 'https://api.openai.com/v1/responses'
               : '$endpointOrigin/$id/responses',
@@ -3160,7 +3161,7 @@ Map<String, Object?> _catalogProvider(String id, {String? displayName}) => {
   'providerId': '$_catalogProviderId.$id-openai',
   'pluginId': _openai,
   'displayName':
-      displayName ?? (id == 'work' ? 'Work OpenAI' : 'Personal OpenAI'),
+      displayName ?? (id == 'work' ? 'OpenAI Work' : 'OpenAI Personal'),
   'serviceId': modelCatalogServiceId,
 };
 

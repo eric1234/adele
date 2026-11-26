@@ -15,12 +15,17 @@ declares the `agents` collection (Agents) and record type
 
 In **Global Settings > Agents**, choose **Add**. Enter **Name** directly and
 write **Instructions** in the rich Markdown editor. Names must be nonblank and
-free of ASCII controls; names need not be unique. The required Instructions
+free of ASCII controls. The required Instructions
 document may be empty. Enter **Description** or **When to Use** directly; leaving
 either blank omits it. Choose **Create** to save the definition, not to select
 it for a Session.
-Settings generates the Agent's immutable ID. To copy it, open **Advanced details**
-in Add or expand the saved Agent's details.
+A new Agent named `Architecture Reviewer` is saved in `agents/architecture-reviewer.toml`
+under the [portable filename policy](../../docs/architecture/profiles-and-configuration.md#declarative-configuration-records).
+Choose a Name whose initial filename is available. Editing the Name leaves the file
+in place, so Agents in different files can share a display name. Settings generates
+the immutable Agent ID independently; even a manual rename to another valid filename
+within `agents` preserves that ID. To copy it, open **Advanced details** in Add or
+expand the saved Agent's details.
 
 These are ordinary global configuration records managed by the existing generic
 Global Settings UI and host persistence. See the
