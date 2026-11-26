@@ -298,7 +298,6 @@ Each record type requires `id`, `collection`, `collectionLabel`, `label`, and
 a declared required `string` field, not an enum or structure. They may name the
 same field or different fields. The public record constructor validates both
 references during discovery; an invalid reference rejects the whole record schema.
-Omitting `displayField` permits presentation to fall back to record identity.
 Omitting `filenameField` preserves the record-ID basename at creation. Neither
 reference changes record identity. Each field requires `id`, `label`, `type`, and
 an explicit Boolean `required`; `description` is optional. Field arrays retain

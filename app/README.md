@@ -414,10 +414,12 @@ Conflicts require this explicit reload rather than automatic merge or retry.
 Other failures also require Reload to confirm disk state; a cleanup or lost-response
 failure can follow publication and is not reported as proof that nothing was saved.
 
-Collection views list valid records in stable ID order, show declared display titles
-(or ID fallback), and offer generic Edit and Delete actions. In **Add**, fill in the
-declared fields; the panel generates the record ID. Expand **Advanced details** to
-copy it, or expand a saved record's details to copy its immutable ID. See
+Collection views list readable records in stable ID order. Each row shows the
+record's title and type label. When titles repeat, filenames distinguish those
+rows before you expand them. Expand a record to see its actual filename (for
+example, `openai-work.toml`) as a read-only detail. The collection directory
+appears beside **Reload**. To create a record, choose **Add** and enter
+the declared fields; the panel manages the record ID. See
 [creating and editing records](../docs/architecture/profiles-and-configuration.md#creating-and-editing-records)
 for direct optional inputs, authored empty values and recovery after an unconfirmed
 Create. When a declaration selects a `filenameField`, the draft checks its name
@@ -444,27 +446,27 @@ or unrepresentable edits block saving, rather than saving an older value or
 treating the field as absent. Explicit removal of an optional document retires
 its owner; callbacks for discarded input do not target the new blank document.
 
-Reload discovers records by their embedded IDs, including files renamed within
-the collection. An existing edit handle or backend credential capture stays tied
-to its original file observation. Malformed, unavailable or duplicate records
-remain attributable filename diagnostics alongside healthy siblings, without
-Edit/Delete actions. Each existing record has a separate
-draft retained through details collapse and section navigation. Cancel editing
+After a valid external rename within the collection, **Reload** shows the new
+filename, including in the title when there is no usable display name. An existing
+edit handle or backend credential capture stays tied to its original observation.
+Files with malformed records, unavailable types or duplicate IDs appear alongside
+healthy records as filename diagnostics, without Edit/Delete actions. Each existing
+record's draft survives details collapse and section navigation. Cancel editing
 discards only that draft. Collection Reload confirms discarding dirty existing-record
 drafts, keeps creation drafts, and replaces the list and edit baselines only on a
 successful read. A failed read retains the prior display and drafts with an actionable
 diagnostic, not an empty collection.
 Duplicate IDs, including malformed or unknown-type occupants, are never overwritten.
-Create and Save publish presented values only after worker acknowledgement. Delete
-requires a safe-default modal identifying the exact record and explaining that its
-entire configuration file, including unknown data, will be removed. Confirmed deletion
-removes only that record and its draft. The host rejects deletion while any credential
-entry remains, including unknown entries. Declared associations must be explicitly
-forgotten first; unknown entries require safe manual correction and Reload, not
-automatic cleanup. No automatic collection refresh invalidates
-unrelated edits. Conflicts and uncertain update/delete outcomes retain drafts and fence
-that record until explicit Reload; no retry or field merging occurs. Known pre-write
-validation failures remain correctable without Reload.
+Create and Save publish presented values only after worker acknowledgement. The
+**Delete** dialog identifies the record by title, type label and actual filename;
+**Cancel** is the default. Deletion cannot be undone: it removes the entire file,
+including unknown data, and discards any unsaved edits to that record. The host
+rejects deletion while any credential entry remains, including unknown entries.
+Declared associations must be explicitly forgotten first; unknown entries require
+safe manual correction and Reload, not automatic cleanup. No automatic collection
+refresh invalidates unrelated edits. Conflicts and uncertain update/delete outcomes
+retain drafts and fence that record until explicit Reload; no retry or field merging
+occurs. Known pre-write validation failures remain correctable without Reload.
 
 After record creation, [`RecordCollectionPanel`](lib/ui/settings/record_collection_panel.dart)
 generates credential-slot controls from the type declaration, independently of

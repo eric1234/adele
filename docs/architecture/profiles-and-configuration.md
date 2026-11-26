@@ -268,10 +268,10 @@ record write, or participates in execution.
 ### Record Metadata
 
 A type may declare one `displayField` referencing a required string field. Discovery
-validates that reference; omission preserves existing declarations. Presentation uses
-the declared value when usable and otherwise the stable record ID, never a host
-field-name convention. This metadata does not change identity or require nonblank
-strings: required still means presence.
+validates that reference. Global Settings uses the declared value as the record's
+title. If no display field is declared or its value is blank, the title is the
+observed filename. Titles need not be unique. This metadata neither changes
+identity nor requires nonblank strings: required still means presence.
 
 Independently, `filenameField` may reference a required ordinary string field
 to name the file **at creation only**. After ordinary field validation, the
@@ -335,10 +335,9 @@ the conflict grants no mutation or credential authority.
 Global Settings discovers collections from the captured prepared catalog and lists
 valid records alongside attributable diagnostics. The generic **Add** form keeps a
 separate draft for each record type and assigns each draft a secure random record ID,
-independent of the display name. Users enter the declared fields, not the ID. Open
-**Advanced details** to inspect or copy the read-only ID before creation; for a
-saved record, expand its details to copy the ID. Collection, type and ID are
-immutable when editing; editing the display name does not change the filename.
+independent of the display name. The ID stays internal to ordinary Settings forms;
+users enter declared fields, and existing references use the `recordId` persisted
+in the TOML header. Collection, type and record ID are immutable when editing.
 ID generation belongs to the panel: [headless callers](../../packages/settings_host/README.md#configuration-records)
 supply an explicit, validated `ConfigurationRecordId` to `create`.
 
@@ -368,22 +367,26 @@ the draft's original ID and field values. Only a confirmed **Create** automatica
 resets the successful type's draft; other types' drafts are untouched. A collision
 never overwrites the occupant, even if its record is malformed or its type unknown.
 When a declared filename source is invalid or its filename is already known to
-be occupied (including a diagnostic or alias), correct the field in place. A
-conflict discovered during a write or an uncertain Create outcome requires an
-explicit collection **Reload**. Reconcile the original attempt, not a filename
-derived from later edits: its ID anywhere in the collection blocks another create
-with that draft. After an uncertain outcome, an unreadable occupant at the
-attempted name cannot establish that the write did not occur. A confirmed
-filename-only conflict permits correcting the source without discarding unrelated
-values. Reload never changes the draft ID. After reconciliation, **Discard and
+be occupied (including a diagnostic or alias), correct the field in place. An ID
+conflict, a conflict discovered during a write, or an uncertain Create outcome
+requires an explicit collection **Reload**. If records or diagnostics anywhere
+in the collection claim the attempted ID, Settings names the observed files and
+blocks another Create with that draft. A matching ID does not confirm that the
+earlier attempt wrote the file or its current contents. If Reload cannot identify
+the occupant at the attempted filename after an uncertain outcome, it names that
+file for inspection and keeps Create blocked, even if the draft's name has changed.
+A confirmed filename-only conflict permits correcting the declared filename
+source without discarding unrelated values.
+Reload never changes the draft ID. After reconciliation, **Discard and
 start new draft** replaces only the affected draft with a blank one and a new ID.
 It does not write a record. Settings never retries Create automatically.
 
 Each existing record has a separate draft retained through details collapse and
 ordinary Settings navigation; Cancel editing discards only that record's draft.
 Save presents confirmed worker results, with no optimistic replacement or automatic
-refresh of unrelated baselines. Delete requires explicit modal confirmation of the
-exact record's title, stable identity, and entire-file removal, including unknown data.
+refresh of unrelated baselines. Delete requires explicit modal confirmation; the
+displayed filename identifies the file for the user, but the write uses the
+revision-bound record handle, not a lookup by title or filename.
 Cancel or dismissal does not write. Confirmed deletion removes only that record and
 its draft. Conflicts or uncertain update/delete outcomes fence the affected record,
 retaining unsaved values for inspection without retry or automatic merging. Known

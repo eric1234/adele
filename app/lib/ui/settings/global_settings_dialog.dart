@@ -18,6 +18,7 @@ final class GlobalSettingsDialog extends StatefulWidget {
     this.recordApplication,
     this.declarationIssues,
     this.recordDeclarationIssues,
+    this.newDraftId,
   });
 
   final Future<GlobalSettingsService> Function() service;
@@ -26,6 +27,9 @@ final class GlobalSettingsDialog extends StatefulWidget {
   final RecordApplication? Function()? recordApplication;
   final List<String> Function()? declarationIssues;
   final List<String> Function()? recordDeclarationIssues;
+
+  /// Optional per-dialog generator for deterministic creation-conflict fixtures.
+  final ConfigurationRecordId Function(RecordTypeDefinition)? newDraftId;
 
   @override
   State<GlobalSettingsDialog> createState() => _GlobalSettingsDialogState();
@@ -138,6 +142,7 @@ final class _GlobalSettingsDialogState extends State<GlobalSettingsDialog> {
                                   ?.call(),
                               active: active,
                               collection: RecordCollectionId(value),
+                              newDraftId: widget.newDraftId,
                               declarationIssues: widget.recordDeclarationIssues,
                             ),
                     );

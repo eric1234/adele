@@ -22,10 +22,9 @@ it for a Session.
 A new Agent named `Architecture Reviewer` is saved in `agents/architecture-reviewer.toml`
 under the [portable filename policy](../../docs/architecture/profiles-and-configuration.md#declarative-configuration-records).
 Choose a Name whose initial filename is available. Editing the Name leaves the file
-in place, so Agents in different files can share a display name. Settings generates
-the immutable Agent ID independently; even a manual rename to another valid filename
-within `agents` preserves that ID. To copy it, open **Advanced details** in Add or
-expand the saved Agent's details.
+in place, so Agents in different files can share a display name. Use the filenames
+in the Settings list to tell those Agents apart. Even a manual rename to another
+valid filename within `agents` preserves the generated Agent ID in the TOML header.
 
 These are ordinary global configuration records managed by the existing generic
 Global Settings UI and host persistence. See the

@@ -294,7 +294,7 @@ base class GlobalSettingsService {
               collection: collection ?? expectedRecord?.collection,
               recordType: recordType ?? expectedRecord?.type,
               recordId: recordId ?? expectedRecord?.id,
-              observedFileName: expectedRecord?._fileName,
+              observedFileName: expectedRecord?.fileName,
               recordValues: recordValues,
               startupRecordTypes: startupRecordTypes,
               startupCredentialSlots: startupCredentialSlots,
@@ -353,20 +353,23 @@ final class RecordCollectionView {
 
   // Observations for creation admission, never authority to write. A readable
   // header can claim an ID even if its record could not be decoded.
-  static bool claimsId(
+  static List<String> fileNamesClaimingId(
     ConfigurationRecordId id,
     Iterable<RecordView> records,
     Iterable<RecordDiagnosticView> diagnostics,
-  ) =>
-      records.any((record) => record.id == id) ||
-      diagnostics.any((item) => item.recordId == id);
+  ) => [
+    for (final record in records)
+      if (record.id == id) record.fileName,
+    for (final item in diagnostics)
+      if (item.recordId == id) item.fileName,
+  ];
 
   static bool occupiesFileName(
     String fileName,
     Iterable<RecordView> records,
     Iterable<RecordDiagnosticView> diagnostics,
   ) =>
-      records.any((record) => record._fileName == fileName) ||
+      records.any((record) => record.fileName == fileName) ||
       diagnostics.any((item) => _atFileName(item, fileName));
 
   static bool hasUnresolvedOccupant(
@@ -384,7 +387,7 @@ final class RecordCollectionView {
 final class RecordView {
   RecordView._(this._owner, _RecordValues record)
     : _revision = record.revision,
-      _fileName = record.fileName,
+      fileName = record.fileName,
       collection = record.collection,
       id = record.id,
       type = record.type,
@@ -396,8 +399,9 @@ final class RecordView {
   final Map<String, Object> values;
   final Object _owner;
   final int _revision;
-  // Observation only, for creation availability and stale-handle diagnostics.
-  final String _fileName;
+
+  /// Observed basename, not a write target or a derived name.
+  final String fileName;
 }
 
 final class _StartupRecordValues {

@@ -543,9 +543,7 @@ void main() {
         await _settingsAction(tester, 'records-reload-providers');
         await _settingsUntil(tester, () => true);
         await _editProviderRecord(tester, workId);
-        expect(find.text('Record ID: $workId'), findsOneWidget);
-        expect(find.text('Record type: $openai.api-key'), findsOneWidget);
-        expect(find.text('Collection: providers'), findsOneWidget);
+        expect(find.text('work-openai.toml'), findsOneWidget);
         final workName = find.byKey(
           ValueKey('record-input-providers-$workId-display-name'),
         );
@@ -557,6 +555,7 @@ void main() {
         await _settingsAction(tester, 'record-save-providers-$workId');
         await _settingsUntil(tester, () => workName.evaluate().isEmpty);
         expect(find.text('Work OpenAI renamed'), findsOneWidget);
+        expect(find.text('work-openai.toml'), findsOneWidget);
         expect(find.text('Saved Work OpenAI renamed.'), findsOneWidget);
         expect(
           await work.readAsString(),
@@ -680,11 +679,13 @@ void main() {
         expect(
           find.descendant(
             of: find.byType(AlertDialog),
-            matching: find.textContaining('Record ID: $personalId'),
+            matching: find.textContaining(
+              'Name: Personal OpenAI\nType: OpenAI API\nFile: personal-openai.toml',
+            ),
           ),
           findsOneWidget,
         );
-        expect(find.textContaining('$openai.api-key'), findsWidgets);
+        expect(find.textContaining('$openai.api-key'), findsNothing);
         await _settingsAction(
           tester,
           'record-delete-cancel-providers-$personalId',

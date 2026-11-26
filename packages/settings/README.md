@@ -142,7 +142,7 @@ not a stored default. These references and labels do not change `validate`.
 Optional `displayField: RecordFieldId?` identifies a declared required
 `StringSettingType` field for record display names. Construction rejects missing,
 optional, or other scalar-type references, including enum fields. Omission is null
-and makes no display-field assumption; presentation can fall back to the record ID.
+and makes no display-field assumption.
 This metadata neither changes record identity nor adds string-value constraints:
 use explicit string constraints if the field requires a nonblank display label.
 

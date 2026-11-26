@@ -8,6 +8,7 @@ import 'dart:io';
 import 'dart:isolate';
 import 'dart:ui' show AppExitResponse, IsolateNameServer;
 
+import 'package:adele_configuration_store/adele_configuration_store.dart';
 import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_desktop/application.dart';
 import 'package:adele_desktop/core/adele_runtime.dart';
@@ -86,7 +87,6 @@ import '../../tool/tool_inspection_frontend_compiler.dart';
 import '../support/agent_selector_installation.dart';
 import '../support/git_worktree_fixture.dart';
 import '../support/markdown_paste_fixture.dart';
-import '../support/record_draft_id.dart';
 import '../support/session_accessory_frontend_fixture.dart';
 
 const _gitPluginId = 'dev.adele.plugin.git';
@@ -577,7 +577,7 @@ void main() {
         }
         final savedRecord = await _seedProviderRecord(fixture);
         final savedRecordBytes = await savedRecord.readAsBytes();
-        final draftId = await _providerRecordDraft(tester, 'Work OpenAI draft');
+        await _providerRecordDraft(tester, 'Work OpenAI draft');
         await _providerRecordEditDraft(tester);
         final recordInputs = [
           for (final key in [
@@ -631,7 +631,6 @@ void main() {
           await savedRecord.parent.list().map((entry) => entry.path).toList(),
           [savedRecord.path],
         );
-        expect(await inspectDraftId(tester), draftId);
         retainedAcrossSettings();
         await _terminalTap(tester, find.byTooltip('Close Settings'));
         expect(find.byType(GlobalSettingsDialog), findsNothing);
@@ -1083,7 +1082,7 @@ void main() {
         final foldingElement = tester.element(folding);
         final savedRecord = await _seedProviderRecord(fixture);
         final savedRecordBytes = await savedRecord.readAsBytes();
-        final draftId = await _providerRecordDraft(tester, 'Work OpenAI draft');
+        await _providerRecordDraft(tester, 'Work OpenAI draft');
         await _providerRecordEditDraft(tester);
         final recordInputs = [
           for (final key in [
@@ -1143,7 +1142,10 @@ void main() {
           expect(searchController.value, searchValue);
           expect(tester.element(folding), same(foldingElement));
           expect(tester.widget<Switch>(folding).value, isTrue);
-          expect(find.text('Advanced details'), findsOneWidget);
+          expect(
+            find.byKey(const ValueKey('record-create-providers')),
+            findsOneWidget,
+          );
           for (final draft in recordDrafts) {
             expect(tester.element(draft.input), same(draft.element));
             expect(tester.state(draft.input), same(draft.state));
@@ -1240,7 +1242,6 @@ void main() {
 
         // Cancellation leaves the original Settings editors usable, not restored
         // from persisted values in a replacement dialog.
-        expect(await inspectDraftId(tester), draftId);
         final newName = find.byKey(
           const ValueKey('record-input-providers-display-name'),
         );
@@ -1336,11 +1337,11 @@ void main() {
         await openSettings();
         await tester.enterText(search, 'folding');
         await _terminalTap(tester, folding);
-        final freshDraftId = await _providerRecordDraft(
-          tester,
-          'Work OpenAI draft',
+        await _providerRecordDraft(tester, 'Work OpenAI draft');
+        expect(
+          tester.widget<TextField>(newName).controller,
+          isNot(same(recordDrafts.first.controller)),
         );
-        expect(freshDraftId, isNot(draftId));
         await _providerRecordEditDraft(tester);
         final acceptedRecordController = tester
             .widget<TextField>(existingName)
@@ -6557,7 +6558,6 @@ printf '%s\n' 'S2B_SHELL_DONE'
         const renamed = 'Design Reviewer';
         await openAgents();
         await _terminalTap(tester, key('records-add-agents'));
-        final agentId = await inspectDraftId(tester);
         await tester.enterText(key('record-input-agents-name'), name);
         final field = key('record-input-agents-instructions');
         await tester.ensureVisible(field);
@@ -6576,13 +6576,19 @@ printf '%s\n' 'S2B_SHELL_DONE'
         await _terminalTap(tester, key('record-create-agents'));
         await _terminalUntil(
           tester,
-          () => key('record-agents-$agentId').evaluate().isNotEmpty,
+          () => find.widgetWithText(ListTile, name).evaluate().isNotEmpty,
           'Agent creation acknowledged',
         );
+        final published = ConfigurationStore(fixture.configurationRoots)
+            .recordFile(
+              collectionId: 'agents',
+              fileName: 'architecture-reviewer.toml',
+            );
+        final file = File(published.filePath);
+        final agentId =
+            published.load().document.readScalar(['recordId']) as String;
+        expect(key('record-agents-$agentId'), findsOneWidget);
         await _terminalTap(tester, find.byTooltip('Close Settings'));
-        final file = File(
-          '${fixture.configurationRoots.configurationRoot}/agents/architecture-reviewer.toml',
-        );
         Future<void> expectSavedAgent(String expectedName) async {
           final toml = await file.readAsString();
           expect(toml, contains('recordId = "$agentId"'));
@@ -9293,7 +9299,7 @@ Future<void> _providerRecordEditDraft(WidgetTester tester) async {
   await tester.pump();
 }
 
-Future<String> _providerRecordDraft(WidgetTester tester, String name) async {
+Future<void> _providerRecordDraft(WidgetTester tester, String name) async {
   await _settingsSection(tester, 'Providers');
   final add = find.byKey(const ValueKey('records-add-providers'));
   await _terminalUntil(
@@ -9307,10 +9313,10 @@ Future<String> _providerRecordDraft(WidgetTester tester, String name) async {
   final input = find.byKey(
     const ValueKey('record-input-providers-display-name'),
   );
+  expect(tester.widget<TextField>(input).controller!.text, isEmpty);
   await tester.ensureVisible(input);
   await tester.enterText(input, name);
   await tester.pump();
-  return inspectDraftId(tester);
 }
 
 Future<void> _newTerminal(WidgetTester tester) async {
