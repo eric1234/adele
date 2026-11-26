@@ -442,11 +442,13 @@ void main() {
       final jobs = Directory('${fixture.roots.configurationRoot}/jobs');
       final invalidFiles = <File, String>{
         File('${jobs.path}/broken-marker.toml'): 'invalid = [',
-        File('${jobs.path}/unknown-marker.toml'):
-            'recordVersion = 1\nrecordType = "test.unknown.record"\n'
+        File(
+          '${jobs.path}/unknown-marker.toml',
+        ): 'recordVersion = 2\nrecordId = "unknown-marker"\nrecordType = "test.unknown.record"\n'
             '[values]\nname = "Unknown marker"\n',
-        File('${jobs.path}/invalid-marker.toml'):
-            'recordVersion = 1\nrecordType = "$_owner.record"\n'
+        File(
+          '${jobs.path}/invalid-marker.toml',
+        ): 'recordVersion = 2\nrecordId = "invalid-marker"\nrecordType = "$_owner.record"\n'
             '[values]\nname = 42\n',
       };
       for (final entry in invalidFiles.entries) {

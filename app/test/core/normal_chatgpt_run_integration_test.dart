@@ -9176,7 +9176,8 @@ Future<File> _seedProviderRecord(_ProductFixture fixture) async {
   );
   await file.parent.create(recursive: true);
   await file.writeAsString(
-    'recordVersion = 1\n'
+    'recordVersion = 2\n'
+    'recordId = "saved-openai"\n'
     'recordType = "$_openAiPluginId.api-key"\n'
     '\n[values]\n'
     'display-name = "Saved OpenAI"\n',

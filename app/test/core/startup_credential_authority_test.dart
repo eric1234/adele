@@ -511,6 +511,44 @@ void main() {
   );
 
   test(
+    'rename during an OS read retires the old capture, not the association',
+    () async {
+      await create('first');
+      await create('second');
+      final old = await capture();
+      final bindings = Map.of(storage.values);
+      storage.blockRead();
+      final rejected = expectLater(
+        read(old),
+        _failure(AdeleCredentialFailureKind.staleConfiguration),
+      );
+      await storage.entered!.future;
+      try {
+        file('first').renameSync(file('work-account').path);
+      } finally {
+        storage.unblockRead();
+      }
+      await rejected;
+      final calls = storage.calls;
+      final live = await service.captureCurrentConfiguration(
+        catalog,
+        installation,
+      );
+      expect(live.records, old.records);
+      await expectLater(
+        read(old),
+        _failure(AdeleCredentialFailureKind.staleConfiguration),
+      );
+      expect(storage.calls, calls);
+      expect(await read(live), _secret);
+      expect(await read(old, id: 'second'), _secret);
+      expect(storage.values, bindings);
+      expect(file('first').existsSync(), isFalse);
+    },
+    skip: !Platform.isLinux,
+  );
+
+  test(
     'preflight rejection preserves the existing credential capture',
     () async {
       final record = await create('first');
@@ -532,12 +570,13 @@ void main() {
   );
 
   test(
-    'symlink-root owners share same-reference mutation epochs per record',
+    'symlink-root owners share same-reference mutation epochs after rename',
     () async {
       await create('first');
       await create('second');
+      final renamed = file('first').renameSync(file('work-account').path);
       final snapshot = await capture();
-      final before = file('first').readAsBytesSync();
+      final before = renamed.readAsBytesSync();
       final alias = Link('${temporary.path}/alias')
         ..createSync(roots.configurationRoot);
       final aliasSettings = owner(storageRoots: atConfiguration(alias.path));
@@ -550,7 +589,8 @@ void main() {
         _slot,
         CredentialSecret('alias-replacement'),
       );
-      expect(file('first').readAsBytesSync(), before);
+      expect(renamed.readAsBytesSync(), before);
+      expect(file('first').existsSync(), isFalse);
       final calls = storage.calls;
       await expectLater(
         read(snapshot),
@@ -694,12 +734,18 @@ void main() {
     skip: !Platform.isLinux,
   );
 
-  for (final mutation in ['ordinary edit', 'same-reference replacement']) {
+  for (final mutation in [
+    'ordinary edit',
+    'same-reference replacement',
+    'reused filename',
+  ]) {
     test(
       '$mutation after worker postcheck fences root publication',
       () async {
-        final record = await create('first');
+        await create('first');
         await create('second');
+        final renamed = file('first').renameSync(file('work-account').path);
+        final record = (await settings.loadRecords(_collection)).records.first;
         final view = await capture();
         final parentZone = Zone.current;
         final postchecked = Completer<void>();
@@ -741,10 +787,16 @@ void main() {
             await settings
                 .updateRecord(record, {'name': 'edited'})
                 .timeout(const Duration(seconds: 5));
-          } else {
+          } else if (mutation == 'same-reference replacement') {
             await service
                 .replace(record, _slot, CredentialSecret('replacement'))
                 .timeout(const Duration(seconds: 5));
+          } else {
+            // The external rename alone races an already completed postcheck.
+            // But the host's creation at that exact physical path must fence
+            // publication, even though its new semantic ID is different.
+            renamed.renameSync(file('moved-again').path);
+            await create('work-account', attach: false);
           }
         } finally {
           pause = false;
@@ -790,30 +842,43 @@ void main() {
     skip: !Platform.isLinux,
   );
 
-  test(
-    'observed ambiguous identity permanently retires only that member',
-    () async {
-      await create('first');
-      await create('second');
-      final view = await capture();
-      final alias = File('${roots.configurationRoot}/accounts/FIRST.toml');
-      alias.writeAsBytesSync(file('first').readAsBytesSync());
-      await expectLater(
-        read(view),
-        _failure(AdeleCredentialFailureKind.staleConfiguration),
-      );
-      alias.deleteSync();
-      final calls = storage.calls;
-      await expectLater(
-        read(view),
-        _failure(AdeleCredentialFailureKind.staleConfiguration),
-      );
-      expect(storage.calls, calls);
-      expect(await read(view, id: 'second'), _secret);
-      expect(await read(await capture()), _secret);
-    },
-    skip: !Platform.isLinux,
-  );
+  for (final conflictingName in ['FIRST', 'duplicate']) {
+    test(
+      '$conflictingName ambiguity permanently retires only the captured member',
+      () async {
+        await create('first');
+        await create('second');
+        final view = await capture();
+        final alias = file('first').copySync(file(conflictingName).path);
+        final callsBeforeConflict = storage.calls;
+        await expectLater(
+          read(view),
+          _failure(AdeleCredentialFailureKind.staleConfiguration),
+        );
+        final partial = await capture();
+        expect(partial.records.single['id'], 'second');
+        expect(
+          partial.diagnostics.map((item) => item.fileName),
+          unorderedEquals(['first.toml', '$conflictingName.toml']),
+        );
+        await expectLater(
+          read(partial),
+          _failure(AdeleCredentialFailureKind.notAuthorized),
+        );
+        expect(storage.calls, callsBeforeConflict);
+        alias.deleteSync();
+        final calls = storage.calls;
+        await expectLater(
+          read(view),
+          _failure(AdeleCredentialFailureKind.staleConfiguration),
+        );
+        expect(storage.calls, calls);
+        expect(await read(view, id: 'second'), _secret);
+        expect(await read(await capture()), _secret);
+      },
+      skip: !Platform.isLinux,
+    );
+  }
 
   test(
     'retirement while queued prevents a second native read',

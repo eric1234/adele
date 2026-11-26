@@ -26,9 +26,9 @@ final class ConfigurationStore {
     this._configurationRoot,
     this.lockPath,
     String collectionId,
-    String recordId,
+    String fileName,
   ) : _collectionPath = p.join(_configurationRoot, collectionId),
-      filePath = p.join(_configurationRoot, collectionId, '$recordId.toml');
+      filePath = p.join(_configurationRoot, collectionId, fileName);
 
   static const maxRecordBytes = 1024 * 1024;
   static const maxCollectionEntries = 1024;
@@ -39,21 +39,32 @@ final class ConfigurationStore {
   final String? _collectionPath;
 
   /// Derives an independently baselined file, sharing this store's stable lock.
-  /// IDs are lowercase ASCII hyphen-separated segments, at most 64 characters;
-  /// reserved device names are rejected. No filesystem access occurs here.
+  /// The collection and filename stem must be portable lowercase segments;
+  /// the complete filename must end in `.toml`. No filesystem access occurs.
   ConfigurationStore recordFile({
     required String collectionId,
-    required String recordId,
+    required String fileName,
   }) {
     _validateSegment(collectionId);
-    _validateSegment(recordId);
+    if (!isRecordFileName(fileName)) {
+      throw ArgumentError.value(
+        fileName,
+        'fileName',
+        'Unsafe record filename.',
+      );
+    }
     return ConfigurationStore._record(
       _configurationRoot,
       lockPath,
       collectionId,
-      recordId,
+      fileName,
     );
   }
+
+  /// Whether an observed basename can be addressed as a record file. This
+  /// tests only the storage grammar, not the identity of the document inside.
+  static bool isRecordFileName(String name) =>
+      name.endsWith('.toml') && _isSegment(name.substring(0, name.length - 5));
 
   /// Lists immediate names and non-followed types without reading their content.
   ///
@@ -426,13 +437,16 @@ final class ConfigurationStore {
     }
   }
 
+  static bool _isSegment(String value) =>
+      value.length <= 64 &&
+      RegExp(r'^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$').hasMatch(value) &&
+      !RegExp(r'^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$').hasMatch(value);
+
   static void _validateSegment(String value) {
-    if (value.length > 64 ||
-        !RegExp(r'^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$').hasMatch(value) ||
-        RegExp(r'^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$').hasMatch(value)) {
+    if (!_isSegment(value)) {
       throw ArgumentError.value(
         value,
-        'id',
+        'collectionId',
         'Unsafe configuration path segment.',
       );
     }

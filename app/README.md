@@ -441,8 +441,11 @@ or unrepresentable edits block saving, rather than saving an older value or
 treating the field as absent. Explicit removal of an optional document retires
 its owner; callbacks for discarded input do not target the new blank document.
 
-Malformed or unavailable records remain attributable filename diagnostics alongside
-healthy siblings, without Edit/Delete actions. Each existing record has a separate
+Reload discovers records by their embedded IDs, including files renamed within
+the collection. An existing edit handle or backend credential capture stays tied
+to its original file observation. Malformed, unavailable or duplicate records
+remain attributable filename diagnostics alongside healthy siblings, without
+Edit/Delete actions. Each existing record has a separate
 draft retained through details collapse and section navigation. Cancel editing
 discards only that draft. Collection Reload confirms discarding dirty existing-record
 drafts, keeps creation drafts, and replaces the list and edit baselines only on a

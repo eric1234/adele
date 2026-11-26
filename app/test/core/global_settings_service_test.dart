@@ -792,8 +792,12 @@ void main() {
     File recordFile(ConfigurationRecordId id) =>
         File('${recordService.collectionPath(collection)}/${id.value}.toml');
 
-    String recordSource(String values, {RecordTypeId? recordType}) =>
-        'recordVersion = 1\nrecordType = "${recordType ?? type}"\n\n'
+    String recordSource(
+      ConfigurationRecordId id,
+      String values, {
+      RecordTypeId? recordType,
+    }) =>
+        'recordVersion = 2\nrecordId = "$id"\nrecordType = "${recordType ?? type}"\n\n'
         '[values]\n$values';
 
     void seedRecord(ConfigurationRecordId id, String source) {
@@ -829,16 +833,35 @@ void main() {
     test(
       'malformed siblings retain attributable diagnostics and bytes',
       () async {
-        seedRecord(first, recordSource('name = "Healthy"\nunknown = [1, 2]\n'));
+        seedRecord(
+          first,
+          recordSource(first, 'name = "Healthy"\nunknown = [1, 2]\n'),
+        );
         final sources = <String, List<int>>{
-          'Bad.toml': utf8.encode(recordSource('name = "Bad ID"\n')),
+          'Bad.toml': utf8.encode(
+            recordSource(
+              ConfigurationRecordId('bad'),
+              'name = "Bad filename"\n',
+            ),
+          ),
           'broken.toml': utf8.encode('invalid = ['),
           'invalid-utf8.toml': [0xff],
-          'invalid-value.toml': utf8.encode(recordSource('name = true\n')),
-          'missing-name.toml': utf8.encode(recordSource('enabled = false\n')),
+          'invalid-value.toml': utf8.encode(
+            recordSource(
+              ConfigurationRecordId('invalid-value'),
+              'name = true\n',
+            ),
+          ),
+          'missing-name.toml': utf8.encode(
+            recordSource(
+              ConfigurationRecordId('missing-name'),
+              'enabled = false\n',
+            ),
+          ),
           'notes.txt': utf8.encode('not a record'),
           'unknown.toml': utf8.encode(
             recordSource(
+              ConfigurationRecordId('unknown'),
               'name = "Unavailable"\n',
               recordType: RecordTypeId('dev.absent.job'),
             ),
@@ -861,7 +884,15 @@ void main() {
         );
         expect(view.diagnostics.map((item) => item.fileName), sources.keys);
         expect(view.diagnostics[0].recordId, isNull);
-        expect(view.diagnostics[1].recordId, ConfigurationRecordId('broken'));
+        expect(view.diagnostics[1].recordId, isNull);
+        expect(
+          RecordCollectionView.blocksCreation(
+            ConfigurationRecordId('broken'),
+            view.records,
+            view.diagnostics,
+          ),
+          isTrue,
+        );
         expect(view.diagnostics[1].message, contains('TomlException(parse)'));
         expect(view.diagnostics[2].message, contains('FormatException'));
         expect(view.diagnostics[3].message, contains('InvalidRecordValue'));
@@ -935,7 +966,7 @@ void main() {
     test(
       'collection scan failures reject rather than replacing a valid view',
       () async {
-        seedRecord(first, recordSource('name = "Retained"\n'));
+        seedRecord(first, recordSource(first, 'name = "Retained"\n'));
         final before = await recordService.loadRecords(collection);
         recordFile(first).parent.deleteSync(recursive: true);
         final obstruction = File(recordService.collectionPath(collection))
@@ -947,7 +978,7 @@ void main() {
         expect(before.records.single.values, {'name': 'Retained'});
         expect(obstruction.readAsStringSync(), 'not a directory');
         obstruction.deleteSync();
-        seedRecord(first, recordSource('name = "Reloaded"\n'));
+        seedRecord(first, recordSource(first, 'name = "Reloaded"\n'));
         expect(
           (await recordService.loadRecords(collection)).records.single.values,
           {'name': 'Reloaded'},
@@ -1015,11 +1046,12 @@ void main() {
       'duplicate IDs preserve valid, malformed and unknown-type occupants',
       () async {
         final unknown = ConfigurationRecordId('unknown');
-        seedRecord(first, recordSource('name = "Original"\n'));
+        seedRecord(first, recordSource(first, 'name = "Original"\n'));
         seedRecord(second, 'malformed = [');
         seedRecord(
           unknown,
           recordSource(
+            unknown,
             'name = "Unavailable"\n',
             recordType: RecordTypeId('dev.absent.job'),
           ),
@@ -1040,10 +1072,7 @@ void main() {
         }
         final view = await recordService.loadRecords(collection);
         expect(view.records.single.values, {'name': 'Original'});
-        expect(view.diagnostics.map((item) => item.recordId), [
-          second,
-          unknown,
-        ]);
+        expect(view.diagnostics.map((item) => item.recordId), [null, unknown]);
         expect(file.existsSync(), isFalse);
       },
       skip: !Platform.isLinux,
@@ -1052,13 +1081,14 @@ void main() {
     group('record revisions', () {
       Future<void> expectRetired(
         GlobalSettingsService owner,
-        RecordView expected,
-      ) async {
+        RecordView expected, {
+        String? observedName,
+      }) async {
         final conflict = throwsA(
           isA<ConfigurationConflictException>().having(
             (error) => error.path,
             'record path',
-            '${owner.collectionPath(expected.collection)}/${expected.id}.toml',
+            '${owner.collectionPath(expected.collection)}/${observedName ?? '${expected.id}.toml'}',
           ),
         );
         await expectLater(
@@ -1069,15 +1099,109 @@ void main() {
       }
 
       test(
+        'only Reload can edit the same ID at its renamed location',
+        () async {
+          final before = await recordService.createRecord(type, first, {
+            'name': 'Before',
+          });
+          await recordService.createRecord(type, second, {'name': 'Sibling'});
+          final oldFile = recordFile(first);
+          final renamed = oldFile.renameSync(
+            '${oldFile.parent.path}/work-job.toml',
+          );
+          final bytes = renamed.readAsBytesSync();
+          await expectRetired(recordService, before);
+          expect(renamed.readAsBytesSync(), bytes);
+          expect(oldFile.existsSync(), isFalse);
+
+          final loaded = await recordService.loadRecords(collection);
+          expect(loaded.diagnostics, isEmpty);
+          expect(loaded.records.map((record) => record.id), [first, second]);
+          final fresh = loaded.records.first;
+          for (final id in [first, ConfigurationRecordId('work-job')]) {
+            expect(
+              RecordCollectionView.blocksCreation(
+                id,
+                loaded.records,
+                loaded.diagnostics,
+              ),
+              isTrue,
+            );
+          }
+          expect(
+            RecordCollectionView.blocksCreation(
+              ConfigurationRecordId('available'),
+              loaded.records,
+              loaded.diagnostics,
+            ),
+            isFalse,
+          );
+          expect(fresh.values, before.values);
+          final saved = await recordService.updateRecord(fresh, {
+            'name': 'After',
+          });
+          await expectRetired(
+            recordService,
+            fresh,
+            observedName: 'work-job.toml',
+          );
+          expect(renamed.readAsStringSync(), contains('After'));
+          await recordService.deleteRecord(saved);
+          expect(oldFile.existsSync(), isFalse);
+          expect(renamed.existsSync(), isFalse);
+          await recordService.deleteRecord(loaded.records.last);
+        },
+      );
+
+      test(
+        'an embedded ID collision retires its handle, not its sibling',
+        () async {
+          final before = await recordService.createRecord(type, first, {
+            'name': 'Before',
+          });
+          final sibling = await recordService.createRecord(type, second, {
+            'name': 'Sibling',
+          });
+          final original = recordFile(first);
+          final copy = original.copySync('${original.parent.path}/copy.toml');
+          final bytes = copy.readAsBytesSync();
+          await expectRetired(recordService, before);
+          expect(original.readAsBytesSync(), bytes);
+          expect(copy.readAsBytesSync(), bytes);
+          await recordService.updateRecord(sibling, {'name': 'Independent'});
+
+          final ambiguous = await recordService.loadRecords(collection);
+          expect(ambiguous.records.single.id, second);
+          expect(ambiguous.diagnostics.map((item) => item.fileName), [
+            'copy.toml',
+            'first.toml',
+          ]);
+          expect(ambiguous.diagnostics.map((item) => item.recordId), [
+            first,
+            first,
+          ]);
+          original.deleteSync();
+          await expectRetired(recordService, before);
+          final fresh = (await recordService.loadRecords(
+            collection,
+          )).records.first;
+          expect(fresh.id, first);
+          await recordService.deleteRecord(fresh);
+          expect(copy.existsSync(), isFalse);
+          expect(original.existsSync(), isFalse);
+        },
+      );
+
+      test(
         'update snapshots input off UI and delete preserves unrelated content',
         () async {
           seed('unrelated = [1, 2] # scalar\n');
           final scalarBytes = file.readAsBytesSync();
           seedRecord(
             first,
-            '# header\n${recordSource('name = "Before" # name\nenabled = true\ncount = 9\nmode = "brief"\nunknown = [1, 2] # unknown\n')}\n[future]\nflag = true\n',
+            '# header\n${recordSource(first, 'name = "Before" # name\nenabled = true\ncount = 9\nmode = "brief"\nunknown = [1, 2] # unknown\n')}\n[future]\nflag = true\n',
           );
-          seedRecord(second, recordSource('name = "Sibling"\n'));
+          seedRecord(second, recordSource(second, 'name = "Sibling"\n'));
           final siblingBytes = recordFile(second).readAsBytesSync();
           final before = (await recordService.loadRecords(
             collection,
@@ -1218,7 +1342,7 @@ void main() {
                 ),
               ]),
             );
-            final original = recordSource('name = "Before"\n');
+            final original = recordSource(first, 'name = "Before"\n');
             seedRecord(first, original);
             final before = (await multi.loadRecords(collection)).records.single;
             // Same ID in another collection must have a separate revision/baseline.
@@ -1273,8 +1397,8 @@ void main() {
       test(
         'records and scalar settings retain independent edit baselines',
         () async {
-          seedRecord(first, recordSource('name = "First"\n'));
-          seedRecord(second, recordSource('name = "Second"\n'));
+          seedRecord(first, recordSource(first, 'name = "First"\n'));
+          seedRecord(second, recordSource(second, 'name = "Second"\n'));
           final loaded = await recordService.loadRecords(collection);
           final firstSaved = await recordService.updateRecord(
             loaded.records.first,
@@ -1303,9 +1427,9 @@ void main() {
         test(
           'external $operation conflict retires the handle without retry',
           () async {
-            final original = recordSource('name = "Before"\n');
+            final original = recordSource(first, 'name = "Before"\n');
             seedRecord(first, original);
-            seedRecord(second, recordSource('name = "Independent"\n'));
+            seedRecord(second, recordSource(second, 'name = "Independent"\n'));
             final loaded = await recordService.loadRecords(collection);
             final before = loaded.records.first;
             final external = '$original# external edit\n';
@@ -1339,7 +1463,7 @@ void main() {
       test(
         'external removal never recreates a record through update',
         () async {
-          final original = recordSource('name = "Before"\n');
+          final original = recordSource(first, 'name = "Before"\n');
           seedRecord(first, original);
           final before = (await recordService.loadRecords(
             collection,
@@ -1384,7 +1508,7 @@ void main() {
       test(
         'cross-owner winner is not merged or retried by the losing owner',
         () async {
-          seedRecord(first, recordSource('name = "Before"\n'));
+          seedRecord(first, recordSource(first, 'name = "Before"\n'));
           final other = createOwner(records: records);
           final winner = (await recordService.loadRecords(
             collection,
@@ -1416,7 +1540,7 @@ void main() {
       test(
         'worker validation precedes I/O and preserves a usable handle',
         () async {
-          seedRecord(first, recordSource('name = "Before"\n'));
+          seedRecord(first, recordSource(first, 'name = "Before"\n'));
           final before = (await recordService.loadRecords(
             collection,
           )).records.single;
@@ -1500,7 +1624,7 @@ void main() {
             );
             seedRecord(
               first,
-              'recordVersion = 1\nrecordType = "$optional"\nvalues.a = "Before"\n',
+              'recordVersion = 2\nrecordId = "$first"\nrecordType = "$optional"\nvalues.a = "Before"\n',
             );
             final before = (await optionalService.loadRecords(
               collection,
@@ -1524,8 +1648,8 @@ void main() {
         test(
           '$operation failure conservatively retires only its baseline',
           () async {
-            seedRecord(first, recordSource('name = "Before"\n'));
-            seedRecord(second, recordSource('name = "Independent"\n'));
+            seedRecord(first, recordSource(first, 'name = "Before"\n'));
+            seedRecord(second, recordSource(second, 'name = "Independent"\n'));
             final loaded = await recordService.loadRecords(collection);
             final before = loaded.records.first;
             final original = recordFile(first).readAsBytesSync();
@@ -1701,8 +1825,8 @@ void main() {
       test(
         'close drains a lock-blocked ${deleting ? 'delete' : 'update'} and serial scalar/record work',
         () async {
-          seedRecord(first, recordSource('name = "Before"\n'));
-          seedRecord(second, recordSource('name = "Second"\n'));
+          seedRecord(first, recordSource(first, 'name = "Before"\n'));
+          seedRecord(second, recordSource(second, 'name = "Second"\n'));
           final loaded = await recordService.loadRecords(collection);
           final initial = await service.load();
           final original = recordFile(first).readAsBytesSync();

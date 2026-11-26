@@ -57,12 +57,15 @@ rewriting the file. An unchanged missing document remains missing.
 
 ### Record Files
 
-`store.recordFile(collectionId: 'providers', recordId: 'work')` derives another
+`store.recordFile(collectionId: 'providers', fileName: 'work.toml')` derives another
 `ConfigurationStore` at `<configurationRoot>/providers/work.toml`, with its own
-file baseline and the **same** `lockPath`. IDs are lowercase ASCII letters/digits
-with internal single hyphens, start with a letter, and are at most 64 characters.
+file baseline and the **same** `lockPath`. The collection and filename stem use
+lowercase ASCII letters/digits with internal single hyphens, start with a letter,
+and are at most 64 characters.
 Reserved device names (`con`, `prn`, `aux`, `nul`, `com1` through `com9`, `lpt1`
-through `lpt9`) are rejected. This is lexical path safety, not schema validation.
+through `lpt9`) are rejected. The filename must include the exact `.toml` suffix.
+This is lexical path safety; the store neither interprets record headers nor
+resolves semantic IDs.
 
 Record stores expose the same `filePath`, `load`, and `save`. `create(document)`
 requires absence, including when the existing bytes are malformed or empty;
@@ -72,7 +75,7 @@ existing write lock protects a fresh capacity check through publication. An
 existing collection needs a free entry; creating a collection also needs a free
 configuration-root entry. Both limits are inclusive at 1024. Overflow raises
 `ConfigurationLimitException` for that directory before creating a collection or
-staging a file. Occupied identities still conflict first. Updates and deletes
+staging a file. Occupied paths still conflict first. Updates and deletes
 need no free slot, and a full root does not prevent insertion into an existing
 collection with capacity.
 `delete(expected)` checks the exact file baseline under the shared lock before
@@ -137,7 +140,7 @@ Errors are explicit:
 ## Placement and Coordination
 
 - Content: `<configurationRoot>/settings.toml` and
-  `<configurationRoot>/<collectionId>/<recordId>.toml`.
+  `<configurationRoot>/<collectionId>/<fileName>` (including `.toml`).
 - Stable lock: `<localStateRoot>/configuration/settings.lock`.
 - Transient staging: a private `.<filename>.*` directory beside the destination,
   removed after success or an ordinary failure.

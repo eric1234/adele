@@ -9,7 +9,7 @@ Future<void> main(List<String> arguments) async {
   final store = arguments.length > 3
       ? settings.recordFile(
           collectionId: arguments.length > 4 ? arguments[4] : 'providers',
-          recordId: arguments[3],
+          fileName: '${arguments[3]}.toml',
         )
       : settings;
   final mode = arguments[1];

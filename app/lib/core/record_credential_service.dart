@@ -645,6 +645,7 @@ final class _RecordCredentialWorkflow {
       collection: record.collection,
       recordType: record.type,
       recordId: record.id,
+      observedFileName: record._fileName,
       credentialSlot: slot,
       credentialReference: reference,
     ),

@@ -294,6 +294,7 @@ base class GlobalSettingsService {
               collection: collection ?? expectedRecord?.collection,
               recordType: recordType ?? expectedRecord?.type,
               recordId: recordId ?? expectedRecord?.id,
+              observedFileName: expectedRecord?._fileName,
               recordValues: recordValues,
               startupRecordTypes: startupRecordTypes,
               startupCredentialSlots: startupCredentialSlots,
@@ -349,12 +350,28 @@ final class RecordCollectionView {
 
   final List<RecordView> records;
   final List<RecordDiagnosticView> diagnostics;
+
+  /// A Reload can establish an occupied initial filename even when an
+  /// unreadable occupant cannot supply a semantic ID. The worker still checks
+  /// both conditions at Create; this observation is never write authority.
+  static bool blocksCreation(
+    ConfigurationRecordId id,
+    Iterable<RecordView> records,
+    Iterable<RecordDiagnosticView> diagnostics,
+  ) {
+    final name = ConfigurationRecordStore.initialFileName(id);
+    return records.any(
+          (record) => record.id == id || record._fileName == name,
+        ) ||
+        diagnostics.any((item) => item.recordId == id || item.fileName == name);
+  }
 }
 
 /// Immutable display values and an owner-scoped handle, never a native snapshot.
 final class RecordView {
   RecordView._(this._owner, _RecordValues record)
     : _revision = record.revision,
+      _fileName = record.fileName,
       collection = record.collection,
       id = record.id,
       type = record.type,
@@ -366,6 +383,8 @@ final class RecordView {
   final Map<String, Object> values;
   final Object _owner;
   final int _revision;
+  // Observation only, for creation availability and stale-handle diagnostics.
+  final String _fileName;
 }
 
 final class _StartupRecordValues {
@@ -429,6 +448,7 @@ final class _Request {
     this.collection,
     this.recordType,
     this.recordId,
+    this.observedFileName,
     this.recordValues,
     this.startupRecordTypes,
     this.startupCredentialSlots,
@@ -448,6 +468,7 @@ final class _Request {
   final RecordCollectionId? collection;
   final RecordTypeId? recordType;
   final ConfigurationRecordId? recordId;
+  final String? observedFileName;
   final Map<String, Object?>? recordValues;
   final List<RecordTypeId>? startupRecordTypes;
   final Map<RecordTypeId, List<RecordCredentialSlotId>>? startupCredentialSlots;
@@ -469,12 +490,14 @@ final class _RecordValues {
     : collection = record.collection,
       id = record.id,
       type = record.type.id,
+      fileName = record.fileName,
       values = Map.unmodifiable(record.values);
 
   final int revision;
   final RecordCollectionId collection;
   final ConfigurationRecordId id;
   final RecordTypeId type;
+  final String fileName;
   final Map<String, Object> values;
 }
 
@@ -693,13 +716,13 @@ final class _SettingsOwner {
   final startupBatches = <int, _StartupBatch>{};
   int startupRevision = 0;
 
-  String _recordPath(RecordCollectionId collection, ConfigurationRecordId id) {
+  String _recordPath(RecordCollectionId collection, String fileName) {
     var directory = File(
       store.store
-          .recordFile(collectionId: collection.value, recordId: id.value)
+          .recordFile(collectionId: collection.value, fileName: fileName)
           .filePath,
     ).absolute.parent;
-    final suffix = ['${id.value}.toml'];
+    final suffix = [fileName];
     // Roots may be symlinked. Resolve afresh, never cache an alias that can be
     // retargeted. A pre-create attempt must not create missing directories.
     while (!directory.existsSync()) {
@@ -723,11 +746,8 @@ final class _SettingsOwner {
   (int, int) _recordMutation(String path) =>
       mutationEpochs.putIfAbsent(path, () => (mutationEpochs.length, 0));
 
-  Future<void> _mutating(
-    RecordCollectionId collection,
-    ConfigurationRecordId id,
-  ) async {
-    final path = _recordPath(collection, id);
+  Future<void> _mutating(RecordCollectionId collection, String fileName) async {
+    final path = _recordPath(collection, fileName);
     final previous = _recordMutation(path);
     final next = (previous.$1, previous.$2 + 1);
     mutationEpochs[path] = next;
@@ -783,7 +803,7 @@ final class _SettingsOwner {
               >{};
           for (final record in projected) {
             if (!slots.containsKey(record.type.id)) continue;
-            final path = _recordPath(record.collection, record.id);
+            final path = _recordPath(record.collection, record.fileName);
             captured[(record.collection, record.id)] = _CapturedStartupRecord(
               record,
               path,
@@ -817,7 +837,6 @@ final class _SettingsOwner {
         }
         final record = captured.record;
         if (batch.stale.contains(key) ||
-            _recordPath(record.collection, record.id) != captured.path ||
             mutationEpochs[captured.path] != captured.mutation) {
           batch.stale.add(key);
           throw const AdeleCredentialFailure(
@@ -825,7 +844,16 @@ final class _SettingsOwner {
           );
         }
         try {
+          void checkLocation() {
+            if (_recordPath(record.collection, record.fileName) !=
+                captured.path) {
+              throw ConfigurationConflictException(captured.path);
+            }
+          }
+
+          checkLocation();
           await records.validateStartupCurrent(record);
+          checkLocation();
         } on ConfigurationStartupIdentityUnavailable {
           throw const AdeleCredentialFailure(
             AdeleCredentialFailureKind.storageUnavailable,
@@ -858,7 +886,12 @@ final class _SettingsOwner {
       case _Operation.createRecord:
         final type = records.catalog.definition(request.recordType!);
         _validateRecordValues(type, request.recordId!, request.recordValues!);
-        await _mutating(type.collection, request.recordId!);
+        // Only a new record starts at <id>.toml. All subsequent operations
+        // fence the physical location from their worker-owned snapshot.
+        await _mutating(
+          type.collection,
+          ConfigurationRecordStore.initialFileName(request.recordId!),
+        );
         try {
           return _publishRecord(
             await records.create(
@@ -887,7 +920,10 @@ final class _SettingsOwner {
           // Reject an old request without retiring a newer successful revision.
           throw ConfigurationConflictException(
             store.store
-                .recordFile(collectionId: key.$1.value, recordId: key.$2.value)
+                .recordFile(
+                  collectionId: key.$1.value,
+                  fileName: request.observedFileName!,
+                )
                 .filePath,
           );
         }
@@ -911,7 +947,7 @@ final class _SettingsOwner {
               request.operation == _Operation.beginCredentialMutation) {
             await records.validateCurrent(expected);
             if (request.operation == _Operation.beginCredentialMutation) {
-              await _mutating(expected.collection, expected.id);
+              await _mutating(expected.collection, expected.fileName);
             }
             return _CredentialValues(
               expected.type.owner.value,
@@ -923,7 +959,7 @@ final class _SettingsOwner {
             if (request.operation == _Operation.deleteRecord) {
               expected.requireNoCredentialEntries();
             }
-            await _mutating(expected.collection, expected.id);
+            await _mutating(expected.collection, expected.fileName);
           }
           if (request.operation == _Operation.setCredentialReference) {
             return _publishRecord(

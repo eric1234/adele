@@ -490,7 +490,10 @@ void main() {
     late ConfigurationStore settings;
     setUp(() {
       settings = store;
-      store = settings.recordFile(collectionId: 'providers', recordId: 'work');
+      store = settings.recordFile(
+        collectionId: 'providers',
+        fileName: 'work.toml',
+      );
       file = File(store.filePath);
     });
 
@@ -529,20 +532,36 @@ void main() {
           'a' * 65,
         ]) {
           expect(
-            () => settings.recordFile(collectionId: invalid, recordId: 'work'),
+            () => settings.recordFile(
+              collectionId: invalid,
+              fileName: 'work.toml',
+            ),
             throwsArgumentError,
             reason: invalid,
           );
           expect(
             () => settings.recordFile(
               collectionId: 'providers',
-              recordId: invalid,
+              fileName: '$invalid.toml',
             ),
             throwsArgumentError,
             reason: invalid,
           );
         }
-        settings.recordFile(collectionId: 'a' * 64, recordId: 'two-words2');
+        for (final invalid in ['work', '.toml', 'work.TOML', 'work.toml.']) {
+          expect(
+            () => settings.recordFile(
+              collectionId: 'providers',
+              fileName: invalid,
+            ),
+            throwsArgumentError,
+            reason: invalid,
+          );
+        }
+        settings.recordFile(
+          collectionId: 'a' * 64,
+          fileName: 'two-words2.toml',
+        );
         expect(root.listSync(), isEmpty);
       },
     );
@@ -564,7 +583,7 @@ void main() {
     test('independent files share the lock but not their byte baselines', () {
       final other = settings.recordFile(
         collectionId: 'providers',
-        recordId: 'personal',
+        fileName: 'personal.toml',
       );
       final work = store.load();
       final personal = other.load();
@@ -1491,7 +1510,7 @@ void main() {
         seed('value = 0\n');
         final other = settings.recordFile(
           collectionId: 'providers',
-          recordId: 'personal',
+          fileName: 'personal.toml',
         );
         File(other.filePath).writeAsStringSync('value = 0\n');
         final kernel = await _prepareWriter(root);

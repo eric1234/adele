@@ -92,7 +92,7 @@ values, executable registrations, live providers, or plugin instances.
 | Identity | Contract |
 | --- | --- |
 | `RecordCollectionId` | Product-facing collection, shared across declaring plugins. |
-| `ConfigurationRecordId` | One named record within a collection, independent of its display name and type. |
+| `ConfigurationRecordId` | Immutable identity of one record within a collection, independent of its filename, display name and type. |
 | `RecordTypeId` | ADELE public ID beneath the declaring `PluginId` namespace at a dot boundary. |
 | `RecordFieldId` | Local field identity, never a synthetic `SettingId`. |
 | `RecordCredentialSlotId` | Local credential-slot identity, distinct from scalar fields and credential references. |

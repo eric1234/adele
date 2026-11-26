@@ -2385,7 +2385,7 @@ void main() {
         );
         file('broken').writeAsStringSync('broken = [\n');
         file('unknown').writeAsStringSync(
-          'record-version = 1\nrecord-type = "dev.missing.type"\n[values]\n',
+          'recordVersion = 2\nrecordId = "unknown"\nrecordType = "dev.missing.type"\n[values]\n',
         );
         await mount(tester);
         await openRecords(tester);

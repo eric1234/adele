@@ -157,7 +157,7 @@ void main() {
     ConfigurationStore(roots)
             .recordFile(
               collectionId: record.collection.value,
-              recordId: record.id.value,
+              fileName: '${record.id.value}.toml',
             )
             .load()
             .document
@@ -357,6 +357,54 @@ void main() {
           RecordCredentialStatus.stored,
           replaced.record,
         );
+      },
+    );
+
+    test(
+      'a renamed uncertain binding requires Reload and explicit Reconcile',
+      () async {
+        final record = await attach(await create('work'));
+        final ref = reference(record);
+        storage.actions('write').add(_Action(errorAfter: _storageError(false)));
+        await _expectFailure(
+          () =>
+              service.replace(record, _apiKey, CredentialSecret(_replacement)),
+          RecordCredentialFailureKind.reconciliationRequired,
+        );
+        final original = file(record);
+        final renamed = original.renameSync(
+          '${original.parent.path}/work-account.toml',
+        );
+        final bytes = renamed.readAsBytesSync();
+        storage.calls.clear();
+        final failure = await _expectFailure(
+          () => service.reconcile(record, _apiKey),
+          RecordCredentialFailureKind.staleRecord,
+        );
+        expect(failure.record, isNull);
+        final fresh = await reload(record);
+        expect(
+          (await service.inspect(fresh, _apiKey)).status,
+          RecordCredentialStatus.reconciliationRequired,
+        );
+        expect(storage.calls, isEmpty);
+        expect(credentials.requiresReconciliation(ref), isTrue);
+        final reconciled = await service.reconcile(fresh, _apiKey);
+        expect(reconciled.status, RecordCredentialStatus.stored);
+        expect(credentials.requiresReconciliation(ref), isFalse);
+        expect(storage.calls, [('read', ref)]);
+        _expectEnvelope(
+          storage,
+          ref,
+          reconciled.record,
+          _apiKey,
+          _replacement,
+          catalog,
+        );
+        expect(renamed.readAsBytesSync(), bytes);
+        await service.forget(reconciled.record, _apiKey);
+        expect(renamed.readAsStringSync(), isNot(contains(ref.value)));
+        expect(original.existsSync(), isFalse);
       },
     );
 
@@ -950,6 +998,46 @@ void main() {
         },
       );
     }
+
+    test(
+      'duplicate appearing during native preflight fences replacement',
+      () async {
+        final record = await attach(await create('work'));
+        final original = file(record);
+        final bytes = original.readAsBytesSync();
+        final bindings = Map.of(storage.values);
+        final gate = _Gate();
+        storage.calls.clear();
+        storage.actions('contains').add(_Action(gate: gate));
+        final rejected = _expectFailure(
+          () =>
+              service.replace(record, _apiKey, CredentialSecret(_replacement)),
+          RecordCredentialFailureKind.staleRecord,
+        );
+        await gate.entered.future;
+        final File duplicate;
+        try {
+          duplicate = original.copySync('${original.parent.path}/copy.toml');
+        } finally {
+          gate.release();
+        }
+        expect((await rejected).record, isNull);
+        expect(storage.calls.map((call) => call.$1), [
+          'read',
+          'contains',
+          'read',
+        ]);
+        expect(storage.values, bindings);
+        expect(original.readAsBytesSync(), bytes);
+        expect(duplicate.readAsBytesSync(), bytes);
+        duplicate.deleteSync();
+        await expectRetired(record);
+        expect(
+          (await service.inspect(await reload(record), _apiKey)).status,
+          RecordCredentialStatus.stored,
+        );
+      },
+    );
 
     for (final operation in ['attach', 'replace', 'establishLocal', 'forget']) {
       test(

@@ -199,23 +199,22 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
       _adding &&
       identical(_creationDrafts[_type], draft);
 
-  bool _listed(ConfigurationRecordId id) =>
-      _records.any((r) => r.id == id) ||
-      _diagnostics.any((d) => d.recordId == id);
+  bool _blocksCreation(ConfigurationRecordId id) =>
+      RecordCollectionView.blocksCreation(id, _records, _diagnostics);
 
   Future<void> _create(_RecordDraft draft, Map<String, Object> values) async {
     final definition = draft.definition;
     final id = draft.id;
     if (!_creationCurrent(draft)) return;
-    // Do not replace a displayed identity (and its draft) through Create even
-    // when an external deletion has made the file available again.
-    if (_listed(id)) {
+    // Keep the observed ID or initial file location occupied until Reload,
+    // even if an external deletion has since made it available.
+    if (_blocksCreation(id)) {
       if (draft.reconciled) return;
       setState(() {
         _formRevision++;
         _blockedCreation = draft;
         _creationError =
-            'Not created: this record ID is already in the loaded collection. '
+            'Not created: this record ID or its initial filename is already in use. '
             'Reload to reconcile current records before creating again. '
             'Your drafts are retained; no write was attempted.';
       });
@@ -239,7 +238,7 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
       setState(() {
         _blockedCreation = draft;
         _creationError =
-            'Not created: the record ID is already occupied or changed on disk. '
+            'Not created: the record ID or its initial filename is occupied or changed on disk. '
             'No existing file was overwritten. Reload before creating again.\n$error';
       });
       return;
@@ -863,14 +862,14 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
     final draft = _creationDrafts[type.id]!;
     final reconciled =
         draft.reconciled && !_creationRequiresReload && !_requiresReload;
-    final occupied = reconciled && _listed(draft.id);
+    final occupied = reconciled && _blocksCreation(draft.id);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         if (reconciled) ...[
           Text(
             occupied
-                ? 'Reload found an entry with this Record ID. Inspect the collection before starting a new draft.'
+                ? 'Reload found this record ID or its initial filename in use. Inspect the collection before starting a new draft.'
                 : 'Reload finished. Inspect the collection before retrying this draft or starting another.',
           ),
           Align(

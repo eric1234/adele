@@ -287,22 +287,34 @@ the existing catalog; one invalid schema does not disable healthy executable or
 scalar components. The [runtime schema contract](../../packages/plugin_runtime/README.md#prepared-catalog)
 owns exact declaration fields and limits.
 
-Records use `<configurationRoot>/<collection>/<record-id>.toml` beside global
-`settings.toml`. A fixed version/type header and regular `[values]` table are edited
-by the existing native TOML document API. The
+Records live in `<configurationRoot>/<collection>/<filename>.toml` beside global
+`settings.toml`. The collection directory supplies the collection identity; the
+version-2 TOML header supplies the immutable `recordId` and declared `recordType`.
+The filename is a storage location, not an ID or a fallback for a missing header.
+Settings initially writes `<record-id>.toml`. An external rename to another valid
+filename in the same collection preserves Session references, configured-provider
+IDs and protected credential associations. Fresh discovery reads the new location;
+it does not rewrite the document or change any existing capture.
+
+The header and regular `[values]` table are persisted with the native TOML API. The
 [host adapter](../../packages/settings_host/README.md#configuration-records) owns
-the exact format, CRUD API, diagnostics and bounds. Each record has its own
-existence/byte baseline; independent-record changes do not conflict. Update supplies
-the complete known-field set, removing omitted optional fields and preserving
-unknown content. Delete removes only that layer's file, not a tombstone or mask.
+the exact format, CRUD API, diagnostics and bounds. Each snapshot pins the observed
+filename and its existence/byte baseline; independent-record changes do not conflict.
+A Save or Delete from before a rename cannot follow the file or recreate its old
+name. Update supplies the complete known-field set, removing omitted optional
+fields and preserving unknown content. Delete removes only that layer's file,
+not a tombstone or mask.
 For a structured field, a regular `[values.<field>]` table holds its scalar
 properties. Only declared properties are read and edited. Unknown siblings and
 unknown properties under that table stay in the document, not in the editor or
 backend snapshot. Component edits are published together under the record's one
 conditional write; they cannot succeed separately.
 Stale update/delete and no-op writes fail explicitly and require deliberate reload.
-Enumeration retains healthy records alongside attributable bad-file diagnostics;
-directory-wide failures remain errors. Aliased identities never select a winner.
+Bounded discovery retains healthy records alongside attributable bad-file diagnostics;
+directory-wide failures remain errors. If multiple readable headers claim one ID in
+a collection, none is authoritative, even if only one record has a known type or
+valid values. Settings diagnoses the conflicting files; semantic lookup fails and
+the conflict grants no mutation or credential authority.
 
 ### Creating and editing records
 
@@ -312,9 +324,9 @@ separate draft for each record type and assigns each draft a secure random recor
 independent of the display name. Users enter the declared fields, not the ID. Open
 **Advanced details** to inspect or copy the read-only ID before creation; for a
 saved record, expand its details to copy the ID. Collection, type and ID are
-immutable when editing; renaming a record does not change its filename. Generation
-belongs to the panel: [headless callers](../../packages/settings_host/README.md#configuration-records)
-still supply an explicit, validated `ConfigurationRecordId` to `create`.
+immutable when editing; editing the display name does not change the filename.
+ID generation belongs to the panel: [headless callers](../../packages/settings_host/README.md#configuration-records)
+supply an explicit, validated `ConfigurationRecordId` to `create`.
 
 Create and Edit use the same declaration-generated form. Required fields are
 marked **(Required)**. Edit them directly. Required
@@ -615,9 +627,12 @@ the vault, or clears an uncertain-mutation fence. The explicit Settings Reconcil
 workflow remains authoritative.
 
 Ordinary field changes, reference changes, Forget, deletion, type changes and
-record replacement invalidate the old capture. Worker-shared record mutation
-epochs also fence host-managed change-and-restore and same-reference credential
-replacement, whose TOML may be byte-identical. Strict credential file observations
+record replacement invalidate the old capture. A capture pins its original
+location; it cannot follow an external rename. A fresh authorized capture can
+resolve the existing protected association at the newly observed filename, with
+no secret rebinding. Worker-shared mutation epochs also fence host-managed
+change-and-restore and same-reference credential replacement, whose TOML may
+be byte-identical. Strict credential file observations
 include device/inode and nanosecond change/modification metadata on the maintained
 Linux path; the capture brackets native loads and validation brackets baseline
 checks. Editable Settings handles retain their existing byte-baseline semantics.
