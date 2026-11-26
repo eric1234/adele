@@ -25,3 +25,7 @@ implementation progress alone is not a reason to modernize old survey terminolog
 - [ChatGPT/Codex authentication and configured instances](openai-chatgpt-auth-integration-survey.md): authentication, credential lifecycle, configured-instance routing, and limits of evidence for the experimental subscription-backed integration.
 
 The model-provider survey builds on the broader harness survey rather than replacing it.
+
+## Development investigations
+
+- [CI performance baseline and optimization candidates (2026-11-26)](ci-performance-2026-11-26.md), including the [desktop test ownership audit](ci-desktop-test-ownership-2026-11-26.md).
