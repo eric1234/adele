@@ -81,7 +81,7 @@ collection with capacity.
 `delete(expected)` checks the exact file baseline under the shared lock before
 deletion and returns a missing snapshot. An absent delete is an artifact-free
 no-op that still rejects a stale baseline. Create/delete are record-only; settings
-behavior is unchanged. No collection-wide transaction or automatic retry is added.
+behavior is unchanged. There is no multi-file write or automatic retry.
 
 Record files are limited to 1 MiB of UTF-8 bytes. Reads check size before data and
 also bound the actual read, including every save/delete baseline check. Writes
@@ -108,10 +108,13 @@ coordination, not a stale-write retry. Missing directories still create nothing.
 The portable read-only path retains Dart's streamed listing; changed writes remain
 unsupported outside Linux.
 
-The semantic host must preflight each record operation through this listing and
-diagnose record-filename aliases/unexpected names before the synchronous file
-operation. Insertions additionally count entries inside the transaction lock;
-cooperating writers cannot both claim the last collection/root slot. Linux uses a
+For conditional creation the store supplies the semantic host with a fresh
+bounded listing **inside the exclusive insertion lock**. The host synchronously
+checks aliases and reads sibling headers there; it must not take another lock
+or yield to asynchronous work. No schema or semantic-ID lookup moves into
+the store. Other operations use ordinary listing and independent file baselines.
+Insertions also check capacity under the lock, so cooperating writers cannot
+both claim the last collection/root slot. Linux uses a
 bounded libc `opendir`/`readdir64` read, closing its descriptor even on overflow,
 rather than an eager `listSync` or an `await` while holding a process-scoped lock.
 The Linux `dirent64` layout is validated on the maintained Linux x64 path. No

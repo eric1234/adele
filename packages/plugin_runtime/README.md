@@ -293,13 +293,14 @@ versioned envelope:
 ```
 
 Each record type requires `id`, `collection`, `collectionLabel`, `label`, and
-`fields`; `description`, `displayField`, `formBehavior`, and `credentialSlots` are optional. When present,
-`displayField` is a local field ID referencing a declared required `string` field,
-not an enum. The public record constructor validates that reference during
-discovery; an invalid reference rejects the whole record schema. Omission preserves
-existing declarations with no designated display field, allowing presentation to
-fall back to record identity. The metadata adds no string-value constraints and
-does not change record identity. Each field requires `id`, `label`, `type`, and
+`fields`; `description`, `displayField`, `filenameField`, `formBehavior`, and
+`credentialSlots` are optional. `displayField` and `filenameField` each reference
+a declared required `string` field, not an enum or structure. They may name the
+same field or different fields. The public record constructor validates both
+references during discovery; an invalid reference rejects the whole record schema.
+Omitting `displayField` permits presentation to fall back to record identity.
+Omitting `filenameField` preserves the record-ID basename at creation. Neither
+reference changes record identity. Each field requires `id`, `label`, `type`, and
 an explicit Boolean `required`; `description` is optional. Field arrays retain
 authored order. Empty `recordTypes` and `fields` arrays are valid. Scalar field
 types are `boolean`, `integer`, `string`, or `enum`, reusing settings' constructors

@@ -273,6 +273,16 @@ the declared value when usable and otherwise the stable record ID, never a host
 field-name convention. This metadata does not change identity or require nonblank
 strings: required still means presence.
 
+Independently, `filenameField` may reference a required ordinary string field
+to name the file **at creation only**. After ordinary field validation, the
+shared `adele_settings` policy lowercases ASCII letters, keeps letters and digits,
+and joins their runs with single hyphens. Printable ASCII punctuation and spaces
+are separators; controls and non-ASCII characters are errors. The result must be
+a portable stem: nonempty, starting with a letter, at most 64 characters and not
+a reserved device name. For example, `OpenAI / Work` yields `openai-work.toml`.
+Invalid names require correction, not truncation, suffixes or an ID fallback.
+The authored value itself is stored unchanged.
+
 Optional ordered `credentialSlots` are separate declarations, not scalar fields or
 secret values. Each has a local identity, bounded presentation label and credential
 kind; the only kind is `secretText`. Omission means no slots. The public Settings
@@ -291,10 +301,14 @@ Records live in `<configurationRoot>/<collection>/<filename>.toml` beside global
 `settings.toml`. The collection directory supplies the collection identity; the
 version-2 TOML header supplies the immutable `recordId` and declared `recordType`.
 The filename is a storage location, not an ID or a fallback for a missing header.
-Settings initially writes `<record-id>.toml`. An external rename to another valid
-filename in the same collection preserves Session references, configured-provider
-IDs and protected credential associations. Fresh discovery reads the new location;
-it does not rewrite the document or change any existing capture.
+Types omitting `filenameField` start at `<record-id>.toml`; `displayField` alone
+has no bearing on that choice. A stored record need not match its initial filename
+policy. Editing the source field never renames the file, and a value which could
+not name a new file remains valid if its ordinary field declaration permits it.
+An external rename to another valid filename in the same collection preserves
+Session references, configured-provider IDs and protected credential associations.
+Fresh discovery reads the new location; it does not rewrite the document or
+change any existing capture.
 
 The header and regular `[values]` table are persisted with the native TOML API. The
 [host adapter](../../packages/settings_host/README.md#configuration-records) owns
@@ -353,10 +367,15 @@ fields. Malformed records have no mutation UI.
 the draft's original ID and field values. Only a confirmed **Create** automatically
 resets the successful type's draft; other types' drafts are untouched. A collision
 never overwrites the occupant, even if its record is malformed or its type unknown.
-On collision or an uncertain Create outcome, Settings keeps the draft and requires an
-explicit collection **Reload** before another creation attempt. Inspect the reloaded
-records using the original ID: an unconfirmed write may have succeeded. Reload does
-not change the ID in the retained draft. After a successful Reload, **Discard and
+When a declared filename source is invalid or its filename is already known to
+be occupied (including a diagnostic or alias), correct the field in place. A
+conflict discovered during a write or an uncertain Create outcome requires an
+explicit collection **Reload**. Reconcile the original attempt, not a filename
+derived from later edits: its ID anywhere in the collection blocks another create
+with that draft. After an uncertain outcome, an unreadable occupant at the
+attempted name cannot establish that the write did not occur. A confirmed
+filename-only conflict permits correcting the source without discarding unrelated
+values. Reload never changes the draft ID. After reconciliation, **Discard and
 start new draft** replaces only the affected draft with a blank one and a new ID.
 It does not write a record. Settings never retries Create automatically.
 
@@ -1197,6 +1216,11 @@ changed saves pending validation. Symlinked configuration directories work, but
 changed saves reject file-level symlinks rather than destroying their arrangement.
 Record operations additionally reject symlinked collection directories and file
 entries rather than discovering records through unexpected links.
+For record creation the same exclusive lock spans the bounded collection scan,
+the host's check for another claim on the embedded ID, and conditional insertion
+at the initial filename. This prevents duplicate IDs even when two cooperating
+creators target different filenames. The low-level store owns
+the lock and file checks, not record interpretation.
 External editors/Git can race the final content check, so this is not unconditional
 compare-and-swap against uncooperative writers. The local README owns the exact
 placement, permission, crash-durability, and coordination limits.

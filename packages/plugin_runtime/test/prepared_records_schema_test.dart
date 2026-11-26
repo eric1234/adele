@@ -1736,7 +1736,7 @@ void main() {
   );
 
   test(
-    'display metadata is optional and captures a declared string field',
+    'display and initial filename sources are optional independent fields',
     () async {
       final directory = await install(
         'plugin',
@@ -1745,9 +1745,11 @@ void main() {
           {
             ..._type(),
             'displayField': 'title',
+            'filenameField': 'slug',
             'fields': [
               _field(id: 'enabled', type: 'boolean'),
               {..._field(id: 'title'), 'required': true},
+              {..._field(id: 'slug'), 'required': true},
             ],
           },
         ]),
@@ -1757,18 +1759,31 @@ void main() {
       final type = catalog.records.definition(
         RecordTypeId('org.example.plugin.api'),
       );
+      final id = ConfigurationRecordId('work');
       expect(type.displayField, RecordFieldId('title'));
-      expect(type.fields.map((field) => field.id.value), ['enabled', 'title']);
-      expect(catalog.records.definitions.last.displayField, isNull);
-      expect(type.validate(ConfigurationRecordId('work'), {'title': ''}), {
-        'title': '',
-      });
+      expect(type.filenameField, RecordFieldId('slug'));
+      expect(type.fields.map((field) => field.id.value), [
+        'enabled',
+        'title',
+        'slug',
+      ]);
+      final legacy = catalog.records.definitions.last;
+      expect(legacy.displayField, isNull);
+      expect(legacy.filenameField, isNull);
+      const values = {'title': '', 'slug': 'OpenAI Work'};
+      expect(type.validate(id, values), values);
+      expect(type.initialFileName(id, values), 'openai-work.toml');
+      expect(legacy.initialFileName(id, values), 'work.toml');
       await File.fromUri(
         directory.uri.resolve('records.schema.json'),
       ).writeAsString('{}');
       expect(
         catalog.records.definitions.first.displayField,
         RecordFieldId('title'),
+      );
+      expect(
+        catalog.records.definitions.first.filenameField,
+        RecordFieldId('slug'),
       );
     },
   );
@@ -2206,50 +2221,54 @@ void main() {
       'org.example.plugin.${'x' * 256}',
     ])
       'formBehavior $invalid': {..._type(), 'formBehavior': invalid},
-    for (final displayField in <Object?>[
-      null,
-      false,
-      1,
-      [],
-      {},
-      '',
-      ' display-name',
-      'Display-name',
-      'display.name',
-      'x' * 65,
-      'missing',
-    ])
-      'displayField ${jsonEncode(displayField)}': {
+    for (final reference in ['displayField', 'filenameField']) ...{
+      for (final value in <Object?>[
+        null,
+        false,
+        1,
+        [],
+        {},
+        '',
+        ' display-name',
+        'Display-name',
+        'display.name',
+        'x' * 65,
+        'missing',
+      ])
+        '$reference ${jsonEncode(value)}': {
+          ..._type(),
+          reference: value,
+          'fields': [
+            {..._field(), 'required': true},
+          ],
+        },
+      '$reference with no fields': {
         ..._type(),
-        'displayField': displayField,
-        'fields': [
-          {..._field(), 'required': true},
-        ],
+        reference: 'display-name',
+        'fields': <Object?>[],
       },
-    'displayField with no fields': {
-      ..._type(),
-      'displayField': 'display-name',
-      'fields': <Object?>[],
-    },
-    'displayField optional string': {
-      ..._type(),
-      'displayField': 'display-name',
-    },
-    for (final kind in ['boolean', 'integer', 'enum'])
-      'displayField $kind': {
+      '$reference optional string': {..._type(), reference: 'display-name'},
+      for (final kind in ['boolean', 'integer', 'enum'])
+        '$reference $kind': {
+          ..._type(),
+          reference: 'display-name',
+          'fields': [
+            {
+              ..._field(type: kind),
+              'required': true,
+              if (kind == 'enum')
+                'options': [
+                  {'value': 'name'},
+                ],
+            },
+          ],
+        },
+      '$reference struct': {
         ..._type(),
-        'displayField': 'display-name',
-        'fields': [
-          {
-            ..._field(type: kind),
-            'required': true,
-            if (kind == 'enum')
-              'options': [
-                {'value': 'name'},
-              ],
-          },
-        ],
+        reference: 'target',
+        'fields': [_structField()],
       },
+    },
     for (final fields in <Object?>[null, false, {}, 'fields'])
       'fields $fields': {..._type(), 'fields': fields},
     'duplicate fields': {
@@ -2284,6 +2303,7 @@ void main() {
       'secret',
       'credentialSlots',
       'displayField',
+      'filenameField',
       'validate',
       'unknown',
       'minimum',

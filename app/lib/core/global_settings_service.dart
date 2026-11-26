@@ -351,20 +351,33 @@ final class RecordCollectionView {
   final List<RecordView> records;
   final List<RecordDiagnosticView> diagnostics;
 
-  /// A Reload can establish an occupied initial filename even when an
-  /// unreadable occupant cannot supply a semantic ID. The worker still checks
-  /// both conditions at Create; this observation is never write authority.
-  static bool blocksCreation(
+  // Observations for creation admission, never authority to write. A readable
+  // header can claim an ID even if its record could not be decoded.
+  static bool claimsId(
     ConfigurationRecordId id,
     Iterable<RecordView> records,
     Iterable<RecordDiagnosticView> diagnostics,
-  ) {
-    final name = ConfigurationRecordStore.initialFileName(id);
-    return records.any(
-          (record) => record.id == id || record._fileName == name,
-        ) ||
-        diagnostics.any((item) => item.recordId == id || item.fileName == name);
-  }
+  ) =>
+      records.any((record) => record.id == id) ||
+      diagnostics.any((item) => item.recordId == id);
+
+  static bool occupiesFileName(
+    String fileName,
+    Iterable<RecordView> records,
+    Iterable<RecordDiagnosticView> diagnostics,
+  ) =>
+      records.any((record) => record._fileName == fileName) ||
+      diagnostics.any((item) => _atFileName(item, fileName));
+
+  static bool hasUnresolvedOccupant(
+    String fileName,
+    Iterable<RecordDiagnosticView> diagnostics,
+  ) => diagnostics.any(
+    (item) => item.recordId == null && _atFileName(item, fileName),
+  );
+
+  static bool _atFileName(RecordDiagnosticView item, String fileName) =>
+      ConfigurationStore.recordFileNameAlias(item.fileName) == fileName;
 }
 
 /// Immutable display values and an owner-scoped handle, never a native snapshot.
@@ -885,25 +898,23 @@ final class _SettingsOwner {
         );
       case _Operation.createRecord:
         final type = records.catalog.definition(request.recordType!);
-        _validateRecordValues(type, request.recordId!, request.recordValues!);
-        // Only a new record starts at <id>.toml. All subsequent operations
-        // fence the physical location from their worker-owned snapshot.
-        await _mutating(
-          type.collection,
-          ConfigurationRecordStore.initialFileName(request.recordId!),
-        );
+        var fenced = false;
         try {
           return _publishRecord(
             await records.create(
               type.id,
               request.recordId!,
               request.recordValues!,
+              beforeWrite: (fileName) async {
+                await _mutating(type.collection, fileName);
+                fenced = true;
+              },
             ),
           );
-        } on InvalidRecordValue {
-          rethrow;
         } on Object {
-          recordBaselines.remove((type.collection, request.recordId!));
+          if (fenced) {
+            recordBaselines.remove((type.collection, request.recordId!));
+          }
           rethrow;
         }
       case _Operation.updateRecord:

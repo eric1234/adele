@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:adele_configuration_store/adele_configuration_store.dart';
@@ -10,7 +11,7 @@ import '../../../configuration_store/test/support.dart';
 
 Future<void> main(List<String> arguments) async {
   final mode = arguments[1];
-  if (mode != 'host-list' && mode != 'host-load') {
+  if (mode != 'host-list' && mode != 'host-load' && mode != 'host-create') {
     await writer.main(arguments);
     return;
   }
@@ -23,6 +24,34 @@ Future<void> main(List<String> arguments) async {
     store: ConfigurationStore(rootsAt(arguments[0])),
     catalog: prepared.records,
   );
+  if (mode == 'host-create') {
+    void gate(String event, String command) {
+      stdout.writeln(event);
+      if (stdin.readLineSync() != command) {
+        throw StateError('Expected $command');
+      }
+    }
+
+    try {
+      final record = await IOOverrides.runWithIOOverrides(
+        () => host.create(
+          RecordTypeId(arguments[4]),
+          ConfigurationRecordId(arguments[3]),
+          jsonDecode(arguments[2]) as Map<String, Object?>,
+        ),
+        StagingOverrides(
+          beforeLock: (mode) {
+            if (mode == FileLock.blockingExclusive) gate('before-lock', 'lock');
+          },
+          beforeRename: (_) => gate('staged', 'publish'),
+        ),
+      );
+      stdout.writeln('created:${record.id.value}:${record.fileName}');
+    } on ConfigurationConflictException {
+      stdout.writeln('conflict');
+    }
+    return;
+  }
   final collection = RecordCollectionId(arguments[4]);
   stdout.writeln(mode == 'host-list' ? 'listing' : 'loading');
   await IOOverrides.runWithIOOverrides(() async {
@@ -40,5 +69,5 @@ Future<void> main(List<String> arguments) async {
         'loaded:${record.id.value}:${record.values['display-name']}',
       );
     }
-  }, StagingOverrides(beforeLock: () => stdout.writeln('waiting')));
+  }, StagingOverrides(beforeLock: (_) => stdout.writeln('waiting')));
 }

@@ -146,6 +146,13 @@ and makes no display-field assumption; presentation can fall back to the record 
 This metadata neither changes record identity nor adds string-value constraints:
 use explicit string constraints if the field requires a nonblank display label.
 
+`filenameField: RecordFieldId?` independently selects a required ordinary string
+field for `type.initialFileName(recordId, values)`. That pure creation policy
+returns a portable `.toml` basename or throws a field-attributed `InvalidRecordValue`.
+Omitting the reference uses the record ID. Neither filename derivation nor filename
+uniqueness participates in `validate` on persisted records. See the
+[normalization rules](../../docs/architecture/profiles-and-configuration.md#record-metadata).
+
 `RecordCredentialSlotDefinition` requires `id`, `label`, and `kind`; the only
 `RecordCredentialKind` is `secretText`. Labels use the existing nonblank single-line
 presentation rules and are bounded to 128 UTF-16 code units. Optional
