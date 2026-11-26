@@ -886,8 +886,8 @@ void main() {
         expect(view.diagnostics[0].recordId, isNull);
         expect(view.diagnostics[1].recordId, isNull);
         expect(
-          RecordCollectionView.blocksCreation(
-            ConfigurationRecordId('broken'),
+          RecordCollectionView.occupiesFileName(
+            'broken.toml',
             view.records,
             view.diagnostics,
           ),
@@ -1118,19 +1118,25 @@ void main() {
           expect(loaded.diagnostics, isEmpty);
           expect(loaded.records.map((record) => record.id), [first, second]);
           final fresh = loaded.records.first;
-          for (final id in [first, ConfigurationRecordId('work-job')]) {
-            expect(
-              RecordCollectionView.blocksCreation(
-                id,
-                loaded.records,
-                loaded.diagnostics,
-              ),
-              isTrue,
-            );
-          }
           expect(
-            RecordCollectionView.blocksCreation(
-              ConfigurationRecordId('available'),
+            RecordCollectionView.claimsId(
+              first,
+              loaded.records,
+              loaded.diagnostics,
+            ),
+            isTrue,
+          );
+          expect(
+            RecordCollectionView.occupiesFileName(
+              'work-job.toml',
+              loaded.records,
+              loaded.diagnostics,
+            ),
+            isTrue,
+          );
+          expect(
+            RecordCollectionView.occupiesFileName(
+              'first.toml',
               loaded.records,
               loaded.diagnostics,
             ),

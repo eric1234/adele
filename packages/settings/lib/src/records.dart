@@ -103,12 +103,22 @@ void _validateRecordLocalId(
   String label, {
   bool portable = false,
 }) {
-  if (value.length > 64 ||
-      !RegExp(r'^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$').hasMatch(value) ||
-      (portable &&
-          RegExp(r'^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$').hasMatch(value))) {
+  if (_recordSegmentError(value, portable: portable) != null) {
     throw FormatException('Invalid $label: $value.');
   }
+}
+
+// Local identities and initial filename stems share lexical restrictions only.
+String? _recordSegmentError(String value, {required bool portable}) {
+  if (value.length > 64) return 'Use at most 64 characters.';
+  if (!RegExp(r'^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$').hasMatch(value)) {
+    return 'Start with a letter and use letters or digits separated by hyphens.';
+  }
+  if (portable &&
+      RegExp(r'^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$').hasMatch(value)) {
+    return 'Choose a name that is not a reserved device name.';
+  }
+  return null;
 }
 
 /// A closed record value declaration: a scalar or one flat structured value.
@@ -325,6 +335,7 @@ final class RecordTypeDefinition {
     this.description,
     required Iterable<RecordFieldDefinition<Object>> fields,
     this.displayField,
+    RecordFieldId? filenameField,
     this.formBehavior,
     Iterable<RecordCredentialSlotDefinition> credentialSlots = const [],
   }) : fields = List.unmodifiable(fields),
@@ -370,17 +381,26 @@ final class RecordTypeDefinition {
         );
       }
     }
-    final display = byId[displayField];
-    if (displayField != null &&
-        (display == null ||
-            !display.required ||
-            display.type is! StringSettingType)) {
-      throw ArgumentError.value(
-        displayField,
-        'displayField',
-        'Must reference a declared required StringSettingType field.',
-      );
+    RecordFieldDefinition<Object>? requiredStringField(
+      RecordFieldId? reference,
+      String parameter,
+    ) {
+      if (reference == null) return null;
+      final field = byId[reference];
+      if (field == null ||
+          !field.required ||
+          field.type is! StringSettingType) {
+        throw ArgumentError.value(
+          reference,
+          parameter,
+          'Must reference a declared required StringSettingType field.',
+        );
+      }
+      return field;
     }
+
+    requiredStringField(displayField, 'displayField');
+    _filenameSource = requiredStringField(filenameField, 'filenameField');
   }
 
   final RecordTypeId id;
@@ -399,9 +419,53 @@ final class RecordTypeDefinition {
   /// This does not change record identity or constrain the field's string values.
   final RecordFieldId? displayField;
 
+  /// Optional source of the initial filename, independent of [displayField].
+  RecordFieldId? get filenameField => _filenameSource?.id;
+  late final RecordFieldDefinition<Object>? _filenameSource;
+
   /// Optional presentation behavior of the exact owning frontend. This does not
   /// change record validation or require the frontend to be active.
   final ExtensionId? formBehavior;
+
+  /// Derives a basename for creation, not the location of an existing record.
+  /// Checks only the designated source; [validate] checks the whole record.
+  String initialFileName(
+    ConfigurationRecordId recordId,
+    Map<String, Object?> values,
+  ) {
+    final field = _filenameSource;
+    if (field == null) return '${recordId.value}.toml';
+
+    final value = values[field.id.value];
+    final error = values.containsKey(field.id.value)
+        ? field.valueError(value)
+        : 'Required field is missing.';
+    if (error != null) {
+      throw InvalidRecordValue(collection, recordId, field.id, error);
+    }
+    final source = value as String;
+    if (RegExp(r'[^\x20-\x7e]').hasMatch(source)) {
+      throw InvalidRecordValue(
+        collection,
+        recordId,
+        field.id,
+        'Use only printable ASCII characters for the filename.',
+      );
+    }
+    final stem = RegExp(
+      r'[a-z0-9]+',
+    ).allMatches(source.toLowerCase()).map((match) => match[0]!).join('-');
+    final stemError = _recordSegmentError(stem, portable: true);
+    if (stemError != null) {
+      throw InvalidRecordValue(
+        collection,
+        recordId,
+        field.id,
+        'Filename: $stemError',
+      );
+    }
+    return '$stem.toml';
+  }
 
   /// Validates known fields and returns an immutable projection in field order.
   ///

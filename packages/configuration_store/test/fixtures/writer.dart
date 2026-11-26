@@ -23,7 +23,7 @@ Future<void> main(List<String> arguments) async {
     final entries = await IOOverrides.runWithIOOverrides(
       () => settings.listCollection('providers'),
       StagingOverrides(
-        beforeLock: () => stdout.writeln('waiting'),
+        beforeLock: (_) => stdout.writeln('waiting'),
         missingLock: mode == 'opening-list' ? scan : null,
         afterMissingLock: mode == 'first-list' ? scan : null,
       ),

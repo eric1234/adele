@@ -1881,6 +1881,7 @@ RecordTypeDefinition _recordTypeDefinition(
     'description',
     'fields',
     'displayField',
+    'filenameField',
     'formBehavior',
     'credentialSlots',
   });
@@ -1938,6 +1939,11 @@ RecordTypeDefinition _recordTypeDefinition(
     displayField: definition.containsKey('displayField')
         ? RecordFieldId(
             _text(definition['displayField'], '$label.displayField'),
+          )
+        : null,
+    filenameField: definition.containsKey('filenameField')
+        ? RecordFieldId(
+            _text(definition['filenameField'], '$label.filenameField'),
           )
         : null,
     formBehavior: definition.containsKey('formBehavior')

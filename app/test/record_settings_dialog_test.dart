@@ -24,6 +24,7 @@ final _collection = RecordCollectionId('jobs');
 final _job = RecordTypeId('dev.example.records.job');
 final _note = RecordTypeId('dev.example.records.note');
 final _memo = RecordTypeId('dev.example.records.memo');
+final _named = RecordTypeId('dev.example.records.named');
 const _preference = 'dev.example.records.message';
 
 void main() {
@@ -2528,6 +2529,196 @@ void main() {
     },
   );
 
+  group('declared creation filename', () {
+    final button = _key('record-create-jobs');
+    final source = _input('subject');
+    final title = _input('title');
+
+    Future<String> start(WidgetTester tester) async {
+      await add(tester);
+      await _choose(tester, _key('record-type-jobs'), 'Named document');
+      return inspectDraftId(tester);
+    }
+
+    Future<void> reload(WidgetTester tester) async {
+      await _tap(tester, _key('records-reload-jobs'));
+      await _loaded(tester);
+    }
+
+    testWidgets(
+      'field feedback uses observed filenames, not display titles or IDs',
+      (tester) => tester.runAsync(() async {
+        await seed('legacy', caption: 'Shared title');
+        final occupied = file('legacy').renameSync(file('taken').path);
+        final original = occupied.readAsBytesSync();
+        file('broken').writeAsStringSync('broken = [');
+        File('${occupied.parent.path}/ALIAS.TOML. ').writeAsStringSync('alias');
+        await mount(tester);
+        await openRecords(tester);
+        final id = await start(tester);
+        await _enter(tester, title, 'Shared title');
+        await _enter(tester, source, 'Shared title');
+        final staleCreate = tester.widget<ButtonStyleButton>(button).onPressed!;
+        for (final input in ['---', 'con', '9 bad', 'line\nbreak']) {
+          await _enter(tester, source, input);
+          expect(_scalarDecoration(tester, source).errorText, isNotEmpty);
+          expect(_enabled(tester, button), isFalse);
+          staleCreate();
+        }
+        for (final input in ['Taken!', 'broken', 'Alias']) {
+          await _enter(tester, source, input);
+          expect(
+            _scalarDecoration(tester, source).errorText,
+            contains('in use'),
+          );
+          expect(_scalarDecoration(tester, title).errorText, isNull);
+          expect(_enabled(tester, button), isFalse);
+          staleCreate();
+        }
+        expect(service.creates, 1); // Only the seed reached the worker.
+        expect(occupied.readAsBytesSync(), original);
+        await _enter(tester, source, '  Current / Name  ');
+        expect(_text(tester, title), 'Shared title');
+        expect(await inspectDraftId(tester), id);
+        expect(find.textContaining('current-name.toml'), findsNothing);
+        await create(tester);
+        final created = file('current-name');
+        expect(created.readAsStringSync(), contains('recordId = "$id"'));
+        expect(
+          created.readAsStringSync(),
+          contains('subject = "  Current / Name  "'),
+        );
+        expect(file(id).existsSync(), isFalse);
+        expect(service.recordLoads, 1);
+        expect(find.text('Shared title'), findsNWidgets(2));
+
+        // Filename derivation is not validation of an existing record's fields.
+        await _edit(tester, id);
+        await _enter(tester, _editInput(id, 'subject'), '???');
+        await save(tester, id);
+        expect(created.readAsStringSync(), contains('subject = "???"'));
+        await reload(tester);
+        expect(_key('record-jobs-$id'), findsOneWidget);
+        await _tap(tester, _key('record-delete-jobs-$id'));
+        await _tap(tester, _key('record-delete-confirm-jobs-$id'));
+        await _loaded(tester);
+        expect(created.existsSync(), isFalse);
+        await add(tester);
+        final replacement = await inspectDraftId(tester);
+        expect(replacement, isNot(id));
+        await _enter(tester, title, 'Shared title');
+        await _enter(tester, source, 'Current Name');
+        await create(tester);
+        expect(
+          created.readAsStringSync(),
+          contains('recordId = "$replacement"'),
+        );
+        await unmount(tester);
+      }),
+    );
+
+    testWidgets(
+      'newly discovered filename conflict allows correction only after Reload',
+      (tester) => tester.runAsync(() async {
+        await mount(tester);
+        await openRecords(tester);
+        final id = await start(tester);
+        await _enter(tester, title, 'Keep this title');
+        await _enter(tester, source, 'External');
+        final staleCreate = tester.widget<ButtonStyleButton>(button).onPressed!;
+        // No readable header. The explicit conflict still proves this call
+        // did not publish, unlike an uncertain response for the same target.
+        final occupant = file('external');
+        occupant.parent.createSync(recursive: true);
+        occupant.writeAsStringSync('broken = [');
+        await create(tester);
+        expect(find.textContaining('Not created:'), findsOneWidget);
+        expect(_enabled(tester, button), isFalse);
+        expect(_enabled(tester, _discardDraft), isFalse);
+        staleCreate();
+        expect(service.creates, 1);
+        await reload(tester);
+        expect(_scalarDecoration(tester, source).errorText, contains('in use'));
+        await _enter(tester, source, 'New location');
+        expect(_enabled(tester, button), isTrue);
+        staleCreate();
+        expect(service.creates, 1);
+        expect(_text(tester, title), 'Keep this title');
+        expect(await inspectDraftId(tester), id);
+        await create(tester);
+        expect(occupant.readAsStringSync(), 'broken = [');
+        expect(
+          file('new-location').readAsStringSync(),
+          contains('recordId = "$id"'),
+        );
+        await unmount(tester);
+      }),
+    );
+
+    testWidgets(
+      'uncertain creation reconciles the submitted ID and target, not the edited name',
+      (tester) => tester.runAsync(() async {
+        final application = RecordApplicationProbe(_named);
+        await mount(tester, application: application);
+        await openRecords(tester);
+        final id = await start(tester);
+        await _enter(tester, title, 'Retained');
+        await _enter(tester, source, 'First place');
+        final staleCreate = tester.widget<ButtonStyleButton>(button).onPressed!;
+        service.loseAcknowledgement = true;
+        await create(tester);
+        service.loseAcknowledgement = false;
+        expect(
+          find.textContaining('Could not confirm creation'),
+          findsOneWidget,
+        );
+        expect(application.saves, isEmpty);
+        final target = file('first-place');
+        final moved = target.renameSync(file('elsewhere').path);
+        await reload(tester);
+        expect(_key('record-jobs-$id'), findsOneWidget);
+        expect(_enabled(tester, button), isFalse);
+        await _enter(tester, source, 'Second place');
+        expect(_enabled(tester, button), isFalse);
+
+        // The current candidate is free and no readable record claims the ID.
+        // The attempted physical name still has an unidentified occupant.
+        moved.deleteSync();
+        final alias = File('${target.parent.path}/FIRST-PLACE.TOML');
+        alias.writeAsStringSync('unknown occupant');
+        await reload(tester);
+        expect(_key('record-jobs-$id'), findsNothing);
+        expect(
+          find.textContaining('could not identify the occupant'),
+          findsOneWidget,
+        );
+        expect(_scalarDecoration(tester, source).errorText, isNull);
+        expect(_enabled(tester, button), isFalse);
+        expect(_enabled(tester, _discardDraft), isTrue);
+        staleCreate();
+        expect(service.creates, 1);
+
+        // A readable occupant with a different ID resolves that uncertainty.
+        alias.deleteSync();
+        await seed('first-place');
+        await reload(tester);
+        expect(_enabled(tester, button), isTrue);
+        expect(file('second-place').existsSync(), isFalse);
+        expect(_text(tester, title), 'Retained');
+        expect(await inspectDraftId(tester), id);
+        expect(application.saves, isEmpty);
+        await create(tester);
+        expect(service.creates, 3); // Two submissions and the external seed.
+        expect(
+          file('second-place').readAsStringSync(),
+          contains('recordId = "$id"'),
+        );
+        expect(application.saves, hasLength(1));
+        await unmount(tester);
+      }),
+    );
+  }, skip: !Platform.isLinux);
+
   for (final malformed in [false, true]) {
     testWidgets(
       'filesystem conflict with ${malformed ? 'an unreadable' : 'a readable'} occupant keeps the draft until explicit discard',
@@ -3036,6 +3227,19 @@ RecordCatalog _catalog() {
           required: false,
           editor: RecordFieldEditor.markdown,
         ),
+      ],
+    ),
+    RecordTypeDefinition(
+      id: _named,
+      owner: PluginId('dev.example.records'),
+      collection: _collection,
+      collectionLabel: 'Jobs',
+      label: 'Named document',
+      displayField: RecordFieldId('title'),
+      filenameField: RecordFieldId('subject'),
+      fields: [
+        field('title', 'Title', const StringSettingType(), required: true),
+        field('subject', 'Subject', const StringSettingType(), required: true),
       ],
     ),
     RecordTypeDefinition(

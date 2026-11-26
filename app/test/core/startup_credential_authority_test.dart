@@ -8,6 +8,7 @@ import 'package:adele_desktop/core/global_settings_service.dart';
 import 'package:adele_platform_storage/adele_platform_storage.dart';
 import 'package:adele_plugin_backend_support/adele_backend_credentials.dart';
 import 'package:adele_settings/adele_settings.dart';
+import 'package:adele_settings_host/adele_settings_host.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
@@ -53,6 +54,7 @@ void main() {
               'collection': 'accounts',
               'collectionLabel': 'Accounts',
               'label': 'Account',
+              if (type == '$_owner.other') 'filenameField': 'name',
               'credentialSlots': [
                 for (final slot in ['token', 'other'])
                   {'id': slot, 'label': slot, 'kind': 'secret-text'},
@@ -734,10 +736,33 @@ void main() {
     skip: !Platform.isLinux,
   );
 
+  test(
+    'invalid create leaves the observed edit and credential authority intact',
+    () async {
+      final first = await create('first');
+      final captured = await capture();
+      final type = RecordTypeId('$_owner.other');
+      // Both the old ID-based path and the valid candidate below coincide
+      // with a captured location. Neither validation failure may fence it.
+      await expectLater(
+        settings.createRecord(type, first.id, {'name': '!!!'}),
+        throwsA(isA<InvalidRecordValue>()),
+      );
+      await expectLater(
+        settings.createRecord(type, first.id, {'name': 'First', 'extra': 0}),
+        throwsA(isA<ConfigurationRecordFormatException>()),
+      );
+      expect(await read(captured), _secret);
+      expect((await settings.updateRecord(first, first.values)).id, first.id);
+    },
+    skip: !Platform.isLinux,
+  );
+
   for (final mutation in [
     'ordinary edit',
     'same-reference replacement',
     'reused filename',
+    'reused derived filename',
   ]) {
     test(
       '$mutation after worker postcheck fences root publication',
@@ -796,7 +821,17 @@ void main() {
             // But the host's creation at that exact physical path must fence
             // publication, even though its new semantic ID is different.
             renamed.renameSync(file('moved-again').path);
-            await create('work-account', attach: false);
+            if (mutation == 'reused filename') {
+              await create('work-account', attach: false);
+            } else {
+              await settings.createRecord(
+                RecordTypeId('$_owner.other'),
+                ConfigurationRecordId('replacement'),
+                {'name': 'Work / Account'},
+              );
+              expect(file('work-account').existsSync(), isTrue);
+              expect(file('replacement').existsSync(), isFalse);
+            }
           }
         } finally {
           pause = false;

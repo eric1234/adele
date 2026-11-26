@@ -420,7 +420,10 @@ declared fields; the panel generates the record ID. Expand **Advanced details** 
 copy it, or expand a saved record's details to copy its immutable ID. See
 [creating and editing records](../docs/architecture/profiles-and-configuration.md#creating-and-editing-records)
 for direct optional inputs, authored empty values and recovery after an unconfirmed
-Create. Creation and editing share `RecordTypeDefinition.validate`; the worker
+Create. When a declaration selects a `filenameField`, the draft checks its name
+against observed filenames (including diagnostic entries) as the user edits. An
+unconfirmed Create retains the attempted location and ID, independent of later
+input. Creation and editing share `RecordTypeDefinition.validate`; the worker
 and host adapter validate again before persistence. Edits preserve unknown data
 and comments within the native document API's limits.
 

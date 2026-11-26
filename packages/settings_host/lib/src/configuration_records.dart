@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -17,9 +18,6 @@ final class ConfigurationRecordStore {
 
   /// Bounds retained documents in one successful collection result.
   static const maxEnumerationBytes = 16 * 1024 * 1024;
-
-  /// Location chosen for a new record, not a lookup rule for existing records.
-  static String initialFileName(ConfigurationRecordId id) => '${id.value}.toml';
 
   final ConfigurationStore store;
   final RecordCatalog catalog;
@@ -121,13 +119,18 @@ final class ConfigurationRecordStore {
     return _decode(collection, id, match.fileName, match.baseline!);
   }
 
+  /// Creates at the declaration's initial filename. [beforeWrite] may fence
+  /// that exact location after validation; it is never called under the lock.
   Future<ConfigurationRecordSnapshot> create(
     RecordTypeId typeId,
     ConfigurationRecordId id,
-    Map<String, Object?> values,
-  ) async {
+    Map<String, Object?> values, {
+    FutureOr<void> Function(String fileName)? beforeWrite,
+  }) async {
     final type = catalog.definition(typeId);
     final validated = _validateDesired(type, id, values);
+    final fileName = type.initialFileName(id, validated);
+    final file = _file(type.collection, fileName);
     var document =
         TomlDocument.parse(
           'recordVersion = 2\nrecordId = ""\nrecordType = ""\n\n[values]\n',
@@ -140,9 +143,13 @@ final class ConfigurationRecordStore {
         document = _setField(document, field, value);
       }
     }
-    final fileName = initialFileName(id);
-    final file = await _exclusiveFile(type.collection, id, fileName);
-    final saved = file.create(document);
+    final insert = file.prepareCreate(
+      document,
+      collectionAllowsCreate: (entries) =>
+          _noOtherClaim(type.collection, id, fileName, entries),
+    );
+    if (beforeWrite != null) await beforeWrite(fileName);
+    final saved = insert();
     return ConfigurationRecordSnapshot._(
       catalog,
       id,
@@ -322,16 +329,31 @@ final class ConfigurationRecordStore {
   ConfigurationStore _file(RecordCollectionId collection, String fileName) =>
       store.recordFile(collectionId: collection.value, fileName: fileName);
 
-  /// Check other files for this ID, but leave the target's raw bytes (including
-  /// malformed replacements or absence) to the conditional file transaction.
   Future<ConfigurationStore> _exclusiveFile(
     RecordCollectionId collection,
     ConfigurationRecordId id,
     String fileName,
   ) async {
     final entries = await store.listCollection(collection.value);
+    final file = _file(collection, fileName);
+    if (!_noOtherClaim(collection, id, fileName, entries)) {
+      throw ConfigurationConflictException(file.filePath);
+    }
+    return file;
+  }
+
+  /// Check other files for this ID, but leave the target's raw bytes (including
+  /// malformed replacements or absence) to the conditional file transaction.
+  /// Create supplies entries from inside the write lock; never re-open it here.
+  bool _noOtherClaim(
+    RecordCollectionId collection,
+    ConfigurationRecordId id,
+    String fileName,
+    List<ConfigurationCollectionEntry> entries,
+  ) {
     for (final entry in entries) {
-      if (_alias(entry.name) == fileName && entry.name != fileName) {
+      if (entry.name != fileName &&
+          ConfigurationStore.recordFileNameAlias(entry.name) == fileName) {
         throw ConfigurationRecordFormatException(
           collection,
           id,
@@ -339,16 +361,11 @@ final class ConfigurationRecordStore {
         );
       }
     }
-    final file = _file(collection, fileName);
-    for (final candidate in _headers(collection, entries, skip: fileName)) {
-      if (candidate.id == id) {
-        throw ConfigurationConflictException(file.filePath);
-      }
-    }
-    // Every cooperating create for this ID targets the same initial filename;
-    // updates never move files or change IDs. The existing locked conditional
-    // create suffices. External editors can still race this scan.
-    return file;
+    return !_headers(
+      collection,
+      entries,
+      skip: fileName,
+    ).any((candidate) => candidate.id == id);
   }
 
   /// Stream one bounded file at a time. A valid embedded ID claims its place
@@ -360,7 +377,11 @@ final class ConfigurationRecordStore {
   }) sync* {
     final names = <String, int>{};
     for (final entry in entries) {
-      names.update(_alias(entry.name), (count) => count + 1, ifAbsent: () => 1);
+      names.update(
+        ConfigurationStore.recordFileNameAlias(entry.name),
+        (count) => count + 1,
+        ifAbsent: () => 1,
+      );
     }
     for (final entry in entries) {
       final fileName = entry.name;
@@ -663,9 +684,6 @@ final class ConfigurationStartupIdentityUnavailable implements Exception {
   @override
   String toString() => 'Strict startup record identity is unavailable.';
 }
-
-String _alias(String name) =>
-    name.toLowerCase().replaceFirst(RegExp(r'[ .]+$'), '');
 
 /// Immutable typed known values plus the exact whole-file persistence baseline.
 final class ConfigurationRecordSnapshot {

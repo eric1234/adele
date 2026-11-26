@@ -661,6 +661,135 @@ void main() {
     }
   });
 
+  group('initial filename', () {
+    final source = _field('name', const StringSettingType(), required: true);
+    final type = _type(fields: [source], filenameField: source.id);
+
+    test(
+      'only an explicit required ordinary string field can be the source',
+      () {
+        for (final field in <RecordFieldDefinition<Object>?>[
+          null,
+          _field('name', const StringSettingType()),
+          _field('name', const BooleanSettingType(), required: true),
+          _field('name', IntegerSettingType(), required: true),
+          _field(
+            'name',
+            EnumSettingType([SettingEnumOption('a')]),
+            required: true,
+          ),
+          _field(
+            'name',
+            StructuredRecordFieldType({
+              RecordFieldId('a'): const StringSettingType(),
+            }),
+            required: true,
+            editor: contributed,
+          ),
+        ]) {
+          expect(
+            () => _type(fields: [?field], filenameField: source.id),
+            throwsA(
+              isA<ArgumentError>().having(
+                (e) => e.name,
+                'name',
+                'filenameField',
+              ),
+            ),
+          );
+        }
+        final legacy = _type(fields: [source], displayField: source.id);
+        expect(legacy.filenameField, isNull);
+        expect(legacy.initialFileName(_record, {'name': 'Other'}), 'work.toml');
+        expect(type.filenameField, source.id);
+        expect(type.displayField, isNull);
+      },
+    );
+
+    test('normalizes printable ASCII without changing the authored value', () {
+      for (final (name, filename) in [
+        ('OpenAI Work', 'openai-work.toml'),
+        ('OPENAI WORK', 'openai-work.toml'),
+        ('OpenAI -- Work', 'openai-work.toml'),
+        ('OpenAI / Work', 'openai-work.toml'),
+        ('  Architecture Reviewer  ', 'architecture-reviewer.toml'),
+        ('GPT-5.4 Fast', 'gpt-5-4-fast.toml'),
+        (r'../A\B?~', 'a-b.toml'),
+        ('! LPT10 ', 'lpt10.toml'),
+        ('${'a' * 62} / b!', '${'a' * 62}-b.toml'),
+      ]) {
+        final values = {'name': name};
+        expect(type.initialFileName(_record, values), filename);
+        expect(type.validate(_record, values), {'name': name});
+      }
+    });
+
+    test(
+      'rejects unusable stems only at creation and attributes the cause',
+      () {
+        for (final (name, reason) in [
+          ('', 'letter'),
+          ('  ', 'letter'),
+          ('=/!', 'letter'),
+          (' (3 Days)', 'letter'),
+          for (final name in ['CON!', 'PRN', ' Aux ', 'NUL', 'COM1', 'LPT9'])
+            (name, 'reserved'),
+          ('${'a' * 63} / b', '64'),
+          for (final invalid in [
+            '\x00',
+            '\t',
+            '\n',
+            '\x1f',
+            '\x7f',
+            '\u00e9',
+            '\u212a',
+            '\u{1f600}',
+          ])
+            ('A${invalid}B', 'printable ASCII'),
+        ]) {
+          final values = {'name': name};
+          expect(type.validate(_record, values), values);
+          expect(
+            () => type.initialFileName(_record, values),
+            throwsA(
+              isA<InvalidRecordValue>()
+                  .having((e) => e.collection, 'collection', type.collection)
+                  .having((e) => e.recordId, 'recordId', _record)
+                  .having((e) => e.fieldId, 'fieldId', source.id)
+                  .having((e) => e.message, 'message', contains(reason)),
+            ),
+            reason: name,
+          );
+        }
+      },
+    );
+
+    test('validates the source declaration before deriving the filename', () {
+      final name = _field(
+        'name',
+        StringSettingType.constrained(maxLength: 4),
+        required: true,
+      );
+      final type = _type(
+        fields: [name],
+        displayField: name.id,
+        filenameField: name.id,
+      );
+      for (final (values, message) in <(Map<String, Object?>, String)>[
+        ({}, 'Required field is missing.'),
+        ({'name': null}, 'Expected a string.'),
+        ({'name': 42}, 'Expected a string.'),
+        ({'name': '   A!'}, 'Must be at most 4 UTF-16 code units.'),
+      ]) {
+        expect(
+          () => type.initialFileName(_record, values),
+          throwsA(_invalid('name', message)),
+        );
+      }
+      expect(type.initialFileName(_record, {'name': ' A! '}), 'a.toml');
+    });
+  });
+
   test(
     'labels reuse presentation rules; description remains optional prose',
     () {
@@ -929,6 +1058,7 @@ RecordTypeDefinition _type({
   String label = '  API  ',
   Iterable<RecordFieldDefinition<Object>> fields = const [],
   RecordFieldId? displayField,
+  RecordFieldId? filenameField,
   ExtensionId? formBehavior,
   Iterable<RecordCredentialSlotDefinition> credentialSlots = const [],
 }) => RecordTypeDefinition(
@@ -940,6 +1070,7 @@ RecordTypeDefinition _type({
   description: 'Type\nexplanation',
   fields: fields,
   displayField: displayField,
+  filenameField: filenameField,
   formBehavior: formBehavior,
   credentialSlots: credentialSlots,
 );

@@ -5,7 +5,9 @@ import 'package:adele_configuration_store/adele_configuration_store.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_settings/adele_settings.dart';
 import 'package:adele_settings_host/adele_settings_host.dart'
-    show ConfigurationRecordCredentialsPresent;
+    show
+        ConfigurationRecordCredentialsPresent,
+        ConfigurationRecordFormatException;
 import 'package:adele_ui/settings_form_behavior.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -73,8 +75,7 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
   bool _busy = false;
   bool _confirming = false;
   bool _requiresReload = false;
-  _RecordDraft? _blockedCreation;
-  bool get _creationRequiresReload => _blockedCreation != null;
+  bool _creationRequiresReload = false;
   bool _adding = false;
   int _formRevision = 0;
   int _reloadRevision = 0;
@@ -169,8 +170,7 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
         _diagnostics = view.diagnostics;
         _loaded = true;
         _requiresReload = false;
-        _blockedCreation?.reconciled = true;
-        _blockedCreation = null;
+        _creationRequiresReload = false;
         _creationError = null;
         _message = null;
       });
@@ -199,25 +199,71 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
       _adding &&
       identical(_creationDrafts[_type], draft);
 
-  bool _blocksCreation(ConfigurationRecordId id) =>
-      RecordCollectionView.blocksCreation(id, _records, _diagnostics);
+  bool _claimsId(ConfigurationRecordId id) =>
+      RecordCollectionView.claimsId(id, _records, _diagnostics);
+
+  bool _occupiesFileName(String fileName) =>
+      RecordCollectionView.occupiesFileName(fileName, _records, _diagnostics);
+
+  String? _reconciledBlock(_RecordDraft draft) {
+    final failure = draft.failedCreation;
+    if (failure == null) return null;
+    final attempt = failure.attempt;
+    if (draft.definition.filenameField == null) {
+      return _claimsId(attempt.id) || _occupiesFileName(attempt.fileName)
+          ? 'Reload found this record ID or its initial filename in use. Inspect the collection before starting a new draft.'
+          : null;
+    }
+    if (_claimsId(attempt.id)) {
+      return 'Reload found a record claiming this draft\'s ID. Inspect the collection before starting a new draft.';
+    }
+    // An unreadable target cannot tell us whether a lost write succeeded.
+    // Check the *submitted* name even if the author has since changed it.
+    if (failure.uncertain &&
+        RecordCollectionView.hasUnresolvedOccupant(
+          attempt.fileName,
+          _diagnostics,
+        )) {
+      return 'Reload could not identify the occupant of ${attempt.fileName}. '
+          'Inspect the file and Reload before retrying this draft.';
+    }
+    return null;
+  }
 
   Future<void> _create(_RecordDraft draft, Map<String, Object> values) async {
     final definition = draft.definition;
-    final id = draft.id;
-    if (!_creationCurrent(draft)) return;
-    // Keep the observed ID or initial file location occupied until Reload,
-    // even if an external deletion has since made it available.
-    if (_blocksCreation(id)) {
-      if (draft.reconciled) return;
+    if (!_creationCurrent(draft) || _reconciledBlock(draft) != null) return;
+    final _CreationAttempt attempt;
+    try {
+      attempt = (
+        id: draft.id,
+        fileName: draft.candidateFileName(values, _occupiesFileName),
+        values: values, // Immutable snapshot from definition.validate.
+      );
+    } on InvalidRecordValue {
+      // A callback from an earlier build may now have an invalid or occupied
+      // candidate. Render its field error without entering mutation admission.
+      setState(() {});
+      return;
+    }
+    void requireReload(String message, {bool uncertain = false}) {
       setState(() {
         _formRevision++;
-        _blockedCreation = draft;
-        _creationError =
-            'Not created: this record ID or its initial filename is already in use. '
-            'Reload to reconcile current records before creating again. '
-            'Your drafts are retained; no write was attempted.';
+        draft.failedCreation = (attempt: attempt, uncertain: uncertain);
+        _creationRequiresReload = true;
+        _creationError = message;
       });
+    }
+
+    // Unlike an authored name, a draft ID cannot be corrected by editing.
+    if (_claimsId(attempt.id) ||
+        (definition.filenameField == null &&
+            _occupiesFileName(attempt.fileName))) {
+      requireReload(
+        'Not created: this record ID or its initial filename is already in use. '
+        'Reload to reconcile current records before creating again. '
+        'Your drafts are retained; no write was attempted.',
+      );
       return;
     }
     setState(() {
@@ -230,18 +276,9 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
     try {
       acknowledged = await widget.service.createRecord(
         definition.id,
-        id,
-        values,
+        attempt.id,
+        attempt.values,
       );
-    } on ConfigurationConflictException catch (error) {
-      if (!mounted) return;
-      setState(() {
-        _blockedCreation = draft;
-        _creationError =
-            'Not created: the record ID or its initial filename is occupied or changed on disk. '
-            'No existing file was overwritten. Reload before creating again.\n$error';
-      });
-      return;
     } on InvalidRecordValue catch (error) {
       if (mounted) {
         setState(
@@ -250,18 +287,32 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
       }
       return;
     } on Object catch (error) {
+      // The native create path rejects aliases and symlinks before publishing.
+      // An unrelated I/O/acknowledgement failure offers no such guarantee.
+      if (error is ConfigurationConflictException ||
+          (definition.filenameField != null &&
+              (error is ConfigurationRecordFormatException ||
+                  error is ConfigurationPathAliasException ||
+                  error is ConfigurationSymlinkException))) {
+        if (mounted) {
+          requireReload(
+            'Not created: the record ID or its initial filename is occupied or changed on disk. '
+            'No existing file was overwritten. Reload before creating again.\n$error',
+          );
+        }
+        return;
+      }
       application?.unconfirmed((
         collection: definition.collection,
         type: definition.id,
-        id: id,
+        id: attempt.id,
       ));
       if (!mounted) return;
-      setState(() {
-        _blockedCreation = draft;
-        _creationError =
-            'Could not confirm creation. Your draft is retained. '
-            'Reload to check persisted records before creating again.\n$error';
-      });
+      requireReload(
+        'Could not confirm creation. Your draft is retained. '
+        'Reload to check persisted records before creating again.\n$error',
+        uncertain: true,
+      );
       return;
     } finally {
       // The worker gate has released. Notify only on acknowledged success,
@@ -685,7 +736,10 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
                                 ],
                                 onChanged: creationEnabled
                                     ? (value) {
-                                        if (_enabled &&
+                                        if (widget.active &&
+                                            _adding &&
+                                            _enabled &&
+                                            !_creationRequiresReload &&
                                             value != null &&
                                             value != _type) {
                                           setState(() {
@@ -861,23 +915,27 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
   Widget _creationForm(RecordTypeDefinition type, bool enabled) {
     final draft = _creationDrafts[type.id]!;
     final reconciled =
-        draft.reconciled && !_creationRequiresReload && !_requiresReload;
-    final occupied = reconciled && _blocksCreation(draft.id);
+        draft.failedCreation != null &&
+        !_creationRequiresReload &&
+        !_requiresReload;
+    final block = reconciled ? _reconciledBlock(draft) : null;
+    final scope = _formScope();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         if (reconciled) ...[
           Text(
-            occupied
-                ? 'Reload found this record ID or its initial filename in use. Inspect the collection before starting a new draft.'
-                : 'Reload finished. Inspect the collection before retrying this draft or starting another.',
+            block ??
+                'Reload finished. Inspect the collection before retrying this draft or starting another.',
           ),
           Align(
             alignment: Alignment.centerLeft,
             child: TextButton(
               onPressed: enabled
                   ? () {
-                      if (!_creationCurrent(draft)) return;
+                      if (!_creationCurrent(draft) || _formScope() != scope) {
+                        return;
+                      }
                       setState(() {
                         _formRevision++;
                         _creationDrafts[type.id] = _RecordDraft(type);
@@ -897,7 +955,8 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
           active: widget.active && _adding && type.id == _type,
           enabled: enabled && _adding && type.id == _type,
           onChanged: () => setState(() {}),
-          onSubmit: occupied ? null : (values) => _create(draft, values),
+          occupiesFileName: _occupiesFileName,
+          onSubmit: block == null ? (values) => _create(draft, values) : null,
         ),
       ],
     );
@@ -952,6 +1011,12 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
   }
 }
 
+typedef _CreationAttempt = ({
+  ConfigurationRecordId id,
+  String fileName,
+  Map<String, Object> values,
+});
+
 final class _RecordDraft extends ChangeNotifier {
   _RecordDraft(this.definition, {this.record}) : id = record?.id ?? _newId() {
     for (final field in definition.fields) {
@@ -979,7 +1044,7 @@ final class _RecordDraft extends ChangeNotifier {
   final RecordTypeDefinition definition;
   final RecordView? record;
   final ConfigurationRecordId id;
-  bool reconciled = false;
+  ({_CreationAttempt attempt, bool uncertain})? failedCreation;
   // Text and documents are read from their owners, never from a cached parse.
   // Only a restored empty string needs distinguishing from an empty control.
   final _restoredEmpty = <RecordFieldId>{};
@@ -1079,6 +1144,23 @@ final class _RecordDraft extends ChangeNotifier {
 
   Map<String, Object> validate() => definition.validate(id, snapshot());
 
+  String candidateFileName(
+    Map<String, Object?> values,
+    bool Function(String) occupied,
+  ) {
+    final fileName = definition.initialFileName(id, values);
+    final field = definition.filenameField;
+    if (field != null && occupied(fileName)) {
+      throw InvalidRecordValue(
+        definition.collection,
+        id,
+        field,
+        'This filename is already in use. Choose a different value.',
+      );
+    }
+    return fileName;
+  }
+
   @override
   void dispose() {
     disposed = true;
@@ -1103,6 +1185,7 @@ final class _RecordForm extends StatelessWidget {
     required this.enabled,
     required this.onChanged,
     required this.onSubmit,
+    this.occupiesFileName,
     this.onCancel,
   });
 
@@ -1114,6 +1197,7 @@ final class _RecordForm extends StatelessWidget {
   final bool enabled;
   final VoidCallback onChanged;
   final ValueChanged<Map<String, Object>>? onSubmit;
+  final bool Function(String)? occupiesFileName;
   final VoidCallback? onCancel;
 
   @override
@@ -1148,6 +1232,15 @@ final class _RecordForm extends StatelessWidget {
         '${definition.collection}${record == null ? '' : '-${record.id}'}';
     final errors = <RecordFieldId, String>{};
     final values = draft.snapshot(errors: errors);
+    final source = definition.filenameField;
+    if (occupiesFileName case final occupied?
+        when source != null && !errors.containsKey(source)) {
+      try {
+        draft.candidateFileName(values, occupied);
+      } on InvalidRecordValue catch (error) {
+        errors[source] = error.message;
+      }
+    }
     final scope = formScope();
     final route = ModalRoute.of(context);
     bool current() =>

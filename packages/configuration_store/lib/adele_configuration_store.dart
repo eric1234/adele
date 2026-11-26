@@ -8,6 +8,11 @@ import 'package:path/path.dart' as p;
 
 import 'src/linux_directory.dart';
 
+typedef _CollectionListing = ({
+  List<ConfigurationCollectionEntry> entries,
+  int rootEntryCount,
+});
+
 /// Internal host configuration persistence, not a plugin storage service.
 ///
 /// Use one owning isolate per process for all configuration operations. The
@@ -66,6 +71,10 @@ final class ConfigurationStore {
   static bool isRecordFileName(String name) =>
       name.endsWith('.toml') && _isSegment(name.substring(0, name.length - 5));
 
+  /// Comparison key for an observed basename, not a filename to open.
+  static String recordFileNameAlias(String name) =>
+      name.toLowerCase().replaceFirst(RegExp(r'[ .]+$'), '');
+
   /// Lists immediate names and non-followed types without reading their content.
   ///
   /// Absence returns an empty list without artifacts. Enumeration is bounded
@@ -85,7 +94,7 @@ final class ConfigurationStore {
       // unlocked scan, redo it under that now-existing lock, even on scan error.
       final List<ConfigurationCollectionEntry> entries;
       try {
-        entries = _listCollectionSync(collectionId);
+        entries = _listCollectionSync(collectionId).entries;
       } on Exception {
         final locked = _listCollectionLocked(collectionId);
         if (locked != null) return locked;
@@ -111,8 +120,7 @@ final class ConfigurationStore {
     final path = p.join(_configurationRoot, collectionId);
     for (final entry in entries) {
       if (entry.name != collectionId &&
-          entry.name.replaceFirst(RegExp(r'[ .]+$'), '').toLowerCase() ==
-              collectionId) {
+          recordFileNameAlias(entry.name) == collectionId) {
         throw ConfigurationPathAliasException(
           path,
           p.join(_configurationRoot, entry.name),
@@ -121,13 +129,14 @@ final class ConfigurationStore {
     }
   }
 
-  List<ConfigurationCollectionEntry> _listCollectionSync(String collectionId) {
+  _CollectionListing _listCollectionSync(String collectionId) {
     final path = p.join(_configurationRoot, collectionId);
-    _checkCollectionAliases(collectionId, _listEntriesSync(_configurationRoot));
+    final rootEntries = _listEntriesSync(_configurationRoot);
+    _checkCollectionAliases(collectionId, rootEntries);
     _checkCollectionDirectory(path);
     final entries = _listEntriesSync(path);
     _checkCollectionDirectory(path);
-    return entries;
+    return (entries: entries, rootEntryCount: rootEntries.length);
   }
 
   List<ConfigurationCollectionEntry>? _listCollectionLocked(
@@ -149,7 +158,7 @@ final class ConfigurationStore {
     try {
       handle.lockSync(FileLock.blockingShared);
       try {
-        return _listCollectionSync(collectionId);
+        return _listCollectionSync(collectionId).entries;
       } finally {
         handle.unlockSync();
       }
@@ -240,13 +249,40 @@ final class ConfigurationStore {
   ConfigurationSnapshot save(
     ConfigurationSnapshot expected,
     TomlDocument document,
-  ) => _save(expected, document);
+  ) {
+    _checkSnapshotPath(expected);
+    if (document.source == expected.document.source) {
+      _checkBaseline(expected);
+      return expected;
+    }
+    _requireLinux();
+    _checkRecordPath();
+    _rejectFileSymlink();
+    return _publish(expected, document, _encode(document));
+  }
 
   /// Creates a record only if absent, without parsing existing destination bytes.
   /// Even an empty document is materialized; an existing empty file conflicts.
-  ConfigurationSnapshot create(TomlDocument document) {
+  ConfigurationSnapshot create(TomlDocument document) =>
+      prepareCreate(document)();
+
+  /// Prepares a bounded record write without touching storage. Invoking the
+  /// result checks the live collection and destination and conditionally inserts.
+  /// [collectionAllowsCreate] runs synchronously inside that write's exclusive
+  /// lock, on the same bounded listing used for capacity. It may load records
+  /// but must not re-open the lock (e.g. via [listCollection] or a mutation).
+  ConfigurationSnapshot Function() prepareCreate(
+    TomlDocument document, {
+    bool Function(List<ConfigurationCollectionEntry>)? collectionAllowsCreate,
+  }) {
     _requireRecord();
-    return _save(_absent(), document, create: true);
+    _requireLinux();
+    final bytes = _encode(document);
+    final absent = _absent();
+    return () {
+      _checkRecordPath();
+      return _publish(absent, document, bytes, collectionAllowsCreate);
+    };
   }
 
   /// Deletes a record only if its existence and exact bytes match [expected].
@@ -269,27 +305,33 @@ final class ConfigurationStore {
     });
   }
 
-  ConfigurationSnapshot _save(
-    ConfigurationSnapshot expected,
-    TomlDocument document, {
-    bool create = false,
-  }) {
-    _checkSnapshotPath(expected);
-    if (!create && document.source == expected.document.source) {
-      _checkBaseline(expected);
-      return expected;
-    }
-    _requireLinux();
-    _checkRecordPath();
-    _rejectFileSymlink();
+  Uint8List _encode(TomlDocument document) {
     _checkSize(document.source.length);
     final bytes = utf8.encode(document.source);
     _checkSize(bytes.length);
+    return bytes;
+  }
+
+  ConfigurationSnapshot _publish(
+    ConfigurationSnapshot expected,
+    TomlDocument document,
+    Uint8List bytes, [
+    bool Function(List<ConfigurationCollectionEntry>)? collectionAllowsCreate,
+  ]) {
     return _withLock(() {
       _rejectFileSymlink();
+      _CollectionListing? listing;
+      if (collectionAllowsCreate != null) {
+        listing = _listCollectionSync(p.basename(_collectionPath!));
+        if (!collectionAllowsCreate(listing.entries)) {
+          throw ConfigurationConflictException(filePath);
+        }
+      }
       _checkBaseline(expected);
       if (_collectionPath != null && !expected.exists) {
-        _checkCreateCapacity();
+        _checkCreateCapacity(
+          listing ?? _listCollectionSync(p.basename(_collectionPath)),
+        );
       }
       final file = File(filePath);
       file.parent.createSync(recursive: true);
@@ -330,20 +372,18 @@ final class ConfigurationStore {
     });
   }
 
-  void _checkCreateCapacity() {
+  void _checkCreateCapacity(_CollectionListing listing) {
     final collection = _collectionPath!;
-    final rootEntries = _listEntriesSync(_configurationRoot);
-    _checkCollectionAliases(p.basename(collection), rootEntries);
     if (FileSystemEntity.typeSync(collection, followLinks: false) ==
             FileSystemEntityType.notFound &&
-        rootEntries.length == maxCollectionEntries) {
+        listing.rootEntryCount == maxCollectionEntries) {
       throw ConfigurationLimitException(
         _configurationRoot,
         maxCollectionEntries,
         'entries',
       );
     }
-    if (_listEntriesSync(collection).length == maxCollectionEntries) {
+    if (listing.entries.length == maxCollectionEntries) {
       throw ConfigurationLimitException(
         collection,
         maxCollectionEntries,

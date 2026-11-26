@@ -73,6 +73,7 @@ void main() {
             'collectionLabel': 'Windows',
             'label': 'Window',
             'displayField': 'caption',
+            'filenameField': 'caption',
             'formBehavior': _behavior,
             'fields': [
               {
@@ -303,15 +304,27 @@ void main() {
       );
       expect(_within(end, 'Draft: 4'), findsOneWidget);
       expect(_enabled(tester, create), isTrue); // The last valid draft won.
+      final beforeInvalidName = tester
+          .widget<ButtonStyleButton>(create)
+          .onPressed!;
+      await _enter(tester, _input('caption'), '---');
+      expect(_enabled(tester, create), isFalse);
+      beforeInvalidName();
+      await _enter(tester, _input('caption'), 'Morning / shift');
+      expect(_within(start, 'Draft: 2'), findsOneWidget);
+      expect(_within(end, 'Draft: 4'), findsOneWidget);
+      expect(_enabled(tester, create), isTrue);
       expect(file(id).existsSync(), isFalse);
       expect(await saved(), isEmpty);
       await _tap(tester, create);
       await _ready(tester, 'records-reload-$_collection');
       expect(await saved(), {
-        id: {'caption': 'Morning', 'start': 2, 'end': 4},
+        id: {'caption': 'Morning / shift', 'start': 2, 'end': 4},
       });
-      expect(file(id).readAsStringSync(), contains('recordType = "$_type"'));
-      expect(file(id).readAsStringSync(), isNot(contains(_editor)));
+      final document = file('morning-shift').readAsStringSync();
+      expect(document, contains('recordType = "$_type"'));
+      expect(document, isNot(contains(_editor)));
+      expect(file(id).existsSync(), isFalse);
       await _dismiss(tester);
     }),
     skip: !Platform.isLinux,
@@ -594,7 +607,10 @@ void main() {
       expect(await saved(), {
         id: {'caption': 'clear', 'start': 2, 'end': 4},
       });
-      expect(file(id).readAsStringSync(), isNot(contains('finish =')));
+      expect(
+        file('clear-on-open').readAsStringSync(),
+        isNot(contains('finish =')),
+      );
       await _dismiss(tester);
     }),
     skip: !Platform.isLinux,

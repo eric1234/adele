@@ -113,8 +113,10 @@ await records.delete(reloaded);
 ```
 
 `create` requires an unoccupied semantic ID in the collection and an unoccupied
-initial filename (`<id>.toml`). An occupied destination conflicts even if its
-contents cannot be parsed. `load(collection, id)` discovers the embedded ID;
+initial filename. The adapter derives the basename from the type's `filenameField`
+or, when omitted, the submitted record ID. Callers cannot override that choice.
+An occupied destination is protected even if its contents cannot be parsed.
+`load(collection, id)` discovers the embedded ID;
 it returns an immutable `ConfigurationRecordSnapshot` with `id`, actual `fileName`,
 `type`, `collection`, typed known `values` and `credentials`, the native
 document, and a private conditional baseline. Absence is
@@ -225,10 +227,10 @@ with the [application coordinator](../../docs/architecture/profiles-and-configur
 
 ### Enumeration and Safety
 
-All record operations return Futures and first perform a bounded, nonrecursive
-directory scan. On Linux the scan waits behind any ordinary writer using the
-existing stable shared lock, then runs synchronously without exposing transaction
-staging in either collection or configuration-root entries. The actual reads and
+Record operations use bounded, nonrecursive directory scans. On Linux,
+creation checks aliases and competing embedded IDs **under the store's exclusive
+insertion lock**; other operations scan under its shared listing lock. Neither
+sees a cooperating writer's staging files. The actual reads and
 transactions remain synchronous on the owning host isolate; no additional actor
 is created. Desktop collection loading and creation route through the established
 Settings worker using this adapter and the same underlying store as scalar

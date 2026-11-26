@@ -32,7 +32,7 @@ final class StagingOverrides extends IOOverrides {
   final void Function(File)? beforeOpen;
   final void Function(File)? beforeRename;
   final void Function(File)? beforeDelete;
-  final void Function()? beforeLock;
+  final void Function(FileLock mode)? beforeLock;
   final void Function()? missingLock;
   final void Function()? afterMissingLock;
 
@@ -68,6 +68,9 @@ final class _LockFile implements File {
   final StagingOverrides overrides;
 
   @override
+  Directory get parent => file.parent;
+
+  @override
   RandomAccessFile openSync({FileMode mode = FileMode.read}) {
     try {
       return _LockHandle(file.openSync(mode: mode), overrides);
@@ -92,7 +95,7 @@ final class _LockHandle implements RandomAccessFile {
     int start = 0,
     int end = -1,
   ]) {
-    overrides.beforeLock?.call();
+    overrides.beforeLock?.call(mode);
     handle.lockSync(mode, start, end);
   }
 
