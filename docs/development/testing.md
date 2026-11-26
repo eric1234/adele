@@ -137,25 +137,21 @@ The local two-process default does not limit CI matrix parallelism. The aggregat
 `test` gate requires every matrix entry to pass; `fail-fast: false` lets other
 entries continue after a failure.
 
-Desktop shards recursively discover `*_test.dart` files under `app/test/`, including
-nested directories, using Flutter's file discovery convention. Sorted paths relative
-to `app/`, with `/` separators, are assigned by unsigned 32-bit FNV-1a of their UTF-8
-bytes modulo four. Every file belongs to exactly one shard; new files are included
-automatically without moving existing paths between shards. Desktop assignment uses
-no duration inventory or separately maintained test lists.
+Desktop and Git backend shards recursively discover `*_test.dart` under
+`app/test/` and `plugins/git/packages/backend/test/`, respectively. New nested
+suites are included automatically; support files without that suffix are ignored.
+Both targets use duration-weighted longest-processing-time-first (LPT) allocation
+with one CI test worker per shard. Each target's `ciTestFileCosts` in
+`tools/adele.dart` contains relative cost hints in approximate ten-second units,
+not an allowlist or timeouts. Unlisted files cost **1**. See the
+[desktop CI replay](../research/ci-performance-2026-11-26.md#desktop-fix-the-distribution-then-move-coverage-to-its-owner)
+for the desktop hints' provenance.
 
-Git backend shards recursively discover `*_test.dart` under
-`plugins/git/packages/backend/test/`, including new nested suites automatically;
-support files without that suffix are ignored. Only Git uses cost-aware
-longest-processing-time-first (LPT) whole-file assignment. The small
-`ciTestFileCosts` map on its target in `tools/adele.dart` contains relative cost
-hints derived from GitHub CI measurements in approximate ten-second units, not a
-discovery allowlist, timeouts, or exact duration promises. An unlisted file has
-cost **1**. Files are considered by descending cost, then ascending
-package-relative path; each goes to the least-loaded shard, with the lower 1-based
-shard id breaking load ties. Identical files and hints produce identical assignments
-regardless of filesystem discovery order. Adding files or updating hints may
-rebalance Git assignments. CI still uses one test worker per Git shard.
+Whole files are considered by descending cost, then ascending package-relative
+path (with `/` separators). Each goes to the least-loaded shard, with the lower
+1-based shard id breaking load ties. Identical inventories and hints produce
+identical assignments regardless of filesystem discovery order. Adding files or
+updating hints can rebalance existing assignments on either target.
 
 For both targets, every discovered file belongs to exactly one nonempty shard.
 Empty partitions fail before preparation rather than falling back to full-suite

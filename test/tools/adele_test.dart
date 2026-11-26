@@ -469,7 +469,7 @@ exit "$CLIPPY_EXIT"
           };
           expect(selected, hasLength(count));
           expect(target.ciShards, count);
-          expect(target.ciTestFileCosts != null, target.name == 'git_backend');
+          expect(target.ciTestFileCosts, count > 1 ? isNotEmpty : isNull);
           for (var index = 0; index < selected.length; index++) {
             final entry = selected[index];
             expect(
@@ -1008,12 +1008,14 @@ exit "$CLIPPY_EXIT"
     }
 
     test(
-      'actual checkout partitions cover every file and separate expensive suites',
+      'desktop checkout shards cover every file and separate the largest suites',
       () {
         final target = lookupTestTarget('adele_desktop');
+        final costs = target.ciTestFileCosts!;
         final shards = partitionTestFiles(
           Directory(target.path),
           target.ciShards,
+          costs: costs,
         );
         final expected =
             Directory('app/test')
@@ -1032,23 +1034,27 @@ exit "$CLIPPY_EXIT"
               ..sort();
         final selected = shards.expand((files) => files).toList();
         expect(shards, hasLength(4));
+        expect(shards, everyElement(isNotEmpty));
+        expect(expected, containsAll(costs.keys));
         expect(selected.toSet(), hasLength(expected.length));
         expect(selected, unorderedEquals(expected));
         expect(
-          partitionTestFiles(Directory(target.path), target.ciShards),
+          partitionTestFiles(
+            Directory(target.path),
+            target.ciShards,
+            costs: costs,
+          ),
           shards,
         );
+        const diff = 'test/prepared_diff_git_integration_test.dart';
+        const portable = 'test/prepared_portable_git_integration_test.dart';
         expect(
-          shards[2],
-          contains('test/core/normal_chatgpt_run_integration_test.dart'),
+          shards.where(
+            (files) => files.contains(diff) || files.contains(portable),
+          ),
+          hasLength(2),
         );
-        expect(
-          shards[1],
-          contains('test/core/command_output_capture_integration_test.dart'),
-        );
-        expect(shards[0], contains('test/prepared_console_host_test.dart'));
         for (final files in shards) {
-          expect(files, [...files]..sort());
           expect(target.argumentsFor(ci: true, testFiles: files), [
             'test',
             '--concurrency',
