@@ -457,6 +457,23 @@ const List<TestTarget> testTargets = <TestTarget>[
     arguments: <String>['test'],
     ciTestConcurrency: 1,
     ciShards: 4,
+    // Approximate 10-second allocation hints from CI runs 800/801, replayed
+    // against 802/803. Unlisted files are still discovered and cost 1.
+    ciTestFileCosts: <String, int>{
+      'test/core/command_output_capture_integration_test.dart': 7,
+      'test/core/durable_chat_session_integration_test.dart': 4,
+      'test/core/model_preset_integration_test.dart': 3,
+      'test/core/normal_chatgpt_run_integration_test.dart': 14,
+      'test/core/openai_record_startup_integration_test.dart': 7,
+      'test/core/session_evaluator_integration_test.dart': 4,
+      'test/prepared_console_host_test.dart': 3,
+      'test/prepared_diff_git_integration_test.dart': 24,
+      'test/prepared_environment_buffered_process_integration_test.dart': 3,
+      'test/prepared_environment_capability_integration_test.dart': 2,
+      'test/prepared_portable_git_integration_test.dart': 19,
+      'test/record_credential_settings_dialog_test.dart': 3,
+      'test/record_settings_dialog_test.dart': 5,
+    },
     linuxDesktopDeps: true,
     nativeCodeEditor: true,
     nativeToml: true,
