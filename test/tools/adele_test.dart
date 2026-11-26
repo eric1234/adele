@@ -415,10 +415,20 @@ exit "$CLIPPY_EXIT"
         final tools = lookupTestTarget('adele_tools');
         expect(tools.path, '.');
         expect(tools.argumentsFor(), ['test', 'test/tools']);
-        expect(
-          File('test/tools/backend_artifacts_test.dart').existsSync(),
-          isTrue,
-        );
+        for (final suite in [
+          'desktop_tool_cache_test.dart',
+          'desktop_final_input_fence_test.dart',
+          'desktop_launcher_routing_test.dart',
+          'stock_installation_publication_test.dart',
+          'desktop_backend_compile_failure_test.dart',
+          'desktop_frontend_compile_failure_test.dart',
+          'desktop_source_invalidation_test.dart',
+          'desktop_identity_invalidation_test.dart',
+          'desktop_publication_recovery_test.dart',
+        ]) {
+          final file = File('test/tools/$suite');
+          expect(file.existsSync(), isTrue, reason: file.path);
+        }
         final plan = jsonDecode(testPlanJson()) as Map<String, Object?>;
         expect(
           (plan['include']! as List<Object?>).cast<Map<String, Object?>>().map(

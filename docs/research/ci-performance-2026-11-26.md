@@ -84,6 +84,8 @@ Keep `app/test/**` as core. Prefer existing `plugins/<owner>/packages/frontend/t
 
 ## Tools: split the file that occupies the worker
 
+The case numbers and local benchmark commands in this section refer to the [original `backend_artifacts_test.dart` at `1367bb5`](https://github.com/eric1234/adele/blob/1367bb502cf0de1b6c161bdb057271dd07e0b8a2/test/tools/backend_artifacts_test.dart). For current commands, see [testing and validation](../development/testing.md).
+
 `adele_tools` runs `dart test test/tools` with the Dart runner's default **file** concurrency. It is not the serial desktop policy. On [run 802, tools job](https://github.com/eric1234/adele/actions/runs/45864576951/job/140064377542) the worker was 689s. The 318 `backend_artifacts_test.dart` completions spanned **635s**, excluding the first case's setup; the other nine suites had all finished with **614s** of that file still to go. The ~14m39s span in [795](https://github.com/eric1234/adele/actions/runs/45679656469/job/139436738116) is plausible but not a stable isolated runtime.
 
 **Which tests?** The following are disjoint completion-interval sums from that file in 802 and a second successful [tools job in 803](https://github.com/eric1234/adele/actions/runs/45869197471/job/140080152573). First row omits time before completion 1; other rows start at the previous row's last completion. Cases *within* this file are sequential, other files can overlap. Seconds measure elapsed lane occupancy, not exclusive CPU. Proposed basenames below would live under `test/tools/`; the IDs identify case order at the inspected revision, not a proposed test selector.
