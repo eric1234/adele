@@ -143,7 +143,7 @@ final class ConfigurationWriter {
     String root,
     String mode, [
     String? value,
-    String? recordId,
+    String? fileStem,
     String? collectionId,
     String? installations,
   ]) async {
@@ -154,7 +154,7 @@ final class ConfigurationWriter {
         root,
         mode,
         ?value,
-        ?recordId,
+        ?fileStem,
         ?collectionId,
         ?installations,
       ]),

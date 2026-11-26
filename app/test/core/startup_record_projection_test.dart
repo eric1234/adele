@@ -107,7 +107,7 @@ void main() {
     final file = File('${roots.configurationRoot}/$collection/$id.toml');
     file.parent.createSync(recursive: true);
     file.writeAsStringSync(
-      '# retained\nrecordVersion = 1\nrecordType = "$type"\n\n'
+      '# retained\nrecordVersion = 2\nrecordId = "$id"\nrecordType = "$type"\n\n'
       '[values]\n$values$suffix',
     );
     return file;
@@ -266,9 +266,17 @@ void main() {
       ]);
       for (final diagnostic in snapshot.diagnostics) {
         expect(diagnostic.collection, _jobs);
-        expect('${diagnostic.recordId}.toml', diagnostic.fileName);
         expect(diagnostic.message, isNotEmpty);
       }
+      expect(snapshot.diagnostics.map((item) => item.recordId?.value), [
+        'bad-reference',
+        null, // Malformed TOML and invalid UTF-8 have no observed header.
+        null,
+        'invalid-value',
+        'missing-required',
+        'unknown-type',
+        'unsupported-value',
+      ]);
       expect(
         snapshot.diagnostics.first.message,
         contains('credential reference'),

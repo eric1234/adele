@@ -806,6 +806,43 @@ void main() {
     );
 
     test(
+      'persisted Session selection resolves after an external rename',
+      () async {
+        const markdown = '# Review\n\nCheck the acceptance criteria.';
+        await fixture.createAgent('reviewer', instructions: markdown);
+        await fixture.createAgent('editor', instructions: 'Edit the wording.');
+        await fixture.client.updateSessionSelection(
+          session.id.value,
+          'reviewer',
+          0,
+        );
+        final rows = _inspect(source, _selectionRows);
+        expect(rows.single, {
+          'session_id': session.id.value,
+          'selected_agent_id': 'reviewer',
+          'revision': 1,
+        });
+
+        final file = File(
+          '${fixture.roots.configurationRoot}/agents/reviewer.toml',
+        );
+        await file.rename('${file.parent.path}/acceptance-review.toml');
+
+        final observed = await fixture.catalog.readAgents();
+        expect(observed.isComplete, isTrue);
+        expect(observed.agents.map((agent) => agent.id), [
+          'editor',
+          'reviewer',
+        ]);
+        final reads = fixture.recordReads;
+        expect(await instructions(firstRun, await capture(firstRun)), markdown);
+        expect(fixture.recordReads, reads + 1);
+        expect(_inspect(source, _selectionRows), rows);
+        expect(await file.exists(), isFalse);
+      },
+    );
+
+    test(
       'Run captures exact instructions once; edits and reselection wait for a new Run',
       () async {
         final firstText =

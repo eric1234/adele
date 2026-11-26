@@ -155,7 +155,7 @@ void main() {
       final settingsFile = File('${roots.configurationRoot}/settings.toml');
       CredentialReference reference(String id) => CredentialReference.parse(
         ConfigurationStore(roots)
-                .recordFile(collectionId: 'providers', recordId: id)
+                .recordFile(collectionId: 'providers', fileName: '$id.toml')
                 .load()
                 .document
                 .readScalar(['credentials', 'api-key'])
@@ -511,7 +511,8 @@ void main() {
           final contents = await File(
             '${roots.configurationRoot}/providers/$id.toml',
           ).readAsString();
-          expect(contents, contains('recordVersion = 1'));
+          expect(contents, contains('recordVersion = 2'));
+          expect(contents, contains('recordId = "$id"'));
           expect(contents, contains('recordType = "$openai.api-key"'));
           expect(contents, contains('[values]'));
           expect(contents, contains('display-name = "$name"'));

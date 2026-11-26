@@ -283,7 +283,7 @@ void main() {
       await broken.writeAsString(invalid);
       final malformed = recordFile('blank-name');
       final blank =
-          'recordVersion = 1\nrecordType = "$_type"\n'
+          'recordVersion = 2\nrecordId = "blank-name"\nrecordType = "$_type"\n'
           '[values]\nname = "   "\ninstructions = "Keep"\n';
       await malformed.writeAsString(blank);
       final partial = await client.readAgents();

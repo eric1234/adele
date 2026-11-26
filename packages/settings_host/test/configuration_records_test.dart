@@ -120,8 +120,12 @@ void main() {
     target.writeAsStringSync(source);
   }
 
-  String source(String values, {String type = 'dev.adele.openai.api-key'}) =>
-      'recordVersion = 1\nrecordType = "$type"\n\n[values]\n$values';
+  String source(
+    String values, {
+    ConfigurationRecordId? id,
+    String type = 'dev.adele.openai.api-key',
+  }) =>
+      'recordVersion = 2\nrecordId = "${id ?? work}"\nrecordType = "$type"\n\n[values]\n$values';
 
   test('ordinary snapshots do not confer strict startup identity', () async {
     seed(work, source('display-name = "Work"\n'));
@@ -173,7 +177,7 @@ void main() {
     'startup batch pins each incarnation without changing UI equivalence',
     () async {
       seed(work, source('display-name = "Work"\n'));
-      seed(personal, source('display-name = "Personal"\n'));
+      seed(personal, source('display-name = "Personal"\n', id: personal));
       final ordinary = await host.load(providers, work);
       final startup = await host.enumerate(
         providers,
@@ -240,13 +244,268 @@ void main() {
   });
 
   test(
+    'record order and uniqueness use collection-scoped IDs, not basenames',
+    () async {
+      seed(work, source('display-name = "Personal"\n', id: personal));
+      seed(personal, source('display-name = "Work"\n'));
+      seed(
+        work,
+        source('name = "Agent"\ninstructions = ""\n', type: agent.value),
+        agents,
+      );
+      final listing = await host.enumerate(providers);
+      expect(listing.diagnostics, isEmpty);
+      expect(listing.records.map((row) => (row.id, row.fileName)), [
+        (personal, 'work-openai.toml'),
+        (work, 'personal-openai.toml'),
+      ]);
+      expect((await host.load(providers, work)).values['display-name'], 'Work');
+      expect((await host.load(agents, work)).values['name'], 'Agent');
+    },
+  );
+
+  test(
+    'a filename never substitutes for a missing or invalid recordId',
+    () async {
+      for (final header in [
+        'recordVersion = 1',
+        'recordVersion = 2',
+        'recordVersion = 2\nrecordId = 42',
+        'recordVersion = 2\nrecordId = ""',
+        'recordVersion = 2\nrecordId = "Work"',
+        'recordVersion = 2\nrecordId = "../work"',
+        'recordVersion = 2\nrecordId = "con"',
+        'recordVersion = 2\nrecordId = "${'x' * 1024}"',
+      ]) {
+        final original =
+            '$header\nrecordType = "$openai"\n[values]\ndisplay-name = "Work"\n';
+        seed(work, original);
+        final listing = await host.enumerate(providers);
+        expect(listing.records, isEmpty);
+        expect(listing.diagnostics.single.fileName, 'work-openai.toml');
+        expect(listing.diagnostics.single.recordId, isNull);
+        expect(
+          listing.diagnostics.single.error.toString(),
+          isNot(contains('x' * 65)),
+        );
+        await expectLater(
+          host.load(providers, work),
+          throwsA(isA<ConfigurationRecordNotFound>()),
+        );
+        expect(file(work).readAsStringSync(), original);
+      }
+    },
+  );
+
+  test('only fresh observations follow an external rename', () async {
+    final initial = await host.create(openai, work, {'display-name': 'Work'});
+    expect(initial.fileName, 'work-openai.toml');
+    expect(initial.document.readScalar(['recordVersion']), 2);
+    expect(initial.document.readScalar(['recordId']), work.value);
+    expect(initial.document.readScalar(['recordType']), openai.value);
+    final original = source(
+      'display-name = "Work" # note\nfuture = { nested = true }\n',
+    );
+    seed(work, original);
+    final old = (await host.enumerate(
+      providers,
+      captureStartupIdentity: true,
+    )).records.single;
+    final previous = file(work);
+    final moved = previous.renameSync(
+      p.join(previous.parent.path, 'office.toml'),
+    );
+    final conflict = throwsA(isA<ConfigurationConflictException>());
+    final ref = CredentialReference.generate();
+    for (final operation in <Future<Object?> Function()>[
+      () => host.create(openai, work, initial.values),
+      () => host.validateCurrent(old),
+      () => host.validateStartupCurrent(old),
+      () => host.update(old, {'display-name': 'Stale'}),
+      () => host.setCredentialReference(old, apiKey, ref),
+      () => host.delete(old),
+    ]) {
+      await expectLater(operation(), conflict);
+      expect(previous.existsSync(), isFalse);
+      expect(moved.readAsStringSync(), original);
+    }
+
+    final listing = await host.enumerate(
+      providers,
+      captureStartupIdentity: true,
+    );
+    expect(listing.diagnostics, isEmpty);
+    final current = listing.records.single;
+    expect(current.fileName, 'office.toml');
+    expect(current.id, work);
+    await host.validateStartupCurrent(current);
+    await expectLater(
+      host.load(providers, ConfigurationRecordId('office')),
+      throwsA(isA<ConfigurationRecordNotFound>()),
+    );
+    // This ID is free, but its initial filename is physically occupied.
+    await expectLater(
+      host.create(openai, ConfigurationRecordId('office'), initial.values),
+      conflict,
+    );
+    var fresh = await host.load(providers, work);
+    fresh = await host.setCredentialReference(fresh, apiKey, ref);
+    fresh = await host.update(fresh, {'display-name': 'Renamed'});
+    expect(fresh.fileName, 'office.toml');
+    expect(fresh.credentials[apiKey], ref);
+    expect(
+      moved.readAsStringSync(),
+      contains('# note\nfuture = { nested = true }'),
+    );
+    fresh = await host.setCredentialReference(fresh, apiKey, null);
+    await host.delete(fresh);
+    expect(moved.existsSync(), isFalse);
+    expect(previous.existsSync(), isFalse);
+  }, skip: !Platform.isLinux);
+
+  test(
+    'every identifiable duplicate is excluded, regardless of validity',
+    () async {
+      final current = await host.create(openai, work, {'display-name': 'Work'});
+      final sibling = await host.create(openai, personal, {
+        'display-name': 'Personal',
+      });
+      final captured = (await host.enumerate(
+        providers,
+        captureStartupIdentity: true,
+      )).records.singleWhere((record) => record.id == work);
+      final bytes = file(work).readAsBytesSync();
+      final copies = [
+        for (final name in ['a.toml', 'z.toml'])
+          File(p.join(file(work).parent.path, name)),
+      ];
+      for (final original in [
+        source('display-name = "Copy"\n'),
+        source('display-name = true\n'),
+        source('', type: 'dev.absent.type'),
+        source(
+          '',
+          type: agent.value,
+        ), // A declared type, but in another collection.
+        source('display-name = "Copy"\n[credentials]\napi-key = false\n'),
+      ]) {
+        // An invalid claimant is seen both before and after the healthy one.
+        for (final copy in copies) {
+          copy.writeAsStringSync(original);
+        }
+        final listing = await host.enumerate(providers);
+        expect(listing.records.single.id, personal);
+        expect(listing.diagnostics.map((d) => d.fileName), [
+          'a.toml',
+          current.fileName,
+          'z.toml',
+        ]);
+        expect(listing.diagnostics.map((d) => d.recordId), everyElement(work));
+        final ambiguous = isA<ConfigurationRecordFormatException>().having(
+          (e) => e.message,
+          'message',
+          contains('Multiple files'),
+        );
+        expect(
+          listing.diagnostics.map((d) => d.error),
+          everyElement(ambiguous),
+        );
+        await expectLater(host.load(providers, work), throwsA(ambiguous));
+        for (final operation in <Future<Object?> Function()>[
+          () => host.create(openai, work, current.values),
+          () => host.validateCurrent(current),
+          () => host.validateStartupCurrent(captured),
+          () => host.update(current, {'display-name': 'Other'}),
+          () => host.setCredentialReference(
+            current,
+            apiKey,
+            CredentialReference.generate(),
+          ),
+          () => host.delete(current),
+        ]) {
+          await expectLater(
+            operation(),
+            throwsA(isA<ConfigurationConflictException>()),
+          );
+        }
+        expect(file(work).readAsBytesSync(), bytes);
+        for (final copy in copies) {
+          expect(copy.readAsStringSync(), original);
+        }
+        expect(await host.validateCurrent(sibling), same(sibling));
+      }
+    },
+    skip: !Platform.isLinux,
+  );
+
+  test(
+    'an unavailable type still occupies its ID at a different filename',
+    () async {
+      final original = source('', type: 'dev.absent.type');
+      seed(personal, original);
+      final diagnostic = (await host.enumerate(providers)).diagnostics.single;
+      expect(diagnostic.recordId, work);
+      expect(diagnostic.fileName, 'personal-openai.toml');
+      await expectLater(
+        host.create(openai, work, {'display-name': 'New'}),
+        throwsA(isA<ConfigurationConflictException>()),
+      );
+      expect(file(work).existsSync(), isFalse);
+      expect(file(personal).readAsStringSync(), original);
+    },
+  );
+
+  test(
+    'a pinned malformed or missing target still conflicts on raw bytes',
+    () async {
+      seed(
+        personal,
+        source('display-name = "Work"\n'),
+      ); // work ID at personal's filename
+      final record = await host.load(providers, work);
+      for (final bytes in <List<int>?>[
+        [0xff],
+        'malformed = ['.codeUnits,
+        null,
+      ]) {
+        if (bytes == null) {
+          file(personal).deleteSync();
+        } else {
+          file(personal).writeAsBytesSync(bytes);
+        }
+        for (final operation in <Future<Object?> Function()>[
+          () => host.validateCurrent(record),
+          () => host.update(record, record.values),
+          () => host.update(record, {'display-name': 'Other'}),
+          () => host.setCredentialReference(
+            record,
+            apiKey,
+            CredentialReference.generate(),
+          ),
+          () => host.delete(record),
+        ]) {
+          await expectLater(
+            operation(),
+            throwsA(isA<ConfigurationConflictException>()),
+          );
+        }
+        expect(file(work).existsSync(), isFalse);
+        expect(file(personal).existsSync(), bytes != null);
+        if (bytes != null) expect(file(personal).readAsBytesSync(), bytes);
+      }
+    },
+    skip: !Platform.isLinux,
+  );
+
+  test(
     'mixed malformed records remain attributable alongside healthy records',
     () async {
       seed(work, source('display-name = "Work"\n'));
       seed(personal, 'not valid TOML = [');
       final invalidUtf8 = ConfigurationRecordId('invalid-utf8');
       file(invalidUtf8).writeAsBytesSync([0xff]);
-      seed(ConfigurationRecordId('missing-name'), source('endpoint = "old"\n'));
+      final missing = ConfigurationRecordId('missing-name');
+      seed(missing, source('endpoint = "old"\n', id: missing));
       final result = await host.enumerate(providers);
       expect(result.records.single.id, work);
       expect(result.diagnostics.map((failure) => failure.fileName), [
@@ -257,7 +516,9 @@ void main() {
       expect(result.diagnostics[0].error, isA<FormatException>());
       expect(result.diagnostics[1].error, isA<InvalidRecordValue>());
       expect(result.diagnostics[2].error, isA<TomlException>());
-      expect(result.diagnostics[2].recordId, personal);
+      expect(result.diagnostics[0].recordId, isNull);
+      expect(result.diagnostics[1].recordId, missing);
+      expect(result.diagnostics[2].recordId, isNull);
       expect((await host.load(providers, work)).values['display-name'], 'Work');
       expect(() => result.records.clear(), throwsUnsupportedError);
       expect(() => result.diagnostics.clear(), throwsUnsupportedError);
@@ -266,23 +527,28 @@ void main() {
   );
 
   for (final malformed in [
-    'recordVersion = 2\nrecordType = "dev.adele.openai.api-key"\n[values]\ndisplay-name = "X"\n',
-    'recordVersion = "1"\nrecordType = "dev.adele.openai.api-key"\n[values]\ndisplay-name = "X"\n',
+    'recordVersion = 1\nrecordType = "dev.adele.openai.api-key"\n[values]\ndisplay-name = "X"\n',
+    'recordVersion = 3\nrecordType = "dev.adele.openai.api-key"\n[values]\ndisplay-name = "X"\n',
+    'recordVersion = "2"\nrecordType = "dev.adele.openai.api-key"\n[values]\ndisplay-name = "X"\n',
     'recordType = "dev.adele.openai.api-key"\n[values]\ndisplay-name = "X"\n',
-    'recordVersion = 1\nrecordType = true\n[values]\ndisplay-name = "X"\n',
-    'recordVersion = 1\nrecordType = "not-a-public-id"\n[values]\n',
-    'recordVersion = 1\nrecordType = "dev.absent.type"\n[values]\n',
-    'recordVersion = 1\nrecordType = "dev.adele.openai.api-key"\n',
-    'recordVersion = 1\nrecordType = "dev.adele.openai.api-key"\nvalues = {}\n',
-    'recordVersion = 1\nrecordType = "dev.adele.openai.api-key"\n[[values]]\n',
+    'recordVersion = 2\nrecordType = true\n[values]\ndisplay-name = "X"\n',
+    'recordVersion = 2\nrecordType = "not-a-public-id"\n[values]\n',
+    'recordVersion = 2\nrecordType = "dev.absent.type"\n[values]\n',
+    'recordVersion = 2\nrecordType = "dev.adele.openai.api-key"\n',
+    'recordVersion = 2\nrecordType = "dev.adele.openai.api-key"\nvalues = {}\n',
+    'recordVersion = 2\nrecordType = "dev.adele.openai.api-key"\n[[values]]\n',
   ]) {
     test('invalid header/table is explicit: $malformed', () async {
-      seed(work, malformed);
+      final original = 'recordId = "$work"\n$malformed';
+      seed(work, original);
       await expectLater(
         host.load(providers, work),
         throwsA(isA<ConfigurationRecordFormatException>()),
       );
-      expect(file(work).readAsStringSync(), malformed);
+      final listing = await host.enumerate(providers);
+      expect(listing.records, isEmpty);
+      expect(listing.diagnostics.single.recordId, work);
+      expect(file(work).readAsStringSync(), original);
     });
   }
 
@@ -335,11 +601,11 @@ void main() {
         isA<ConfigurationLimitException>(),
       );
       file(personal).deleteSync();
-      final large = source(
-        'display-name = "Name"\nunknown = "${'x' * (1000 * 1024)}"\n',
-      );
+      final large =
+          'display-name = "Name"\nunknown = "${'x' * (1000 * 1024)}"\n';
       for (var index = 0; index < 17; index++) {
-        seed(ConfigurationRecordId('large-$index'), large);
+        final id = ConfigurationRecordId('large-$index');
+        seed(id, source(large, id: id));
       }
       await expectLater(
         host.enumerate(providers),
@@ -385,7 +651,7 @@ void main() {
         .having((e) => e.fieldId, 'field', model);
 
     String presetSource(String fields) =>
-        source("name = '  Preset  '\n$fields", type: preset.value);
+        source("name = '  Preset  '\n$fields", type: preset.value, id: id);
 
     test('create writes a regular subtable in declaration order', () async {
       final input = Map.of(reference);
@@ -785,7 +1051,7 @@ future = ["untouched"]
           final original =
               '${source('display-name = "Work"\n')}\n[credentials]\n$malformed\n';
           seed(work, original);
-          seed(personal, source('display-name = "Personal"\n'));
+          seed(personal, source('display-name = "Personal"\n', id: personal));
           final safe = isA<ConfigurationRecordFormatException>()
               .having((error) => error.collection, 'collection', providers)
               .having((error) => error.recordId, 'record', work)
@@ -938,7 +1204,7 @@ future = ["untouched"]
       'equal association and validation preserve exact BOM CRLF bytes and mtime',
       () async {
         final original =
-            '\uFEFF# header\r\nrecordVersion = 0x1\r\nrecordType = "dev.adele.openai.api-key"\r\n[values]\r\ndisplay-name = \'Work\'\r\n[credentials]\r\napi-key = \'${reference.value}\' # keep\r\n';
+            '\uFEFF# header\r\nrecordVersion = 0x2\r\nrecordId = "$work"\r\nrecordType = "dev.adele.openai.api-key"\r\n[values]\r\ndisplay-name = \'Work\'\r\n[credentials]\r\napi-key = \'${reference.value}\' # keep\r\n';
         seed(work, original);
         final bytes = file(work).readAsBytesSync();
         final modified = DateTime.utc(2001);
@@ -990,10 +1256,10 @@ future = ["untouched"]
             throwsA(invalidField),
           );
           // Seed parseable legacy TOML directly, bypassing the validating writer.
-          final original = healthy.document.setScalar([
-            'values',
-            field,
-          ], '   ').source;
+          final original = healthy.document
+              .setScalar(['recordId'], personal.value)
+              .setScalar(['values', field], '   ')
+              .source;
           seed(personal, original, collection);
           await expectLater(
             host.load(collection, personal),
@@ -1252,7 +1518,7 @@ Return **findings** before the summary.
         'full root and collection still allow existing updates and deletes',
         () async {
           seed(work, source('display-name = "Work"\n'));
-          seed(personal, source('display-name = "Personal"\n'));
+          seed(personal, source('display-name = "Personal"\n', id: personal));
           final personalBytes = file(personal).readAsBytesSync();
           final collection = file(work).parent;
           final root = Directory(roots.configurationRoot);
@@ -1314,7 +1580,9 @@ Return **findings** before the summary.
         expect(result.diagnostics, hasLength(1023));
         expect(
           result.diagnostics
-              .singleWhere((failure) => failure.recordId == personal)
+              .singleWhere(
+                (failure) => failure.fileName == 'personal-openai.toml',
+              )
               .error,
           isA<TomlException>(),
         );
@@ -1409,7 +1677,10 @@ Return **findings** before the summary.
             'enumerate and load exclude staging ${atCapacity ? 'at 1024 root and collection entries' : 'below capacity'}',
             () async {
               seed(work, source('display-name = "Work"\n'));
-              seed(personal, source('display-name = "Personal"\n'));
+              seed(
+                personal,
+                source('display-name = "Personal"\n', id: personal),
+              );
               final workBytes = file(work).readAsBytesSync();
               final personalBytes = file(personal).readAsBytesSync();
               final collection = file(work).parent;
@@ -1613,7 +1884,7 @@ Return **findings** before the summary.
       'no-op retains byte spelling BOM comments and mtime without state artifacts',
       () async {
         final original =
-            '\uFEFF# header\nrecordVersion = 0x1\nrecordType = "dev.adele.openai.api-key"\n\n[values]\ndisplay-name = "Work" # comment\n';
+            '\uFEFF# header\nrecordVersion = 0x2\nrecordId = "$work"\nrecordType = "dev.adele.openai.api-key"\n\n[values]\ndisplay-name = "Work" # comment\n';
         seed(work, original);
         final originalBytes = file(work).readAsBytesSync();
         final modified = DateTime.utc(2001);
@@ -1691,7 +1962,7 @@ Return **findings** before the summary.
       final bytes = target.readAsBytesSync();
       await expectLater(
         host.load(providers, work),
-        throwsA(isA<ConfigurationSymlinkException>()),
+        throwsA(isA<ConfigurationRecordNotFound>()),
       );
       await expectLater(
         host.update(loaded, {'display-name': 'Other'}),
@@ -1707,10 +1978,10 @@ Return **findings** before the summary.
       );
       expect(target.readAsBytesSync(), bytes);
       expect(Link(file(work).path).existsSync(), isTrue);
-      expect(
-        (await host.enumerate(providers)).diagnostics.single.recordId,
-        work,
-      );
+      final diagnostic = (await host.enumerate(providers)).diagnostics.single;
+      expect(diagnostic.recordId, isNull);
+      expect(diagnostic.fileName, 'work-openai.toml');
+      expect(diagnostic.error, isA<ConfigurationSymlinkException>());
     });
 
     test(
@@ -1929,6 +2200,19 @@ Return **findings** before the summary.
         throwsA(isA<ConfigurationConflictException>()),
       );
       expect((await generic.load(providers, work)).type.id, openai);
+      seed(personal, source('', type: otherType.id.value));
+      final ambiguous = await generic.enumerate(providers);
+      expect(ambiguous.records, isEmpty);
+      expect(ambiguous.diagnostics.map((d) => d.fileName), [
+        'personal-openai.toml',
+        'work-openai.toml',
+      ]);
+      expect(ambiguous.diagnostics.map((d) => d.recordId), everyElement(work));
+      await expectLater(
+        generic.load(providers, work),
+        throwsA(isA<ConfigurationRecordFormatException>()),
+      );
+      file(personal).deleteSync();
       seed(work, source('', type: otherType.id.value));
       await expectLater(
         generic.update(original, original.values),
@@ -1961,8 +2245,8 @@ Return **findings** before the summary.
             store: persistence,
             catalog: RecordCatalog([type]),
           );
-          const original =
-              'recordVersion = 1\nrecordType = "dev.example.optional.type"\nvalues.a = "value"\n';
+          final original =
+              'recordVersion = 2\nrecordId = "$work"\nrecordType = "dev.example.optional.type"\nvalues.a = "value"\n';
           seed(work, original);
           final loaded = await generic.load(providers, work);
           await expectLater(

@@ -18,10 +18,13 @@ final class ConfigurationRecordStore {
   /// Bounds retained documents in one successful collection result.
   static const maxEnumerationBytes = 16 * 1024 * 1024;
 
+  /// Location chosen for a new record, not a lookup rule for existing records.
+  static String initialFileName(ConfigurationRecordId id) => '${id.value}.toml';
+
   final ConfigurationStore store;
   final RecordCatalog catalog;
 
-  /// Returns valid records and attributable failures, each in filename order.
+  /// Returns valid records in semantic ID order and diagnostics in filename order.
   /// Directory-wide failures reject the operation, never an empty replacement.
   Future<ConfigurationRecordEnumeration> enumerate(
     RecordCollectionId collection, {
@@ -32,50 +35,49 @@ final class ConfigurationRecordStore {
     final paths = [
       if (captureStartupIdentity)
         for (final entry in entries)
-          File(store.filePath).parent.uri
-              .resolve('${collection.value}/${Uri.encodeComponent(entry.name)}')
-              .toFilePath(),
+          if (ConfigurationStore.isRecordFileName(entry.name) &&
+              entry.type == FileSystemEntityType.file)
+            _file(collection, entry.name).filePath,
     ];
     final before = captureStartupIdentity
         ? await _startupIdentities(paths)
         : const <String, String?>{};
-    final names = <String, int>{};
-    for (final entry in entries) {
-      names.update(_alias(entry.name), (count) => count + 1, ifAbsent: () => 1);
-    }
-    final records = <ConfigurationRecordSnapshot>[];
-    final diagnostics = <ConfigurationRecordDiagnostic>[];
+    final firstFile = <ConfigurationRecordId, String>{};
+    final records = <ConfigurationRecordId, ConfigurationRecordSnapshot>{};
+    final diagnostics = <String, ConfigurationRecordDiagnostic>{};
     var sourceBytes = 0;
-    for (final entry in entries) {
-      ConfigurationRecordId? id;
+    for (final candidate in _headers(collection, entries)) {
+      final (:fileName, :id, :error, :baseline) = candidate;
+      if (id != null) {
+        final first = firstFile.putIfAbsent(id, () => fileName);
+        if (first != fileName) {
+          final removed = records.remove(id);
+          if (removed != null) {
+            sourceBytes -= utf8.encode(removed.document.source).length;
+          }
+          final duplicate = _duplicate(collection, id);
+          for (final name in [first, fileName]) {
+            diagnostics[name] = ConfigurationRecordDiagnostic(
+              collection,
+              name,
+              id,
+              duplicate,
+            );
+          }
+          continue;
+        }
+      }
       try {
-        final name = entry.name;
-        if (!name.endsWith('.toml')) {
-          throw FormatException(
-            'Expected a canonical <record-id>.toml filename.',
-          );
-        }
-        id = ConfigurationRecordId(name.substring(0, name.length - 5));
-        if (names[_alias(name)] != 1) {
-          throw ConfigurationRecordFormatException(
-            collection,
-            id,
-            'Ambiguous record filename aliases.',
-          );
-        }
-        if (entry.type != FileSystemEntityType.file) {
-          throw ConfigurationRecordFormatException(
-            collection,
-            id,
-            'Expected a regular record file, not ${entry.type}.',
-          );
-        }
-        final record = _load(collection, id);
+        if (error != null) throw error;
+        final record = _decode(collection, id!, fileName, baseline!);
         sourceBytes += utf8.encode(record.document.source).length;
-        records.add(record);
+        records[id] = record;
       } on Exception catch (error) {
-        diagnostics.add(
-          ConfigurationRecordDiagnostic(collection, entry.name, id, error),
+        diagnostics[fileName] = ConfigurationRecordDiagnostic(
+          collection,
+          fileName,
+          id,
+          error,
         );
       }
       if (sourceBytes > maxEnumerationBytes) {
@@ -88,22 +90,35 @@ final class ConfigurationRecordStore {
     }
     if (captureStartupIdentity) {
       final after = await _startupIdentities(paths);
-      for (final record in records) {
-        final path = _file(record.collection, record.id).filePath;
+      for (final record in records.values) {
+        final path = _file(record.collection, record.fileName).filePath;
         record._startupIdentity = before == null || after == null
             ? null
             : (before[path], after[path]);
       }
     }
-    return ConfigurationRecordEnumeration._(records, diagnostics);
+    final sorted = records.values.toList()
+      ..sort((a, b) => a.id.value.compareTo(b.id.value));
+    return ConfigurationRecordEnumeration._(sorted, [
+      for (final entry in entries) ?diagnostics[entry.name],
+    ]);
   }
 
   Future<ConfigurationRecordSnapshot> load(
     RecordCollectionId collection,
     ConfigurationRecordId id,
   ) async {
-    await _checkIdentity(collection, id);
-    return _load(collection, id);
+    catalog.collectionLabel(collection);
+    final entries = await store.listCollection(collection.value);
+    _RecordHeader? match;
+    for (final candidate in _headers(collection, entries)) {
+      if (candidate.id != id) continue;
+      if (match != null) throw _duplicate(collection, id);
+      match = candidate;
+    }
+    if (match == null) throw ConfigurationRecordNotFound(collection, id);
+    if (match.error case final error?) throw error;
+    return _decode(collection, id, match.fileName, match.baseline!);
   }
 
   Future<ConfigurationRecordSnapshot> create(
@@ -113,18 +128,29 @@ final class ConfigurationRecordStore {
   ) async {
     final type = catalog.definition(typeId);
     final validated = _validateDesired(type, id, values);
-    var document = TomlDocument.parse(
-      'recordVersion = 1\nrecordType = ""\n\n[values]\n',
-    ).setScalar(['recordType'], type.id.value);
+    var document =
+        TomlDocument.parse(
+          'recordVersion = 2\nrecordId = ""\nrecordType = ""\n\n[values]\n',
+        ).setScalar(['recordId'], id.value).setScalar([
+          'recordType',
+        ], type.id.value);
     for (final field in type.fields) {
       final value = validated[field.id.value];
       if (value != null) {
         document = _setField(document, field, value);
       }
     }
-    await _checkIdentity(type.collection, id);
-    final saved = _file(type.collection, id).create(document);
-    return ConfigurationRecordSnapshot._(catalog, id, type, validated, saved);
+    final fileName = initialFileName(id);
+    final file = await _exclusiveFile(type.collection, id, fileName);
+    final saved = file.create(document);
+    return ConfigurationRecordSnapshot._(
+      catalog,
+      id,
+      fileName,
+      type,
+      validated,
+      saved,
+    );
   }
 
   /// Replaces the complete known-field set, preserving unknown content. Omitted
@@ -155,15 +181,17 @@ final class ConfigurationRecordStore {
         '[values] table: ${error.message}',
       );
     }
-    await _checkIdentity(expected.collection, expected.id);
-    final saved = _file(
+    final file = await _exclusiveFile(
       expected.collection,
       expected.id,
-    ).save(expected._baseline, document);
+      expected.fileName,
+    );
+    final saved = file.save(expected._baseline, document);
     if (identical(saved, expected._baseline)) return expected;
     return ConfigurationRecordSnapshot._(
       catalog,
       expected.id,
+      expected.fileName,
       expected.type,
       validated,
       saved,
@@ -219,14 +247,16 @@ final class ConfigurationRecordStore {
           .setScalar(path, reference.value);
     }
     final credentials = _readCredentials(expected.type, expected.id, document);
-    await _checkIdentity(expected.collection, expected.id);
-    final saved = _file(
+    final file = await _exclusiveFile(
       expected.collection,
       expected.id,
-    ).save(expected._baseline, document);
+      expected.fileName,
+    );
+    final saved = file.save(expected._baseline, document);
     return ConfigurationRecordSnapshot._(
       catalog,
       expected.id,
+      expected.fileName,
       expected.type,
       expected.values,
       saved,
@@ -241,11 +271,12 @@ final class ConfigurationRecordStore {
     ConfigurationRecordSnapshot expected,
   ) async {
     _checkCatalog(expected);
-    await _checkIdentity(expected.collection, expected.id);
-    _file(
+    final file = await _exclusiveFile(
       expected.collection,
       expected.id,
-    ).save(expected._baseline, expected.document);
+      expected.fileName,
+    );
+    file.save(expected._baseline, expected.document);
     return expected;
   }
 
@@ -259,7 +290,7 @@ final class ConfigurationRecordStore {
     if (identity == null) {
       throw const ConfigurationStartupIdentityUnavailable();
     }
-    final path = _file(expected.collection, expected.id).filePath;
+    final path = _file(expected.collection, expected.fileName).filePath;
     if (identity.$1 == null || identity.$1 != identity.$2) {
       throw ConfigurationConflictException(path);
     }
@@ -280,26 +311,27 @@ final class ConfigurationRecordStore {
   Future<void> delete(ConfigurationRecordSnapshot expected) async {
     _checkCatalog(expected);
     expected.requireNoCredentialEntries();
-    await _checkIdentity(expected.collection, expected.id);
-    _file(expected.collection, expected.id).delete(expected._baseline);
+    final file = await _exclusiveFile(
+      expected.collection,
+      expected.id,
+      expected.fileName,
+    );
+    file.delete(expected._baseline);
   }
 
-  ConfigurationStore _file(
-    RecordCollectionId collection,
-    ConfigurationRecordId id,
-  ) => store.recordFile(collectionId: collection.value, recordId: id.value);
+  ConfigurationStore _file(RecordCollectionId collection, String fileName) =>
+      store.recordFile(collectionId: collection.value, fileName: fileName);
 
-  Future<void> _checkIdentity(
+  /// Check other files for this ID, but leave the target's raw bytes (including
+  /// malformed replacements or absence) to the conditional file transaction.
+  Future<ConfigurationStore> _exclusiveFile(
     RecordCollectionId collection,
     ConfigurationRecordId id,
+    String fileName,
   ) async {
-    catalog.collectionLabel(collection);
-    final name = '${id.value}.toml';
-    // Cooperating writers only create canonical names. An external editor can
-    // still change entries after this bounded scan, just as it can race CFG2's
-    // final byte check; this is not filesystem compare-and-swap.
-    for (final entry in await store.listCollection(collection.value)) {
-      if (_alias(entry.name) == name && entry.name != name) {
+    final entries = await store.listCollection(collection.value);
+    for (final entry in entries) {
+      if (_alias(entry.name) == fileName && entry.name != fileName) {
         throw ConfigurationRecordFormatException(
           collection,
           id,
@@ -307,22 +339,107 @@ final class ConfigurationRecordStore {
         );
       }
     }
+    final file = _file(collection, fileName);
+    for (final candidate in _headers(collection, entries, skip: fileName)) {
+      if (candidate.id == id) {
+        throw ConfigurationConflictException(file.filePath);
+      }
+    }
+    // Every cooperating create for this ID targets the same initial filename;
+    // updates never move files or change IDs. The existing locked conditional
+    // create suffices. External editors can still race this scan.
+    return file;
   }
 
-  ConfigurationRecordSnapshot _load(
+  /// Stream one bounded file at a time. A valid embedded ID claims its place
+  /// even when the type, values or credential associations aren't usable.
+  Iterable<_RecordHeader> _headers(
+    RecordCollectionId collection,
+    List<ConfigurationCollectionEntry> entries, {
+    String? skip,
+  }) sync* {
+    final names = <String, int>{};
+    for (final entry in entries) {
+      names.update(_alias(entry.name), (count) => count + 1, ifAbsent: () => 1);
+    }
+    for (final entry in entries) {
+      final fileName = entry.name;
+      if (fileName == skip) continue;
+      ConfigurationRecordId? id;
+      try {
+        if (!ConfigurationStore.isRecordFileName(fileName)) {
+          throw const FormatException(
+            'Expected a portable record filename ending in .toml.',
+          );
+        }
+        final file = _file(collection, fileName);
+        if (entry.type == FileSystemEntityType.link) {
+          throw ConfigurationSymlinkException(file.filePath);
+        }
+        if (entry.type != FileSystemEntityType.file) {
+          throw FileSystemException(
+            'Expected a regular record file.',
+            file.filePath,
+          );
+        }
+        final baseline = file.load();
+        if (!baseline.exists) {
+          throw FileSystemException(
+            'Listed record file no longer exists.',
+            file.filePath,
+          );
+        }
+        final value = baseline.document.readScalar(['recordId']);
+        if (value is! String) {
+          throw const FormatException('recordId must be a string.');
+        }
+        try {
+          id = ConfigurationRecordId(value);
+        } on FormatException {
+          throw const FormatException('Invalid embedded recordId.');
+        }
+        // Only the canonical, regular file is opened, never an alias. Its
+        // header still reserves the ID; the alias bars using the snapshot.
+        if (names[fileName] != 1) {
+          throw ConfigurationRecordFormatException(
+            collection,
+            id,
+            'Ambiguous record filename aliases.',
+          );
+        }
+        yield (fileName: fileName, id: id, baseline: baseline, error: null);
+      } on TomlNativeException {
+        // A broken reader is not evidence of absent semantic identities.
+        rethrow;
+      } on Exception catch (error) {
+        yield (fileName: fileName, id: id, baseline: null, error: error);
+      }
+    }
+  }
+
+  ConfigurationRecordFormatException _duplicate(
     RecordCollectionId collection,
     ConfigurationRecordId id,
+  ) => ConfigurationRecordFormatException(
+    collection,
+    id,
+    'Multiple files declare this recordId.',
+  );
+
+  ConfigurationRecordSnapshot _decode(
+    RecordCollectionId collection,
+    ConfigurationRecordId id,
+    String fileName,
+    ConfigurationSnapshot baseline,
   ) {
-    final baseline = _file(collection, id).load();
-    if (!baseline.exists) throw ConfigurationRecordNotFound(collection, id);
     final document = baseline.document;
     final RecordTypeDefinition type;
     try {
-      if (document.readScalar(['recordVersion']) != 1) {
+      if (document.readScalar(['recordVersion']) != 2) {
         throw ConfigurationRecordFormatException(
           collection,
           id,
-          'recordVersion must be integer 1.',
+          'recordVersion must be integer 2.',
         );
       }
       final typeValue = document.readScalar(['recordType']);
@@ -387,6 +504,7 @@ final class ConfigurationRecordStore {
     return ConfigurationRecordSnapshot._(
       catalog,
       id,
+      fileName,
       type,
       type.validate(id, values),
       baseline,
@@ -465,6 +583,13 @@ final class ConfigurationRecordStore {
     }
   }
 }
+
+typedef _RecordHeader = ({
+  String fileName,
+  ConfigurationRecordId? id,
+  ConfigurationSnapshot? baseline,
+  Exception? error,
+});
 
 /// GNU stat preserves nanosecond change times and device/inode identity that
 /// Dart FileStat does not expose. Batch the collection, never spawn a worker or
@@ -547,6 +672,7 @@ final class ConfigurationRecordSnapshot {
   ConfigurationRecordSnapshot._(
     this._catalog,
     this.id,
+    this.fileName,
     this.type,
     Map<String, Object> values,
     this._baseline, {
@@ -559,6 +685,9 @@ final class ConfigurationRecordSnapshot {
   final ConfigurationSnapshot _baseline;
   (String?, String?)? _startupIdentity;
   final ConfigurationRecordId id;
+
+  /// The observed basename, not the source of the record's semantic identity.
+  final String fileName;
   final RecordTypeDefinition type;
   final Map<String, Object> values;
   final Map<RecordCredentialSlotId, CredentialReference> credentials;

@@ -112,10 +112,12 @@ final reloaded = await records.load(providers, id);
 await records.delete(reloaded);
 ```
 
-`create` requires an unoccupied collection/record identity, including when another
-record type or malformed content occupies it. `load` returns an immutable
-`ConfigurationRecordSnapshot` with `id`, `type`, `collection`, typed known `values`
-and `credentials`, the native document, and a private conditional baseline. Absence is
+`create` requires an unoccupied semantic ID in the collection and an unoccupied
+initial filename (`<id>.toml`). An occupied destination conflicts even if its
+contents cannot be parsed. `load(collection, id)` discovers the embedded ID;
+it returns an immutable `ConfigurationRecordSnapshot` with `id`, actual `fileName`,
+`type`, `collection`, typed known `values` and `credentials`, the native
+document, and a private conditional baseline. Absence is
 `ConfigurationRecordNotFound`, not an empty valid record. Snapshots belong to the
 same catalog instance and exact file path; successful updates return the next
 baseline. Reconstructing the store and explicitly loading recovers persisted data.
@@ -139,10 +141,11 @@ filesystem alias checks use the same exception and remain a separate failure.
 
 ### File Format
 
-For example, `providers/work-openai.toml` contains:
+For example, `providers/work-account.toml` can contain:
 
 ```toml
-recordVersion = 1
+recordVersion = 2
+recordId = "work-openai"
 recordType = "dev.adele.openai.api-key"
 
 [values]
@@ -153,10 +156,10 @@ endpoint = "https://api.openai.com/v1"
 api-key = "cred1_00000000000000000000000000000000"
 ```
 
-The collection and filename supply stable identity; no editable ID is duplicated
-inside the document. Renaming the display name never relocates the file. The header
-requires integer version `1`, a declared type belonging to the exact collection,
-and a regular `values` table (not an inline table or array). Values are literal
+The collection directory scopes the embedded `recordId`, which must satisfy
+`ConfigurationRecordId`. Neither filename nor display name supplies semantic
+identity. Records require integer version `2`, a declared type belonging to the
+exact collection, and a regular `values` table (not an inline table or array). Values are literal
 field keys. Unknown header/values content is not interpreted. A structured field
 occupies a regular subtable, with one scalar entry per declared component. For
 example, a Model Preset stores its `model` field as:
@@ -234,21 +237,25 @@ values and filename/record-ID diagnostic messages, not documents or conditional
 baselines. It preserves whole-operation errors, including
 `ConfigurationConflictException` for occupied identities, without retry or merge.
 
-`enumerate` returns immutable filename-sorted `records` and `diagnostics`. A bad
-file does not hide healthy siblings. Each diagnostic retains the filename,
+`enumerate` returns immutable records sorted by semantic ID and diagnostics
+sorted by filename. A bad file does not hide healthy siblings. Each diagnostic retains the filename,
 collection, record ID when valid, and original error: malformed TOML, invalid
 UTF-8, schema violations, file I/O failures and size limits remain distinguishable.
 Unexpected entries are reported, never followed as records. Directory-wide I/O or
 enumeration-limit failures reject the operation instead of returning an empty or
 successful truncated list. A missing root/collection creates no artifacts.
 
-Only validated lowercase portable IDs form paths. Case and trailing-dot/space
-filename aliases block exact operations on that identity, and enumeration excludes
-every conflicting candidate. Collection aliases are rejected by the filesystem
-store. Collection and record-file symlinks are rejected; the explicitly supplied
+Only validated lowercase portable collection and file names form paths. Case and
+trailing-dot/space filename aliases block operations on that location. Multiple
+files claiming the same ID in one collection are all excluded, even if a claiming
+file's type is unavailable or its fields are invalid. A syntactically unreadable
+file gets a filename diagnostic, not a guessed ID. The filesystem store rejects
+collection aliases and collection and record-file symlinks; the explicitly supplied
 configuration root may itself be symlinked. Every mutation uses the existing stable
 configuration lock and independent file baseline. Stale updates/deletes, including
 no-op updates, require explicit reload, with no retry or field-level merge.
+A snapshot never follows a moved file. After an external rename within a
+collection, load or enumerate again to edit at the newly observed location.
 
 The underlying store bounds each record at 1 MiB and scans at 1024 immediate entries
 per configuration-root/collection directory, including unrelated entries. These

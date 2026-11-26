@@ -97,7 +97,7 @@ void main() {
 
   CredentialReference? reference(String id, [String slot = 'token']) {
     final document = ConfigurationStore(roots)
-        .recordFile(collectionId: 'jobs', recordId: id)
+        .recordFile(collectionId: 'jobs', fileName: '$id.toml')
         .load()
         .document
         .ensureTable(['credentials']); // Snapshot-only, never persisted.

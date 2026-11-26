@@ -1224,6 +1224,40 @@ void main() {
     ]);
   });
 
+  test('external rename requires explicit refresh but preserves the configured '
+      'provider IDs and protected credential association', () async {
+    final fixture = await prepareProviders();
+    await fixture.start();
+    final old = fixture.capture('work');
+    final personal = fixture.capture('personal');
+    final reference = fixture.reference('work');
+    final protected = fixture.storage.values[reference]!;
+    await fixture.expectRoutes(old, 'work', 'test-work-key', reference);
+
+    final file = fixture.recordFile('work');
+    final bytes = await file.readAsBytes();
+    final renamed = await file.rename('${file.parent.path}/engineering.toml');
+
+    old.expectSame(fixture.capture('work'));
+    await fixture.expectFailure('stale_configuration');
+    expect(fixture.storage.calls, ['read', 'read']);
+    expect(fixture.requests, hasLength(2));
+
+    expect(
+      await fixture.refresh('work-openai'),
+      _refreshResult('applied', 'replaced'),
+    );
+    final fresh = fixture.capture('work');
+    old.expectReplacement(fresh);
+    await old.expectRetired(fixture);
+    personal.expectSame(fixture.capture('personal'));
+    _expectCatalogAssociations(fixture.bootstrap, fixture.registry);
+    await fixture.expectRoutes(fresh, 'work', 'test-work-key', reference);
+    expect(fixture.storage.values[reference] == protected, isTrue);
+    expect(await renamed.readAsBytes(), bytes);
+    expect(await file.exists(), isFalse);
+  });
+
   test('explicit same-reference Replace refreshes a live credential scope even '
       'when nonsecret record bytes are unchanged', () async {
     final fixture = await prepareProviders(consumeCatalog: true);
