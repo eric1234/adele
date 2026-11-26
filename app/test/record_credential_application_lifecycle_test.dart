@@ -138,7 +138,7 @@ void main() {
           }
           expect(
             await File(
-              '${fixture.roots.configurationRoot}/providers/work-openai.toml',
+              '${fixture.roots.configurationRoot}/providers/work.toml',
             ).readAsString(),
             contains(fixture.storage.reference!.value),
           );

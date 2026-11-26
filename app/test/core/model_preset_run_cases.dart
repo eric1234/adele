@@ -141,10 +141,15 @@ void _registerRunCases(
       );
 
       await f.create('review', _firstValues);
-      final later = await f.create('later', {
+      final initial = await f.create('later', {
         ..._secondValues,
+        'name': 'Later review',
         'model': {'provider-id': _second, 'model-id': 'Before-edit'},
         'reasoning-effort': 'high',
+      });
+      final later = await f.settings.updateRecord(initial, {
+        ...initial.values,
+        'name': 'Review',
       });
       // The same mounted selector must observe the newly authored records.
       await _tapText(tester, 'Refresh');
@@ -382,9 +387,10 @@ void _registerRunCases(
       // An external edit can invalidate a selected preset, but must not change
       // the selection, invoke a fallback provider or repair the file.
       final file = File(
-        '${f.roots.configurationRoot}/model-presets/saved.toml',
+        '${f.roots.configurationRoot}/model-presets/review.toml',
       );
       final original = await file.readAsString();
+      expect(original, contains('recordId = "saved"'));
       final malformed = original.replaceFirst(_second, 'not a provider');
       await file.writeAsString(malformed);
       await runs.expectPreparationFailure(isA<RunModelPreferenceFailure>());

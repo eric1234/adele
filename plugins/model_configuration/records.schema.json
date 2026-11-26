@@ -8,6 +8,7 @@
       "label": "Model Preset",
       "description": "A named configuration for one model on one configured provider instance.",
       "displayField": "name",
+      "filenameField": "name",
       "formBehavior": "dev.adele.plugin.model-configuration.preset-form",
       "fields": [
         {

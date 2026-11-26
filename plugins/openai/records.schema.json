@@ -8,6 +8,7 @@
       "label": "OpenAI API",
       "description": "An OpenAI API-key provider configuration.",
       "displayField": "display-name",
+      "filenameField": "display-name",
       "credentialSlots": [
         {
           "id": "api-key",

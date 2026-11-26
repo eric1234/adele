@@ -46,7 +46,9 @@ void main() {
       );
       final collection = RecordCollectionId('providers');
       final slot = RecordCredentialSlotId('api-key');
-      final file = File('${roots.configurationRoot}/providers/smoke.toml');
+      final file = File(
+        '${roots.configurationRoot}/providers/disposable-linux-association.toml',
+      );
       const value = 'disposable-association-fixture-not-an-api-key';
       try {
         if (phase == 'attach') {

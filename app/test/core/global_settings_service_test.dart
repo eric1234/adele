@@ -621,19 +621,18 @@ void main() {
 
       final first = ConfigurationRecordId('first');
       final second = ConfigurationRecordId('second');
-      const minimal = {
-        'name': 'Research',
-        'model': {
-          'provider-id': 'dev.example.provider.work-01',
-          'model-id': 'Team-A/Research:V2',
-        },
+      const model = {
+        'provider-id': 'dev.example.provider.work-01',
+        'model-id': 'Team-A/Research:V2',
       };
+      const minimal = {'name': 'Research', 'model': model};
       const none = {
-        ...minimal,
+        'name': 'Quick research',
+        'model': model,
         'description': 'Quick lookup',
         'reasoning-effort': 'none',
       };
-      final reference = {...minimal['model']! as Map<String, String>};
+      final reference = {...model};
       await expectLater(
         presets.createRecord(type, first, {...minimal, 'name': '  '}),
         throwsA(
@@ -659,8 +658,8 @@ void main() {
       expect((created.values['model'] as Map).clear, throwsUnsupportedError);
       await presets.createRecord(type, second, none);
       final directory = presets.collectionPath(collection);
-      final firstFile = File('$directory/$first.toml');
-      final secondFile = File('$directory/$second.toml');
+      final firstFile = File('$directory/research.toml');
+      final secondFile = File('$directory/quick-research.toml');
       final siblingBytes = secondFile.readAsBytesSync();
 
       const unknown = '[future]\nlabels = ["retain"] # hand-edited\n';

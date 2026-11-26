@@ -100,12 +100,13 @@ installations or import plugins. The root can be supplied from
 ```dart
 final records = ConfigurationRecordStore(store: persistence, catalog: catalog);
 final providers = RecordCollectionId('providers');
-final id = ConfigurationRecordId('work-openai');
+final id = ConfigurationRecordId('account-a');
 var record = await records.create(
   RecordTypeId('dev.adele.openai.api-key'),
   id,
-  {'display-name': 'Work OpenAI'},
+  {'display-name': 'OpenAI Work'},
 );
+// record.fileName is 'openai-work.toml'; updates still use that location.
 record = await records.update(record, {'display-name': 'Renamed Work'});
 final collection = await records.enumerate(providers);
 final reloaded = await records.load(providers, id);
@@ -143,15 +144,15 @@ filesystem alias checks use the same exception and remain a separate failure.
 
 ### File Format
 
-For example, `providers/work-account.toml` can contain:
+For example, `providers/openai-work.toml` can contain:
 
 ```toml
 recordVersion = 2
-recordId = "work-openai"
+recordId = "account-a"
 recordType = "dev.adele.openai.api-key"
 
 [values]
-display-name = "Work OpenAI"
+display-name = "OpenAI Work"
 endpoint = "https://api.openai.com/v1"
 
 [credentials]

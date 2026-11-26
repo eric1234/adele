@@ -74,8 +74,9 @@ void main() {
         ConfigurationRecordId('work'),
         {...siblings, 'model': _initial},
       );
-      final file = File('${roots.configurationRoot}/model-presets/work.toml');
+      final file = File('${roots.configurationRoot}/model-presets/writer.toml');
       final original = file.readAsStringSync();
+      expect(original, contains('recordId = "work"'));
 
       await tester.binding.setSurfaceSize(const Size(1000, 1000));
       addTearDown(() => tester.binding.setSurfaceSize(null));

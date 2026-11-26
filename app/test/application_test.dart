@@ -153,9 +153,12 @@ void main() {
       }
 
       final settingsFile = File('${roots.configurationRoot}/settings.toml');
-      CredentialReference reference(String id) => CredentialReference.parse(
+      CredentialReference reference(File file) => CredentialReference.parse(
         ConfigurationStore(roots)
-                .recordFile(collectionId: 'providers', fileName: '$id.toml')
+                .recordFile(
+                  collectionId: 'providers',
+                  fileName: file.uri.pathSegments.last,
+                )
                 .load()
                 .document
                 .readScalar(['credentials', 'api-key'])
@@ -195,19 +198,16 @@ void main() {
       try {
         await mount();
         await openProviders();
-        final workId = await _createProviderRecord(
+        final (workId, work) = await _createProviderRecord(
           tester,
           roots,
-          'Work OpenAI',
+          'OpenAI Work',
         );
-        final personalId = await _createProviderRecord(
+        expect(work.uri.pathSegments.last, 'openai-work.toml');
+        final (personalId, personal) = await _createProviderRecord(
           tester,
           roots,
           'Personal OpenAI',
-        );
-        final work = File('${roots.configurationRoot}/providers/$workId.toml');
-        final personal = File(
-          '${roots.configurationRoot}/providers/$personalId.toml',
         );
         for (final id in [workId, personalId]) {
           await _expandProviderRecord(tester, id);
@@ -238,8 +238,8 @@ void main() {
           expect(storage.calls, hasLength(callsBeforeCheck));
           await store('set', secret, id);
         }
-        final workReference = reference(workId);
-        final personalReference = reference(personalId);
+        final workReference = reference(work);
+        final personalReference = reference(personal);
         expect(workReference, isNot(personalReference));
         expectEnvelope(workReference, workId, workSecret);
         expectEnvelope(personalReference, personalId, personalSecret);
@@ -256,7 +256,7 @@ void main() {
         final workBeforeReplace = await work.readAsBytes();
 
         await store('replace', replacement, workId);
-        expect(reference(workId), workReference);
+        expect(reference(work), workReference);
         expect(await work.readAsBytes(), workBeforeReplace);
         expectEnvelope(workReference, workId, replacement);
         expect(storage.values, hasLength(2));
@@ -279,7 +279,7 @@ void main() {
           await work.readAsString(),
           contains('display-name = "Work renamed after replacement"'),
         );
-        expect(reference(workId), workReference);
+        expect(reference(work), workReference);
         expect(
           await work.readAsString(),
           contains('endpoint = "https://example.invalid/work/v1"'),
@@ -308,8 +308,8 @@ void main() {
           reason:
               'Reconstruction and reopening must not inspect saved references.',
         );
-        expect(reference(workId), workReference);
-        expect(reference(personalId), personalReference);
+        expect(reference(work), workReference);
+        expect(reference(personal), personalReference);
         for (final id in [workId, personalId]) {
           expect(status('Credential status not checked', id), findsOneWidget);
           await press('check', id);
@@ -506,11 +506,9 @@ void main() {
           await Directory('${roots.configurationRoot}/providers').exists(),
           isFalse,
         );
-        Future<String> create(String name) async {
-          final id = await _createProviderRecord(tester, roots, name);
-          final contents = await File(
-            '${roots.configurationRoot}/providers/$id.toml',
-          ).readAsString();
+        Future<(String, File)> create(String name) async {
+          final (id, file) = await _createProviderRecord(tester, roots, name);
+          final contents = await file.readAsString();
           expect(contents, contains('recordVersion = 2'));
           expect(contents, contains('recordId = "$id"'));
           expect(contents, contains('recordType = "$openai.api-key"'));
@@ -519,11 +517,11 @@ void main() {
           expect(contents, isNot(contains('endpoint')));
           expect(contents, isNot(contains('credential')));
           expect(await settingsFile.readAsString(), originalSettings);
-          return id;
+          return (id, file);
         }
 
-        final workId = await create('Work OpenAI');
-        final personalId = await create('Personal OpenAI');
+        final (workId, work) = await create('Work OpenAI');
+        final (personalId, personal) = await create('Personal OpenAI');
         expect(
           find.byKey(ValueKey('record-providers-$workId')),
           findsOneWidget,
@@ -532,15 +530,11 @@ void main() {
           find.byKey(ValueKey('record-providers-$personalId')),
           findsOneWidget,
         );
-        final work = File('${roots.configurationRoot}/providers/$workId.toml');
-        final personal = File(
-          '${roots.configurationRoot}/providers/$personalId.toml',
-        );
         final personalBytes = await personal.readAsBytes();
         final providers = await work.parent.list().toList();
         expect(
           providers.map((file) => file.uri.pathSegments.last),
-          unorderedEquals(['$workId.toml', '$personalId.toml']),
+          unorderedEquals(['work-openai.toml', 'personal-openai.toml']),
         );
         // Retain unrecognized content instead of adopting it into the form.
         const unknown =
@@ -574,7 +568,7 @@ void main() {
           (await work.parent.list().toList()).map(
             (file) => file.uri.pathSegments.last,
           ),
-          unorderedEquals(['$workId.toml', '$personalId.toml']),
+          unorderedEquals(['work-openai.toml', 'personal-openai.toml']),
         );
 
         await _editProviderRecord(tester, workId);
@@ -858,9 +852,7 @@ void main() {
               ),
             )
             .onPressed!;
-        final file = File(
-          '${roots.configurationRoot}/providers/work-openai.toml',
-        );
+        final file = File('${roots.configurationRoot}/providers/work.toml');
         final original = await file.readAsBytes();
         final lock = File(ConfigurationStore(roots).lockPath);
         await lock.parent.create(recursive: true);
@@ -1376,15 +1368,13 @@ void main() {
                   .isNotEmpty,
             );
             if (Platform.isLinux) {
-              final workId = await _createProviderRecord(
+              final (_, work) = await _createProviderRecord(
                 tester,
                 roots,
                 'Work OpenAI',
               );
               expect(
-                await File(
-                  '${roots.configurationRoot}/providers/$workId.toml',
-                ).readAsString(),
+                await work.readAsString(),
                 contains('display-name = "Work OpenAI"'),
               );
             }
@@ -1579,7 +1569,7 @@ void main() {
                   .evaluate()
                   .isNotEmpty,
             );
-            final workId = await _createProviderRecord(
+            final (_, work) = await _createProviderRecord(
               tester,
               roots,
               'Work OpenAI',
@@ -1589,9 +1579,7 @@ void main() {
               isFalse,
             );
             expect(
-              await File(
-                '${roots.configurationRoot}/providers/$workId.toml',
-              ).readAsString(),
+              await work.readAsString(),
               contains('display-name = "Work OpenAI"'),
             );
           }
@@ -2446,7 +2434,7 @@ Future<void> _editProviderRecord(WidgetTester tester, String id) async {
   await _settingsAction(tester, 'record-edit-providers-$id');
 }
 
-Future<String> _createProviderRecord(
+Future<(String, File)> _createProviderRecord(
   WidgetTester tester,
   PlatformStorageRoots roots,
   String name,
@@ -2502,15 +2490,18 @@ Future<String> _createProviderRecord(
   expect(find.text('Created $name.'), findsOneWidget);
   // Observe the published filename without reloading the UI's live handles.
   final filename = (await filenames()).difference(before).single;
-  expect(filename, endsWith('.toml'));
-  final id = filename.substring(0, filename.length - '.toml'.length);
+  final published = ConfigurationStore(
+    roots,
+  ).recordFile(collectionId: 'providers', fileName: filename);
+  final id = published.load().document.readScalar(['recordId']) as String;
+  expect(filename, isNot('$id.toml'));
   final row = find.byKey(ValueKey('record-providers-$id'));
   expect(find.descendant(of: row, matching: find.text(name)), findsOneWidget);
   expect(
     find.descendant(of: row, matching: find.text('OpenAI API')),
     findsOneWidget,
   );
-  return id;
+  return (id, File(published.filePath));
 }
 
 final class _CredentialStorage implements CredentialStorageAdapter {

@@ -68,7 +68,10 @@ Use **Set credential** and then **Store credential** to attach the key. Check
 the runtime application result; storing the key does not authenticate the account
 or select it for a Session.
 
-Settings generates the record ID. To copy it, open **Advanced details** in Add
+The Name determines the initial filename: `OpenAI Work` creates
+`providers/openai-work.toml` if that filename is available. Editing the Name or
+endpoint leaves the file in place. Settings generates the record ID independently
+of the filename. To copy it, open **Advanced details** in Add
 or expand the saved record's details. See the
 [record editing guide](../../../../docs/architecture/profiles-and-configuration.md#creating-and-editing-records).
 The plugin derives the inference `ProviderId` as `dev.adele.openai.api-key.<record-id>`,

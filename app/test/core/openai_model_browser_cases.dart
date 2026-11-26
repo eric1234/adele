@@ -79,16 +79,17 @@ void _registerModelBrowserCases(Future<_ProviderFixture> Function() prepare) {
       final work = model('work', _sharedModel);
       final personal = model('personal', _sharedModel);
       Map<String, Object> values(Map<String, String> target, String? effort) =>
-          {'name': 'Review', 'model': target, 'reasoning-effort': ?effort};
+          {'name': 'Code review', 'model': target, 'reasoning-effort': ?effort};
       await f.settings.createRecord(
         RecordTypeId('$_modelConfiguration.preset'),
         ConfigurationRecordId('review'),
         values(original, 'low'),
       );
       final toml = File(
-        '${f.roots.configurationRoot}/model-presets/review.toml',
+        '${f.roots.configurationRoot}/model-presets/code-review.toml',
       );
       final originalBytes = await toml.readAsBytes();
+      expect(utf8.decode(originalBytes), contains('recordId = "review"'));
       const retiring = 'gpt-6-astra';
       f.catalogModels['/work/models'] = [_sharedModel, _highOnly, retiring];
       f.catalogModels['/personal/models'] = [_sharedModel];
@@ -152,7 +153,7 @@ void _registerModelBrowserCases(Future<_ProviderFixture> Function() prepare) {
           () => ui.key('record-$_review').evaluate().isNotEmpty,
           'saved review',
         );
-        await ui._tap(find.text('Review'));
+        await ui._tap(find.text('Code review'));
         await ui.press('record-edit-$_review');
         await ui.until(
           () => find.text('Browse models...').evaluate().isNotEmpty,
@@ -304,12 +305,12 @@ void _registerModelBrowserCases(Future<_ProviderFixture> Function() prepare) {
         expectEffort('low', all);
         expectTraffic();
         await browse(ui);
-        await select(ui, 'Work OpenAI', _sharedModel);
+        await select(ui, 'OpenAI Work', _sharedModel);
         await cancelBrowser(ui);
         expect(draft(), original);
         expectEffort('low', all);
         await browse(ui);
-        await select(ui, 'Work OpenAI', retiring);
+        await select(ui, 'OpenAI Work', retiring);
         expect(draft(), original);
         // The already-highlighted row loses its exact registration, even though
         // both stable IDs and the owning OpenAI backend remain available.
@@ -326,7 +327,7 @@ void _registerModelBrowserCases(Future<_ProviderFixture> Function() prepare) {
         expect(draft(), original);
         expectEffort('low', all);
         await browse(ui, refresh: true);
-        await select(ui, 'Work OpenAI', _highOnly);
+        await select(ui, 'OpenAI Work', _highOnly);
         await use(ui);
         expect(draft(), original);
         expectEffort('low', ['high']); // New evidence, not a change of model.
@@ -342,7 +343,7 @@ void _registerModelBrowserCases(Future<_ProviderFixture> Function() prepare) {
         // accepted Work pair or its known effort choices, even transiently.
         await browse(ui);
         await ui._tap(find.text('Enter manually'));
-        await ui._tap(chip('Personal OpenAI'));
+        await ui._tap(chip('OpenAI Personal'));
         final manualModel = find.descendant(
           of: find.byType(Dialog).last,
           matching: find.byType(TextField),
@@ -354,7 +355,7 @@ void _registerModelBrowserCases(Future<_ProviderFixture> Function() prepare) {
         expect(find.textContaining('Property model-id:'), findsOneWidget);
         expect(tester.widget<TextField>(manualModel).controller!.text, invalid);
         expect(
-          tester.widget<ChoiceChip>(chip('Personal OpenAI')).selected,
+          tester.widget<ChoiceChip>(chip('OpenAI Personal')).selected,
           isTrue,
         );
         expect(draft(), original);
@@ -366,7 +367,7 @@ void _registerModelBrowserCases(Future<_ProviderFixture> Function() prepare) {
         expectTraffic();
 
         await browse(ui);
-        await select(ui, 'Work OpenAI', _sharedModel);
+        await select(ui, 'OpenAI Work', _sharedModel);
         await use(ui);
         expect(draft(), work);
         expectEffort('high', known); // A supported explicit choice survives.
@@ -482,7 +483,7 @@ void _registerModelBrowserCases(Future<_ProviderFixture> Function() prepare) {
           f.catalogStatus = HttpStatus.ok;
 
           await browse(ui);
-          await select(ui, 'Work OpenAI', _highOnly);
+          await select(ui, 'OpenAI Work', _highOnly);
           await use(ui);
           expectEffort(null, ['high']); // None is not supported by this model.
           expect(
@@ -497,10 +498,11 @@ void _registerModelBrowserCases(Future<_ProviderFixture> Function() prepare) {
           expectEffort('none', all);
 
           await browse(ui);
-          await select(ui, 'Work OpenAI', _highOnly);
+          await select(ui, 'OpenAI Work', _highOnly);
           await use(ui);
           const description = 'Review a proposed change';
           expect(ui.key('record-presence-$_review-description'), findsNothing);
+          await ui._enter('record-input-$_review-name', 'Personal review');
           await ui._enter('record-input-$_review-description', description);
           // Leave the text input before opening a dialog that restores focus.
           await tester.sendKeyEvent(LogicalKeyboardKey.tab);
@@ -509,7 +511,7 @@ void _registerModelBrowserCases(Future<_ProviderFixture> Function() prepare) {
           expectEffort(null, ['high']);
           expectTraffic();
           await browse(ui);
-          await select(ui, 'Personal OpenAI', _sharedModel);
+          await select(ui, 'OpenAI Personal', _sharedModel);
           await use(ui);
           expect(
             draft(),
@@ -522,12 +524,19 @@ void _registerModelBrowserCases(Future<_ProviderFixture> Function() prepare) {
           await save(ui);
           expect(await saved(), {
             ...values(personal, null),
+            'name': 'Personal review',
             'description': description,
           });
+          final edited = await toml.readAsString();
+          expect(edited, contains('recordId = "review"'));
+          expect(edited, contains('name = "Personal review"'));
+          expect(edited, isNot(contains('reasoning-effort')));
           expect(
-            await toml.readAsString(),
-            isNot(contains('reasoning-effort')),
+            await File('${toml.parent.path}/personal-review.toml').exists(),
+            isFalse,
           );
+          final selected = await selections().readSessionSelection(id.value);
+          expect((selected.selectedPresetId, selected.revision), ('review', 1));
 
           expect(
             owner.resolveApproval(owner.pendingApproval!, approved: true),

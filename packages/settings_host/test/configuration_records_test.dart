@@ -102,20 +102,21 @@ void main() {
   });
   tearDown(() => temporary.deleteSync(recursive: true));
 
-  File file(ConfigurationRecordId id, [RecordCollectionId? collection]) => File(
-    p.join(
-      roots.configurationRoot,
-      (collection ?? providers).value,
-      '${id.value}.toml',
-    ),
+  File fileAt(String fileName, [RecordCollectionId? collection]) => File(
+    p.join(roots.configurationRoot, (collection ?? providers).value, fileName),
   );
 
+  // Directly seeded fixtures choose their own location, independent of the
+  // embedded ID. Host-created records use the declared initial filename.
+  File file(ConfigurationRecordId stem, [RecordCollectionId? collection]) =>
+      fileAt('${stem.value}.toml', collection);
+
   void seed(
-    ConfigurationRecordId id,
+    ConfigurationRecordId stem,
     String source, [
     RecordCollectionId? collection,
   ]) {
-    final target = file(id, collection);
+    final target = file(stem, collection);
     target.parent.createSync(recursive: true);
     target.writeAsStringSync(source);
   }
@@ -299,19 +300,18 @@ void main() {
 
   test('only fresh observations follow an external rename', () async {
     final initial = await host.create(openai, work, {'display-name': 'Work'});
-    expect(initial.fileName, 'work-openai.toml');
+    expect(initial.fileName, 'work.toml');
     expect(initial.document.readScalar(['recordVersion']), 2);
     expect(initial.document.readScalar(['recordId']), work.value);
     expect(initial.document.readScalar(['recordType']), openai.value);
     final original = source(
       'display-name = "Work" # note\nfuture = { nested = true }\n',
     );
-    seed(work, original);
+    final previous = fileAt(initial.fileName)..writeAsStringSync(original);
     final old = (await host.enumerate(
       providers,
       captureStartupIdentity: true,
     )).records.single;
-    final previous = file(work);
     final moved = previous.renameSync(
       p.join(previous.parent.path, 'office.toml'),
     );
@@ -345,7 +345,7 @@ void main() {
     );
     // This ID is free, but its initial filename is physically occupied.
     await expectLater(
-      host.create(openai, ConfigurationRecordId('office'), initial.values),
+      host.create(openai, personal, {'display-name': 'Office'}),
       conflict,
     );
     var fresh = await host.load(providers, work);
@@ -374,10 +374,10 @@ void main() {
         providers,
         captureStartupIdentity: true,
       )).records.singleWhere((record) => record.id == work);
-      final bytes = file(work).readAsBytesSync();
+      final target = fileAt(current.fileName);
+      final bytes = target.readAsBytesSync();
       final copies = [
-        for (final name in ['a.toml', 'z.toml'])
-          File(p.join(file(work).parent.path, name)),
+        for (final name in ['a.toml', 'z.toml']) fileAt(name),
       ];
       for (final original in [
         source('display-name = "Copy"\n'),
@@ -428,7 +428,7 @@ void main() {
             throwsA(isA<ConfigurationConflictException>()),
           );
         }
-        expect(file(work).readAsBytesSync(), bytes);
+        expect(target.readAsBytesSync(), bytes);
         for (final copy in copies) {
           expect(copy.readAsStringSync(), original);
         }
@@ -450,7 +450,7 @@ void main() {
         host.create(openai, work, {'display-name': 'New'}),
         throwsA(isA<ConfigurationConflictException>()),
       );
-      expect(file(work).existsSync(), isFalse);
+      expect(fileAt('new.toml').existsSync(), isFalse);
       expect(file(personal).readAsStringSync(), original);
     },
   );
@@ -663,7 +663,7 @@ void main() {
       expect(created.values, values);
       expect((created.values['model'] as Map).clear, throwsUnsupportedError);
       expect(
-        file(id, presets).readAsStringSync(),
+        fileAt('preset.toml', presets).readAsStringSync(),
         contains(
           '[values.model]\nprovider-id = "dev.example.provider.work"\nmodel-id = "  Team-A/Research:V2  "\n',
         ),
@@ -708,8 +708,9 @@ future = ["untouched"]
     });
 
     test('missing or malformed known components invalidate the record', () async {
-      await host.create(preset, personal, values);
-      final healthyBytes = file(personal, presets).readAsBytesSync();
+      final healthy = await host.create(preset, personal, values);
+      final healthyFile = fileAt(healthy.fileName, presets);
+      final healthyBytes = healthyFile.readAsBytesSync();
       for (final malformed in [
         '',
         'model = "not a table"',
@@ -735,13 +736,14 @@ future = ["untouched"]
         expect(listing.diagnostics.single.recordId, id);
         expect(listing.diagnostics.single.error, invalidModel);
         expect(file(id, presets).readAsStringSync(), original);
-        expect(file(personal, presets).readAsBytesSync(), healthyBytes);
+        expect(healthyFile.readAsBytesSync(), healthyBytes);
       }
     });
 
     test('invalid models cannot create or partially update a preset', () async {
       final original = await host.create(preset, id, values);
-      final bytes = file(id, presets).readAsBytesSync();
+      final target = fileAt(original.fileName, presets);
+      final bytes = target.readAsBytesSync();
       for (final invalid in <Object?>[
         null,
         'manual/A',
@@ -767,12 +769,12 @@ future = ["untouched"]
           host.create(preset, personal, desired),
           throwsA(invalidModel),
         );
-        expect(file(personal, presets).existsSync(), isFalse);
+        expect(fileAt('renamed.toml', presets).existsSync(), isFalse);
         await expectLater(
           host.update(original, desired),
           throwsA(invalidModel),
         );
-        expect(file(id, presets).readAsBytesSync(), bytes);
+        expect(target.readAsBytesSync(), bytes);
       }
       final corrected = {
         'name': 'Renamed',
@@ -854,7 +856,8 @@ future = ["untouched"]
         final sibling = await host.create(openai, personal, {
           'display-name': 'Personal',
         });
-        final siblingBytes = file(personal).readAsBytesSync();
+        final siblingFile = fileAt(sibling.fileName);
+        final siblingBytes = siblingFile.readAsBytesSync();
         record = await host.setCredentialReference(record, apiKey, reference);
         expect(record.credentials, {apiKey: reference});
         expect(record.hasCredentialEntries, isTrue);
@@ -878,7 +881,7 @@ future = ["untouched"]
         ]) {
           expect(text, contains(retained));
         }
-        expect(file(personal).readAsBytesSync(), siblingBytes);
+        expect(siblingFile.readAsBytesSync(), siblingBytes);
         host = ConfigurationRecordStore(
           store: ConfigurationStore(roots),
           catalog: catalog,
@@ -911,7 +914,8 @@ future = ["untouched"]
       () async {
         var record = await host.create(openai, work, {'display-name': 'Work'});
         record = await host.setCredentialReference(record, apiKey, reference);
-        final bytes = file(work).readAsBytesSync();
+        final target = fileAt(record.fileName);
+        final bytes = target.readAsBytesSync();
         await expectLater(
           host.delete(record),
           throwsA(
@@ -925,7 +929,7 @@ future = ["untouched"]
                 ),
           ),
         );
-        expect(file(work).readAsBytesSync(), bytes);
+        expect(target.readAsBytesSync(), bytes);
       },
     );
 
@@ -1178,8 +1182,9 @@ future = ["untouched"]
             throwsA(isA<ConfigurationConflictException>()),
           );
         }
-        final external = '${file(work).readAsStringSync()}# external bytes\n';
-        file(work).writeAsStringSync(external);
+        final target = fileAt(initial.fileName);
+        final external = '${target.readAsStringSync()}# external bytes\n';
+        target.writeAsStringSync(external);
         await expectLater(
           host.validateCurrent(renamed),
           throwsA(isA<ConfigurationConflictException>()),
@@ -1188,15 +1193,15 @@ future = ["untouched"]
           host.setCredentialReference(renamed, apiKey, reference),
           throwsA(isA<ConfigurationConflictException>()),
         );
-        expect(file(work).readAsStringSync(), external);
+        expect(target.readAsStringSync(), external);
         final reloaded = await host.load(providers, work);
         expect(await host.validateCurrent(reloaded), same(reloaded));
-        file(work).deleteSync();
+        target.deleteSync();
         await expectLater(
           host.validateCurrent(reloaded),
           throwsA(isA<ConfigurationConflictException>()),
         );
-        expect(file(work).existsSync(), isFalse);
+        expect(target.existsSync(), isFalse);
       },
     );
 
@@ -1247,10 +1252,18 @@ future = ["untouched"]
               throwsA(invalidField),
             );
           }
+          final isName = field == 'name' || field == 'display-name';
+          if (isName) {
+            await expectLater(
+              host.create(type, personal, {...values, field: 'CON'}),
+              throwsA(invalidField),
+            );
+          }
           expect(temporary.listSync(), isEmpty);
 
           final healthy = await host.create(type, work, values);
-          final bytes = file(work, collection).readAsBytesSync();
+          final target = fileAt(healthy.fileName, collection);
+          final bytes = target.readAsBytesSync();
           await expectLater(
             host.update(healthy, {...values, field: '   '}),
             throwsA(invalidField),
@@ -1271,7 +1284,14 @@ future = ["untouched"]
           expect(listing.diagnostics.single.recordId, personal);
           expect(listing.diagnostics.single.error, invalidField);
           expect(file(personal, collection).readAsStringSync(), original);
-          expect(file(work, collection).readAsBytesSync(), bytes);
+          expect(target.readAsBytesSync(), bytes);
+          if (isName) {
+            // A reserved stem is still an ordinary Name on edit and reload.
+            await host.update(healthy, {...values, field: 'CON'});
+            final reloaded = await host.load(collection, work);
+            expect(reloaded.fileName, healthy.fileName);
+            expect(reloaded.values[field], 'CON');
+          }
         },
       );
     }
@@ -1281,14 +1301,10 @@ future = ["untouched"]
       () async {
         final reviewer = ConfigurationRecordId('reviewer');
         final writer = ConfigurationRecordId('writer');
-        final reviewerFile = File(
-          p.join(roots.configurationRoot, 'agents', 'reviewer.toml'),
-        );
-        final writerFile = File(
-          p.join(roots.configurationRoot, 'agents', 'writer.toml'),
-        );
+        final reviewerFile = fileAt('code-reviewer.toml', agents);
+        final writerFile = fileAt('writer.toml', agents);
         const reviewValues = {
-          'name': 'Reviewer',
+          'name': 'Code Reviewer',
           'description':
               '# Review\n\nExplain **risks**, "quotes", and `C:\\repo`.',
           'when-to-use':
@@ -1338,7 +1354,7 @@ Return **findings** before the summary.
         expect(reviewerFile.existsSync(), isTrue);
         expect(
           reviewerFile.parent.listSync().map((entry) => p.basename(entry.path)),
-          unorderedEquals(['reviewer.toml', 'writer.toml']),
+          unorderedEquals(['code-reviewer.toml', 'writer.toml']),
         );
         expect(writerFile.readAsBytesSync(), writerBytes);
         final reviewBytes = reviewerFile.readAsBytesSync();
@@ -1500,7 +1516,7 @@ Return **findings** before the summary.
             ),
           );
 
-          expect(file(personal).existsSync(), isFalse);
+          expect(fileAt('personal.toml').existsSync(), isFalse);
           expect(collection.listSync(), hasLength(1024));
           expect(Directory(roots.configurationRoot).listSync(), hasLength(1));
           expect(file(work).readAsBytesSync(), workBytes);
@@ -1560,9 +1576,14 @@ Return **findings** before the summary.
         final collection = file(work).parent;
         fillWithUserFiles(collection, 1024);
 
-        for (final id in [work, personal]) {
+        // The healthy record claims its embedded ID; the unreadable file
+        // reserves only its physical destination.
+        for (final (id, name) in [
+          (work, 'Replacement'),
+          (personal, 'Personal OpenAI'),
+        ]) {
           await expectLater(
-            host.create(openai, id, {'display-name': 'Replacement'}),
+            host.create(openai, id, {'display-name': name}),
             throwsA(isA<ConfigurationConflictException>()),
           );
         }
@@ -1600,7 +1621,7 @@ Return **findings** before the summary.
 
         expect(root.listSync(), hasLength(1024));
         expect(collection.listSync().map((entry) => p.basename(entry.path)), [
-          'work-openai.toml',
+          'work.toml',
         ]);
         expect((await host.load(providers, work)).values, created.values);
         final result = await host.enumerate(providers);
@@ -1628,7 +1649,7 @@ Return **findings** before the summary.
 
           expect(root.listSync(), hasLength(1024));
           expect(collection.existsSync(), isFalse);
-          expect(file(work).existsSync(), isFalse);
+          expect(fileAt('work.toml').existsSync(), isFalse);
           final result = await host.enumerate(providers);
           expect(result.records, isEmpty);
           expect(result.diagnostics, isEmpty);
@@ -1785,7 +1806,9 @@ Return **findings** before the summary.
           'display-name': 'Personal OpenAI',
           'endpoint': 'https://api.openai.com/v1',
         });
-        final personalBytes = file(personal).readAsBytesSync();
+        final personalFile = fileAt(personalRecord.fileName);
+        final workFile = fileAt(workRecord.fileName);
+        final personalBytes = personalFile.readAsBytesSync();
         var result = await host.enumerate(providers);
         expect(result.diagnostics, isEmpty);
         expect(result.records.map((record) => record.id), [personal, work]);
@@ -1797,22 +1820,33 @@ Return **findings** before the summary.
           'https://api.openai.com/v1',
         );
         workRecord = await host.update(workRecord, {
-          'display-name': 'Renamed Work',
+          'display-name': 'Personal OpenAI',
         });
         expect(workRecord.id, work);
-        expect(file(work).existsSync(), isTrue);
-        expect(file(personal).readAsBytesSync(), personalBytes);
-        final workBytes = file(work).readAsBytesSync();
+        final sameLabel = await host.enumerate(providers);
+        expect(
+          sameLabel.records.map(
+            (r) => (r.id, r.fileName, r.values['display-name']),
+          ),
+          [
+            (personal, 'personal-openai.toml', 'Personal OpenAI'),
+            (work, 'work-openai.toml', 'Personal OpenAI'),
+          ],
+        );
+        expect(personalFile.readAsBytesSync(), personalBytes);
+        final workBytes = workFile.readAsBytesSync();
         await host.delete(personalRecord);
-        expect(file(personal).existsSync(), isFalse);
-        expect(file(work).readAsBytesSync(), workBytes);
+        expect(personalFile.existsSync(), isFalse);
+        expect(workFile.readAsBytesSync(), workBytes);
         host = ConfigurationRecordStore(
           store: ConfigurationStore(roots),
           catalog: catalog,
         );
         result = await host.enumerate(providers);
         expect(result.records.single.id, work);
-        expect(result.records.single.values, {'display-name': 'Renamed Work'});
+        expect(result.records.single.values, {
+          'display-name': 'Personal OpenAI',
+        });
         expect(result.diagnostics, isEmpty);
         expect(Directory(roots.localDataRoot).existsSync(), isFalse);
         expect(Directory(roots.cacheRoot).existsSync(), isFalse);
@@ -1820,25 +1854,23 @@ Return **findings** before the summary.
       },
     );
 
-    test(
-      'duplicate creates reject even malformed or differently typed existing files',
-      () async {
-        final existing = await host.create(openai, work, {
-          'display-name': 'Work',
-        });
-        await expectLater(
-          host.create(openai, work, {'display-name': 'Replacement'}),
-          throwsA(isA<ConfigurationConflictException>()),
-        );
-        expect((await host.load(providers, work)).values, existing.values);
-        seed(work, 'malformed = [');
-        await expectLater(
-          host.create(openai, work, {'display-name': 'Replacement'}),
-          throwsA(isA<ConfigurationConflictException>()),
-        );
-        expect(file(work).readAsStringSync(), 'malformed = [');
-      },
-    );
+    test('creates reject a claimed ID or an unreadable destination', () async {
+      final existing = await host.create(openai, work, {
+        'display-name': 'Work',
+      });
+      await expectLater(
+        host.create(openai, work, {'display-name': 'Replacement'}),
+        throwsA(isA<ConfigurationConflictException>()),
+      );
+      expect((await host.load(providers, work)).values, existing.values);
+      final target = fileAt(existing.fileName)
+        ..writeAsStringSync('malformed = [');
+      await expectLater(
+        host.create(openai, personal, existing.values),
+        throwsA(isA<ConfigurationConflictException>()),
+      );
+      expect(target.readAsStringSync(), 'malformed = [');
+    });
 
     test('stale updates deletes and no-ops require explicit reload', () async {
       final initial = await host.create(openai, work, {'display-name': 'Work'});
@@ -1861,8 +1893,9 @@ Return **findings** before the summary.
         throwsA(isA<ConfigurationConflictException>()),
       );
       expect((await host.load(providers, work)).values, latest.values);
-      final external = '${file(work).readAsStringSync()}# external edit\n';
-      file(work).writeAsStringSync(external);
+      final target = fileAt(initial.fileName);
+      final external = '${target.readAsStringSync()}# external edit\n';
+      target.writeAsStringSync(external);
       await expectLater(
         host.delete(latest),
         throwsA(isA<ConfigurationConflictException>()),
@@ -1871,7 +1904,7 @@ Return **findings** before the summary.
         host.update(latest, latest.values),
         throwsA(isA<ConfigurationConflictException>()),
       );
-      expect(file(work).readAsStringSync(), external);
+      expect(target.readAsStringSync(), external);
       final reloaded = await host.load(providers, work);
       await host.delete(reloaded);
       await expectLater(
@@ -1930,7 +1963,8 @@ Return **findings** before the summary.
         final loaded = await host.create(openai, work, {
           'display-name': 'Work',
         });
-        final bytes = file(work).readAsBytesSync();
+        final target = fileAt(loaded.fileName);
+        final bytes = target.readAsBytesSync();
         for (final values in <Map<String, Object?>>[
           {},
           {'display-name': null},
@@ -1941,7 +1975,7 @@ Return **findings** before the summary.
             host.update(loaded, values),
             throwsA(isA<InvalidRecordValue>()),
           );
-          expect(file(work).readAsBytesSync(), bytes);
+          expect(target.readAsBytesSync(), bytes);
         }
         await expectLater(
           host.update(loaded, {
@@ -1950,15 +1984,16 @@ Return **findings** before the summary.
           }),
           throwsA(isA<ConfigurationRecordFormatException>()),
         );
-        expect(file(work).readAsBytesSync(), bytes);
+        expect(target.readAsBytesSync(), bytes);
       },
     );
 
     test('file symlinks cannot be loaded overwritten or deleted', () async {
       final loaded = await host.create(openai, work, {'display-name': 'Work'});
       final target = File(p.join(temporary.path, 'outside.toml'));
-      file(work).renameSync(target.path);
-      Link(file(work).path).createSync(target.path);
+      final location = fileAt(loaded.fileName);
+      location.renameSync(target.path);
+      final link = Link(location.path)..createSync(target.path);
       final bytes = target.readAsBytesSync();
       await expectLater(
         host.load(providers, work),
@@ -1973,14 +2008,14 @@ Return **findings** before the summary.
         throwsA(isA<ConfigurationSymlinkException>()),
       );
       await expectLater(
-        host.create(openai, work, {'display-name': 'Other'}),
+        host.create(openai, personal, loaded.values),
         throwsA(isA<ConfigurationSymlinkException>()),
       );
       expect(target.readAsBytesSync(), bytes);
-      expect(Link(file(work).path).existsSync(), isTrue);
+      expect(link.existsSync(), isTrue);
       final diagnostic = (await host.enumerate(providers)).diagnostics.single;
       expect(diagnostic.recordId, isNull);
-      expect(diagnostic.fileName, 'work-openai.toml');
+      expect(diagnostic.fileName, 'work.toml');
       expect(diagnostic.error, isA<ConfigurationSymlinkException>());
     });
 
@@ -1994,7 +2029,7 @@ Return **findings** before the summary.
           'display-name': 'Work',
         });
         expect((await host.load(providers, work)).values, loaded.values);
-        final collection = file(work).parent;
+        final collection = fileAt(loaded.fileName).parent;
         final moved = collection.renameSync(p.join(temporary.path, 'moved'));
         Link(collection.path).createSync(moved.path);
         await expectLater(
@@ -2005,10 +2040,7 @@ Return **findings** before the summary.
           host.delete(loaded),
           throwsA(isA<ConfigurationSymlinkException>()),
         );
-        expect(
-          File(p.join(moved.path, '${work.value}.toml')).existsSync(),
-          isTrue,
-        );
+        expect(File(p.join(moved.path, loaded.fileName)).existsSync(), isTrue);
       },
     );
 
@@ -2019,13 +2051,12 @@ Return **findings** before the summary.
           'display-name': 'Work',
         });
         for (final name in [
-          'Work-openai.toml',
-          'work-openai.TOML',
-          'work-openai.toml. ',
-          'work-openai.toml ',
+          'Work.toml',
+          'work.TOML',
+          'work.toml. ',
+          'work.toml ',
         ]) {
-          final alias = File(p.join(file(work).parent.path, name))
-            ..writeAsStringSync('untouched');
+          final alias = fileAt(name)..writeAsStringSync('untouched');
           await expectLater(
             host.update(loaded, loaded.values),
             throwsA(isA<ConfigurationRecordFormatException>()),
@@ -2205,7 +2236,7 @@ Return **findings** before the summary.
       expect(ambiguous.records, isEmpty);
       expect(ambiguous.diagnostics.map((d) => d.fileName), [
         'personal-openai.toml',
-        'work-openai.toml',
+        'work.toml',
       ]);
       expect(ambiguous.diagnostics.map((d) => d.recordId), everyElement(work));
       await expectLater(
@@ -2213,7 +2244,9 @@ Return **findings** before the summary.
         throwsA(isA<ConfigurationRecordFormatException>()),
       );
       file(personal).deleteSync();
-      seed(work, source('', type: otherType.id.value));
+      fileAt(
+        original.fileName,
+      ).writeAsStringSync(source('', type: otherType.id.value));
       await expectLater(
         generic.update(original, original.values),
         throwsA(isA<ConfigurationConflictException>()),

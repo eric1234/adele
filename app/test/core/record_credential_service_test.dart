@@ -132,18 +132,19 @@ void main() {
     service = coordinate(settings, credentials);
   });
 
+  // Only the stock declaration uses the initial "Account <id>" label.
+  String initialFileName(RecordView record) => record.type == _openai
+      ? 'account-${record.id}.toml'
+      : '${record.id}.toml';
   File file(RecordView record) => File(
-    '${settings.collectionPath(record.collection)}/${record.id.value}.toml',
+    '${settings.collectionPath(record.collection)}/${initialFileName(record)}',
   );
 
-  Future<RecordView> create(
-    String id, {
-    RecordTypeId? type,
-    String name = 'Shared display name',
-  }) => settings.createRecord(type ?? _openai, ConfigurationRecordId(id), {
-    'display-name': name,
-    'endpoint': 'https://example.invalid/v1',
-  });
+  Future<RecordView> create(String id, {RecordTypeId? type}) =>
+      settings.createRecord(type ?? _openai, ConfigurationRecordId(id), {
+        'display-name': 'Account $id',
+        'endpoint': 'https://example.invalid/v1',
+      });
 
   Future<RecordView> reload(RecordView record) async =>
       (await settings.loadRecords(
@@ -157,7 +158,7 @@ void main() {
     ConfigurationStore(roots)
             .recordFile(
               collectionId: record.collection.value,
-              fileName: '${record.id.value}.toml',
+              fileName: initialFileName(record),
             )
             .load()
             .document
@@ -267,7 +268,7 @@ void main() {
         await expectRetired(second);
         // Rejection of an old revision cannot retire either current record.
         final renamed = await settings.updateRecord(storedFirst, {
-          'display-name': 'Renamed',
+          'display-name': storedSecond.values['display-name']!,
         });
         expect(reference(renamed), firstRef);
         _expectResult(
@@ -287,7 +288,9 @@ void main() {
       'reconstruction uses persisted references, never display names',
       () async {
         final first = await attach(await create('work'));
-        final second = await attach(await create('personal'), _secondSecret);
+        final personal = await attach(await create('personal'), _secondSecret);
+        // Reconstruction must not use display names, even when they coincide.
+        final second = await settings.updateRecord(personal, first.values);
         final references = [reference(first), reference(second)];
         final bytes = [
           file(first).readAsBytesSync(),
@@ -597,12 +600,14 @@ void main() {
           ),
         );
         final ref = reference(source);
-        var copied = target == 'slot'
-            ? source
-            : await create(
-                'copied',
-                type: target == 'plugin' ? _fixtureType : _openai,
-              );
+        var copied = source;
+        if (target != 'slot') {
+          final other = await create(
+            'copied',
+            type: target == 'plugin' ? _fixtureType : _openai,
+          );
+          copied = await settings.updateRecord(other, source.values);
+        }
         final slot = target == 'slot' ? _secondary : _apiKey;
         file(copied).writeAsStringSync(
           '${file(copied).readAsStringSync()}\n'
