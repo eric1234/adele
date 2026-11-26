@@ -63,8 +63,8 @@ has an immutable record ID, distinct from its editable provider and model IDs.
 Settings generates the preset ID independently of the Name. A new preset named
 `Fast` starts at `model-presets/fast.toml`; if that filename is occupied, choose
 a different Name. Editing a saved Name never moves the file, so presets in
-different files can share a display name. Copy the ID from **Advanced details**
-in Add or from the saved preset's details. See the
+different files can share a display name. The Session references the preset's
+`recordId` from the TOML header, not its Name or filename. See the
 [record editing guide](../../docs/architecture/profiles-and-configuration.md#creating-and-editing-records)
 for draft retention and recovery.
 

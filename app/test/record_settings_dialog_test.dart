@@ -18,7 +18,6 @@ import '../../tools/backend_artifacts.dart';
 import 'native_rich_document_editor_test.dart'
     as native_input
     show control, frames, input, insertAtSelection;
-import 'support/record_draft_id.dart';
 
 final _collection = RecordCollectionId('jobs');
 final _job = RecordTypeId('dev.example.records.job');
@@ -63,13 +62,14 @@ void main() {
     await temporary.delete(recursive: true);
   });
 
-  File file(String id) => File('${roots.configurationRoot}/jobs/$id.toml');
+  File file(String stem) => File('${roots.configurationRoot}/jobs/$stem.toml');
 
   Future<void> mount(
     WidgetTester tester, {
     List<String> recordIssues = const [],
     GlobalSettingsService? settingsService,
     RecordApplication? application,
+    ConfigurationRecordId Function(RecordTypeDefinition)? newDraftId,
   }) async {
     await tester.binding.setSurfaceSize(const Size(1000, 1100));
     addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -84,6 +84,7 @@ void main() {
                   service: () async => settingsService ?? service,
                   recordApplication: () => application,
                   recordDeclarationIssues: () => recordIssues,
+                  newDraftId: newDraftId,
                 ),
               ),
               child: const Text('Open settings'),
@@ -141,7 +142,7 @@ void main() {
     (tester) => tester.runAsync(() async {
       final application = RecordApplicationProbe(_job);
       final key = _jobKey('supported');
-      await seed('supported', caption: 'same-title');
+      await seed('supported', caption: 'same-title.toml');
       await service.createRecord(
         _note,
         ConfigurationRecordId('same-title'),
@@ -149,7 +150,9 @@ void main() {
       );
       await mount(tester, application: application);
       await openRecords(tester);
-      expect(find.text('same-title'), findsNWidgets(2));
+      expect(find.text('same-title.toml'), findsNWidgets(2));
+      expect(find.text('Job · supported.toml'), findsOneWidget);
+      expect(find.text('Note · same-title.toml'), findsNothing);
       expect(find.textContaining('No confirmed result'), findsOneWidget);
       await _edit(tester, 'same-title');
       await save(tester, 'same-title');
@@ -433,7 +436,6 @@ void main() {
         final original = agentFile().readAsBytesSync();
         await open(tester);
         await _tap(tester, _key('records-add-agents'));
-        final id = await inspectDraftId(tester);
         final name = _key('record-input-agents-name');
         final description = _key('record-input-agents-description');
         await _enter(tester, description, 'Retained description');
@@ -452,8 +454,8 @@ void main() {
         await _enter(tester, name, 'Second Reviewer');
         expect(_scalarDecoration(tester, name).errorText, isNull);
         expect(_text(tester, description), 'Retained description');
-        expect(await inspectDraftId(tester), id);
         await submit(tester, createButton);
+        final id = settings.submittedIds.last;
         final second = agentFile('second-reviewer');
         expect(second.readAsStringSync(), contains('recordId = "$id"'));
         expect(second.readAsStringSync(), contains('name = "Second Reviewer"'));
@@ -488,8 +490,6 @@ void main() {
         );
         expect(Directory(roots.configurationRoot).existsSync(), isFalse);
         await _tap(tester, _key('records-add-agents'));
-        final id = await inspectDraftId(tester);
-        final suffix = 'agents-$id';
         final recordFile = agentFile('architecture-reviewer');
         expect(find.text('Agent'), findsOneWidget);
         expect(_enabled(tester, createButton), isFalse);
@@ -547,6 +547,8 @@ void main() {
         await submit(tester, createButton);
         expect(creation.isDisposed, isTrue);
         expect(await stored(), values);
+        final id = settings.submittedIds.single;
+        final suffix = 'agents-$id';
         final created = recordFile.readAsStringSync();
         expect(created, contains('recordVersion = 2'));
         expect(created, contains('recordId = "$id"'));
@@ -554,9 +556,9 @@ void main() {
         expect(agentFile(id).existsSync(), isFalse);
         await _tap(tester, find.text('Architecture Reviewer'));
         await tester.pumpAndSettle();
-        expect(find.text('Collection: agents'), findsOneWidget);
-        expect(find.text('Record ID: $id'), findsOneWidget);
-        expect(find.text('Record type: $type'), findsOneWidget);
+        expect(find.text('architecture-reviewer.toml'), findsOneWidget);
+        _expectNoIdentityControls();
+        expect(find.textContaining(id), findsNothing);
         for (final field in settings.records.definition(type).fields) {
           expect(
             find.text('${field.label}: ${values[field.id.value]}'),
@@ -612,10 +614,10 @@ void main() {
           findsOneWidget,
         );
         await _tap(tester, _key('records-add-agents'));
-        final replacement = await inspectDraftId(tester);
-        expect(replacement, isNot(id));
         await _enter(tester, name, 'Architecture Reviewer');
         await submit(tester, createButton);
+        final replacement = settings.submittedIds.last;
+        expect(replacement, isNot(id));
         expect(
           recordFile.readAsStringSync(),
           contains('recordId = "$replacement"'),
@@ -886,7 +888,6 @@ void main() {
       await openRecords(tester);
       await add(tester);
       await _choose(tester, _key('record-type-jobs'), 'Memo');
-      final id = await inspectDraftId(tester);
       expect(find.byType(CheckboxListTile), findsNothing);
       final body = tester.widget<InputDecorator>(_input('body')).decoration;
       expect(body.labelText, 'Body (Required)');
@@ -904,7 +905,10 @@ void main() {
       await native_input.frames(tester);
       expect(find.textContaining('Finish composing'), findsOneWidget);
       expect(service.creates, 0);
-      expect(file(id).existsSync(), isFalse);
+      expect(
+        Directory(service.collectionPath(_collection)).existsSync(),
+        isFalse,
+      );
       await native_input.input(
         tester,
         composing.copyWith(composing: TextRange.empty),
@@ -913,6 +917,7 @@ void main() {
       await _richTap(tester, button);
       await _loaded(tester);
       expect(owner.isDisposed, isTrue);
+      final id = service.submittedIds.single;
       expect(file(id).existsSync(), isTrue);
       await _tap(tester, _key('records-reload-jobs'));
       await _loaded(tester);
@@ -944,9 +949,9 @@ void main() {
       await openRecords(tester);
       await add(tester);
       await _choose(tester, _key('record-type-jobs'), 'Memo');
-      final id = await inspectDraftId(tester);
-      final suffix = 'jobs-$id';
       await create(tester);
+      final id = service.submittedIds.single;
+      final suffix = 'jobs-$id';
       final original = file(id).readAsBytesSync();
       expect(file(id).readAsStringSync(), isNot(contains('instructions')));
       await _edit(tester, id);
@@ -1117,9 +1122,8 @@ void main() {
       await mount(tester);
       await openRecords(tester);
       await _edit(tester, 'original');
-      expect(find.text('Collection: jobs'), findsOneWidget);
-      expect(find.text('Record ID: original'), findsOneWidget);
-      expect(find.text('Record type: $_job'), findsOneWidget);
+      expect(find.text('original.toml'), findsOneWidget);
+      _expectNoIdentityControls();
       expect(_key('record-id-jobs-original'), findsNothing);
       expect(_key('record-type-jobs-original'), findsNothing);
       await save(tester, 'original');
@@ -1192,7 +1196,13 @@ void main() {
       await _choose(tester, _editInput('original', 'optional-enum'), 'Not set');
       await _enter(tester, _editInput('original', 'optional-int'), '');
       await save(tester, 'original');
-      expect(find.text('original'), findsOneWidget);
+      expect(
+        find.descendant(
+          of: _recordTile('jobs', 'original'),
+          matching: find.text('original.toml'),
+        ),
+        findsOneWidget,
+      );
       final saved = (await service.loadRecords(_collection)).records.single;
       expect(saved.id, ConfigurationRecordId('original'));
       expect(saved.type, _job);
@@ -1293,90 +1303,74 @@ void main() {
   );
 
   testWidgets(
-    'duplicate display names have distinct, copyable IDs and independent files',
+    'duplicate display names disambiguate by filename and keep independent identities',
     (tester) => tester.runAsync(() async {
-      final copies = <Object?>[];
-      final messenger = tester.binding.defaultBinaryMessenger;
-      messenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
-        if (call.method == 'Clipboard.setData') copies.add(call.arguments);
-        return null;
-      });
-      addTearDown(
-        () => messenger.setMockMethodCallHandler(SystemChannels.platform, null),
-      );
-      final application = RecordApplicationProbe(_job);
+      final application = RecordApplicationProbe(_named);
       await mount(tester, application: application);
       await openRecords(tester);
       const name = 'Duplicate title';
-      final copy = find.byTooltip('Copy record ID');
-      final ids = <String>[];
-      for (var i = 0; i < 2; i++) {
+      for (final stem in ['primary', 'secondary']) {
         await add(tester);
-        expect(find.textContaining('Record ID:'), findsNothing);
-        expect(copy, findsNothing);
-        expect(
-          find.byWidgetPredicate(
-            (w) => w is TextField && w.decoration?.labelText == 'Record ID',
-          ),
-          findsNothing,
-        );
-        final id = await inspectDraftId(tester);
-        expect(
-          ConfigurationRecordId(id).value,
-          id,
-        ); // The public portable grammar.
-        expect(ids, isNot(contains(id)));
-        ids.add(id);
-        await fillRequired(tester, caption: name);
-        await _tap(tester, find.text('Advanced details'));
-        await tester.pumpAndSettle();
-        expect(find.text('Record ID: $id'), findsOneWidget);
-        await _tap(tester, copy);
-        expect(copies.last, {'text': id});
-        expect(file(id).existsSync(), isFalse);
+        if (stem == 'primary') {
+          await _choose(tester, _key('record-type-jobs'), 'Named document');
+        }
+        await _enter(tester, _input('title'), name);
+        await _enter(tester, _input('subject'), stem);
+        _expectNoIdentityControls();
+        expect(find.textContaining('$stem.toml'), findsNothing);
+        expect(file(stem).existsSync(), isFalse);
         await create(tester);
+        final id = service.submittedIds.last;
+        expect(file(stem).readAsStringSync(), contains('recordId = "$id"'));
         expect(find.text('Created $name.'), findsOneWidget);
-        expect(
-          find.textContaining(id),
-          findsNothing,
-        ); // Includes the row subtitle.
-        expect(file(id).readAsStringSync(), contains(name));
+        expect(find.textContaining(id), findsNothing);
+        if (stem == 'primary') {
+          expect(find.textContaining('primary.toml'), findsNothing);
+        }
       }
-      final first = ids.first;
-      final second = ids.last;
+      final [first, second] = service.submittedIds;
+      expect(first, isNot(second));
       expect(find.text(name), findsNWidgets(2));
-      final sibling = file(second).readAsBytesSync();
+      for (final (id, stem) in [(first, 'primary'), (second, 'secondary')]) {
+        expect(id, matches(RegExp(r'^r-[0-9a-f]{32}$')));
+        expect(
+          find.descendant(
+            of: _recordTile('jobs', id),
+            matching: find.text('Named document · $stem.toml'),
+          ),
+          findsOneWidget,
+        );
+      }
+      final sibling = file('secondary').readAsBytesSync();
       await _edit(tester, first);
-      expect(find.text('Record ID: $first'), findsOneWidget);
-      await _tap(tester, copy);
-      expect(copies, [
-        {'text': first},
-        {'text': second},
-        {'text': first},
-      ]);
-      await _enter(tester, _editInput(first, 'caption'), 'Renamed');
+      expect(find.text('primary.toml'), findsOneWidget);
+      _expectNoIdentityControls();
+      expect(find.textContaining(first), findsNothing);
+      await _enter(tester, _editInput(first, 'title'), 'Renamed');
       await save(tester, first);
       expect(find.text('Saved Renamed.'), findsOneWidget);
-      expect(file(first).readAsStringSync(), contains('Renamed'));
-      expect(file(second).readAsBytesSync(), sibling);
+      expect(find.text('primary.toml'), findsOneWidget);
+      expect(find.textContaining('secondary.toml'), findsNothing);
+      expect(file('primary').readAsStringSync(), contains('Renamed'));
+      expect(file('secondary').readAsBytesSync(), sibling);
       await _tap(tester, _key('record-delete-jobs-$first'));
-      expect(
-        find.descendant(
-          of: find.byType(AlertDialog),
-          matching: find.textContaining('Record ID: $first'),
-        ),
-        findsOneWidget,
-      );
+      expect(find.textContaining('File: primary.toml'), findsOneWidget);
+      expect(find.textContaining(first), findsNothing);
       await _tap(tester, _key('record-delete-confirm-jobs-$first'));
       await _loaded(tester);
-      expect(file(first).existsSync(), isFalse);
-      expect(file(second).readAsBytesSync(), sibling);
+      expect(file('primary').existsSync(), isFalse);
+      expect(file('secondary').readAsBytesSync(), sibling);
       expect(find.text(name), findsOneWidget);
+      RecordApplyKey key(String id) => (
+        collection: _collection,
+        type: _named,
+        id: ConfigurationRecordId(id),
+      );
       expect(application.saves, [
-        (_jobKey(first), false),
-        (_jobKey(second), false),
-        (_jobKey(first), false),
-        (_jobKey(first), true),
+        (key(first), false),
+        (key(second), false),
+        (key(first), false),
+        (key(first), true),
       ]);
       await unmount(tester);
     }),
@@ -1539,11 +1533,12 @@ void main() {
   testWidgets(
     'Create cannot replace a still-listed identity and draft after external deletion',
     (tester) => tester.runAsync(() async {
-      await mount(tester);
+      final drafts = _DraftIds();
+      await mount(tester, newDraftId: drafts.next);
       await openRecords(tester);
       await add(tester);
       await _choose(tester, _key('record-type-jobs'), 'Note');
-      final id = await inspectDraftId(tester);
+      final id = drafts.byType[_note]!.single;
       await seed(id);
       await _tap(tester, _key('records-reload-jobs'));
       await _loaded(tester);
@@ -1565,7 +1560,7 @@ void main() {
       await _tap(tester, _key('records-reload-confirm-jobs'));
       await _loaded(tester);
       expect(_key('record-jobs-$id'), findsNothing);
-      expect(await inspectDraftId(tester), id);
+      expect(drafts.byType[_note], [id]);
       expect(_enabled(tester, _key('record-create-jobs')), isTrue);
       await create(tester);
       expect(_key('record-jobs-$id'), findsOneWidget);
@@ -1733,13 +1728,14 @@ void main() {
   );
 
   testWidgets(
-    'Delete confirms exact identity with safe Cancel autofocus and modal-only Escape',
+    'Delete confirms the saved name, type and observed file with safe Cancel and Escape',
     (tester) => tester.runAsync(() async {
       await seed('target', caption: 'Same title');
       await seed('sibling', caption: 'Same title');
       file('target').writeAsStringSync(
         '${file('target').readAsStringSync()}\nunknown = [1, 2]\n',
       );
+      final target = file('target').renameSync(file('selected-document').path);
       final sibling = file('sibling').readAsBytesSync();
       await mount(tester);
       await openRecords(tester);
@@ -1762,20 +1758,26 @@ void main() {
       expect(find.byType(AlertDialog), findsOneWidget);
       final confirmation = find.descendant(
         of: find.byType(AlertDialog),
-        matching: find.textContaining('Title: Same title'),
+        matching: find.textContaining('Name: Same title'),
       );
       expect(confirmation, findsOneWidget);
       final message = tester.widget<Text>(confirmation).data!;
       for (final exact in [
-        'Record ID: target',
-        'Record type: $_job',
-        'Collection: jobs',
+        'Type: Job',
+        'File: selected-document.toml',
         'entire record file',
         'unknown data',
+        'unsaved edits',
+        'cannot be undone',
       ]) {
         expect(message, contains(exact));
       }
       expect(message, isNot(contains('Unsaved renamed title')));
+      expect(message, isNot(contains('target')));
+      expect(message, isNot(contains('sibling.toml')));
+      expect(message, isNot(contains(_job.value)));
+      expect(message, isNot(contains(target.parent.path)));
+      _expectNoIdentityControls();
       expect(
         tester
             .widget<TextButton>(_key('record-delete-cancel-jobs-target'))
@@ -1786,7 +1788,7 @@ void main() {
       await _loaded(tester);
       expect(find.byType(AlertDialog), findsNothing);
       expect(service.deletes, 0);
-      expect(file('target').existsSync(), isTrue);
+      expect(target.existsSync(), isTrue);
       await _tap(tester, _key('record-delete-jobs-target'));
       await tester.pumpAndSettle();
       final staleConfirm = tester
@@ -1821,14 +1823,14 @@ void main() {
         await tester.pump();
         expect(service.deletes, 1);
         expect(service.recordLoads, 1);
-        expect(file('target').existsSync(), isTrue);
+        expect(target.existsSync(), isTrue);
         expect(_key('record-jobs-target'), findsOneWidget);
       } finally {
         service.gate = null;
         gate.complete();
       }
       await _loaded(tester);
-      expect(file('target').existsSync(), isFalse);
+      expect(target.existsSync(), isFalse);
       expect(_key('record-jobs-target'), findsNothing);
       expect(file('sibling').readAsBytesSync(), sibling);
       expect(find.text('Deleted Same title.'), findsOneWidget);
@@ -2088,7 +2090,6 @@ void main() {
         expect(find.textContaining('Restart ADELE'), findsNothing);
         expect(Directory(roots.configurationRoot).existsSync(), isFalse);
         await add(tester);
-        final requiredId = await inspectDraftId(tester);
         for (final (field, label) in [
           ('caption', 'Caption'),
           ('enabled', 'Enabled'),
@@ -2168,10 +2169,13 @@ void main() {
         await _choose(tester, _input('mode'), 'Compact label');
         expect(_scalarDecoration(tester, _input('mode')).errorText, isNull);
         expect(_enabled(tester, _key('record-create-jobs')), isTrue);
-        expect(await inspectDraftId(tester), requiredId);
         expect(service.creates, 0);
-        expect(file(requiredId).existsSync(), isFalse);
+        expect(
+          Directory(service.collectionPath(_collection)).existsSync(),
+          isFalse,
+        );
         await create(tester);
+        final requiredId = service.submittedIds.single;
         final saved = (await service.loadRecords(_collection)).records.single;
         expect(saved.id, ConfigurationRecordId(requiredId));
         expect(saved.values, {
@@ -2180,7 +2184,8 @@ void main() {
           'count': 0,
           'mode': 'compact',
         });
-        expect(find.text(requiredId), findsOneWidget);
+        expect(find.text('$requiredId.toml'), findsOneWidget);
+        expect(find.text(requiredId), findsNothing);
         expect(find.text('Created Job.'), findsOneWidget);
         expect(
           file(requiredId).readAsStringSync(),
@@ -2193,7 +2198,6 @@ void main() {
         expect(File(service.filePath).existsSync(), isFalse);
 
         await add(tester);
-        final explicitId = await inspectDraftId(tester);
         await fillRequired(tester, caption: 'Two lines\nSecond line');
         final button = _key('record-create-jobs');
         final staleCreate = tester.widget<ButtonStyleButton>(button).onPressed!;
@@ -2215,7 +2219,9 @@ void main() {
         staleCreate();
         await tester.pump();
         expect(service.creates, 1);
-        expect(file(explicitId).existsSync(), isFalse);
+        expect(file(requiredId).parent.listSync().map((f) => f.path), [
+          file(requiredId).path,
+        ]);
         await _enter(tester, _input('optional-int'), '');
         expect(
           _scalarDecoration(tester, _input('optional-int')).errorText,
@@ -2228,6 +2234,8 @@ void main() {
         await _enter(tester, _input('optional-int'), '0');
         await _choose(tester, _input('optional-enum'), 'Expanded label');
         await create(tester);
+        final explicitId = service.submittedIds.last;
+        expect(explicitId, isNot(requiredId));
         final explicit = (await service.loadRecords(
           _collection,
         )).records.firstWhere((r) => r.id.value == explicitId);
@@ -2251,7 +2259,8 @@ void main() {
     tester,
   ) {
     return tester.runAsync(() async {
-      await mount(tester);
+      final drafts = _DraftIds();
+      await mount(tester, newDraftId: drafts.next);
       expect(find.text('Preferences'), findsOneWidget);
       final preference = _key('setting-input-$_preference');
       await _enter(tester, preference, 'Retained preference');
@@ -2260,14 +2269,16 @@ void main() {
       await _enter(tester, _key('settings-search'), 'Greeting');
       await openRecords(tester);
       await add(tester);
-      final jobId = await inspectDraftId(tester);
+      final jobId = drafts.byType[_job]!.single;
+      _expectNoIdentityControls();
+      expect(find.textContaining(jobId), findsNothing);
       await _enter(tester, _input('caption'), 'Retained record');
       final recordElement = tester.element(_input('caption'));
       final recordController = tester
           .widget<TextField>(_input('caption'))
           .controller;
       await _choose(tester, _key('record-type-jobs'), 'Note');
-      final noteId = await inspectDraftId(tester);
+      final noteId = drafts.byType[_note]!.single;
       expect(noteId, isNot(jobId));
       await _enter(tester, _input('display-name'), 'Note draft');
       await _choose(tester, _key('record-type-jobs'), 'Job');
@@ -2277,7 +2288,6 @@ void main() {
         same(recordController),
       );
       expect(recordController!.text, 'Retained record');
-      expect(await inspectDraftId(tester), jobId);
       await _section(tester, 'Preferences');
       expect(tester.element(preference), same(scalarElement));
       expect(
@@ -2300,12 +2310,11 @@ void main() {
       await openRecords(tester);
       expect(tester.element(_input('caption')), same(recordElement));
       expect(recordController.text, 'Retained record');
-      expect(await inspectDraftId(tester), jobId);
       await _tap(tester, find.text('Back to records'));
       await add(tester);
-      expect(await inspectDraftId(tester), jobId);
       await _choose(tester, _key('record-type-jobs'), 'Note');
-      expect(await inspectDraftId(tester), noteId);
+      expect(drafts.byType[_job], [jobId]);
+      expect(drafts.byType[_note], [noteId]);
       expect(_text(tester, _input('display-name')), 'Note draft');
       expect(service.recordLoads, 1);
       expect(File(service.filePath).existsSync(), isFalse);
@@ -2321,10 +2330,11 @@ void main() {
     'type switching fences old controls and sibling creation retains the other draft',
     (tester) {
       return tester.runAsync(() async {
-        await mount(tester);
+        final drafts = _DraftIds();
+        await mount(tester, newDraftId: drafts.next);
         await openRecords(tester);
         await add(tester);
-        final jobId = await inspectDraftId(tester);
+        final jobId = drafts.byType[_job]!.single;
         await _enter(
           tester,
           _input('optional-text'),
@@ -2365,11 +2375,12 @@ void main() {
           'compact',
         );
         await _choose(tester, _key('record-type-jobs'), 'Note');
-        final noteId = await inspectDraftId(tester);
+        final noteId = drafts.byType[_note]!.single;
         await create(tester);
+        expect(service.submittedIds.single, noteId);
         expect(file(noteId).existsSync(), isTrue);
         await _tap(tester, _key('records-add-jobs'));
-        expect(await inspectDraftId(tester), isNot(noteId));
+        expect(drafts.byType[_note], [noteId, isNot(noteId)]);
         await _choose(tester, _key('record-type-jobs'), 'Job');
         expect(tester.element(_input('caption')), same(element));
         expect(
@@ -2377,7 +2388,7 @@ void main() {
           same(controller),
         );
         expect(controller!.text, 'Retained across sibling creation');
-        expect(await inspectDraftId(tester), jobId);
+        expect(drafts.byType[_job], [jobId]);
         expect(
           _text(tester, _input('optional-text')),
           'Retained optional value',
@@ -2417,19 +2428,20 @@ void main() {
   );
 
   testWidgets(
-    'generic title metadata, immutable details and per-file diagnostics reload',
+    'declared titles and filename fallbacks follow observed files on Reload',
     (tester) {
       return tester.runAsync(() async {
         await service.createRecord(
           _job,
-          ConfigurationRecordId('with-title'),
+          ConfigurationRecordId('job-key'),
           _values(caption: 'Declared title'),
         );
-        await service.createRecord(
-          _note,
-          ConfigurationRecordId('id-fallback'),
-          {'display-name': 'Not a title heuristic'},
-        );
+        await service.createRecord(_note, ConfigurationRecordId('note-key'), {
+          'display-name': 'Not a title heuristic',
+        });
+        final job = file('job-key').renameSync(file('job-file').path);
+        final note = file('note-key').renameSync(file('note-file').path);
+        final noteBytes = note.readAsBytesSync();
         file('broken').writeAsStringSync('broken = [\n');
         file('unknown').writeAsStringSync(
           'recordVersion = 2\nrecordId = "unknown"\nrecordType = "dev.missing.type"\n[values]\n',
@@ -2437,33 +2449,87 @@ void main() {
         await mount(tester);
         await openRecords(tester);
         expect(find.text('Declared title'), findsOneWidget);
-        expect(find.text('id-fallback'), findsOneWidget);
+        expect(find.text('note-file.toml'), findsOneWidget);
+        expect(find.textContaining('job-file.toml'), findsNothing);
+        for (final id in ['job-key', 'note-key']) {
+          expect(find.textContaining(id), findsNothing);
+        }
         expect(find.text('Not a title heuristic'), findsNothing);
         expect(find.textContaining('broken.toml:'), findsOneWidget);
         expect(find.textContaining('unknown.toml:'), findsOneWidget);
-        await _tap(tester, find.text('Declared title'));
-        expect(find.text('Record ID: with-title'), findsOneWidget);
-        expect(find.text('Record type: $_job'), findsOneWidget);
+        expect(_key('record-jobs-unknown'), findsNothing);
+        await _expand(tester, 'job-key');
+        expect(find.text('job-file.toml'), findsOneWidget);
+        _expectNoIdentityControls();
         expect(find.text('Enabled: false'), findsOneWidget);
         expect(find.text('Count: 0'), findsOneWidget);
         expect(find.text('Optional text: Not provided'), findsOneWidget);
         expect(find.text('Save'), findsNothing);
-        expect(_enabled(tester, _key('record-edit-jobs-with-title')), isTrue);
-        expect(_enabled(tester, _key('record-delete-jobs-with-title')), isTrue);
-        expect(find.text('Collection: jobs'), findsOneWidget);
+        expect(_enabled(tester, _key('record-edit-jobs-job-key')), isTrue);
+        expect(_enabled(tester, _key('record-delete-jobs-job-key')), isTrue);
         expect(find.text('Reset'), findsNothing);
-        file('with-title').writeAsStringSync(
-          file(
-            'with-title',
-          ).readAsStringSync().replaceFirst('Declared title', 'External title'),
+        job.writeAsStringSync(
+          job.readAsStringSync().replaceFirst(
+            'Declared title',
+            'External title',
+          ),
         );
+        final renamedJob = job.renameSync(file('renamed-job').path);
+        final jobBytes = renamedJob.readAsBytesSync();
+        final renamedNote = note.renameSync(file('renamed-note').path);
         file('broken').deleteSync();
         await _tap(tester, _key('records-reload-jobs'));
         await _loaded(tester);
         expect(find.text('External title'), findsOneWidget);
         expect(find.text('Declared title'), findsNothing);
+        expect(
+          find.descendant(
+            of: _key('record-jobs-job-key'),
+            matching: find.text('renamed-job.toml'),
+          ),
+          findsOneWidget,
+        );
+        expect(
+          find.descendant(
+            of: _recordTile('jobs', 'note-key'),
+            matching: find.text('renamed-note.toml'),
+          ),
+          findsOneWidget,
+        );
+        expect(find.textContaining('job-file.toml'), findsNothing);
+        expect(find.textContaining('note-file.toml'), findsNothing);
+        expect(find.textContaining('job-key'), findsNothing);
+        expect(find.textContaining('note-key'), findsNothing);
+        expect(renamedJob.readAsBytesSync(), jobBytes);
+        expect(renamedNote.readAsBytesSync(), noteBytes);
         expect(find.textContaining('broken.toml:'), findsNothing);
         expect(find.textContaining('unknown.toml:'), findsOneWidget);
+
+        // The fallback is already the observed basename, not a separate Name.
+        await _expand(tester, 'note-key');
+        await _tap(tester, _key('record-delete-jobs-note-key'));
+        final modal = find.byType(AlertDialog);
+        for (final expected in ['Type: Note', 'File: renamed-note.toml']) {
+          expect(
+            find.descendant(of: modal, matching: find.textContaining(expected)),
+            findsOneWidget,
+          );
+        }
+        for (final absent in [
+          'Name:',
+          'note-key',
+          'Not a title heuristic',
+          'note-file.toml',
+        ]) {
+          expect(
+            find.descendant(of: modal, matching: find.textContaining(absent)),
+            findsNothing,
+          );
+        }
+        await _tap(tester, _key('record-delete-confirm-jobs-note-key'));
+        await _loaded(tester);
+        expect(renamedNote.existsSync(), isFalse);
+        expect(renamedJob.readAsBytesSync(), jobBytes);
         await unmount(tester);
       });
     },
@@ -2489,10 +2555,9 @@ void main() {
           findsOneWidget,
         );
         await add(tester);
-        final id = await inspectDraftId(tester);
         await fillRequired(tester);
         await create(tester);
-        expect(file(id).existsSync(), isTrue);
+        expect(file(service.submittedIds.single).existsSync(), isTrue);
         expect(File(service.filePath).readAsStringSync(), 'broken = [\n');
         await unmount(tester);
       });
@@ -2580,10 +2645,9 @@ void main() {
     final source = _input('subject');
     final title = _input('title');
 
-    Future<String> start(WidgetTester tester) async {
+    Future<void> start(WidgetTester tester) async {
       await add(tester);
       await _choose(tester, _key('record-type-jobs'), 'Named document');
-      return inspectDraftId(tester);
     }
 
     Future<void> reload(WidgetTester tester) async {
@@ -2601,7 +2665,7 @@ void main() {
         File('${occupied.parent.path}/ALIAS.TOML. ').writeAsStringSync('alias');
         await mount(tester);
         await openRecords(tester);
-        final id = await start(tester);
+        await start(tester);
         await _enter(tester, title, 'Shared title');
         await _enter(tester, source, 'Shared title');
         final staleCreate = tester.widget<ButtonStyleButton>(button).onPressed!;
@@ -2625,9 +2689,9 @@ void main() {
         expect(occupied.readAsBytesSync(), original);
         await _enter(tester, source, '  Current / Name  ');
         expect(_text(tester, title), 'Shared title');
-        expect(await inspectDraftId(tester), id);
         expect(find.textContaining('current-name.toml'), findsNothing);
         await create(tester);
+        final id = service.submittedIds.last;
         final created = file('current-name');
         expect(created.readAsStringSync(), contains('recordId = "$id"'));
         expect(
@@ -2650,11 +2714,11 @@ void main() {
         await _loaded(tester);
         expect(created.existsSync(), isFalse);
         await add(tester);
-        final replacement = await inspectDraftId(tester);
-        expect(replacement, isNot(id));
         await _enter(tester, title, 'Shared title');
         await _enter(tester, source, 'Current Name');
         await create(tester);
+        final replacement = service.submittedIds.last;
+        expect(replacement, isNot(id));
         expect(
           created.readAsStringSync(),
           contains('recordId = "$replacement"'),
@@ -2668,7 +2732,7 @@ void main() {
       (tester) => tester.runAsync(() async {
         await mount(tester);
         await openRecords(tester);
-        final id = await start(tester);
+        await start(tester);
         await _enter(tester, title, 'Keep this title');
         await _enter(tester, source, 'External');
         final staleCreate = tester.widget<ButtonStyleButton>(button).onPressed!;
@@ -2678,6 +2742,7 @@ void main() {
         occupant.parent.createSync(recursive: true);
         occupant.writeAsStringSync('broken = [');
         await create(tester);
+        final id = service.submittedIds.single;
         expect(find.textContaining('Not created:'), findsOneWidget);
         expect(_enabled(tester, button), isFalse);
         expect(_enabled(tester, _discardDraft), isFalse);
@@ -2690,8 +2755,8 @@ void main() {
         staleCreate();
         expect(service.creates, 1);
         expect(_text(tester, title), 'Keep this title');
-        expect(await inspectDraftId(tester), id);
         await create(tester);
+        expect(service.submittedIds, [id, id]);
         expect(occupant.readAsStringSync(), 'broken = [');
         expect(
           file('new-location').readAsStringSync(),
@@ -2707,12 +2772,13 @@ void main() {
         final application = RecordApplicationProbe(_named);
         await mount(tester, application: application);
         await openRecords(tester);
-        final id = await start(tester);
+        await start(tester);
         await _enter(tester, title, 'Retained');
         await _enter(tester, source, 'First place');
         final staleCreate = tester.widget<ButtonStyleButton>(button).onPressed!;
         service.loseAcknowledgement = true;
         await create(tester);
+        final id = service.submittedIds.single;
         service.loseAcknowledgement = false;
         expect(
           find.textContaining('Could not confirm creation'),
@@ -2723,9 +2789,29 @@ void main() {
         final moved = target.renameSync(file('elsewhere').path);
         await reload(tester);
         expect(_key('record-jobs-$id'), findsOneWidget);
+        final block = find.textContaining(
+          "Reload found this draft's record ID in:",
+        );
+        expect(tester.widget<Text>(block).data, contains('elsewhere.toml'));
+        expect(tester.widget<Text>(block).data, isNot(contains(id)));
         expect(_enabled(tester, button), isFalse);
         await _enter(tester, source, 'Second place');
         expect(_enabled(tester, button), isFalse);
+
+        // Duplicate headers leave only diagnostics; neither file is editable,
+        // but the recovery block must still identify both claiming locations.
+        final copy = moved.copySync(file('second-claim').path);
+        await reload(tester);
+        final blocked = tester.widget<Text>(block).data!;
+        for (final filename in ['elsewhere.toml', 'second-claim.toml']) {
+          expect(blocked, contains(filename));
+          expect(find.textContaining('$filename:'), findsOneWidget);
+        }
+        expect(blocked, isNot(contains(id)));
+        expect(_key('record-jobs-$id'), findsNothing);
+        expect(_enabled(tester, button), isFalse);
+        expect(copy.readAsBytesSync(), moved.readAsBytesSync());
+        copy.deleteSync();
 
         // The current candidate is free and no readable record claims the ID.
         // The attempted physical name still has an unidentified occupant.
@@ -2735,7 +2821,9 @@ void main() {
         await reload(tester);
         expect(_key('record-jobs-$id'), findsNothing);
         expect(
-          find.textContaining('could not identify the occupant'),
+          find.textContaining(
+            'could not identify the occupant of first-place.toml',
+          ),
           findsOneWidget,
         );
         expect(_scalarDecoration(tester, source).errorText, isNull);
@@ -2751,7 +2839,6 @@ void main() {
         expect(_enabled(tester, button), isTrue);
         expect(file('second-place').existsSync(), isFalse);
         expect(_text(tester, title), 'Retained');
-        expect(await inspectDraftId(tester), id);
         expect(application.saves, isEmpty);
         await create(tester);
         expect(service.creates, 3); // Two submissions and the external seed.
@@ -2769,10 +2856,11 @@ void main() {
     testWidgets(
       'filesystem conflict with ${malformed ? 'an unreadable' : 'a readable'} occupant keeps the draft until explicit discard',
       (tester) => tester.runAsync(() async {
-        await mount(tester);
+        final drafts = _DraftIds();
+        await mount(tester, newDraftId: drafts.next);
         await openRecords(tester);
         await add(tester);
-        final id = await inspectDraftId(tester);
+        final id = drafts.byType[_job]!.single;
         await fillRequired(tester, caption: 'Unsaved title');
         final button = _key('record-create-jobs');
         final staleCreate = tester.widget<ButtonStyleButton>(button).onPressed!;
@@ -2793,14 +2881,16 @@ void main() {
         expect(occupant.readAsBytesSync(), before);
         expect(_enabled(tester, button), isFalse);
         expect(_enabled(tester, _discardDraft), isFalse);
-        expect(await inspectDraftId(tester), id);
         await _tap(tester, _key('records-reload-jobs'));
         await _loaded(tester);
         expect(_text(tester, _input('caption')), 'Unsaved title');
-        expect(await inspectDraftId(tester), id);
         expect(_enabled(tester, _discardDraft), isTrue);
         if (malformed) {
           expect(find.textContaining('$id.toml:'), findsOneWidget);
+          expect(
+            find.textContaining('Reload found $id.toml in use'),
+            findsOneWidget,
+          );
           // The diagnosed entry is still occupied in the loaded view. A stale
           // callback must not recreate its file even if it now disappears.
           occupant.deleteSync();
@@ -2815,9 +2905,9 @@ void main() {
         await _choose(tester, _key('record-type-jobs'), 'Note');
         expect(_enabled(tester, _discardDraft), isFalse);
         await _choose(tester, _key('record-type-jobs'), 'Job');
-        expect(await inspectDraftId(tester), id);
+        expect(drafts.byType[_job], [id]);
         await _tap(tester, _discardDraft);
-        final freshId = await inspectDraftId(tester);
+        final freshId = drafts.byType[_job]!.last;
         expect(freshId, isNot(id));
         expect(_enabled(tester, _discardDraft), isFalse);
         expect(_text(tester, _input('caption')), isEmpty);
@@ -2845,7 +2935,6 @@ void main() {
           await mount(tester, application: application);
           await openRecords(tester);
           await add(tester);
-          final id = await inspectDraftId(tester);
           const caption = 'Retained uncertain draft';
           await fillRequired(tester, caption: caption);
           final button = _key('record-create-jobs');
@@ -2858,6 +2947,7 @@ void main() {
             File(roots.localStateRoot).writeAsStringSync('not a directory');
           }
           await create(tester);
+          final id = service.submittedIds.single;
           expect(
             find.textContaining('Could not confirm creation'),
             findsOneWidget,
@@ -2869,7 +2959,6 @@ void main() {
           expect(_enabled(tester, button), isFalse);
           expect(_enabled(tester, _discardDraft), isFalse);
           expect(_text(tester, _input('caption')), caption);
-          expect(await inspectDraftId(tester), id);
           if (!lostAcknowledgement) File(roots.localStateRoot).deleteSync();
           service.loseAcknowledgement = false;
           service.failNextLoad = true;
@@ -2884,7 +2973,6 @@ void main() {
           await _tap(tester, _key('records-reload-jobs'));
           await _loaded(tester);
           expect(_text(tester, _input('caption')), caption);
-          expect(await inspectDraftId(tester), id);
           expect(_enabled(tester, _discardDraft), isTrue);
           expect(
             _key('record-jobs-$id'),
@@ -2895,7 +2983,6 @@ void main() {
           if (lostAcknowledgement) {
             final published = file(id).readAsBytesSync();
             await _tap(tester, _discardDraft);
-            expect(await inspectDraftId(tester), isNot(id));
             expect(_text(tester, _input('caption')), isEmpty);
             expect(service.creates, 1);
             expect(file(id).readAsBytesSync(), published);
@@ -2903,6 +2990,7 @@ void main() {
             expect(_enabled(tester, button), isTrue);
             await create(tester);
             expect(application.saves, [(_jobKey(id), false)]);
+            expect(service.submittedIds, [id, id]);
             expect(file(id).readAsStringSync(), contains(caption));
             expect(service.creates, 2);
           }
@@ -2921,7 +3009,6 @@ void main() {
         await mount(tester, application: application);
         await openRecords(tester);
         await add(tester);
-        final requestedId = await inspectDraftId(tester);
         await fillRequired(tester, caption: 'Requested title');
         service.returnDifferentPersistedRecord = true;
         service.failNextLoad = true;
@@ -2933,7 +3020,7 @@ void main() {
         expect(find.textContaining('Could not confirm creation'), findsNothing);
         expect(_key('record-jobs-actual-id'), findsOneWidget);
         expect(file('actual-id').existsSync(), isTrue);
-        expect(file(requestedId).existsSync(), isFalse);
+        expect(file(service.submittedIds.single).existsSync(), isFalse);
         expect(_enabled(tester, _key('records-add-jobs')), isTrue);
         await _tap(tester, _key('records-reload-jobs'));
         await _loaded(tester);
@@ -2958,7 +3045,6 @@ void main() {
         await mount(tester, application: application);
         await openRecords(tester);
         await add(tester);
-        final id = await inspectDraftId(tester);
         await fillRequired(tester);
         var commit = tester
             .widget<ButtonStyleButton>(_key('record-create-jobs'))
@@ -3013,6 +3099,7 @@ void main() {
         await _loaded(tester);
         expect(service.recordLoads, 2);
         expect(service.creates, 1);
+        final id = service.submittedIds.single;
         expect(application.saves, [(_jobKey(id), false)]);
         expect(file(id).existsSync(), isTrue);
         await unmount(tester);
@@ -3058,7 +3145,6 @@ void main() {
             .onPressed!;
         await openRecords(tester);
         await add(tester);
-        final id = await inspectDraftId(tester);
         await fillRequired(tester);
         final create = tester
             .widget<ButtonStyleButton>(_key('record-create-jobs'))
@@ -3077,7 +3163,10 @@ void main() {
         expect(service.recordLoads, 1);
         expect(service.creates, 0);
         expect(File(service.filePath).existsSync(), isFalse);
-        expect(file(id).existsSync(), isFalse);
+        expect(
+          Directory(service.collectionPath(_collection)).existsSync(),
+          isFalse,
+        );
         await unmount(tester);
       });
     },
@@ -3091,7 +3180,6 @@ void main() {
         await mount(tester, application: application);
         await openRecords(tester);
         await add(tester);
-        final id = await inspectDraftId(tester);
         await fillRequired(tester, caption: 'Created after close');
         final gate = Completer<void>();
         service.gate = gate.future;
@@ -3106,6 +3194,7 @@ void main() {
           service.gate = null;
           gate.complete();
         }
+        final id = service.submittedIds.single;
         await _until(
           tester,
           () => file(id).existsSync() && application.saves.isNotEmpty,
@@ -3127,6 +3216,18 @@ void main() {
 
 RecordApplyKey _jobKey(String id) =>
     (collection: _collection, type: _job, id: ConfigurationRecordId(id));
+
+// Only for tests that must identify an unsubmitted draft or its replacement.
+final class _DraftIds {
+  final byType = <RecordTypeId, List<String>>{};
+
+  ConfigurationRecordId next(RecordTypeDefinition type) {
+    final ids = byType.putIfAbsent(type.id, () => []);
+    final id = 'draft-${type.id.value.split('.').last}-${ids.length + 1}';
+    ids.add(id);
+    return ConfigurationRecordId(id);
+  }
+}
 
 // Shared by the two Settings widget suites. Persistence and credential workflows
 // stay real; only independent runtime notifications and requests are controlled.
@@ -3319,7 +3420,8 @@ final class _ControlledService extends GlobalSettingsService {
   Future<void>? gate;
   int scalarLoads = 0;
   int recordLoads = 0;
-  int creates = 0;
+  final submittedIds = <String>[];
+  int get creates => submittedIds.length;
   int updates = 0;
   int deletes = 0;
   bool loseAcknowledgement = false;
@@ -3355,7 +3457,7 @@ final class _ControlledService extends GlobalSettingsService {
     ConfigurationRecordId id,
     Map<String, Object?> values,
   ) async {
-    creates++;
+    submittedIds.add(id.value);
     await gate;
     final saved = await super.createRecord(
       type,
@@ -3407,6 +3509,20 @@ final class _ControlledService extends GlobalSettingsService {
 }
 
 Finder _key(String value) => find.byKey(ValueKey(value));
+void _expectNoIdentityControls() {
+  expect(find.text('Advanced details'), findsNothing);
+  expect(find.byTooltip('Copy record ID'), findsNothing);
+  for (final label in ['Record ID:', 'Record type:', 'Collection:']) {
+    expect(find.textContaining(label), findsNothing);
+  }
+  expect(
+    find.byWidgetPredicate(
+      (w) => w is TextField && w.decoration?.labelText == 'Record ID',
+    ),
+    findsNothing,
+  );
+}
+
 Finder get _discardDraft => find.ancestor(
   of: find.text('Discard and start new draft'),
   matching: find.bySubtype<ButtonStyleButton>(),

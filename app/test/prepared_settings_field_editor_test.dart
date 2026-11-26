@@ -18,8 +18,6 @@ import 'package:flutter_eval/widgets.dart' show $StatefulWidget$bridge;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
-import 'support/record_draft_id.dart';
-
 const _plugin = 'dev.example.windows';
 const _library = 'package:window_controls/editor.dart';
 const _editor = '$_plugin.step';
@@ -271,7 +269,6 @@ void main() {
     (tester) => tester.runAsync(() async {
       await mount(tester);
       await _tap(tester, _key('records-add-$_collection'));
-      final id = await inspectDraftId(tester);
       final start = _input('start');
       final end = _input('end');
       final create = _key('record-create-$_collection');
@@ -314,14 +311,21 @@ void main() {
       expect(_within(start, 'Draft: 2'), findsOneWidget);
       expect(_within(end, 'Draft: 4'), findsOneWidget);
       expect(_enabled(tester, create), isTrue);
-      expect(file(id).existsSync(), isFalse);
+      final namedFile = file('morning-shift');
+      expect(namedFile.existsSync(), isFalse);
       expect(await saved(), isEmpty);
       await _tap(tester, create);
       await _ready(tester, 'records-reload-$_collection');
-      expect(await saved(), {
-        id: {'caption': 'Morning / shift', 'start': 2, 'end': 4},
+      final record = (await saved()).entries.single;
+      final id = record.key;
+      expect(_key('record-$_collection-$id'), findsOneWidget);
+      expect(record.value, {
+        'caption': 'Morning / shift',
+        'start': 2,
+        'end': 4,
       });
-      final document = file('morning-shift').readAsStringSync();
+      final document = namedFile.readAsStringSync();
+      expect(document, contains('recordId = "$id"'));
       expect(document, contains('recordType = "$_type"'));
       expect(document, isNot(contains(_editor)));
       expect(file(id).existsSync(), isFalse);
@@ -728,7 +732,6 @@ void main() {
           )
           .onChanged!(_layoutType);
       await tester.pumpAndSettle();
-      final id = await inspectDraftId(tester);
       final layout = _input('layout');
       expect(find.text(_unavailable), findsOneWidget);
       final create = _key('record-create-$_collection');
@@ -765,9 +768,13 @@ void main() {
       expect(await saved(), isEmpty);
       await _tap(tester, create);
       await _ready(tester, 'records-reload-$_collection');
-      expect(await saved(), {
-        id: {'caption': '', 'layout': _layout},
-      });
+      final record = (await saved()).entries.single;
+      expect(_key('record-$_collection-${record.key}'), findsOneWidget);
+      expect(record.value, {'caption': '', 'layout': _layout});
+      expect(
+        file(record.key).readAsStringSync(),
+        contains('recordId = "${record.key}"'),
+      );
       _expectRejected(afterAcceptance);
       await _dismiss(tester);
     }),

@@ -8,6 +8,7 @@ import 'dart:isolate';
 import 'dart:ui' show AppExitResponse;
 
 import 'package:adele_capabilities/adele_capabilities.dart';
+import 'package:adele_configuration_store/adele_configuration_store.dart';
 import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_desktop/application.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
@@ -40,7 +41,6 @@ import 'package:plugin_runtime/plugin_runtime.dart';
 import '../../../tools/backend_artifacts.dart';
 import '../../tool/model_configuration_frontend_compiler.dart';
 import '../support/project_provider.dart';
-import '../support/record_draft_id.dart';
 import '../support/review_execution_fixture.dart';
 import '../support/selection_sessions.dart';
 
@@ -161,14 +161,25 @@ void main() {
       final host = fixture.bootstrap.host!;
       final personal = fixture.capture('personal');
       final work = fixture.capture('work');
-      final id = await ui.draftAccount(
-        'Third account',
-        '${fixture.origin}/third/responses',
-      );
+      const name = 'Third account';
+      await ui.draftAccount(name, '${fixture.origin}/third/responses');
       final file = fixture.providerFile('third-account.toml');
-      expect(id, isNot('third-account'));
       expect(file.existsSync(), isFalse);
-      expect(() => fixture.client(id), throwsA(isA<ProviderUnavailable>()));
+      final before = fixture.registry
+          .providersFor(modelProviderCapability)
+          .map((provider) => provider.id)
+          .toSet();
+
+      await ui.press('record-create-providers');
+      final row = find.widgetWithText(ListTile, name);
+      await ui.until(() => row.evaluate().isNotEmpty, 'create acknowledgement');
+      final published = ConfigurationStore(
+        fixture.roots,
+      ).recordFile(collectionId: 'providers', fileName: 'third-account.toml');
+      final id = published.load().document.readScalar(['recordId']) as String;
+      expect(id, isNot('third-account'));
+      expect(before, isNot(contains(ProviderId('$_recordType.$id'))));
+      expect(ui.key('record-providers-$id'), findsOneWidget);
 
       Future<_ConfiguredBinding> current() async {
         await ui.status(id, 'Applied');
@@ -185,13 +196,8 @@ void main() {
         return fixture.captureRecord(id);
       }
 
-      await ui.press('record-create-providers');
-      await ui.until(
-        () => ui.key('record-providers-$id').evaluate().isNotEmpty,
-        'create acknowledgement',
-      );
       final created = await current();
-      expect(created.catalog.provider.displayName, 'Third account');
+      expect(created.catalog.provider.displayName, name);
       final contents = file.readAsStringSync();
       expect(contents, contains('recordId = "$id"'));
       expect(contents, contains('display-name = "Third account"'));
@@ -2475,11 +2481,10 @@ final class _ProviderSettings {
         .first,
   );
 
-  Future<String> draftAccount(String name, String endpoint) async {
+  Future<void> draftAccount(String name, String endpoint) async {
     await press('records-add-providers');
     await _enter('record-input-providers-display-name', name);
     await _enter('record-input-providers-endpoint', endpoint);
-    return inspectDraftId(tester);
   }
 
   Future<void> update(String id, String name, String endpoint) async {

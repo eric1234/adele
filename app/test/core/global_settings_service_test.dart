@@ -1117,13 +1117,15 @@ void main() {
           expect(loaded.diagnostics, isEmpty);
           expect(loaded.records.map((record) => record.id), [first, second]);
           final fresh = loaded.records.first;
+          expect(before.fileName, 'first.toml');
+          expect(fresh.fileName, 'work-job.toml');
           expect(
-            RecordCollectionView.claimsId(
+            RecordCollectionView.fileNamesClaimingId(
               first,
               loaded.records,
               loaded.diagnostics,
             ),
-            isTrue,
+            ['work-job.toml'],
           );
           expect(
             RecordCollectionView.occupiesFileName(
@@ -1145,6 +1147,7 @@ void main() {
           final saved = await recordService.updateRecord(fresh, {
             'name': 'After',
           });
+          expect(saved.fileName, fresh.fileName);
           await expectRetired(
             recordService,
             fresh,
@@ -1185,6 +1188,14 @@ void main() {
             first,
             first,
           ]);
+          expect(
+            RecordCollectionView.fileNamesClaimingId(
+              first,
+              ambiguous.records,
+              ambiguous.diagnostics,
+            ),
+            ['copy.toml', 'first.toml'],
+          );
           original.deleteSync();
           await expectRetired(recordService, before);
           final fresh = (await recordService.loadRecords(

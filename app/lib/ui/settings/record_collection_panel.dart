@@ -34,6 +34,7 @@ final class RecordCollectionPanel extends StatefulWidget {
     this.recordApplication,
     this.active = true,
     this.declarationIssues,
+    this.newDraftId,
   });
 
   final GlobalSettingsService service;
@@ -44,6 +45,7 @@ final class RecordCollectionPanel extends StatefulWidget {
   final RecordApplication? recordApplication;
   final bool active;
   final List<String> Function()? declarationIssues;
+  final ConfigurationRecordId Function(RecordTypeDefinition)? newDraftId;
 
   @override
   State<RecordCollectionPanel> createState() => _RecordCollectionPanelState();
@@ -55,8 +57,9 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
       .toList();
   late RecordTypeId _type = _types.first.id;
   late final _creationDrafts = {
-    for (final type in _types) type.id: _RecordDraft(type),
+    for (final type in _types) type.id: _newDraft(type),
   };
+
   // Collection identity belongs to this panel; drafts outlive collapsed tiles.
   final _drafts = <ConfigurationRecordId, _RecordDraft>{};
   final _recordErrors = <ConfigurationRecordId, String>{};
@@ -82,6 +85,9 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
   String? _error;
   String? _creationError;
   String? _message;
+
+  _RecordDraft _newDraft(RecordTypeDefinition type) =>
+      _RecordDraft(type, newId: widget.newDraftId?.call(type));
 
   @override
   void initState() {
@@ -199,8 +205,8 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
       _adding &&
       identical(_creationDrafts[_type], draft);
 
-  bool _claimsId(ConfigurationRecordId id) =>
-      RecordCollectionView.claimsId(id, _records, _diagnostics);
+  List<String> _filesClaimingId(ConfigurationRecordId id) =>
+      RecordCollectionView.fileNamesClaimingId(id, _records, _diagnostics);
 
   bool _occupiesFileName(String fileName) =>
       RecordCollectionView.occupiesFileName(fileName, _records, _diagnostics);
@@ -209,13 +215,10 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
     final failure = draft.failedCreation;
     if (failure == null) return null;
     final attempt = failure.attempt;
-    if (draft.definition.filenameField == null) {
-      return _claimsId(attempt.id) || _occupiesFileName(attempt.fileName)
-          ? 'Reload found this record ID or its initial filename in use. Inspect the collection before starting a new draft.'
-          : null;
-    }
-    if (_claimsId(attempt.id)) {
-      return 'Reload found a record claiming this draft\'s ID. Inspect the collection before starting a new draft.';
+    final claims = _filesClaimingId(attempt.id);
+    if (claims.isNotEmpty) {
+      return 'Reload found this draft\'s record ID in: ${claims.join(', ')}. '
+          'Inspect the listed files before starting a new draft.';
     }
     // An unreadable target cannot tell us whether a lost write succeeded.
     // Check the *submitted* name even if the author has since changed it.
@@ -226,6 +229,11 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
         )) {
       return 'Reload could not identify the occupant of ${attempt.fileName}. '
           'Inspect the file and Reload before retrying this draft.';
+    }
+    if (draft.definition.filenameField == null &&
+        _occupiesFileName(attempt.fileName)) {
+      return 'Reload found ${attempt.fileName} in use. '
+          'Inspect the file before starting a new draft.';
     }
     return null;
   }
@@ -256,11 +264,15 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
     }
 
     // Unlike an authored name, a draft ID cannot be corrected by editing.
-    if (_claimsId(attempt.id) ||
+    final claims = _filesClaimingId(attempt.id);
+    if (claims.isNotEmpty ||
         (definition.filenameField == null &&
             _occupiesFileName(attempt.fileName))) {
+      final conflict = claims.isNotEmpty
+          ? 'this draft\'s record ID is already in: ${claims.join(', ')}'
+          : '${attempt.fileName} is already in use';
       requireReload(
-        'Not created: this record ID or its initial filename is already in use. '
+        'Not created: $conflict. '
         'Reload to reconcile current records before creating again. '
         'Your drafts are retained; no write was attempted.',
       );
@@ -296,7 +308,7 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
                   error is ConfigurationSymlinkException))) {
         if (mounted) {
           requireReload(
-            'Not created: the record ID or its initial filename is occupied or changed on disk. '
+            'Not created: the record ID or ${attempt.fileName} is occupied or changed on disk. '
             'No existing file was overwritten. Reload before creating again.\n$error',
           );
         }
@@ -329,7 +341,7 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
       _message =
           'Created ${_displayName(saved, definition) ?? definition.label}.';
       _adding = false;
-      _creationDrafts[definition.id] = _RecordDraft(definition);
+      _creationDrafts[definition.id] = _newDraft(definition);
       draft.dispose();
     });
   }
@@ -385,14 +397,14 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
     try {
       if (deleting) {
         final definition = widget.service.records.definition(record.type);
+        final title = _recordTitle(record, definition);
         final confirmed = await _confirm(
           context,
           title: 'Delete record?',
           message:
-              'Title: ${_recordTitle(record, definition)}\n'
-              'Record ID: ${record.id}\n'
-              'Record type: ${record.type}\n'
-              'Collection: ${record.collection}\n\n'
+              '${title == record.fileName ? '' : 'Name: $title\n'}'
+              'Type: ${definition.label}\n'
+              'File: ${record.fileName}\n\n'
               'This deletes the entire record file, including unknown data and '
               'any unsaved edits to this record. This cannot be undone.',
           confirmLabel: 'Delete',
@@ -653,6 +665,18 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
     final collection = widget.collection;
     final creationEnabled = _enabled && !_creationRequiresReload;
     final deletion = widget.recordApplication?.recentDeletion(collection);
+    final titles = {
+      for (final record in _records)
+        record.id: _recordTitle(
+          record,
+          widget.service.records.definition(record.type),
+        ),
+    };
+    final seen = <String>{};
+    final duplicates = {
+      for (final title in titles.values)
+        if (!seen.add(title)) title,
+    };
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -786,7 +810,8 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
                     padding: EdgeInsets.symmetric(vertical: 16),
                     child: Text('No readable records in this collection.'),
                   ),
-                for (final record in _records) _details(record),
+                for (final record in _records)
+                  _details(record, titles[record.id]!, duplicates),
                 for (final diagnostic in _diagnostics)
                   _diagnostic(
                     context,
@@ -938,7 +963,7 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
                       }
                       setState(() {
                         _formRevision++;
-                        _creationDrafts[type.id] = _RecordDraft(type);
+                        _creationDrafts[type.id] = _newDraft(type);
                         draft.dispose();
                       });
                     }
@@ -962,12 +987,19 @@ final class _RecordCollectionPanelState extends State<RecordCollectionPanel> {
     );
   }
 
-  Widget _details(RecordView record) {
+  Widget _details(
+    RecordView record,
+    String title,
+    Set<String> duplicateTitles,
+  ) {
     final draft = _drafts[record.id];
     final enabled = _enabled && !_fencedRecords.contains(record.id);
     return _RecordDetails(
       key: ValueKey('record-${record.collection}-${record.id}'),
       record: record,
+      title: title,
+      showFileInSubtitle:
+          duplicateTitles.contains(title) && title != record.fileName,
       definition: widget.service.records.definition(record.type),
       error: _recordErrors[record.id],
       onExpansionChanged: () => setState(() => _formRevision++),
@@ -1018,7 +1050,8 @@ typedef _CreationAttempt = ({
 });
 
 final class _RecordDraft extends ChangeNotifier {
-  _RecordDraft(this.definition, {this.record}) : id = record?.id ?? _newId() {
+  _RecordDraft(this.definition, {this.record, ConfigurationRecordId? newId})
+    : id = record?.id ?? newId ?? _newId() {
     for (final field in definition.fields) {
       final value = record?.values[field.id.value];
       if (field.editor == RecordFieldEditor.markdown) {
@@ -1300,11 +1333,6 @@ final class _RecordForm extends StatelessWidget {
               ),
           ],
         ),
-        if (record == null)
-          ExpansionTile(
-            title: const Text('Advanced details'),
-            children: [_RecordIdentity(draft.id)],
-          ),
       ],
     );
   }
@@ -1439,6 +1467,8 @@ final class _RecordDetails extends StatefulWidget {
     super.key,
     required this.record,
     required this.definition,
+    required this.title,
+    required this.showFileInSubtitle,
     required this.onEdit,
     required this.onDelete,
     required this.credentials,
@@ -1450,6 +1480,8 @@ final class _RecordDetails extends StatefulWidget {
 
   final RecordView record;
   final RecordTypeDefinition definition;
+  final String title;
+  final bool showFileInSubtitle;
   final VoidCallback? onEdit;
   final VoidCallback? onDelete;
   final List<Widget> Function(bool expanded) credentials;
@@ -1475,8 +1507,12 @@ final class _RecordDetailsState extends State<_RecordDetails> {
         setState(() => _expanded = expanded);
         widget.onExpansionChanged();
       },
-      title: Text(_recordTitle(record, definition)),
-      subtitle: Text(definition.label),
+      title: Text(widget.title),
+      subtitle: Text(
+        widget.showFileInSubtitle
+            ? '${definition.label} · ${record.fileName}'
+            : definition.label,
+      ),
       childrenPadding: const EdgeInsets.all(16),
       expandedCrossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -1485,9 +1521,10 @@ final class _RecordDetailsState extends State<_RecordDetails> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              SelectableText('Collection: ${record.collection}'),
-              _RecordIdentity(record.id),
-              SelectableText('Record type: ${record.type}'),
+              SelectableText(
+                record.fileName,
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
               if (widget.error case final error?) _diagnostic(context, error),
               if (widget.editor case final editor?)
                 editor(_expanded)
@@ -1565,26 +1602,8 @@ void _saved(
   }
 }
 
-final class _RecordIdentity extends StatelessWidget {
-  const _RecordIdentity(this.id);
-
-  final ConfigurationRecordId id;
-
-  @override
-  Widget build(BuildContext context) => Row(
-    children: [
-      Expanded(child: SelectableText('Record ID: $id')),
-      IconButton(
-        tooltip: 'Copy record ID',
-        icon: const Icon(Icons.copy),
-        onPressed: () => Clipboard.setData(ClipboardData(text: id.value)),
-      ),
-    ],
-  );
-}
-
 String _recordTitle(RecordView record, RecordTypeDefinition definition) =>
-    _displayName(record, definition) ?? record.id.value;
+    _displayName(record, definition) ?? record.fileName;
 
 String _describeField(String label, Object? value) {
   String scalar(Object? value) => switch (value) {
