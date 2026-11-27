@@ -460,6 +460,26 @@ implementation promises no stronger confinement. A timeout fences later commands
 and publication but does not cancel an already admitted unary process request;
 the provider's process deadline and lifetime policy still apply.
 
+### Portable Git tests
+
+After bootstrap, run the maintained Git targets from the repository root:
+
+```sh
+dart tools/adele.dart test --target git_backend
+dart tools/adele.dart test --target git_desktop_tests
+dart tools/adele.dart test --target git_desktop_tests --ci
+```
+
+`git_backend` remains a plain-Dart target with seven CI shards. The private
+[`git_desktop_tests`](packages/desktop_tests/) package runs Flutter tests in
+one unsharded CI job with one worker. The host and Flutter are development
+dependencies of that package, not dependencies of the production backend.
+Provide the pinned `FLUTTER_ROOT`, Rust 1.93.0 for the app's
+[native TOML hook](../../docs/development/toolchain.md#native-toml-documents), and
+the [Linux executables](#portable-unstaged-inspection) used by the Environment.
+The hosted target needs no CodeForge library or loader variable, Linux desktop
+bundle build, or Git PTY helper.
+
 `git_portable_unstaged_snapshot_test.dart` exercises real Git through an independent
 process-service adapter, including hostile configuration, unusual paths, explicit
 unsupported cases, limits and changed observations. `git_portable_discovery_test.dart`
@@ -468,19 +488,23 @@ repository at the host filesystem root. The maintained `git_backend` target
 discovers those, `git_portable_cached_diff_test.dart`'s staged and commit-to-commit
 feasibility checks, and the extracted parser tests.
 
-The [stock portable review suite](../../app/plugin_interactions_test/review/prepared_portable_git_stock_integration_test.dart)
-in `adele_plugin_interactions` pairs stock Git AOT with compiled stock Diff EVC.
-An independent Environment backend runs real processes without importing either
-plugin. The suite checks nonprimary snapshots, conflicts, clean-repository batch
-scaling, index-only review actions and behavior with a missing Task anchor.
+The [Git-hosted service suite](packages/desktop_tests/test/prepared_portable_git_service_integration_test.dart)
+and [desktop authority suite](../../app/test/prepared_portable_git_integration_test.dart)
+each compile a shared backend host, independent real-process Environment and
+Git service adapter as separate AOT artifacts, plus a synthetic EVC consumer of
+Diff's generated contract. The Git suite checks typed nonprimary snapshots, batch
+scaling, and exact index changes, including once-only writes across retirement.
+Its persisted cases use the actual Git plugin identity and storage grant to check
+distinct anchors and durable reopen without reenrollment. Desktop checks host
+admission and fencing, not Git's comparison rules. The [fixture source guard](packages/desktop_tests/test/portable_git_source_boundary_test.dart)
+checks the independent components without compiling them.
 
-The [desktop probe suite](../../app/test/prepared_portable_git_integration_test.dart)
-instead uses an Environment-bound adapter over Git's production services and a
-generated Diff client. It checks typed layered hunks, one semantic invocation per
-request, explicit process declarations and exact retirement/departure fencing.
-Its persisted cases use the actual Git plugin identity and exact-generation storage
-grant, real Project backing, distinct primary/nonprimary anchors, replacement and
-durable reopen without reenrollment. `app/test/core/git_task_anchor_store_test.dart`
+Only the [stock portable review suite](../../app/plugin_interactions_test/review/prepared_portable_git_stock_integration_test.dart)
+in `adele_plugin_interactions` pairs stock Git AOT with compiled stock Diff EVC
+over the independent Environment. It checks nonprimary snapshots, conflicts,
+batch scaling, index-only review actions and behavior with a missing Task anchor.
+
+`app/test/core/git_task_anchor_store_test.dart`
 covers the Git store against maintained Project storage, including association,
 duplicate/concurrent enrollment, corruption, Project isolation and temporary backing.
 `git_persisted_change_set_source_test.dart` covers adapter failure/deadline boundaries;
@@ -814,7 +838,7 @@ none. The 16-file cap leaves measured headroom rather than promising that the
 256-entry inspection limit is whole-layer mutation capacity. CI checks deterministic
 request/mutation bounds, not these host-dependent elapsed times. Clean 100/500/900-file
 snapshots retain the existing batch-scaling model; revision calculation adds no requests.
-The [desktop probe suite](../../app/test/prepared_portable_git_integration_test.dart)
+The [Git-hosted service suite](packages/desktop_tests/test/prepared_portable_git_service_integration_test.dart)
 invokes the production handler through the generated client without using stock UI.
 The [stock portable review suite](../../app/plugin_interactions_test/review/prepared_portable_git_stock_integration_test.dart)
 checks hunk, added/deleted file and whole-layer approval and unapproval from Diff

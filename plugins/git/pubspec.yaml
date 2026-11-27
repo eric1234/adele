@@ -10,3 +10,4 @@ resolution: workspace
 
 workspace:
   - packages/backend
+  - packages/desktop_tests

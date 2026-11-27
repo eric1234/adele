@@ -22,6 +22,7 @@ final class DesktopLauncherFixture {
   late final File sdkVersion;
   late final File launchArguments;
   late final Directory _appTestInvocations;
+  late final File gitHostedArguments;
   late final File frontendArguments;
   late final File frontendEnvironment;
   late final Map<String, String> environment;
@@ -296,6 +297,7 @@ ${package.value.devDependencies.map((name) => '  $name: any').join('\n')}
       );
     launchArguments = File('${logs.path}/launch-arguments.txt');
     _appTestInvocations = Directory('${logs.path}/app-tests')..createSync();
+    gitHostedArguments = File('${logs.path}/git-hosted-arguments.txt');
     frontendArguments = File('${logs.path}/frontend-arguments.txt');
     frontendEnvironment = File('${logs.path}/frontend-environment.txt');
     environment = <String, String>{
@@ -374,6 +376,10 @@ elif [ "\$1" = analyze ] || { [ "\$1" = test ] && [ "\$2" != --no-pub ]; }; then
     fi
   elif [ "\$1" = test ] && [ "\$PWD" = '${root.path}/plugins/diff_viewer/packages/frontend' ]; then
     test -z "\$FRB_DART_LOAD_EXTERNAL_LIBRARY_NATIVE_LIB_DIR" || exit 94
+  elif [ "\$1" = test ] && [ "\$PWD" = '${root.path}/plugins/git/packages/desktop_tests' ]; then
+    test -z "\$FRB_DART_LOAD_EXTERNAL_LIBRARY_NATIVE_LIB_DIR" || exit 94
+    printf '%s\n' "\$@" > '${gitHostedArguments.path}'
+    if [ "\$ADELE_TEST_FAIL_GIT_HOSTED" = 1 ]; then exit 38; fi
   fi
   printf '%s|flutter|%s\n' "\$1" "\$PWD" >> '${commands.path}'
 elif [ "\$1" = test ]; then

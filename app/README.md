@@ -2346,10 +2346,13 @@ The [prepared Diff/Git review suite](plugin_interactions_test/review/prepared_di
 runs in `adele_plugin_interactions`, including Open in Source and Diff-to-Chat
 feedback. The [stock portable review suite](plugin_interactions_test/review/prepared_portable_git_stock_integration_test.dart)
 in that target pairs stock Git and Diff over an independent Environment. The
-[portable Git probe suite](test/prepared_portable_git_integration_test.dart)
-remains in `adele_desktop`: its generated-client consumer is not the stock Diff
-UI. See [focused portable Git commands](../docs/development/testing.md#focused-buffered-process-checks)
-to run either file. Diff's behavior without a change source belongs to
+[desktop authority suite](test/prepared_portable_git_integration_test.dart)
+uses real Git operations to check host admission, exact grants, and stale clients
+or results after retirement, replacement or departure. It uses a synthetic EVC
+consumer, not stock Diff. The [Git-hosted service suite](../plugins/git/packages/desktop_tests/test/prepared_portable_git_service_integration_test.dart)
+uses the same fixture code in a separate test-only Flutter package for Git index,
+snapshot and anchor behavior. See [focused portable Git commands](../docs/development/testing.md#focused-buffered-process-checks).
+Diff's behavior without a change source belongs to
 `diff_viewer_frontend`; see [focused Diff checks](../docs/development/testing.md#focused-diff-checks).
 
 Application changes should use the repository's
