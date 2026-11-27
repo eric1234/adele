@@ -301,7 +301,7 @@ void main() {
   );
 
   test(
-    'resolved interaction CI runs only its directory without CodeForge',
+    'resolved interaction CI supplies CodeForge and runs only its directory',
     () async {
       await resolveWorkspace();
       final result = await fixture.invoke([
@@ -322,9 +322,22 @@ void main() {
         '1',
         'plugin_interactions_test',
       ]);
-      expectNoNativeBuild();
     },
   );
+
+  test('Diff frontend CI runs its package without building CodeForge', () async {
+    final result = await fixture.invoke([
+      'test',
+      '--target=diff_viewer_frontend',
+      '--ci',
+    ]);
+    expect(result.exitCode, 0, reason: '${result.stderr}');
+    expect(fixture.commands.readAsLinesSync(), [
+      'generate|path',
+      'test|flutter|${fixture.root.path}/plugins/diff_viewer/packages/frontend',
+    ]);
+    expectNoNativeBuild();
+  });
 
   for (final targetName in [
     'adele_tools',

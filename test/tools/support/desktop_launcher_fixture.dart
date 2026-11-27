@@ -361,13 +361,14 @@ elif [ "\$1" = pub ]; then
 elif [ "\$1" = analyze ] || { [ "\$1" = test ] && [ "\$2" != --no-pub ]; }; then
   test -f '${generatedContract.path}' || exit 95
   if [ "\$1" = test ] && [ "\$PWD" = '${root.path}/app' ]; then
+    test -f "\$FRB_DART_LOAD_EXTERNAL_LIBRARY_NATIVE_LIB_DIR/libcode_forge.so" || exit 94
     case "\$*" in
       'test plugin_interactions_test'|'test --concurrency 1 plugin_interactions_test')
-        test -z "\$FRB_DART_LOAD_EXTERNAL_LIBRARY_NATIVE_LIB_DIR" || exit 94
         printf '%s\n' "\$@" > '${launchArguments.path}'
         if [ "\$ADELE_TEST_FAIL_INTERACTION" = 1 ]; then exit 36; fi ;;
-      *) test -f "\$FRB_DART_LOAD_EXTERNAL_LIBRARY_NATIVE_LIB_DIR/libcode_forge.so" || exit 94 ;;
     esac
+  elif [ "\$1" = test ] && [ "\$PWD" = '${root.path}/plugins/diff_viewer/packages/frontend' ]; then
+    test -z "\$FRB_DART_LOAD_EXTERNAL_LIBRARY_NATIVE_LIB_DIR" || exit 94
   fi
   printf '%s|flutter|%s\n' "\$1" "\$PWD" >> '${commands.path}'
 elif [ "\$1" = test ]; then

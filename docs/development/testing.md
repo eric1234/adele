@@ -221,7 +221,9 @@ runs unmigrated integration files, not just generic host tests.
 
 To reproduce the interaction CI job, run
 `dart tools/adele.dart test --target adele_plugin_interactions --ci` from the
-root. For direct iteration after bootstrap, run
+root; the maintained target prepares the native CodeForge library for the review
+suite. For a direct run of the whole directory, bootstrap and configure the
+[native editor loader](#focused-editor-checks) first, then run
 `flutter test --no-pub --concurrency 1 plugin_interactions_test` from `app/`.
 Plain `flutter test` there selects only `test/`, not all application-level
 integration coverage.
@@ -270,15 +272,17 @@ deadlines through resource contention. Parallelism comes from the four independe
 desktop jobs. Unsharded desktop `--ci` execution also uses one worker. The non-CI
 desktop target retains Flutter's normal worker default.
 
-The desktop and Source Editor targets require Rust 1.93.0 for their shared CodeForge
-library and transitive native TOML hook. Frontend test targets with a development
-dependency on the app also declare `nativeToml`, even without CodeForge use.
-The interaction target needs the app's native TOML hook and pinned Rust. Its
+The desktop, interaction, and Source Editor frontend targets need Rust 1.93.0
+for both CodeForge and the app's transitive native TOML hook. In the
+[review interaction suite](../../app/plugin_interactions_test/review/prepared_diff_git_integration_test.dart),
+Open in Source exercises native editing and undo. Neither it nor the
 [command capture suite](../../app/plugin_interactions_test/execution/command_output_capture_integration_test.dart)
-uses Git's foreground process pipes and `setsid`, not the Git terminal PTY
-helper. It runs Flutter widget tests without building a Linux desktop bundle or
-opening a CodeForge editor; it does not request those separate prerequisites.
-Source Editor does not require Linux desktop or PTY prerequisites. Source-only
+uses the Git PTY helper: review uses Git worktrees and buffered processes;
+command capture uses foreground pipes and `setsid`. The interaction target runs
+Flutter widget tests, not a Linux desktop bundle. Neither it nor Source Editor
+requests the desktop or PTY prerequisites. Frontend targets with a development
+dependency on the app also declare `nativeToml`; `diff_viewer_frontend` needs
+that hook but no CodeForge library, even for its host-backed test. Source-only
 bootstrap and tooling tests do not require Rust.
 The standalone credential package and its `adele_credential_store_native` Rust
 test/Clippy target also receive the pinned compiler in CI. The desktop and its
@@ -922,7 +926,7 @@ relative to `app/`; this is a testing map, not an application architecture map.
 | Prepared contextual Environment-read Capabilities | [`test/prepared_environment_capability_integration_test.dart`](../../app/test/prepared_environment_capability_integration_test.dart) (independent frontend-only EVC and backend-only AOT through normal catalog/Main Content hosting, generated value DTOs and actual reverse reads from canonical nonprimary Environments, separate declarations, navigation and concurrent presentation isolation); [`test/core/environment_capability_invocation_integration_test.dart`](../../app/test/core/environment_capability_invocation_integration_test.dart) adds native bridge handle bounds, release/retirement and the external synchronous grant-revocation hook. Run alongside the unchanged C1 unary/streaming, C2a selection, Main Content and frontend activation suites, not instead of them. Public request-only API belongs to `adele_ui`; strict descriptor/roundtrip tests belong to `plugin_runtime`. |
 | Prepared contextual buffered-process Capabilities | [`test/prepared_environment_buffered_process_integration_test.dart`](../../app/test/prepared_environment_buffered_process_integration_test.dart) reuses the three-installation harness for stock Environment AOT, independent semantic Capability AOT, and frontend-only compiled EVC. Covers binary evidence from the canonical nonprimary Environment, separate provider/frontend permissions, process-only grants, denial, and exact lifecycle/late-publication fencing. Run with the Environment-read suites above, `adele_environment` generated host-service and binary DTO tests, `plugin_runtime` exposure/catalog/invocation tests, and `plugin_backend_host` token allowlist tests. Provider process supervision remains in the owning backend's buffered-process suite rather than duplicated here. |
 | Portable Git inspection and retained anchors | [`test/prepared_portable_git_integration_test.dart`](../../app/test/prepared_portable_git_integration_test.dart) independently compiles a real-process Environment AOT backend, an explicitly Environment-bound AOT adapter over Git's production portable service, and a generated Diff-client EVC consumer. Checks real nonprimary content and typed layered hunks, separate declarations, unavailability, retirement/replacement and presentation departure. Persisted cases use the Git-owned store through real Project storage, exact-generation infrastructure, distinct Environment anchors and durable reopen without reenrollment. [`test/core/git_task_anchor_store_test.dart`](../../app/test/core/git_task_anchor_store_test.dart) owns actual SQL association, concurrency, corruption, Project isolation and backing-lifetime tests. The probe fixture supplements the actual stock route below; it is not a second stock provider. Git semantics and limits belong to `git_backend`'s `git_portable_unstaged_snapshot_test.dart`; `git_persisted_change_set_source_test.dart` owns adapter/deadline checks, and existing buffered-process tests retain generic transport ownership. |
-| Stock Diff/Source/Git change review | [`test/prepared_diff_git_integration_test.dart`](../../app/test/prepared_diff_git_integration_test.dart) builds actual stock Git/shared-host AOT and independently prepared Diff and Source EVC, discovers ordinary installations, and mounts canonical nonprimary Session Main Content. It owns default Unstaged and selected Uncommitted/Task scopes, committed-only work, independent Environment baselines, real staged-only/partial/cancelling layers, source confinement, selected-scope refresh/retry including real commits, actual Open in Source invocation, nonprimary file content, raw paths, deduplication, dirty text/undo, focus, and gated navigation/retirement for all snapshot operations. Source cases require the native CodeForge library. Enumeration/parser/process bounds belong to `git_backend`; generated values and isolated compiled presentation belong to the Diff targets. See [focused Diff checks](#focused-diff-checks). |
+| Stock Diff/Git change review | The [prepared review interaction suite](../../app/plugin_interactions_test/review/prepared_diff_git_integration_test.dart) in `adele_plugin_interactions` exercises real Git-backed snapshots and index mutations in the selected Environment, Open in Source with retained native text/undo and focus, and Diff submission to Chat through scheduling and feedback Inspection. Enumeration/parser/process bounds belong to `git_backend`; generated values and single-plugin presentation belong to the Diff targets. See [focused Diff checks](#focused-diff-checks). |
 | Project/native picker bridge | [`test/project_opening_test.dart`](../../app/test/project_opening_test.dart), [`test/directory_picker_bridge_test.dart`](../../app/test/directory_picker_bridge_test.dart) |
 | Native editor ownership | [`test/native_code_editor_test.dart`](../../app/test/native_code_editor_test.dart) (ordinary editing/undo, external controller lifetime, fixed read-only configuration, same-editor clipboard completion, and targeted small fixes) |
 | Prepared editor bridge | [`test/code_editor_bridge_test.dart`](../../app/test/code_editor_bridge_test.dart) (actual prepared EVC, explicit text snapshots, generic revisions, scoped handle retirement, and independently owned text/undo) |
@@ -1069,6 +1073,7 @@ bootstrap/current generation, select affected targets from the repository root:
 dart tools/adele.dart test --target diff_viewer_contract
 dart tools/adele.dart test --target diff_viewer_backend
 dart tools/adele.dart test --target diff_viewer_frontend
+dart tools/adele.dart test --target adele_plugin_interactions --ci
 dart tools/adele.dart test --target source_editor_frontend
 dart tools/adele.dart test --target adele_ui
 dart tools/adele.dart test --target plugin_runtime
@@ -1092,7 +1097,21 @@ and Project-close fencing. It needs no source materialization or Run. Run it fro
 The [Diff README](../../plugins/diff_viewer/README.md#pending-comments) owns the
 schema, limits, and semantics; timing output is diagnostic, not a CI threshold.
 
-The owning [Diff frontend suite](../../plugins/diff_viewer/packages/frontend/test/diff_viewer_frontend_test.dart)
+The `diff_viewer_frontend` target discovers the
+[frontend-only installation test](../../plugins/diff_viewer/packages/frontend/test/desktop/change_source_absent_test.dart).
+It compiles only Diff's frontend and mounts it through normal host activation.
+The product lifecycle establishes the Session and Environment, so the test
+needs neither a Git worktree nor an active backend. Refresh and scope selection
+must retain the Diff pane and report the change source as unavailable, never
+clean. To run this case alone after bootstrap, with the
+[native TOML prerequisites](toolchain.md#native-toml-documents) but no CodeForge
+library, run from `plugins/diff_viewer/packages/frontend/`:
+
+```sh
+flutter test --no-pub test/desktop/change_source_absent_test.dart
+```
+
+The separate [Diff frontend suite](../../plugins/diff_viewer/packages/frontend/test/diff_viewer_frontend_test.dart)
 compiles real EVC and covers default/switching scopes, separate committed/staged/unstaged/conflict
 rows, same-path cancellation, clean states, selected-scope Refresh/Retry, pending
 scope/departure fencing, eligible/ineligible headers, unchanged unusual paths,
@@ -1130,13 +1149,15 @@ library. Serialize Flutter invocations sharing its build directory:
 flutter test --no-pub --concurrency 1 test/main_content_source_display_test.dart test/prepared_main_content_host_test.dart test/session_feedback_presentation_test.dart
 ```
 
-For the real Diff+Source integration, first run
+For a direct run of the prepared Diff/Git review suite, first run
 `dart tools/adele.dart build-code-editor-tests` from the repository root and set
 `FRB_DART_LOAD_EXTERNAL_LIBRARY_NATIVE_LIB_DIR` to the absolute directory it prints.
-Then, from `app/`, serialize the compiler-heavy integration files:
+Then run from `app/`:
 
 ```sh
-flutter test --no-pub --concurrency 1 test/prepared_diff_git_integration_test.dart test/prepared_environment_capability_integration_test.dart test/core/environment_capability_selection_test.dart test/core/environment_capability_integration_test.dart test/core/environment_capability_invocation_integration_test.dart test/prepared_main_content_host_test.dart test/core/normal_task_git_integration_test.dart
+flutter test --no-pub --concurrency 1 plugin_interactions_test/review/prepared_diff_git_integration_test.dart
+# Related desktop-owned Environment and Main Content checks:
+flutter test --no-pub --concurrency 1 test/prepared_environment_capability_integration_test.dart test/core/environment_capability_selection_test.dart test/core/environment_capability_integration_test.dart test/core/environment_capability_invocation_integration_test.dart test/prepared_main_content_host_test.dart test/core/normal_task_git_integration_test.dart
 ```
 
 Use the pinned explicit `FLUTTER_ROOT` and the
@@ -1177,10 +1198,18 @@ The independent portable suite retains the separate Environment AOT
 to Git Capability AOT to EVC path. It also exercises the
 actual stock Git advertisement and Diff controls over an independent Environment
 provider without a Task anchor table, with an exact index-only roundtrip.
-The ordinary `adele_desktop` target discovers both app files and prepares the native
-library/environment without a separate CI target. This is prepared-artifact
-coverage, not human desktop or non-Linux process acceptance. No live model,
-credentials, or review submission is used.
+The portable Git and durable draft integration files remain in `adele_desktop`;
+the stock review suite runs only in `adele_plugin_interactions`. This is
+prepared-artifact coverage, not human desktop or non-Linux process acceptance.
+Review submission uses local fixtures, not a live model or credentials.
+
+For changes to test ownership or prerequisites, check discovery, launcher routing
+(including the native library environment), and production dependency boundaries
+from the repository root:
+
+```sh
+dart test test/tools/adele_test.dart test/tools/desktop_launcher_routing_test.dart test/tools/app_plugin_boundary_test.dart
+```
 
 ### Focused buffered process checks
 

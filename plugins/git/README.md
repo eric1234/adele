@@ -814,7 +814,8 @@ The existing `prepared_portable_git_integration_test.dart` adds independent
 Environment AOT, production-handler Capability AOT, and generated-client EVC proof.
 Its layer selections exercise the same generated Capability without adding stock
 frontend controls or a new grant.
-`prepared_diff_git_integration_test.dart` exercises the production advertisement and
+The [prepared Diff/Git review suite](../../app/plugin_interactions_test/review/prepared_diff_git_integration_test.dart)
+in `adele_plugin_interactions` exercises the production advertisement and
 actual stock Diff controls against selected nonprimary Git indices, independently of
 the isolated frontend state tests. Inspection and approval continue to have separate
 semantic resolution and operation grants.

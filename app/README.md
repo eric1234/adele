@@ -2342,6 +2342,12 @@ belongs to `adele_desktop`; the [mixed Filesystem and Command presenter tests](p
 belong to `adele_plugin_interactions`. Single-plugin rendering stays in the
 respective frontend suites. See [test ownership and commands](../docs/development/testing.md#application-level-test-ownership).
 
+The [prepared Diff/Git review suite](plugin_interactions_test/review/prepared_diff_git_integration_test.dart)
+runs in `adele_plugin_interactions`, including Open in Source and Diff-to-Chat
+feedback. Diff's behavior without a change source belongs to `diff_viewer_frontend`,
+not to either app test target. See [focused Diff checks](../docs/development/testing.md#focused-diff-checks)
+for the independent commands and their different native prerequisites.
+
 Application changes should use the repository's
 [testing and validation workflow](../docs/development/testing.md), including its
 [application validation map](../docs/development/testing.md#application-validation-map)

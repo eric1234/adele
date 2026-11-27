@@ -149,6 +149,10 @@ resolve isolated global configuration, and inspect CodeForge's rendered option
 while preserving retained native text/controller/undo and document identity.
 Both suites run through `dart tools/adele.dart test --target source_editor_frontend`
 from the repository root, including maintained native editor preparation.
+The [Diff/Git review suite](../../app/plugin_interactions_test/review/prepared_diff_git_integration_test.dart)
+in `adele_plugin_interactions` checks Open in Source against a real nonprimary
+Git Environment, including focus, retained dirty text, and native undo. See
+[focused Diff checks](../../docs/development/testing.md#focused-diff-checks) to run it independently.
 The Source cases in `app/test/core/normal_chatgpt_run_integration_test.dart` cover
 the stock Command through the actual application palette and real Git worktrees,
 including hidden pre-Project/Task Browser availability, enabled Session input,

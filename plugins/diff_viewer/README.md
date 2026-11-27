@@ -584,19 +584,22 @@ layer/added/deleted/modified-file/hunk pending admission, success refresh,
 unconfirmed failures and lifecycle fencing. It does not substitute for authority
 validation:
 `app/test/main_content_source_display_test.dart` owns focused native and compiled
-consumer authority checks. `app/test/prepared_diff_git_integration_test.dart` owns
-real stock Git AOT plus independently prepared Diff and Source EVC through normal
-catalog/Main Content hosting, including committed-only work, exact independently
+consumer authority checks. The [prepared Diff/Git review suite](../../app/plugin_interactions_test/review/prepared_diff_git_integration_test.dart)
+in `adele_plugin_interactions` exercises real stock Git AOT plus independently
+prepared Diff and Source EVC through normal catalog/Main Content hosting,
+including committed-only work, exact independently
 established baselines, staged-only and layered partial/cancelling changes,
 source confinement, selected-scope Refresh after commits, canonical
 nonprimary content, deduplication, dirty text/undo, focus, and gated
 retirement/navigation. Hunk, atomic file and mixed whole-layer mutation acceptance
 checks real selected index objects, unchanged working bytes and HEAD, nonprimary
 isolation, stale selections, lock rejection and retirement after an index effect.
-That cross-plugin suite requires
-the native CodeForge library; the isolated Diff frontend suite does not.
-Its approval/unapproval regression also runs with a failed draft backend, while
-the retained frontend-only fixtures prove the absent-backend case.
+That suite also checks approval/unapproval with a failed draft backend. Its
+Source cases require the native CodeForge library. In contrast, the
+[frontend-only installation test](packages/frontend/test/desktop/change_source_absent_test.dart)
+in `diff_viewer_frontend` needs the app's native TOML hook but no CodeForge
+library. With no active backend, Diff stays mounted and reports unavailable,
+not clean, on Refresh and across all three scopes.
 The existing Source host suite remains the owner of Source document/operation
 behavior. See [focused Diff checks](../../docs/development/testing.md#focused-diff-checks)
 for prerequisites and test ownership, not recorded passing outcomes.

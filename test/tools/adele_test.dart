@@ -587,11 +587,16 @@ exit "$CLIPPY_EXIT"
             expect(options.shard, entry['shard']);
           }
         }
+        const nativeEditorTargets = [
+          'source_editor_frontend',
+          'adele_desktop',
+          'adele_plugin_interactions',
+        ];
         expect(
           testTargets
               .where((target) => target.nativeCodeEditor)
               .map((target) => target.name),
-          ['source_editor_frontend', 'adele_desktop'],
+          unorderedEquals(nativeEditorTargets),
         );
         const nativeTomlTargets = [
           'adele_toml_document',
@@ -620,7 +625,7 @@ exit "$CLIPPY_EXIT"
         for (final entry in entries) {
           expect(
             entry['nativeCodeEditor'],
-            ['source_editor_frontend', 'adele_desktop'].contains(entry['name']),
+            nativeEditorTargets.contains(entry['name']),
           );
           expect(
             entry['nativeToml'],
@@ -1194,7 +1199,7 @@ exit "$CLIPPY_EXIT"
       );
     }
 
-    test('the two app targets cover distinct checkout suites exactly once', () {
+    test('app and Diff targets discover suites under their own roots', () {
       final desktop = lookupTestTarget('adele_desktop');
       final interactions = lookupTestTarget('adele_plugin_interactions');
       List<String> selected(TestTarget target) => partitionTestFiles(
@@ -1211,6 +1216,19 @@ exit "$CLIPPY_EXIT"
         unorderedEquals(checkoutSuites('app', 'plugin_interactions_test')),
       );
       expect(core.toSet().intersection(plugin.toSet()), isEmpty);
+      const review = 'prepared_diff_git_integration_test.dart';
+      expect(core, isNot(contains('test/$review')));
+      expect(plugin, contains('plugin_interactions_test/review/$review'));
+      final diff = lookupTestTarget('diff_viewer_frontend');
+      // No explicit paths: Flutter recursively discovers the default test root.
+      expect(diff.argumentsFor(ci: true), ['test']);
+      expect(
+        checkoutSuites(diff.path, diff.testDirectory),
+        containsAll([
+          'test/desktop/change_source_absent_test.dart',
+          'test/diff_viewer_frontend_test.dart',
+        ]),
+      );
       const suite = 'command_output_capture_integration_test.dart';
       expect(core, isNot(contains('test/core/$suite')));
       expect(plugin, contains('plugin_interactions_test/execution/$suite'));
@@ -1248,13 +1266,13 @@ exit "$CLIPPY_EXIT"
           ),
           shards,
         );
-        const diff = 'test/prepared_diff_git_integration_test.dart';
-        const portable = 'test/prepared_portable_git_integration_test.dart';
+        final weights = [
+          for (final path in checkoutSuites(target.path, target.testDirectory))
+            costs[path] ?? 1,
+        ]..sort((a, b) => b.compareTo(a));
         expect(
-          shards.where(
-            (files) => files.contains(diff) || files.contains(portable),
-          ),
-          hasLength(2),
+          shards.map((files) => costs[files.first] ?? 1),
+          weights.take(target.ciShards),
         );
         for (final files in shards) {
           expect(target.argumentsFor(ci: true, testFiles: files), [
@@ -1383,7 +1401,7 @@ exit "$CLIPPY_EXIT"
       expect(target.ciShards, 1);
       expect(target.ciTestConcurrency, 1);
       expect(target.nativeToml, isTrue);
-      expect(target.nativeCodeEditor, isFalse);
+      expect(target.nativeCodeEditor, isTrue);
       expect(target.linuxDesktopDeps, isFalse);
       expect(target.linuxPtyDeps, isFalse);
       for (final ci in [false, true]) {
@@ -2172,6 +2190,8 @@ exit "$CLIPPY_EXIT"
           );
           expect(target.nativeCodeEditor, isFalse);
           expect(target.linuxDesktopDeps, isFalse);
+          expect(target.linuxPtyDeps, isFalse);
+          expect(target.nativeToml, component == 'frontend');
           expect(target.arguments, ['test']);
           final analysis = analysisTargets.singleWhere(
             (entry) => entry.name == name,
@@ -2199,6 +2219,10 @@ exit "$CLIPPY_EXIT"
           'diff_viewer_contract': '^0.1.0',
           'flutter': {'sdk': 'flutter'},
         });
+        expect(
+          (manifest['dev_dependencies'] as YamlMap).keys,
+          contains('adele_desktop'),
+        );
         expect(
           stockFrontendDescriptors['dev.adele.diff-viewer'],
           contains(
@@ -2247,11 +2271,20 @@ exit "$CLIPPY_EXIT"
           compiler,
           isNot(contains('..addPlugin(const CapabilityAccessDeclarations())')),
         );
-        for (final library in Directory(
-          'plugins/diff_viewer/packages/frontend/lib',
-        ).listSync().whereType<File>()) {
+        for (final library
+            in Directory('plugins/diff_viewer/packages/frontend/lib')
+                .listSync(recursive: true)
+                .whereType<File>()
+                .where((file) => file.path.endsWith('.dart'))) {
           final source = library.readAsStringSync();
-          expect(source, isNot(contains('package:adele_desktop/')));
+          for (final dependency
+              in (manifest['dev_dependencies'] as YamlMap).keys) {
+            expect(
+              source,
+              isNot(contains('package:$dependency/')),
+              reason: library.path,
+            );
+          }
           expect(source, isNot(contains('package:git_backend/')));
           expect(source, isNot(contains("import 'dart:io'")));
         }
