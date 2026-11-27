@@ -1321,8 +1321,9 @@ exit "$CLIPPY_EXIT"
         'prepared_git_buffered_process_integration_test.dart',
       };
       final hosted = lookupTestTarget('git_desktop_tests');
+      final hostedFiles = checkoutSuites(hosted.path, hosted.testDirectory);
       expect(
-        checkoutSuites(hosted.path, hosted.testDirectory),
+        hostedFiles,
         containsAll([
           gitService,
           sourceGuard,
@@ -1330,14 +1331,30 @@ exit "$CLIPPY_EXIT"
         ]),
       );
       final backend = lookupTestTarget('git_backend');
+      final backendFiles = checkoutSuites(backend.path, backend.testDirectory);
       expect(
         [
           ...core,
           ...plugin,
-          ...checkoutSuites(backend.path, backend.testDirectory),
+          ...backendFiles,
         ].where((path) => hostedGitSuites.contains(path.split('/').last)),
         isEmpty,
       );
+      const publication = 'durable_task_git_integration_test.dart';
+      const comparison = 'durable_task_git_comparison_test.dart';
+      const restart = 'durable_project_git_interaction_test.dart';
+      const durableSuites = {publication, comparison, restart};
+      for (final (files, expected) in [
+        (core, ['test/core/$publication']),
+        (hostedFiles, ['test/$comparison']),
+        (plugin, ['$interactionRoot/project/$restart']),
+        (backendFiles, <String>[]),
+      ]) {
+        expect(
+          files.where((path) => durableSuites.contains(path.split('/').last)),
+          unorderedEquals(expected),
+        );
+      }
       expect(core, isNot(contains(gitService)));
       expect(costs[stockPortable], 8);
       expect(desktop.ciTestFileCosts![independentPortable], 4);

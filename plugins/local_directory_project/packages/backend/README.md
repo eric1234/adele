@@ -48,5 +48,7 @@ From the repository root, use
 `dart tools/adele.dart test --target local_directory_project_backend`.
 The package participates in root workspace membership and maintained analysis/test
 discovery. App lifecycle tests own database publication, reopen/move, and
-confinement checks; prepared composition and launcher checks belong to the app and
+confinement checks. The [Local Directory + Git interaction](../../../../app/plugin_interactions_test/project/durable_project_git_interaction_test.dart)
+checks that the database and linked Git worktree survive restart or relocation
+together. Prepared composition and launcher checks belong to the app and
 `test/tools`. Package validation is not macOS/Windows native build proof.

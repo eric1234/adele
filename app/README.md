@@ -1661,8 +1661,12 @@ same-generation retry. There is no generic release/rollback contract.
 The browser can select restored Tasks without materializing their Environments;
 new Task creation still requires available Environment support. Reopening a
 Project does not automatically select a Task or resume work.
-See [durable Task lifecycle tests](test/core/durable_task_environment_lifecycle_test.dart)
-and [fresh-runtime Git restart/move integration](test/core/durable_task_git_integration_test.dart).
+The [durable Task lifecycle tests](test/core/durable_task_environment_lifecycle_test.dart)
+cover host records and materialization. The [host publication tests](test/core/durable_task_git_integration_test.dart)
+check SQL failures and retired establishment results after Git has created a worktree.
+The [Local Directory + Git interaction](plugin_interactions_test/project/durable_project_git_interaction_test.dart)
+owns fresh-runtime restart and whole-Project move coverage. For stock Git comparison
+failures and commands for each suite, see [focused durable Git Task checks](../docs/development/testing.md#focused-durable-git-task-checks).
 
 ### Session lifecycle
 

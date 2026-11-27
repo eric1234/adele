@@ -230,7 +230,8 @@ recursive Flutter discovery under its own `test/`. The pre-bootstrap
 does not accept `--shard`.
 The target participates in normal `test`, `check`, and the aggregate CI gate,
 separately from the seven plain-Dart `git_backend` shards. See the
-[focused Git checks](#focused-buffered-process-checks) for commands and prerequisites.
+[focused buffered process checks](#focused-buffered-process-checks) and
+[durable Git Task checks](#focused-durable-git-task-checks) for commands and prerequisites.
 
 The two app targets use the same `app/` Flutter package and working directory.
 Both participate in `test`, `check`, and application analysis. The interaction
@@ -969,7 +970,7 @@ relative to `app/`; this is a testing map, not an application architecture map.
 | Task Browser canonical projection/actions | [`test/window_task_browser_source_test.dart`](../../app/test/window_task_browser_source_test.dart) (immutable Session queries, Project/Task scope, canonical opening independent of frontend/backend availability, separate execution status/readiness, exact orchestration creation choices and label fallback, retirement, and opening without Environment materialization or Run start) |
 | Task Browser bridge/view hosting | [`test/task_browser_bridge_test.dart`](../../app/test/task_browser_bridge_test.dart), [`test/task_browser_presentation_host_test.dart`](../../app/test/task_browser_presentation_host_test.dart) (safe action settlement, subscriptions/revocation, zero/one/many resolution, and retained factory state) |
 | Prepared Task Browser activation | [`test/prepared_task_browser_host_test.dart`](../../app/test/prepared_task_browser_host_test.dart) (frontend-only activation, lazy source creation/disposal, exact retirement, and per-view bytecode/entrypoint failure) |
-| Durable Project/Task/Environment records | [`test/core/project_database_test.dart`](../../app/test/core/project_database_test.dart), [`test/core/durable_project_lifecycle_test.dart`](../../app/test/core/durable_project_lifecycle_test.dart), [`test/core/durable_task_environment_lifecycle_test.dart`](../../app/test/core/durable_task_environment_lifecycle_test.dart), [`test/core/durable_task_git_integration_test.dart`](../../app/test/core/durable_task_git_integration_test.dart) (fresh runtime and whole-Project move, real SQLite/Git backends) |
+| Durable Project/Task/Environment records | [`test/core/project_database_test.dart`](../../app/test/core/project_database_test.dart), [`test/core/durable_project_lifecycle_test.dart`](../../app/test/core/durable_project_lifecycle_test.dart), [`test/core/durable_task_environment_lifecycle_test.dart`](../../app/test/core/durable_task_environment_lifecycle_test.dart). For publication after real Git establishment, stock Task comparison failures, or Local Directory + Git restart/move, see [focused durable Git Task checks](#focused-durable-git-task-checks). |
 | Durable Session identity/Environment association | [`test/core/durable_session_lifecycle_test.dart`](../../app/test/core/durable_session_lifecycle_test.dart), [`test/core/project_database_test.dart`](../../app/test/core/project_database_test.dart) (complete-graph validation, atomic creation, missing strategy/provider, and no volatile fallback) |
 | Terminal Run schema/publication | [`test/core/project_database_test.dart`](../../app/test/core/project_database_test.dart), [`test/core/durable_session_lifecycle_test.dart`](../../app/test/core/durable_session_lifecycle_test.dart) (separate product/execution v1 owners, atomic record/activity retention, whole-graph publication, immutable lookup, and explicit volatile retention) |
 | Terminal execution evidence | [`test/core/execution_evidence_test.dart`](../../app/test/core/execution_evidence_test.dart) (normalized schema, field-by-field public snapshot roundtrip, Run-local ordering/provenance validation, corruption rejection, and record/evidence rollback) |
@@ -1154,9 +1155,9 @@ arguments for all methods. Real Git backend tests own baseline/HEAD/index/worktr
 intent-to-add, unmerged entries, mode/nontext placeholders, immutable object reads,
 deterministic HEAD/index/worktree races, baseline/branch integrity and
 whole-observation resource bounds. Provider lifecycle tests verify the exact
-establishment SQL plan and baseline-free operational state. Stock lifecycle tests
-verify atomic anchors before Sessions, unchanged anchors after commits and backend
-replacement, durable reopen, and rollback without claiming external Git cleanup.
+establishment SQL plan and baseline-free operational state. For that plan's
+publication in real Project storage and the stock comparison after reopen, see
+[focused durable Git Task checks](#focused-durable-git-task-checks).
 The generator's nested nonnullable-list storage regression belongs to
 [`contract_codegen`](../../packages/contract_codegen/README.md#generated-eval-clients).
 The injected frontend provider is not cross-plugin authority evidence
@@ -1899,6 +1900,38 @@ canonical history. Failed-test cleanup releases the processes before application
 shutdown drains them. For application-wide ownership/navigation changes, follow
 focused checks with the maintained `dart tools/adele.dart test --target
 adele_desktop --ci`; preserve its single Flutter-worker policy.
+
+### Focused durable Git Task checks
+
+Each suite compiles the shared host and the stock Git and Local Directory
+Project backends to AOT and uses real Project SQLite storage. Choose by the
+behavior under test:
+
+| Maintained target | What the suite checks |
+| --- | --- |
+| `adele_desktop` | [Host publication](../../app/test/core/durable_task_git_integration_test.dart): an anchor `INSERT` or deferred `COMMIT` failure publishes no new Task or Environment even though the Git worktree exists. A held establishment result cannot enter SQL after its provider retires, even with a same-ID replacement. |
+| `git_desktop_tests` | [Stock Task comparison](../../plugins/git/packages/desktop_tests/test/durable_task_git_comparison_test.dart): after reopen, a missing anchor, unexpected branch, or unavailable baseline commit fails Task comparison without rewriting the anchor or disabling Unstaged and Uncommitted. The test uses Diff's generated client, not its frontend. |
+| `adele_plugin_interactions` | [Local Directory + Git](../../app/plugin_interactions_test/project/durable_project_git_interaction_test.dart): the Project's `.adele/data.db`, Git anchor and dirty worktree survive both same-directory restart and a whole-Project move. Opening restores records without touching Git; explicit materialization restores the checkout and repairs moved metadata. |
+
+For focused runs, bootstrap from the repository root with the pinned
+`FLUTTER_ROOT`, its bundled Dart and matching `dartaotruntime`, and install
+[Rust 1.93.0 for native hooks](toolchain.md#native-toml-documents). Use Git on Linux
+x64; the comparison and restart/move cases also run real buffered processes
+with util-linux `setsid` and the [Git inspection commands](../../plugins/git/README.md#portable-unstaged-inspection).
+None of these files needs a CodeForge library or loader variable, a desktop
+bundle, a Git PTY helper, or live credentials. The complete desktop and
+interaction targets still prepare CodeForge for other files.
+
+```sh
+# app/: host publication, then the two-plugin interaction. Run serially.
+flutter test --no-pub --concurrency 1 test/core/durable_task_git_integration_test.dart
+flutter test --no-pub --concurrency 1 plugin_interactions_test/project/durable_project_git_interaction_test.dart
+# plugins/git/packages/desktop_tests/: Git-owned comparison behavior.
+flutter test --no-pub --concurrency 1 test/durable_task_git_comparison_test.dart
+```
+
+For a complete owner, run `dart tools/adele.dart test --target NAME --ci` from
+the repository root with the target name from the table and no `--shard`.
 
 ### Focused persistence checks
 
