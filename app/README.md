@@ -2337,7 +2337,10 @@ production manifest dependencies and import/export directives.
 From `app/`, an unqualified `flutter test` runs `test/` (`adele_desktop`) but
 not [`plugin_interactions_test/`](plugin_interactions_test/). The latter is a
 separate maintained target, `adele_plugin_interactions`, in this same package.
-See [test ownership and commands](../docs/development/testing.md#application-level-test-ownership).
+For tool Inspection, the [generic Session first-mount test](test/tool_inspection_frontend_eval_test.dart)
+belongs to `adele_desktop`; the [mixed Filesystem and Command presenter tests](plugin_interactions_test/inspection/tool_inspection_interaction_test.dart)
+belong to `adele_plugin_interactions`. Single-plugin rendering stays in the
+respective frontend suites. See [test ownership and commands](../docs/development/testing.md#application-level-test-ownership).
 
 Application changes should use the repository's
 [testing and validation workflow](../docs/development/testing.md), including its

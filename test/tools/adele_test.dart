@@ -1214,6 +1214,13 @@ exit "$CLIPPY_EXIT"
       const suite = 'command_output_capture_integration_test.dart';
       expect(core, isNot(contains('test/core/$suite')));
       expect(plugin, contains('plugin_interactions_test/execution/$suite'));
+      expect(core, contains('test/tool_inspection_frontend_eval_test.dart'));
+      expect(
+        plugin,
+        contains(
+          'plugin_interactions_test/inspection/tool_inspection_interaction_test.dart',
+        ),
+      );
       expect(
         core,
         contains('test/core/normal_chatgpt_run_integration_test.dart'),
@@ -2813,12 +2820,6 @@ exit "$CLIPPY_EXIT"
       expect(headless, isNot(contains('adele_ui:')));
       expect(headless, isNot(contains('${tool}_frontend')));
     }
-    // Mixed/generic Inspection composition remains application-owned.
-    expect(lookupTestTarget('adele_desktop').argumentsFor(), ['test']);
-    expect(
-      File('app/test/tool_inspection_frontend_eval_test.dart').existsSync(),
-      isTrue,
-    );
   });
 
   test('compact composition preserves plugin parsing and authority boundaries', () {
