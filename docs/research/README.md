@@ -29,3 +29,4 @@ The model-provider survey builds on the broader harness survey rather than repla
 ## Development investigations
 
 - [CI performance baseline and optimization candidates (2026-11-26)](ci-performance-2026-11-26.md), including the [desktop test ownership audit](ci-desktop-test-ownership-2026-11-26.md).
+- [Invocation-scoped reuse of compiled test artifacts (2026-11-27)](test-artifact-reuse-2026-11-27.md): per-worker inventory, Git AOT pilot, correctness gates and hosted CI trend.
