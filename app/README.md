@@ -2334,6 +2334,11 @@ production manifest dependencies and import/export directives.
 
 ## Focused validation
 
+From `app/`, an unqualified `flutter test` runs `test/` (`adele_desktop`) but
+not [`plugin_interactions_test/`](plugin_interactions_test/). The latter is a
+separate maintained target, `adele_plugin_interactions`, in this same package.
+See [test ownership and commands](../docs/development/testing.md#application-level-test-ownership).
+
 Application changes should use the repository's
 [testing and validation workflow](../docs/development/testing.md), including its
 [application validation map](../docs/development/testing.md#application-validation-map)

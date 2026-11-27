@@ -14,6 +14,17 @@ void main() {
   late DesktopLauncherFixture fixture;
   setUp(() async {
     fixture = await DesktopLauncherFixture.create();
+    for (final name in [
+      'adele_tools',
+      'git_backend',
+      'adele_desktop',
+      'adele_plugin_interactions',
+    ]) {
+      final target = tooling.lookupTestTarget(name);
+      File(
+        '${fixture.root.path}/${target.path}/${target.testDirectory}/nested/example_test.dart',
+      ).createSync(recursive: true);
+    }
   });
 
   const dependencyCommands = ['pub-get', 'workspace-list'];
@@ -61,6 +72,7 @@ void main() {
           'adele_ui',
           'plugin_runtime',
           'adele_tools',
+          'adele_plugin_interactions',
           'adele_plugin_backend_support',
           'agents_md_backend',
           'agent_configuration_contract',
@@ -288,6 +300,32 @@ void main() {
     },
   );
 
+  test(
+    'resolved interaction CI runs only its directory without CodeForge',
+    () async {
+      await resolveWorkspace();
+      final result = await fixture.invoke([
+        'test',
+        '--target',
+        'adele_plugin_interactions',
+        '--ci',
+      ]);
+      expect(result.exitCode, 0, reason: '${result.stderr}');
+      expect(fixture.commands.readAsLinesSync(), [
+        ...dependencyCommands,
+        'generate|path',
+        'test|flutter|${fixture.root.path}/app',
+      ]);
+      expect(fixture.launchArguments.readAsLinesSync(), [
+        'test',
+        '--concurrency',
+        '1',
+        'plugin_interactions_test',
+      ]);
+      expectNoNativeBuild();
+    },
+  );
+
   for (final targetName in [
     'adele_tools',
     'adele_desktop',
@@ -359,6 +397,27 @@ void main() {
     );
     fixture.expectGenerationArguments();
   });
+
+  test(
+    'check runs both app categories and propagates an interaction failure',
+    () async {
+      fixture.generatedContract.writeAsStringSync(
+        fixture.contractSource.readAsStringSync(),
+      );
+      fixture.environment['ADELE_TEST_FAIL_INTERACTION'] = '1';
+      final result = await fixture.invoke(['check']);
+      expect(result.exitCode, 36, reason: '${result.stdout}\n${result.stderr}');
+      expect(result.stdout, contains('==> PASS test: adele_desktop ('));
+      expect(
+        result.stderr,
+        'FAILED TEST TARGETS:\n  adele_plugin_interactions (exit 36)\n',
+      );
+      expect(fixture.launchArguments.readAsLinesSync(), [
+        'test',
+        'plugin_interactions_test',
+      ]);
+    },
+  );
 
   for (final (arguments, code) in [
     (['tools/adele.dart', 'unexpected-native-command'], 99),

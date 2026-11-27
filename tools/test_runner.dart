@@ -2,17 +2,21 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 
+const defaultTestDirectory = 'test';
+
 final class TestTarget {
   const TestTarget({
     required this.name,
     required this.path,
     required this.executable,
     required this.arguments,
+    this.testDirectory = defaultTestDirectory,
     this.testConcurrency,
     this.ciTestConcurrency,
     this.ciShards = 1,
     this.ciTestFileCosts,
     this.linuxDesktopDeps = false,
+    this.linuxPtyDeps = false,
     this.nativeCodeEditor = false,
     this.nativeToml = false,
   });
@@ -23,10 +27,12 @@ final class TestTarget {
   final Map<String, int>? ciTestFileCosts;
   final String executable;
   final bool linuxDesktopDeps;
+  final bool linuxPtyDeps;
   final bool nativeCodeEditor;
   final bool nativeToml;
   final String name;
   final String path;
+  final String testDirectory;
   final int? testConcurrency;
 
   List<String> argumentsFor({bool ci = false, List<String>? testFiles}) {
@@ -39,12 +45,15 @@ final class TestTarget {
     return <String>[
       ...arguments,
       if (concurrency != null) ...<String>['--concurrency', '$concurrency'],
-      ...?testFiles,
+      if (testFiles != null)
+        ...testFiles
+      else if (testDirectory != defaultTestDirectory)
+        testDirectory,
     ];
   }
 }
 
-/// Matches Flutter's recursive test/ discovery, returning package-relative
+/// Matches Flutter's recursive directory discovery, returning package-relative
 /// paths with '/' separators. Without [costs], FNV-1a keeps existing assignments
 /// stable when files are added. With costs, longest-processing-time-first (LPT)
 /// assigns whole files by descending cost, then path, to the least-loaded shard
@@ -52,6 +61,7 @@ final class TestTarget {
 List<List<String>> partitionTestFiles(
   Directory packageRoot,
   int shardCount, {
+  String testDirectory = defaultTestDirectory,
   Map<String, int>? costs,
 }) {
   if (shardCount < 1) {
@@ -61,8 +71,11 @@ List<List<String>> partitionTestFiles(
     throw ArgumentError.value(costs, 'costs', 'must be positive');
   }
   final root = packageRoot.absolute;
+  final directory = Directory.fromUri(
+    root.uri.resolveUri(Uri.directory(testDirectory)),
+  );
   final files =
-      Directory.fromUri(root.uri.resolve('test/'))
+      directory
           // Flutter does not traverse linked directories, but accepts file symlinks.
           .listSync(recursive: true, followLinks: false)
           .where(
@@ -105,7 +118,7 @@ List<List<String>> partitionTestFiles(
   for (var index = 0; index < shards.length; index++) {
     if (shards[index].isEmpty) {
       throw StateError(
-        'Test shard ${index + 1}/$shardCount is empty under ${root.path}/test.',
+        'Test shard ${index + 1}/$shardCount is empty under ${directory.path}.',
       );
     }
   }
@@ -164,21 +177,45 @@ Future<TestRunSummary> runTestTargets({
     targets.length,
     null,
   );
-  int nextTarget = 0;
+  Uri directoryKey(String path) {
+    var absolute = Directory(path).absolute.path;
+    if (Platform.isWindows) absolute = absolute.replaceAll(r'\', '/');
+    // Keep the Windows UNC prefix when collapsing redundant separators.
+    final unc = Platform.isWindows && absolute.startsWith('//');
+    final normalized = absolute.replaceAll(RegExp('/+'), '/');
+    return Uri.directory(unc ? '/$normalized' : normalized).normalizePath();
+  }
+
+  final directories = <Uri?>[
+    for (final target in targets)
+      target.executable == 'flutter' ? directoryKey(target.path) : null,
+  ];
+  final activeDirectories = <Uri>{};
+  final pending = <int>{for (var i = 0; i < targets.length; i++) i};
 
   Future<void> worker() async {
-    while (nextTarget < targets.length) {
-      final int index = nextTarget++;
+    while (pending.isNotEmpty) {
+      final index = pending.firstWhere(
+        (i) => !activeDirectories.contains(directories[i]),
+        orElse: () => -1,
+      );
+      // When all pending targets are blocked, their active workers will drain them.
+      if (index < 0) return;
+      pending.remove(index);
+      final directory = directories[index];
       final TestTarget target = targets[index];
       onStart?.call(target);
       final Stopwatch elapsed = Stopwatch()..start();
       int targetExitCode;
       Object? error;
+      if (directory != null) activeDirectories.add(directory);
       try {
         targetExitCode = await execute(target);
       } on Object catch (caught) {
         targetExitCode = 1;
         error = caught;
+      } finally {
+        if (directory != null) activeDirectories.remove(directory);
       }
       elapsed.stop();
       final TestTargetResult result = TestTargetResult(

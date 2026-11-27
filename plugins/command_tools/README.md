@@ -727,7 +727,9 @@ output before completion, two identical invocations, simultaneous card/console
 views, two warm output tabs with hidden committed output and unchanged
 tab/mount/emulator identity, selected interactive Terminal coexistence, Session
 departure revocation and cold historical reconstruction, and fresh Project/backend
-reopen without Git. `command_output_capture_integration_test.dart` retains the
-independent full-volume capture proof. See the maintained
+reopen without Git. The [command capture interaction](../../app/plugin_interactions_test/execution/command_output_capture_integration_test.dart)
+checks the full-volume foreground process transcript, interpreted observation
+and Session Evaluator export across durable reopen. From the repository root,
+run `dart tools/adele.dart test --target adele_plugin_interactions`. See the maintained
 [validation map](../../docs/development/testing.md#focused-command-output-checks)
 for proportional commands and evidence boundaries.

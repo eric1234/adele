@@ -53,6 +53,17 @@ void main() {
   );
 
   group('test target pool', () {
+    TestTarget target(
+      String name,
+      String path, {
+      String executable = 'flutter',
+    }) => TestTarget(
+      name: name,
+      path: path,
+      executable: executable,
+      arguments: [],
+    );
+
     test(
       'bounds concurrency, overlaps work, and executes every target',
       () async {
@@ -130,6 +141,74 @@ void main() {
       expect(summary.failures.single.exitCode, 1);
       expect(summary.failures.single.error, isA<StateError>());
     });
+
+    test(
+      'bypasses blocked Flutter targets without reordering results',
+      () async {
+        final first = target('first', 'app');
+        final alias = target(
+          'alias',
+          Directory('./app/nested//../').absolute.path,
+        );
+        final other = target('other', 'packages/ui');
+        final dart = target('dart', 'app', executable: 'dart');
+        final targets = [first, alias, other, dart];
+        final started = <TestTarget>[];
+        final completed = <TestTarget>[];
+        final releaseFirst = Completer<int>();
+        final dartStarted = Completer<void>();
+
+        final pending = runTestTargets(
+          targets: targets,
+          jobs: 2,
+          onStart: started.add,
+          onComplete: (result) => completed.add(result.target),
+          execute: (target) {
+            if (target == first) return releaseFirst.future;
+            if (target == dart) dartStarted.complete();
+            return Future.value(0);
+          },
+        );
+
+        await dartStarted.future;
+        expect(started, [first, other, dart]);
+        expect(completed, contains(other));
+        releaseFirst.complete(0);
+        final summary = await pending;
+        expect(started, [first, other, dart, alias]);
+        expect(completed.indexOf(first), lessThan(completed.indexOf(alias)));
+        expect(summary.results.map((result) => result.target), targets);
+        expect(summary.succeeded, isTrue);
+      },
+    );
+
+    test(
+      'releases the Flutter directory after failure and exception',
+      () async {
+        final targets = [
+          for (final name in ['exit', 'throw', 'pass']) target(name, 'app'),
+        ];
+        final error = StateError('start failed');
+        final events = <String>[];
+        final summary = await runTestTargets(
+          targets: targets,
+          jobs: 3,
+          onStart: (target) => events.add('start ${target.name}'),
+          onComplete: (result) => events.add('end ${result.target.name}'),
+          execute: (target) {
+            if (target.name == 'throw') throw error;
+            return Future.value(target.name == 'exit' ? 7 : 0);
+          },
+        );
+
+        expect(events, [
+          for (final t in targets) ...['start ${t.name}', 'end ${t.name}'],
+        ]);
+        expect(summary.results.map((r) => r.exitCode), [7, 1, 0]);
+        expect(summary.results[1].error, same(error));
+        expect(summary.passed, 1);
+      },
+    );
   });
 
   group('--jobs', () {
@@ -235,6 +314,7 @@ void main() {
       ['--target=adele_desktop', '--ci', '--shard=5'],
       ['--target=git_backend', '--ci', '--shard=8'],
       ['--target=adele_tools', '--ci', '--shard=1'],
+      ['--target=adele_plugin_interactions', '--ci', '--shard=1'],
       ['--target=missing', '--ci', '--shard=1'],
       ['--jobs=2', '--ci', '--shard=1'],
       for (final name in ['adele_desktop', 'git_backend'])
@@ -415,6 +495,11 @@ exit "$CLIPPY_EXIT"
         final tools = lookupTestTarget('adele_tools');
         expect(tools.path, '.');
         expect(tools.argumentsFor(), ['test', 'test/tools']);
+        const selected = ['test/tools/adele_test.dart'];
+        expect(tools.argumentsFor(ci: true, testFiles: selected), [
+          'test',
+          ...selected,
+        ]);
         for (final suite in [
           'desktop_tool_cache_test.dart',
           'desktop_final_input_fence_test.dart',
@@ -489,6 +574,7 @@ exit "$CLIPPY_EXIT"
             expect(entry['shard'], count > 1 ? index + 1 : null);
             expect(entry['shardCount'], target.ciShards);
             expect(entry['linuxDesktopDeps'], target.linuxDesktopDeps);
+            expect(entry['linuxPtyDeps'], target.linuxPtyDeps);
             expect(entry['nativeCodeEditor'], target.nativeCodeEditor);
             expect(entry['nativeToml'], target.nativeToml);
             expect(entry['ciTestConcurrency'], target.ciTestConcurrency);
@@ -523,12 +609,13 @@ exit "$CLIPPY_EXIT"
           'source_editor_frontend',
           'openai_frontend',
           'adele_desktop',
+          'adele_plugin_interactions',
         ];
         expect(
           testTargets
               .where((target) => target.nativeToml)
               .map((target) => target.name),
-          nativeTomlTargets,
+          unorderedEquals(nativeTomlTargets),
         );
         for (final entry in entries) {
           expect(
@@ -552,6 +639,7 @@ exit "$CLIPPY_EXIT"
                 'shard',
                 'shardCount',
                 'linuxDesktopDeps',
+                'linuxPtyDeps',
                 'nativeCodeEditor',
                 'nativeToml',
                 'ciTestConcurrency',
@@ -567,6 +655,12 @@ exit "$CLIPPY_EXIT"
           <String>['adele_desktop'],
         );
         expect(
+          testTargets
+              .where((target) => target.linuxPtyDeps)
+              .map((target) => target.name),
+          unorderedEquals(['git_backend', 'adele_desktop']),
+        );
+        expect(
           <String, Object?>{
             for (final Map<String, Object?> item in entries)
               item['name']! as String: item['ciTestConcurrency'],
@@ -575,7 +669,9 @@ exit "$CLIPPY_EXIT"
             for (final TestTarget target in testTargets)
               target.name: switch (target.name) {
                 'contract_codegen' => 4,
-                'git_backend' || 'adele_desktop' => 1,
+                'git_backend' ||
+                'adele_desktop' ||
+                'adele_plugin_interactions' => 1,
                 _ => null,
               },
           },
@@ -723,10 +819,7 @@ exit "$CLIPPY_EXIT"
         final pty = steps.singleWhere(
           (step) => step['name'] == 'Install Linux PTY test prerequisites',
         );
-        expect(
-          pty['if'],
-          r"${{ matrix.name == 'git_backend' || matrix.name == 'adele_desktop' }}",
-        );
+        expect(pty['if'], r'${{ matrix.linuxPtyDeps }}');
         expect(pty['run'], contains('apt-get install -y gcc libc6-dev'));
         final run = steps.singleWhere(
           (step) => step['name'] == 'Run test target',
@@ -816,6 +909,21 @@ exit "$CLIPPY_EXIT"
       file.writeAsStringSync('');
     }
 
+    List<String> checkoutSuites(String package, String testDirectory) =>
+        Directory('$package/$testDirectory')
+            .listSync(recursive: true, followLinks: false)
+            .where(
+              (entry) =>
+                  entry.path.endsWith('_test.dart') &&
+                  FileSystemEntity.isFileSync(entry.path),
+            )
+            .map(
+              (entry) => entry.path
+                  .replaceAll(Platform.pathSeparator, '/')
+                  .substring('$package/'.length),
+            )
+            .toList();
+
     test(
       'complete, disjoint, ordered and stable across discovery and additions',
       () {
@@ -861,6 +969,31 @@ exit "$CLIPPY_EXIT"
         }
       },
     );
+
+    test('alternate discovery includes only suites under its own root', () {
+      const root = 'alternate/suites';
+      const first = '$root/nested path/a_test.dart';
+      const second = '$root/z_test.dart';
+      addFile(second);
+      addFile('$root/nested path/helper.dart');
+      addFile('alternate/other_test.dart');
+      addFile('test/unrelated_test.dart');
+      addFile(first);
+      expect(partitionTestFiles(fixture, 1, testDirectory: root).single, [
+        first,
+        second,
+      ]);
+      expect(partitionTestFiles(fixture, 1).single, [
+        'test/unrelated_test.dart',
+      ]);
+      expect(
+        partitionTestFiles(fixture, 2, testDirectory: root, costs: {second: 3}),
+        [
+          [second],
+          [first],
+        ],
+      );
+    });
 
     test(
       'matches Flutter file-link but not directory-link discovery',
@@ -1038,8 +1171,58 @@ exit "$CLIPPY_EXIT"
       });
     }
 
+    for (final kind in ['missing', 'empty']) {
+      test(
+        'CLI refuses $kind interactions discovery before preparation',
+        () async {
+          addFile('app/test/unrelated_test.dart');
+          if (kind == 'empty') {
+            addFile('app/plugin_interactions_test/nested/helper.dart');
+          }
+          final result = await Process.run(Platform.resolvedExecutable, [
+            File('tools/adele.dart').absolute.path,
+            'test',
+            '--target=adele_plugin_interactions',
+            if (kind == 'empty') '--ci',
+          ], workingDirectory: fixture.path);
+          expect(result.exitCode, 1);
+          expect(result.stderr, contains('plugin_interactions_test'));
+          expect(result.stdout, isNot(contains('START test:')));
+          expect(Directory('${fixture.path}/.adele').existsSync(), isFalse);
+          expect(Directory('${fixture.path}/.dart_tool').existsSync(), isFalse);
+        },
+      );
+    }
+
+    test('the two app targets cover distinct checkout suites exactly once', () {
+      final desktop = lookupTestTarget('adele_desktop');
+      final interactions = lookupTestTarget('adele_plugin_interactions');
+      List<String> selected(TestTarget target) => partitionTestFiles(
+        Directory(target.path),
+        target.ciShards,
+        testDirectory: target.testDirectory,
+        costs: target.ciTestFileCosts,
+      ).expand((shard) => shard).toList();
+      final core = selected(desktop);
+      final plugin = selected(interactions);
+      expect(core, unorderedEquals(checkoutSuites('app', 'test')));
+      expect(
+        plugin,
+        unorderedEquals(checkoutSuites('app', 'plugin_interactions_test')),
+      );
+      expect(core.toSet().intersection(plugin.toSet()), isEmpty);
+      const suite = 'command_output_capture_integration_test.dart';
+      expect(core, isNot(contains('test/core/$suite')));
+      expect(plugin, contains('plugin_interactions_test/execution/$suite'));
+      expect(
+        core,
+        contains('test/core/normal_chatgpt_run_integration_test.dart'),
+      );
+      expect(core, containsAll(desktop.ciTestFileCosts!.keys));
+    });
+
     test(
-      'desktop checkout shards cover every file and separate the largest suites',
+      'desktop checkout shards separate the largest suites with unchanged argv',
       () {
         final target = lookupTestTarget('adele_desktop');
         final costs = target.ciTestFileCosts!;
@@ -1048,27 +1231,8 @@ exit "$CLIPPY_EXIT"
           target.ciShards,
           costs: costs,
         );
-        final expected =
-            Directory('app/test')
-                .listSync(recursive: true, followLinks: false)
-                .where(
-                  (file) =>
-                      file.path.endsWith('_test.dart') &&
-                      FileSystemEntity.isFileSync(file.path),
-                )
-                .map(
-                  (file) => file.path
-                      .replaceAll(Platform.pathSeparator, '/')
-                      .substring('app/'.length),
-                )
-                .toList()
-              ..sort();
-        final selected = shards.expand((files) => files).toList();
         expect(shards, hasLength(4));
         expect(shards, everyElement(isNotEmpty));
-        expect(expected, containsAll(costs.keys));
-        expect(selected.toSet(), hasLength(expected.length));
-        expect(selected, unorderedEquals(expected));
         expect(
           partitionTestFiles(
             Directory(target.path),
@@ -1103,19 +1267,7 @@ exit "$CLIPPY_EXIT"
         target.ciShards,
         costs: target.ciTestFileCosts,
       );
-      final expected = Directory('${target.path}/test')
-          .listSync(recursive: true, followLinks: false)
-          .where(
-            (file) =>
-                file.path.endsWith('_test.dart') &&
-                FileSystemEntity.isFileSync(file.path),
-          )
-          .map(
-            (file) => file.path
-                .replaceAll(Platform.pathSeparator, '/')
-                .substring('${target.path}/'.length),
-          )
-          .toList();
+      final expected = checkoutSuites(target.path, 'test');
       final selected = shards.expand((files) => files).toList();
       expect(shards, hasLength(7));
       expect(shards, everyElement(isNotEmpty));
@@ -1205,12 +1357,54 @@ exit "$CLIPPY_EXIT"
       'desktop CI serializes compiler-heavy fixtures without changing local defaults',
       () {
         final target = lookupTestTarget('adele_desktop');
+        expect(target.path, 'app');
+        expect(target.testDirectory, 'test');
         expect(target.nativeCodeEditor, isTrue);
         expect(target.argumentsFor(), ['test']);
         expect(target.argumentsFor(ci: true), ['test', '--concurrency', '1']);
         expect(target.ciTestConcurrency, 1);
       },
     );
+
+    test('interactions share app analysis but select only their own tests', () {
+      const name = 'adele_plugin_interactions';
+      const root = 'plugin_interactions_test';
+      final target = lookupTestTarget(name);
+      expect(target.path, 'app');
+      expect(target.executable, 'flutter');
+      expect(target.testDirectory, root);
+      expect(target.ciShards, 1);
+      expect(target.ciTestConcurrency, 1);
+      expect(target.nativeToml, isTrue);
+      expect(target.nativeCodeEditor, isFalse);
+      expect(target.linuxDesktopDeps, isFalse);
+      expect(target.linuxPtyDeps, isFalse);
+      for (final ci in [false, true]) {
+        final prefix = [
+          'test',
+          if (ci) ...['--concurrency', '1'],
+        ];
+        expect(target.argumentsFor(ci: ci), [...prefix, root]);
+        const paths = ['$root/nested/one_test.dart', '$root/another_test.dart'];
+        expect(target.argumentsFor(ci: ci, testFiles: paths), [
+          ...prefix,
+          ...paths,
+        ]);
+        expect(
+          () => target.argumentsFor(ci: ci, testFiles: []),
+          throwsArgumentError,
+        );
+      }
+      expect(
+        analysisTargets.where(
+          (entry) =>
+              entry.path == 'app' ||
+              entry.path.startsWith('app/') ||
+              entry.name == name,
+        ),
+        [(name: 'adele_desktop', path: 'app', flutter: true)],
+      );
+    });
 
     test('returns the exact target', () {
       expect(lookupTestTarget('contract_codegen').name, 'contract_codegen');
@@ -1738,13 +1932,6 @@ exit "$CLIPPY_EXIT"
         expect(entries.single['linuxDesktopDeps'], isFalse);
         expect(entries.single['nativeCodeEditor'], isFalse);
         expect(entries.single['ciTestConcurrency'], isNull);
-        expect(lookupTestTarget('adele_desktop').path, 'app');
-        expect(
-          File(
-            'app/test/core/normal_chatgpt_run_integration_test.dart',
-          ).existsSync(),
-          isTrue,
-        );
       });
     }
 
@@ -2753,6 +2940,7 @@ exit "$CLIPPY_EXIT"
         'workspace_demo_contract|dart|plugins/workspace_demo/packages/contract|test',
         'workspace_demo_backend|dart|plugins/workspace_demo/packages/backend|test',
         'adele_desktop|flutter|app|test',
+        'adele_plugin_interactions|flutter|app|test plugin_interactions_test',
       ],
     );
     final TestTarget codegen = lookupTestTarget('contract_codegen');
