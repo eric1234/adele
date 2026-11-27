@@ -321,6 +321,7 @@ void main() {
         ['--target=$name', '--ci', '--shard=${count + 1}'],
       ],
       ['--target=adele_tools', '--ci', '--shard=1'],
+      ['--target=git_desktop_tests', '--ci', '--shard=1'],
       ['--target=adele_plugin_interactions', '--ci', '--shard=1', '--jobs=2'],
       ['--target=missing', '--ci', '--shard=1'],
       ['--jobs=2', '--ci', '--shard=1'],
@@ -603,6 +604,7 @@ exit "$CLIPPY_EXIT"
           'adele_toml_document',
           'adele_configuration_store',
           'adele_settings_host',
+          'git_desktop_tests',
           'filesystem_tools_frontend',
           'command_tools_frontend',
           'agent_configuration_frontend',
@@ -676,6 +678,7 @@ exit "$CLIPPY_EXIT"
               target.name: switch (target.name) {
                 'contract_codegen' => 4,
                 'git_backend' ||
+                'git_desktop_tests' ||
                 'adele_desktop' ||
                 'adele_plugin_interactions' => 1,
                 _ => null,
@@ -711,6 +714,18 @@ exit "$CLIPPY_EXIT"
             (manifests[name]?['dependencies'] as YamlMap?)?.keys
                     .cast<String>() ??
                 const [],
+          );
+        }
+        if (target.name == 'git_backend') {
+          expect(
+            visited.intersection({
+              'adele_desktop',
+              'flutter',
+              'flutter_test',
+              'git_desktop_tests',
+            }),
+            isEmpty,
+            reason: 'All seven Git backend shards must run under plain Dart.',
           );
         }
         expect(
@@ -835,8 +850,35 @@ exit "$CLIPPY_EXIT"
           'TEST_TARGET': r'${{ matrix.name }}',
           'TEST_SHARD': r'${{ matrix.shard }}',
         });
-        // Execute the actual workflow shell with a stand-in for Dart.
-        final plan = jsonDecode(testPlanJson()) as Map<String, Object?>;
+        // Exercise the actual discovery handoff, not just a reconstructed list.
+        final discover = jobs['discover-test-targets'] as YamlMap;
+        expect(discover['outputs'], {
+          'matrix': r'${{ steps.test-plan.outputs.matrix }}',
+        });
+        final planStep = (discover['steps'] as YamlList)
+            .cast<YamlMap>()
+            .singleWhere((step) => step['id'] == 'test-plan');
+        final directory = Directory.systemTemp.createTempSync(
+          'adele-ci-matrix-',
+        );
+        addTearDown(() => directory.deleteSync(recursive: true));
+        final output = File('${directory.path}/github-output');
+        final discovery = await Process.run(
+          'bash',
+          ['-e', '-c', planStep['run'] as String],
+          environment: {
+            'GITHUB_OUTPUT': output.path,
+            'PATH':
+                '${File(Platform.resolvedExecutable).parent.path}:${Platform.environment['PATH']}',
+          },
+        );
+        expect(discovery.exitCode, 0, reason: '${discovery.stderr}');
+        final matrix = output.readAsLinesSync().single;
+        expect(matrix, startsWith('matrix='));
+        final plan =
+            jsonDecode(matrix.substring('matrix='.length))
+                as Map<String, Object?>;
+        expect(plan, jsonDecode(testPlanJson()));
         final entries = (plan['include']! as List<Object?>)
             .cast<Map<String, Object?>>();
         expect(
@@ -845,6 +887,7 @@ exit "$CLIPPY_EXIT"
               .map((entry) => entry['shard']),
           [1, 2],
         );
+        // Execute each planned worker's workflow shell with a stand-in for Dart.
         for (final entry in [
           ...entries,
           for (final name in ciShardCounts.keys) {'name': name, 'shard': null},
@@ -1247,7 +1290,7 @@ exit "$CLIPPY_EXIT"
       );
     }
 
-    test('app and Diff targets discover suites under their own roots', () {
+    test('app, hosted Git and Diff discover suites under their own roots', () {
       final desktop = lookupTestTarget('adele_desktop');
       final interactions = lookupTestTarget('adele_plugin_interactions');
       final core = shardsFor(desktop, Directory(desktop.path)).expand((s) => s);
@@ -1264,8 +1307,17 @@ exit "$CLIPPY_EXIT"
       expect(plugin, containsAll(costs.keys));
       expect(plugin, contains(stockPortable));
       expect(core, contains(independentPortable));
+      const gitService =
+          'test/prepared_portable_git_service_integration_test.dart';
+      const sourceGuard = 'test/portable_git_source_boundary_test.dart';
+      final hosted = lookupTestTarget('git_desktop_tests');
+      expect(
+        checkoutSuites(hosted.path, hosted.testDirectory),
+        containsAll([gitService, sourceGuard]),
+      );
+      expect(core, isNot(contains(gitService)));
       expect(costs[stockPortable], 8);
-      expect(desktop.ciTestFileCosts![independentPortable], 15);
+      expect(desktop.ciTestFileCosts![independentPortable], 4);
       expect(costs[reviewPath], 20);
       expect(costs[capturePath], 12);
       expect(
@@ -1289,6 +1341,7 @@ exit "$CLIPPY_EXIT"
         containsAll([
           'test/desktop/change_source_absent_test.dart',
           'test/diff_viewer_frontend_test.dart',
+          sourceGuard,
         ]),
       );
       expect(core, isNot(contains('test/core/$capture')));
@@ -1345,6 +1398,7 @@ exit "$CLIPPY_EXIT"
 
     test('Git checkout shards cover all suites once with unchanged argv', () {
       final target = lookupTestTarget('git_backend');
+      expect(target.executable, 'dart');
       final shards = partitionTestFiles(
         Directory(target.path),
         target.ciShards,
@@ -1436,6 +1490,57 @@ exit "$CLIPPY_EXIT"
   });
 
   group('target lookup', () {
+    test(
+      'Git hosted tests are a nested test-only Flutter workspace member',
+      () {
+        const name = 'git_desktop_tests';
+        const path = 'plugins/git/packages/desktop_tests';
+        YamlMap manifest(String directory) =>
+            loadYaml(File('$directory/pubspec.yaml').readAsStringSync())
+                as YamlMap;
+        final workspace = manifest('.')['workspace'] as YamlList;
+        expect(workspace, contains('plugins/git'));
+        expect(workspace, isNot(contains(path)));
+        final members = manifest('plugins/git')['workspace'] as YamlList;
+        expect(
+          members,
+          containsAll(['packages/backend', 'packages/desktop_tests']),
+        );
+        final hosted = manifest(path);
+        expect(hosted['name'], name);
+        expect(hosted['resolution'], 'workspace');
+        expect(hosted['publish_to'], 'none');
+        expect(
+          (hosted['dependencies'] as YamlMap?)?.keys ?? const <String>[],
+          isEmpty,
+        );
+        expect(
+          (hosted['dev_dependencies'] as YamlMap).keys,
+          containsAll([
+            'flutter',
+            'flutter_test',
+            'adele_desktop',
+            'git_backend',
+          ]),
+        );
+        for (final directory in ['lib', 'bin']) {
+          expect(Directory('$path/$directory').existsSync(), isFalse);
+        }
+        final target = testTargets.singleWhere(
+          (t) => t.name == name || t.path == path,
+        );
+        expect(target.name, name);
+        expect(target.path, path);
+        expect(target.executable, 'flutter');
+        expect(target.testDirectory, 'test');
+        expect(target.argumentsFor(), ['test']);
+        expect(target.argumentsFor(ci: true), ['test', '--concurrency', '1']);
+        expect(analysisTargets.where((t) => t.name == name || t.path == path), [
+          (name: name, path: path, flutter: true),
+        ]);
+      },
+    );
+
     test(
       'desktop CI serializes compiler-heavy fixtures without changing local defaults',
       () {
@@ -2992,6 +3097,7 @@ exit "$CLIPPY_EXIT"
         'plugin_backend_host|dart|packages/plugin_backend_host|test',
         'resource_inspector_contract|dart|plugins/resource_inspector/packages/contract|test --timeout 4m',
         'git_backend|dart|plugins/git/packages/backend|test --timeout 4m',
+        'git_desktop_tests|flutter|plugins/git/packages/desktop_tests|test',
         'filesystem_tools_plugin|dart|plugins/filesystem_tools|test',
         'filesystem_tools_backend|dart|plugins/filesystem_tools/packages/backend|test',
         'filesystem_tools_frontend|flutter|plugins/filesystem_tools/packages/frontend|test',

@@ -13,6 +13,8 @@ import 'support/desktop_launcher_inputs.dart';
 
 void main() {
   const interactions = 'adele_plugin_interactions';
+  const gitHosted = 'git_desktop_tests';
+  const gitHostedPath = 'plugins/git/packages/desktop_tests';
   const review =
       'plugin_interactions_test/review/prepared_diff_git_integration_test.dart';
   const capture =
@@ -29,7 +31,12 @@ void main() {
   late DesktopLauncherFixture fixture;
   setUp(() async {
     fixture = await DesktopLauncherFixture.create();
-    for (final name in ['adele_tools', 'git_backend', 'adele_desktop']) {
+    for (final name in [
+      'adele_tools',
+      'git_backend',
+      gitHosted,
+      'adele_desktop',
+    ]) {
       final target = tooling.lookupTestTarget(name);
       File(
         '${fixture.root.path}/${target.path}/${target.testDirectory}/nested/example_test.dart',
@@ -73,6 +80,9 @@ void main() {
       Directory(
         '${fixture.root.path}/app/plugin_interactions_test',
       ).deleteSync(recursive: true);
+      Directory(
+        '${fixture.root.path}/$gitHostedPath',
+      ).deleteSync(recursive: true);
       final ProcessResult result = await fixture.invoke(<String>[
         'test-plan',
         '--json',
@@ -114,6 +124,17 @@ void main() {
             .map((item) => item['shard']),
         [1, 2],
       );
+      expect(entries.singleWhere((entry) => entry['name'] == gitHosted), {
+        'name': gitHosted,
+        'displayName': gitHosted,
+        'shard': null,
+        'shardCount': 1,
+        'ciTestConcurrency': 1,
+        'nativeToml': true,
+        'nativeCodeEditor': false,
+        'linuxDesktopDeps': false,
+        'linuxPtyDeps': false,
+      });
       expect(fixture.commands.existsSync(), isFalse);
       expect(fixture.generatedContract.existsSync(), isFalse);
       expect(
@@ -391,6 +412,29 @@ void main() {
     expectNoNativeBuild();
   });
 
+  for (final ci in [false, true]) {
+    test(
+      'Git hosted tests run the whole package without CodeForge (ci=$ci)',
+      () async {
+        final result = await fixture.invoke([
+          'test',
+          '--target=$gitHosted',
+          if (ci) '--ci',
+        ]);
+        expect(result.exitCode, 0, reason: '${result.stderr}');
+        expect(fixture.commands.readAsLinesSync(), [
+          'generate|path',
+          'test|flutter|${fixture.root.path}/$gitHostedPath',
+        ]);
+        expect(fixture.gitHostedArguments.readAsLinesSync(), [
+          'test',
+          if (ci) ...['--concurrency', '1'],
+        ]);
+        expectNoNativeBuild();
+      },
+    );
+  }
+
   for (final targetName in [
     'adele_tools',
     'adele_desktop',
@@ -471,23 +515,30 @@ void main() {
     fixture.expectGenerationArguments();
   });
 
-  test(
-    'check runs both app categories and propagates an interaction failure',
-    () async {
-      fixture.generatedContract.writeAsStringSync(
-        fixture.contractSource.readAsStringSync(),
-      );
-      fixture.environment['ADELE_TEST_FAIL_INTERACTION'] = '1';
-      final result = await fixture.invoke(['check']);
-      expect(result.exitCode, 36, reason: '${result.stdout}\n${result.stderr}');
-      expect(result.stdout, contains('==> PASS test: adele_desktop ('));
-      expect(
-        result.stderr,
-        'FAILED TEST TARGETS:\n  adele_plugin_interactions (exit 36)\n',
-      );
-      expect(fixture.appTestInvocations(), unorderedEquals(wholeAppRuns));
-    },
-  );
+  for (final (name, failure, code) in [
+    (interactions, 'ADELE_TEST_FAIL_INTERACTION', 36),
+    (gitHosted, 'ADELE_TEST_FAIL_GIT_HOSTED', 38),
+  ]) {
+    test(
+      'check runs both app categories and hosted Git, propagating a $name failure',
+      () async {
+        fixture.generatedContract.writeAsStringSync(
+          fixture.contractSource.readAsStringSync(),
+        );
+        fixture.environment[failure] = '1';
+        final result = await fixture.invoke(['check']);
+        expect(
+          result.exitCode,
+          code,
+          reason: '${result.stdout}\n${result.stderr}',
+        );
+        expect(result.stdout, contains('==> PASS test: adele_desktop ('));
+        expect(result.stderr, 'FAILED TEST TARGETS:\n  $name (exit $code)\n');
+        expect(fixture.appTestInvocations(), unorderedEquals(wholeAppRuns));
+        expect(fixture.gitHostedArguments.readAsLinesSync(), ['test']);
+      },
+    );
+  }
 
   for (final (arguments, code) in [
     (['tools/adele.dart', 'unexpected-native-command'], 99),

@@ -600,9 +600,16 @@ Source cases require the native CodeForge library.
 The [stock portable review suite](../../app/plugin_interactions_test/review/prepared_portable_git_stock_integration_test.dart)
 also runs in `adele_plugin_interactions`. Diff's compiled controls approve and
 unapprove hunks, added/deleted files and whole layers against stock Git over
-an independent real-process Environment, without Source or CodeForge. The
-[desktop probe suite](../../app/test/prepared_portable_git_integration_test.dart)
-uses Diff's generated contract, not its UI. See [focused commands for both](../../docs/development/testing.md#focused-buffered-process-checks).
+an independent real-process Environment, without Source or CodeForge. By contrast,
+the [Git-hosted service suite](../git/packages/desktop_tests/test/prepared_portable_git_service_integration_test.dart)
+and [desktop authority suite](../../app/test/prepared_portable_git_integration_test.dart)
+use a synthetic consumer of Diff's generated contract, not the Diff UI. See the
+[focused portable Git commands](../../docs/development/testing.md#focused-buffered-process-checks).
+
+The [stock Diff source guard](packages/frontend/test/portable_git_source_boundary_test.dart)
+runs in `diff_viewer_frontend`. It checks that the pane uses the generated review
+and snapshot clients without importing Git, selecting a baseline or invoking
+processes directly. It needs no AOT/EVC fixture preparation.
 
 The [frontend-only installation test](packages/frontend/test/desktop/change_source_absent_test.dart)
 in `diff_viewer_frontend` needs the app's native TOML hook but no CodeForge

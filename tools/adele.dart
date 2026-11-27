@@ -207,6 +207,14 @@ const List<TestTarget> testTargets = <TestTarget>[
     },
   ),
   TestTarget(
+    name: 'git_desktop_tests',
+    path: 'plugins/git/packages/desktop_tests',
+    executable: 'flutter',
+    arguments: <String>['test'],
+    ciTestConcurrency: 1,
+    nativeToml: true,
+  ),
+  TestTarget(
     name: 'filesystem_tools_plugin',
     path: 'plugins/filesystem_tools',
     executable: 'dart',
@@ -470,8 +478,8 @@ const List<TestTarget> testTargets = <TestTarget>[
       'test/prepared_console_host_test.dart': 3,
       'test/prepared_environment_buffered_process_integration_test.dart': 3,
       'test/prepared_environment_capability_integration_test.dart': 2,
-      // Split portable Git: runs 825/826 and local cases, plus probe setup.
-      'test/prepared_portable_git_integration_test.dart': 15,
+      // Host-only portable Git cases: serial case intervals plus probe setup.
+      'test/prepared_portable_git_integration_test.dart': 4,
       'test/record_credential_settings_dialog_test.dart': 3,
       'test/record_settings_dialog_test.dart': 5,
     },
@@ -724,6 +732,11 @@ analysisTargets = <({String name, String path, bool flutter})>[
     flutter: true,
   ),
   (name: 'git_backend', path: 'plugins/git/packages/backend', flutter: false),
+  (
+    name: 'git_desktop_tests',
+    path: 'plugins/git/packages/desktop_tests',
+    flutter: true,
+  ),
   (
     name: 'openai_model_provider_backend',
     path: 'plugins/openai/packages/backend',

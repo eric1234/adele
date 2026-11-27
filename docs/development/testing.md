@@ -195,11 +195,11 @@ dart tools/adele.dart test --target git_backend --ci --shard 1
 
 Logs list the shard identity, selected file count and paths before preparation,
 then the existing START/PASS/FAIL and elapsed-time summary. Omitting `--shard`
-still runs the complete selected target, with or without `--ci`. Unsharded Git CI
-retains one worker; non-CI Git retains the normal Dart worker default. The ordinary
+still runs the complete selected target, with or without `--ci`. For `git_backend`,
+`--ci` selects one worker; without it, Dart uses its normal worker default. The ordinary
 `test` and `check` commands run each logical target once, not extra shard runs.
 
-The full-suite local Git command is unchanged:
+For the complete plain-Dart Git backend suite, run:
 
 ```sh
 dart tools/adele.dart test --target git_backend
@@ -215,6 +215,21 @@ plugins installed in its fixture:
 | Generic hosting, authority, lifecycle, presentation infrastructure or native bridges | `adele_desktop`, recursively under [`app/test/`](../../app/test/). A real plugin may supply fixture data without owning the assertion. |
 | Observable behavior of one plugin | That plugin's maintained suite, even when a development-only desktop host, compiler or other plugin supplies test infrastructure. |
 | Cooperation between concrete plugin implementations | `adele_plugin_interactions`, recursively under [`app/plugin_interactions_test/`](../../app/plugin_interactions_test/), outside `app/test/`. |
+
+If a backend-only plugin needs a real desktop host and has no suitable Flutter
+test target, use a private `plugins/<plugin>/packages/desktop_tests/` workspace
+member. Register it in the plugin's nested workspace and the maintained Flutter
+analysis and test registries. Keep Flutter, the app, and the plugin under test in
+`dev_dependencies`. The test package has no production entrypoint, installation
+descriptor, or production consumers; the backend stays pure Dart.
+
+[`git_desktop_tests`](../../plugins/git/packages/desktop_tests/) uses normal
+recursive Flutter discovery under its own `test/`. The pre-bootstrap
+`test-plan --json` lists one unsharded job with one Flutter worker; the target
+does not accept `--shard`.
+The target participates in normal `test`, `check`, and the aggregate CI gate,
+separately from the seven plain-Dart `git_backend` shards. See the
+[focused Git checks](#focused-buffered-process-checks) for commands and prerequisites.
 
 The two app targets use the same `app/` Flutter package and working directory.
 Both participate in `test`, `check`, and application analysis. The interaction
@@ -931,7 +946,7 @@ relative to `app/`; this is a testing map, not an application architecture map.
 | Prepared cross-plugin callable Capabilities | [`test/prepared_capability_integration_test.dart`](../../app/test/prepared_capability_integration_test.dart) (frontend-only EVC, separately installed ready-advertised AOT providers, authoritative generated native/eval contract, normal catalog/bootstrap/Main Content path); [`test/capability_access_bridge_test.dart`](../../app/test/capability_access_bridge_test.dart) (default-deny grants, exact handles, retirement/admitted unary settlement, bounded retention, lazy streams and presentation fencing). Shared transport regressions remain in [`test/owning_backend_stream_bridge_test.dart`](../../app/test/owning_backend_stream_bridge_test.dart); descriptor validation belongs to `plugin_runtime`. |
 | Prepared contextual Environment-read Capabilities | [`test/prepared_environment_capability_integration_test.dart`](../../app/test/prepared_environment_capability_integration_test.dart) (independent frontend-only EVC and backend-only AOT through normal catalog/Main Content hosting, generated value DTOs and actual reverse reads from canonical nonprimary Environments, separate declarations, navigation and concurrent presentation isolation); [`test/core/environment_capability_invocation_integration_test.dart`](../../app/test/core/environment_capability_invocation_integration_test.dart) adds native bridge handle bounds, release/retirement and the external synchronous grant-revocation hook. Run alongside the unchanged C1 unary/streaming, C2a selection, Main Content and frontend activation suites, not instead of them. Public request-only API belongs to `adele_ui`; strict descriptor/roundtrip tests belong to `plugin_runtime`. |
 | Prepared contextual buffered-process Capabilities | [`test/prepared_environment_buffered_process_integration_test.dart`](../../app/test/prepared_environment_buffered_process_integration_test.dart) reuses the three-installation harness for stock Environment AOT, independent semantic Capability AOT, and frontend-only compiled EVC. Covers binary evidence from the canonical nonprimary Environment, separate provider/frontend permissions, process-only grants, denial, and exact lifecycle/late-publication fencing. Run with the Environment-read suites above, `adele_environment` generated host-service and binary DTO tests, `plugin_runtime` exposure/catalog/invocation tests, and `plugin_backend_host` token allowlist tests. Provider process supervision remains in the owning backend's buffered-process suite rather than duplicated here. |
-| Portable Git inspection, approval and retained anchors | The [desktop probe suite](../../app/test/prepared_portable_git_integration_test.dart) uses a generated Diff client, not the stock UI. It exercises Git's production services through an Environment-bound adapter: nonprimary snapshots and index changes, persisted anchors and durable reopen, admission, retirement/replacement and presentation departure. [`git_task_anchor_store_test.dart`](../../app/test/core/git_task_anchor_store_test.dart) owns SQL association, concurrency, corruption, Project isolation and backing lifetime. The [stock portable review suite](../../app/plugin_interactions_test/review/prepared_portable_git_stock_integration_test.dart) in `adele_plugin_interactions` pairs real Git AOT and Diff EVC over an independent real-process Environment. See [focused buffered process checks](#focused-buffered-process-checks) for both commands. |
+| Portable Git inspection, approval and retained anchors | `git_desktop_tests` owns hosted Git service behavior; `adele_desktop` owns generic authority; `adele_plugin_interactions` owns stock Git/Diff review. See [focused buffered process checks](#focused-buffered-process-checks) for the suites, fixtures and commands. [`git_task_anchor_store_test.dart`](../../app/test/core/git_task_anchor_store_test.dart) remains in desktop for SQL association, concurrency, corruption, Project isolation and backing lifetime. |
 | Stock Diff/Git change review | The [prepared review interaction suite](../../app/plugin_interactions_test/review/prepared_diff_git_integration_test.dart) in `adele_plugin_interactions` exercises real Git-backed snapshots and index mutations in the selected Environment, Open in Source with retained native text/undo and focus, and Diff submission to Chat through scheduling and feedback Inspection. Enumeration/parser/process bounds belong to `git_backend`; generated values and single-plugin presentation belong to the Diff targets. See [focused Diff checks](#focused-diff-checks). |
 | Project/native picker bridge | [`test/project_opening_test.dart`](../../app/test/project_opening_test.dart), [`test/directory_picker_bridge_test.dart`](../../app/test/directory_picker_bridge_test.dart) |
 | Native editor ownership | [`test/native_code_editor_test.dart`](../../app/test/native_code_editor_test.dart) (ordinary editing/undo, external controller lifetime, fixed read-only configuration, same-editor clipboard completion, and targeted small fixes) |
@@ -1202,8 +1217,8 @@ request for multiple shifting hunks, preserved partial staging and unrelated ent
 outside the selected source scope, and accurate Uncommitted/Task refresh.
 For stock Diff controls over an independent Environment rather than the Git
 Worktree provider, run the [stock portable review check](#focused-buffered-process-checks).
-Both stock review suites belong to `adele_plugin_interactions`; the portable Git
-probe and durable draft suites remain in `adele_desktop`. These checks exercise
+Both stock review suites belong to `adele_plugin_interactions`; the durable draft
+suite remains in `adele_desktop`. These checks exercise
 prepared artifacts, not a human desktop session. Review submission uses local
 fixtures, not a live model or credentials.
 
@@ -1217,23 +1232,49 @@ dart test test/tools/adele_test.dart test/tools/desktop_launcher_routing_test.da
 
 ### Focused buffered process checks
 
-For portable Git, use the pinned `FLUTTER_ROOT`, current generated contracts,
-the app's [native TOML prerequisites](toolchain.md#native-toml-documents), and the
-[Environment-side Linux commands](../../plugins/git/README.md#portable-unstaged-inspection).
-Neither portable suite needs the native CodeForge library. Run from `app/`, one
-command at a time:
+For the portable Git suites, bootstrap with the pinned toolchain, set `FLUTTER_ROOT`
+to that SDK, and provide the [Environment-side Linux commands](../../plugins/git/README.md#portable-unstaged-inspection).
+The Git-hosted target declares `nativeToml` for the app's transitive build hook
+([Rust 1.93.0 and prerequisites](toolchain.md#native-toml-documents)). It needs no
+CodeForge library or loader variable, Linux desktop bundle dependencies, or Git
+PTY helper. The portable suites under `app/` also run directly without CodeForge;
+the full app targets prepare it for other suites.
 
 ```sh
-# adele_plugin_interactions: stock Git backend and stock Diff controls.
-flutter test --no-pub --concurrency 1 plugin_interactions_test/review/prepared_portable_git_stock_integration_test.dart
-# adele_desktop: portable Git adapter and generated-client probe.
+# Repository root: complete Git-owned hosted target; --ci selects one worker.
+dart tools/adele.dart test --target git_desktop_tests
+dart tools/adele.dart test --target git_desktop_tests --ci
+# plugins/git/packages/desktop_tests/: just the prepared service suite.
+flutter test --no-pub --concurrency 1 test/prepared_portable_git_service_integration_test.dart
+# app/: generic host authority, then stock Git/Diff interaction; run serially.
 flutter test --no-pub --concurrency 1 test/prepared_portable_git_integration_test.dart
+flutter test --no-pub --concurrency 1 plugin_interactions_test/review/prepared_portable_git_stock_integration_test.dart
 # adele_desktop: generic buffered-process transport and authority.
 flutter test --no-pub --concurrency 1 test/prepared_environment_buffered_process_integration_test.dart
 ```
 
-The stock suite exercises hunk, added/deleted file and whole-layer approval and
-unapproval, checking the selected Git index without needing a Task anchor. It
+The [Git service suite](../../plugins/git/packages/desktop_tests/test/prepared_portable_git_service_integration_test.dart)
+and the [desktop authority suite](../../app/test/prepared_portable_git_integration_test.dart)
+each prepare a real shared backend host AOT, an independent Environment AOT that
+runs real processes, a separate callable AOT using Git's production services, and
+a synthetic EVC consumer of Diff's generated contracts. Neither prepares stock
+Git or stock Diff artifacts. They share [fixture code](../../app/test/support/prepared_portable_git.dart),
+not compiled artifacts, repositories, live installations or Project storage.
+
+Choose the Git suite for selected-index effects, stale revisions, typed nonprimary
+snapshots, inventory batching and exact persisted anchors across replacement and
+reopen. Keep cases that check a real index write **and** retirement or departure
+together: a lost response must not replay or roll back that write. Choose the
+desktop suite for grant/selector denial, admission without fallback, and fencing
+outstanding results or stale invocation tokens on retirement, replacement or
+departure. The [independent fixture source guard](../../plugins/git/packages/desktop_tests/test/portable_git_source_boundary_test.dart)
+belongs with Git; the [stock consumer source guard](../../plugins/diff_viewer/packages/frontend/test/portable_git_source_boundary_test.dart)
+belongs to `diff_viewer_frontend`. Neither guard compiles the fixture.
+
+The [stock portable review suite](../../app/plugin_interactions_test/review/prepared_portable_git_stock_integration_test.dart)
+uses actual stock Git AOT and Diff EVC. It exercises hunk, added/deleted file
+and whole-layer approval and unapproval, checking the selected Git index without
+needing a Task anchor. It
 also checks layered snapshots, conflicts and unsupported files, retained
 nonprimary anchors across reopen, and a missing selected anchor without fallback
 to the primary Environment. Clean 100/500/900-file and mixed layered snapshots
@@ -1241,11 +1282,7 @@ assert process counts; elapsed times are diagnostic. The independent Environment
 runs real commands without importing Git's Worktree provider. This demonstrates
 provider independence, not OS sandboxing or non-Linux portability.
 
-The desktop suite instead uses an AOT adapter over Git's production services and
-a probe EVC to exercise generated calls, persisted anchors, denial and lifecycle
-races. Git-owned service cases and generic host-authority cases remain together
-there pending a subsequent ownership split. The `git_backend` target owns the
-portable snapshot and parser tests;
+The plain-Dart `git_backend` target owns the portable snapshot and parser tests;
 `git_persisted_change_set_source_test.dart` covers adapter failures and deadlines.
 
 After bootstrap with the pinned SDK, the existing targets discover the binary

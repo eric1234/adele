@@ -63,6 +63,88 @@ Future<void> main() async {
     });
   });
 
+  test('workspace production code never consumes Git hosted tests', () {
+    const hosted = 'git_desktop_tests';
+    // The AOT plugin may use its public contracts, not the test package's host.
+    const backendDependencies = {
+      'adele_capabilities',
+      'adele_contract',
+      'adele_environment',
+      'adele_plugin_api',
+      'adele_plugin_backend_support',
+      'adele_product',
+      'adele_project_storage',
+      'crypto',
+      'diff_viewer_contract',
+    };
+    final hostedRoot = Directory(
+      'plugins/git/packages/desktop_tests',
+    ).absolute.uri;
+    final pending = [Directory.current];
+    while (pending.isNotEmpty) {
+      final root = pending.removeLast();
+      final manifestFile = File.fromUri(root.uri.resolve('pubspec.yaml'));
+      final manifest = loadYaml(manifestFile.readAsStringSync()) as YamlMap;
+      for (final member
+          in (manifest['workspace'] as YamlList?)?.cast<String>() ??
+              const <String>[]) {
+        pending.add(Directory.fromUri(root.uri.resolve('$member/')));
+      }
+      expect(
+        (manifest['dependencies'] as YamlMap?)?.containsKey(hosted) ?? false,
+        isFalse,
+        reason: manifestFile.path,
+      );
+      final backend = manifest['name'] == 'git_backend';
+      if (backend) {
+        expect(
+          (manifest['dependencies'] as YamlMap).keys,
+          everyElement(isIn(backendDependencies)),
+          reason: manifestFile.path,
+        );
+      }
+      for (final path in ['bin', 'lib', 'hook']) {
+        final directory = Directory.fromUri(root.uri.resolve('$path/'));
+        if (!directory.existsSync()) continue;
+        for (final file
+            in directory
+                .listSync(recursive: true, followLinks: false)
+                .whereType<File>()
+                .where((file) => file.path.endsWith('.dart'))) {
+          for (final uri in _directiveUris(file)) {
+            final package = uri.scheme == 'package'
+                ? uri.pathSegments.first
+                : null;
+            final resolved = file.uri.resolveUri(uri);
+            expect(
+              package == hosted ||
+                  resolved.toString().startsWith(hostedRoot.toString()),
+              isFalse,
+              reason: '${file.path}: $uri',
+            );
+            if (backend) {
+              if (package != null && package != manifest['name']) {
+                expect(
+                  backendDependencies,
+                  contains(package),
+                  reason: '${file.path}: $uri',
+                );
+              }
+              expect(uri.toString(), isNot('dart:ui'), reason: file.path);
+              if (resolved.isScheme('file')) {
+                expect(
+                  resolved.toString(),
+                  startsWith(root.uri.toString()),
+                  reason: '${file.path}: $uri',
+                );
+              }
+            }
+          }
+        }
+      }
+    }
+  });
+
   test(
     'Model Preset frontend uses only its public presentation dependencies',
     () {
@@ -151,27 +233,17 @@ Future<void> main() async {
                   .listSync(recursive: true, followLinks: false)
                   .whereType<File>()
                   .where((file) => file.path.endsWith('.dart'))) {
-            final unit = parseString(content: file.readAsStringSync()).unit;
-            for (final directive
-                in unit.directives.whereType<UriBasedDirective>()) {
-              final uris = [
-                directive.uri,
-                if (directive is NamespaceDirective)
-                  ...directive.configurations.map((config) => config.uri),
-              ];
-              for (final literal in uris) {
-                final uri = Uri.parse(literal.stringValue!);
-                expect(
-                  uri.scheme == 'package' &&
-                          uri.pathSegments.first == 'adele_credential_store' ||
-                      file.absolute.uri
-                          .resolveUri(uri)
-                          .toString()
-                          .startsWith(credentialRoot),
-                  isFalse,
-                  reason: '${file.path}: $uri',
-                );
-              }
+            for (final uri in _directiveUris(file)) {
+              expect(
+                uri.scheme == 'package' &&
+                        uri.pathSegments.first == 'adele_credential_store' ||
+                    file.absolute.uri
+                        .resolveUri(uri)
+                        .toString()
+                        .startsWith(credentialRoot),
+                isFalse,
+                reason: '${file.path}: $uri',
+              );
             }
           }
         }
@@ -416,6 +488,21 @@ export '../public.dart'
 
 Set<String> _pluginPackageNames(Directory root) =>
     _pluginManifests(root).keys.toSet();
+
+Iterable<Uri> _directiveUris(File file) sync* {
+  final unit = parseString(
+    content: file.readAsStringSync(),
+    path: file.absolute.path,
+  ).unit;
+  for (final directive in unit.directives.whereType<UriBasedDirective>()) {
+    yield Uri.parse(directive.uri.stringValue!);
+    if (directive is NamespaceDirective) {
+      for (final config in directive.configurations) {
+        yield Uri.parse(config.uri.stringValue!);
+      }
+    }
+  }
+}
 
 Map<String, File> _pluginManifests(Directory root) {
   final manifests = <String, File>{};
