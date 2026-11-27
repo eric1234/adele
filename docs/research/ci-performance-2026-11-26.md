@@ -56,7 +56,8 @@ The pre-worker generation marker to `START` averaged **22.4s** on the 71 entries
 ## Desktop: fix the distribution, then move coverage to its owner
 
 The suite paths and timing hints in this replay describe the measured desktop
-inventory, including [command capture at the audited revision](https://github.com/eric1234/adele/blob/1367bb502cf0de1b6c161bdb057271dd07e0b8a2/app/test/core/command_output_capture_integration_test.dart).
+inventory, including [Diff/Git review](https://github.com/eric1234/adele/blob/1367bb502cf0de1b6c161bdb057271dd07e0b8a2/app/test/prepared_diff_git_integration_test.dart)
+and [command capture](https://github.com/eric1234/adele/blob/1367bb502cf0de1b6c161bdb057271dd07e0b8a2/app/test/core/command_output_capture_integration_test.dart) at the audited revision.
 Use the [testing procedure](../development/testing.md#application-level-test-ownership) for current owners and commands.
 
 **Measured.** [Desktop 2, run 802](https://github.com/eric1234/adele/actions/runs/45864576951/job/140064377451) charged about **206s** to `app/test/prepared_diff_git_integration_test.dart`, **166s** to `app/test/prepared_portable_git_integration_test.dart`, **60s** to `app/test/core/command_output_capture_integration_test.dart` (57s to its first T3a completion), and **38s** to `app/test/core/session_evaluator_integration_test.dart`. These four account for ~470s on one worker. The earlier estimates of 3m37s, 2m47s and 1m07s in [run 795](https://github.com/eric1234/adele/actions/runs/45679656469/job/139436738008) include the interval leading up to each file's first completion. For command capture that interval was 64.3s; only 2.8s separated its two completions. Neither span is an isolated file benchmark. Several other heavy suites exist, e.g. normal Chat ~92s and OpenAI record startup ~64s in 802 (Model Browser case interval ~29s).

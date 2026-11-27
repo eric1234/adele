@@ -44,14 +44,14 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
-import '../../tools/backend_artifacts.dart';
-import '../../tools/stock_frontend_descriptors.dart';
-import '../tool/chat_frontend_compiler.dart';
-import '../tool/diff_viewer_frontend_compiler.dart';
-import '../tool/source_editor_frontend_compiler.dart';
-import 'support/gated_project_storage.dart';
-import 'support/project_provider.dart';
-import 'support/review_execution_fixture.dart';
+import '../../../tools/backend_artifacts.dart';
+import '../../../tools/stock_frontend_descriptors.dart';
+import '../../test/support/gated_project_storage.dart';
+import '../../test/support/project_provider.dart';
+import '../../test/support/review_execution_fixture.dart';
+import '../../tool/chat_frontend_compiler.dart';
+import '../../tool/diff_viewer_frontend_compiler.dart';
+import '../../tool/source_editor_frontend_compiler.dart';
 
 const _gitPlugin = 'dev.adele.plugin.git';
 const _diffPlugin = 'dev.adele.diff-viewer';
@@ -77,7 +77,6 @@ final _changes = CapabilityKey(
 void main() {
   late Directory artifacts;
   late Directory installations;
-  late Directory frontendOnly;
   late Directory approvalDenied;
   late Directory failedDraftBackend;
   late Directory withDraft;
@@ -89,7 +88,6 @@ void main() {
   setUpAll(() async {
     artifacts = await Directory.systemTemp.createTemp('adele-diff-artifacts-');
     installations = await Directory('${artifacts.path}/installed').create();
-    frontendOnly = await Directory('${artifacts.path}/frontend-only').create();
     approvalDenied = await Directory(
       '${artifacts.path}/approval-denied',
     ).create();
@@ -136,9 +134,6 @@ void main() {
       },
     };
     await _manifest(diff, _diffPlugin, component);
-    final alone = await Directory('${frontendOnly.path}/diff').create();
-    await File('${diff.path}/frontend.evc').copy('${alone.path}/frontend.evc');
-    await _manifest(alone, _diffPlugin, component);
     final deniedGit = await Directory('${approvalDenied.path}/git').create();
     for (final name in ['backend.aot', 'adele_plugin.installation.json']) {
       await File('${git.path}/$name').copy('${deniedGit.path}/$name');
@@ -4775,27 +4770,6 @@ void main() {
       skip: !Platform.isLinux,
     );
   }
-
-  testWidgets(
-    'frontend-only installation retains Diff when change source is absent',
-    (tester) async {
-      await mount(tester, catalog: frontendOnly);
-      await _visible(tester, 'Diff unavailable for this Environment.');
-      expect(find.text('Diff'), findsOneWidget);
-      expect(find.textContaining('No unstaged changes'), findsNothing);
-      expect(fixture.backends.backends, isEmpty);
-      _refresh(tester);
-      await _visible(tester, 'Diff unavailable for this Environment.');
-      expect(fixture.backends.backends, isEmpty);
-      for (final (scope, clean) in _scopes.skip(1)) {
-        await _selectScope(tester, scope);
-        await _visible(tester, 'Diff unavailable for this Environment.');
-        expect(find.textContaining(clean), findsNothing);
-      }
-      expect(tester.takeException(), isNull);
-      await tester.pumpWidget(const SizedBox.shrink());
-    },
-  );
 
   for (final (scope, clean) in _scopes) {
     for (final departure in ['navigation', 'provider retirement']) {

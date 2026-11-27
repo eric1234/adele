@@ -468,7 +468,6 @@ const List<TestTarget> testTargets = <TestTarget>[
       'test/core/openai_record_startup_integration_test.dart': 7,
       'test/core/session_evaluator_integration_test.dart': 4,
       'test/prepared_console_host_test.dart': 3,
-      'test/prepared_diff_git_integration_test.dart': 24,
       'test/prepared_environment_buffered_process_integration_test.dart': 3,
       'test/prepared_environment_capability_integration_test.dart': 2,
       'test/prepared_portable_git_integration_test.dart': 19,
@@ -487,6 +486,7 @@ const List<TestTarget> testTargets = <TestTarget>[
     arguments: <String>['test'],
     testDirectory: 'plugin_interactions_test',
     ciTestConcurrency: 1,
+    nativeCodeEditor: true,
     nativeToml: true,
   ),
 ];

@@ -146,7 +146,9 @@ canonical Session/user entry and immutable submission relationship. Its generate
 Chat DTOs preserve public Session feedback semantics; persistence still uses the
 existing canonical feedback codec, not a second JSON format. See the
 [backend map](packages/backend/README.md#structured-feedback) for validation and
-safe declared failures.
+safe declared failures. The [prepared review interaction suite](../../app/plugin_interactions_test/review/prepared_diff_git_integration_test.dart)
+in `adele_plugin_interactions` checks Diff submission through Chat acceptance,
+Run scheduling, and read-only Inspection of the accepted occurrence.
 
 ## Tool Narration Protocol
 
