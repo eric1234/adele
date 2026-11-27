@@ -600,8 +600,8 @@ pending work, navigation, shutdown, and generation retirement.
 A stock Git AOT fixture exercises a nonprimary Session Environment with nested
 source scope, retained baseline/branch hints, and unchanged Git state without
 materializing the reopened Environment.
-`app/test/core/command_output_capture_integration_test.dart` adds real Git/Command
-Tools/evaluator AOT and socket-gated process output: exact decoded transcripts
+The [command capture interaction](../../app/plugin_interactions_test/execution/command_output_capture_integration_test.dart)
+adds real Git/Command Tools/evaluator AOT and socket-gated process output: exact decoded transcripts
 beyond the model-result bound, an unsealed committed prefix, evaluator-only Project
 reopen without Command Tools activation, and an over-budget transcript that fails
 without emitting a successful prefix. These are separate from Chat strategy support
@@ -641,15 +641,17 @@ dart tools/adele.dart test --target session_evaluator_frontend
 dart tools/adele.dart test --target adele_core_extensions
 dart tools/adele.dart test --target adele_tools
 dart tools/adele.dart test --target adele_desktop --ci
+dart tools/adele.dart test --target adele_plugin_interactions --ci
 dart tools/adele.dart generate --check
 ```
 
 After current generation, from `app/`:
 
 ```sh
-flutter test --no-pub --concurrency 1 test/core/session_evaluator_integration_test.dart test/core/command_output_capture_integration_test.dart test/prepared_session_command_test.dart test/command_bridge_test.dart test/application_test.dart
+flutter test --no-pub --concurrency 1 test/core/session_evaluator_integration_test.dart plugin_interactions_test/execution/command_output_capture_integration_test.dart test/prepared_session_command_test.dart test/command_bridge_test.dart test/application_test.dart
 ```
 
-The packages participate in maintained analysis/test targets; the existing
-`adele_desktop` target discovers the integration tests. See the
+The packages participate in maintained analysis/test targets. Command capture
+runs in `adele_plugin_interactions`; the other app files above remain in
+`adele_desktop`. See the
 [testing map](../../docs/development/testing.md) for repository/CI policy.

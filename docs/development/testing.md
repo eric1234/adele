@@ -102,7 +102,11 @@ Flutter arguments for both commands.
 concurrency. The default is at most two concurrent target processes, reduced to
 one on a single-processor host. This is separate from concurrency inside an
 individual Dart/Flutter test process. Queued targets still run after another
-target fails; the final summary reports failures.
+target fails; the final summary reports failures. Within one maintained invocation,
+Flutter targets with the same normalized working directory run one at a time so
+they cannot write the same build outputs concurrently. Targets in independent
+directories can still run in parallel. This is not a cross-process lock: serialize
+separately launched Flutter commands that share a package directory yourself.
 
 For one maintained target, use `dart tools/adele.dart test --target <name>`
 or `dart tools/adele.dart test --target=<name>`.
@@ -110,6 +114,7 @@ Representative choices are:
 
 ```sh
 dart tools/adele.dart test --target adele_desktop
+dart tools/adele.dart test --target adele_plugin_interactions
 dart tools/adele.dart test --target adele_tools
 dart tools/adele.dart test --target plugin_runtime
 dart tools/adele.dart test --target adele_project_storage
@@ -124,10 +129,10 @@ dart tools/adele.dart test-plan --json
 ```
 
 This exports the CI expansion of the maintained registry, including logical target
-names, distinct job display names, shard identity/count, Linux desktop dependency
-requirements, native Code Editor/TOML requirements, and CI concurrency metadata. It can run before bootstrap
-without resolving dependencies or generating artifacts. It is not automatic
-discovery of every package containing tests.
+names, distinct job display names, shard identity/count, Linux desktop and PTY
+prerequisites, native Code Editor/TOML requirements, and CI concurrency metadata.
+It can run before bootstrap without resolving dependencies or generating artifacts.
+It is not automatic discovery of every package containing tests.
 
 | Test option | Meaning and constraints |
 | --- | --- |
@@ -144,8 +149,12 @@ already generate before starting workers or analyzers. The separate `generated`
 job runs full bootstrap then `generate --check` to verify the materialized parts
 without repairing them.
 
-Each matrix entry gets an independent runner and its target's normal setup. All Git
-and desktop shards retain the Linux PTY prerequisites. Shards are
+Each matrix entry gets an independent runner and its target's normal setup. The
+registry declares `linuxDesktopDeps`, `linuxPtyDeps`, `nativeCodeEditor`, and
+`nativeToml` according to what the selected suites need, not the use of Flutter
+or the presence of a plugin in a fixture. All Git backend and desktop shards
+declare the Linux PTY prerequisites. Update the receiving target's requirements
+when moving a suite that introduces new dependencies. Shards are
 emitted first to encourage early scheduling, not to guarantee runner launch order.
 The local two-process default does not limit CI matrix parallelism. The aggregate
 `test` gate requires every matrix entry to pass; `fail-fast: false` lets other
@@ -192,13 +201,35 @@ The full-suite local Git command is unchanged:
 dart tools/adele.dart test --target git_backend
 ```
 
-Single-plugin interpreted frontend integration belongs to the owning frontend
-package even when it uses the private desktop host as test infrastructure.
+### Application-level test ownership
+
+Choose the owner by the behavior an assertion protects, not by the number of
+plugins installed in its fixture:
+
+| Behavior under test | Maintained owner |
+| --- | --- |
+| Generic hosting, authority, lifecycle, presentation infrastructure or native bridges | `adele_desktop`, recursively under [`app/test/`](../../app/test/). A real plugin may supply fixture data without owning the assertion. |
+| Observable behavior of one plugin | That plugin's maintained suite, even when a development-only desktop host, compiler or other plugin supplies test infrastructure. |
+| Cooperation between concrete plugin implementations | `adele_plugin_interactions`, recursively under [`app/plugin_interactions_test/`](../../app/plugin_interactions_test/), outside `app/test/`. |
+
+The two app targets use the same `app/` Flutter package and working directory.
+Both participate in `test`, `check`, and application analysis. The interaction
+target selects its directory explicitly and runs one unsharded CI job with one
+Flutter worker. Only `*_test.dart` files are suites; shared fixtures and compiler
+helpers remain development-only. Migration is incremental: `adele_desktop` still
+runs unmigrated integration files, not just generic host tests.
+
+To reproduce the interaction CI job, run
+`dart tools/adele.dart test --target adele_plugin_interactions --ci` from the
+root. For direct iteration after bootstrap, run
+`flutter test --no-pub --concurrency 1 plugin_interactions_test` from `app/`.
+Plain `flutter test` there selects only `test/`, not all application-level
+integration coverage.
+
 `chat_strategy_frontend`, `filesystem_tools_frontend`, `command_tools_frontend`,
 `openai_frontend`, `source_editor_frontend`, and `diff_viewer_frontend` run
-that coverage independently with development-only host dependencies and shared
-app-side compiler support. Generic desktop/native infrastructure and whole-product
-multi-plugin integration remain in `adele_desktop`.
+single-plugin interpreted frontend suites with development-only host dependencies
+and shared app-side compiler support.
 
 Single-plugin Apply Patch and Run Command rich/compact Inspection semantics live
 in the [Filesystem frontend suite](../../plugins/filesystem_tools/packages/frontend/test/filesystem_tools_frontend_eval_test.dart)
@@ -219,15 +250,19 @@ flutter test --no-pub --concurrency 1 test/tool_inspection_frontend_eval_test.da
 ```
 
 Each `adele_desktop` CI shard runs Flutter test files with one worker. Its real-AOT
-and prepared-EVC fixtures are compiler-heavy; concurrent files can consume the
-unchanged activity timing and full-capture deadlines through resource contention.
-Serial execution within each runner preserves those assertions and full transcript
-volumes; parallelism comes only from the four independent CI jobs, retaining all
-test files. Full-suite `--ci` execution also uses one worker. The non-CI target
-retains Flutter's normal worker default.
-The app and Source Editor targets require Rust 1.93.0 for their shared CodeForge
+and prepared-EVC fixtures are compiler-heavy; concurrent files can consume activity
+deadlines through resource contention. Parallelism comes from the four independent
+desktop jobs. Unsharded desktop `--ci` execution also uses one worker. The non-CI
+desktop target retains Flutter's normal worker default.
+
+The desktop and Source Editor targets require Rust 1.93.0 for their shared CodeForge
 library and transitive native TOML hook. Frontend test targets with a development
 dependency on the app also declare `nativeToml`, even without CodeForge use.
+The interaction target needs the app's native TOML hook and pinned Rust. Its
+[command capture suite](../../app/plugin_interactions_test/execution/command_output_capture_integration_test.dart)
+uses Git's foreground process pipes and `setsid`, not the Git terminal PTY
+helper. It runs Flutter widget tests without building a Linux desktop bundle or
+opening a CodeForge editor; it does not request those separate prerequisites.
 Source Editor does not require Linux desktop or PTY prerequisites. Source-only
 bootstrap and tooling tests do not require Rust.
 The standalone credential package and its `adele_credential_store_native` Rust
@@ -287,7 +322,7 @@ independent documents, invalid and retired handles, mounted-widget revocation,
 input-client closure, and resource disposal. Use bounded frame pumping rather than
 waiting indefinitely for upstream cursor/selection animations to settle.
 
-All app tests are automatically discovered by `adele_desktop` and its CI shards;
+All tests under `app/test/` are discovered by `adele_desktop` and its CI shards;
 public interpreted-stub tests belong to `adele_ui`. Select the existing CodeForge,
 Terminal, prepared frontend failure, Main Content, and presentation lifecycle tests
 when changing shared hosting, with the native prerequisites described below.
@@ -457,8 +492,8 @@ Public decoder limits, strict shape, duplicates, immutable copies and bounded
 value-free errors belong to `adele_plugin_backend_support`. Raw malformed-frame
 rejection before plugin spawn and real-AOT generation delivery belong to
 `plugin_backend_host`; runtime pre-dispatch copying belongs to `plugin_runtime`.
-New app suites are discovered by the existing desktop target/shards. Focused app
-iteration after bootstrap uses:
+The desktop target and its shards discover the record-projection and startup
+suites under `app/test/core/`. Focused iteration after bootstrap uses:
 
 ```sh
 # app/
@@ -543,8 +578,8 @@ flutter test --no-pub --concurrency 1 test/core/backend_credential_host_test.dar
 ```
 
 Retain the P1/P2, Settings, application lifecycle, Source/Review and bootstrap
-regressions below. New app suites participate in existing desktop shard discovery,
-not a separate test registry. Production reverse-transport changes require the
+regressions below. The credential-delivery suites above run in `adele_desktop`
+and its CI shards. Production reverse-transport changes require the
 maintained Linux profile build as well as these AOT fixtures. Real Secret Service
 smokes remain separately isolated and opt-in.
 
@@ -675,9 +710,8 @@ Settings in no-Project, Task Browser, and active Session states, saves through t
 real prepared schema and host store, and checks retained native/document/workbench
 identities and startup-only folding for later editors. Creation and existing-record
 edit drafts and the original Settings route also survive navigation and rejected
-application-exit preflights. This requires the existing native editor preparation,
-not a new target. All new app test files are discovered
-by the existing desktop shard registry; no production dummy settings are installed.
+application-exit preflights. This Source case requires native editor preparation
+and runs in `adele_desktop`; no production dummy settings are installed.
 
 From `app/`, after bootstrap and native prerequisites:
 
@@ -901,7 +935,7 @@ relative to `app/`; this is a testing map, not an application architecture map.
 | Terminal Run execution/restart | [`test/core/durable_run_lifecycle_test.dart`](../../app/test/core/durable_run_lifecycle_test.dart) (completed/failed fresh-runtime snapshot restore, unstarted/waiting close without invented outcomes, approval completion, SQLite and execution-plus-storage failures without retry, deferred mechanics draining, and no ID allocation or live execution/approval recreation) |
 | Session- or Environment-addressed plugin storage host | [`test/core/project_storage_host_test.dart`](../../app/test/core/project_storage_host_test.dart) (owner schema, canonical Project routing before Sessions, scalar/query bounds, atomic batches, explicit volatile distinction, later Session mirroring, and queued-entry revocation); [`test/core/backend_capability_integration_test.dart`](../../app/test/core/backend_capability_integration_test.dart) exercises the generated client over compiled infrastructure transport, owner/backing isolation and generation retirement/replacement without Environment execution grants. |
 | Durable Chat across real backend generations | [`test/core/durable_chat_session_integration_test.dart`](../../app/test/core/durable_chat_session_integration_test.dart) (conversation/configuration/plain-text draft, user-entry Run association, atomic draft submission, fresh-runtime reopen, and completed Run/activity retention despite Chat storage failure; real Local Directory/Git/Chat AOT backends and SQLite with a deterministic native model fixture, no paid provider) |
-| Session Evaluator retained evidence and ordinary prepared handoff | [`test/core/session_evaluator_integration_test.dart`](../../app/test/core/session_evaluator_integration_test.dart) (prepared Chat/Command Tools/evaluator AOT and production evaluator EVC, generated services, normal application/Task Browser/palette composition, evaluator absence, automatic copy and selectable copy-failure feedback, plugin-owned three-file publication, captured Session across navigation, cancellation, duplicate admission, partial coverage, safe failures, shutdown, retirement/replacement, read-only SQL snapshots and nonprimary Git provenance; temporary host path lookup and backend-side write gates, no paid provider); [`test/core/command_output_capture_integration_test.dart`](../../app/test/core/command_output_capture_integration_test.dart) (real Git/Command Tools/evaluator AOT, full decoded command export beyond the model-result bound, unsealed prefix, evaluator-only reopen, and whole-export limit failure). Plugin-local summary, source/README, writer and operation lifecycle suites live under [`session_evaluator/packages/backend/test`](../../plugins/session_evaluator/packages/backend/test/); compiled completion/copy tests belong to its frontend package. See [focused checks](#focused-session-evaluator-checks); normal catalog/compiler-input/launcher selection belongs to tooling tests. |
+| Session Evaluator retained evidence and ordinary prepared handoff | [`test/core/session_evaluator_integration_test.dart`](../../app/test/core/session_evaluator_integration_test.dart) (prepared Chat/Command Tools/evaluator AOT and production evaluator EVC, generated services, normal application/Task Browser/palette composition, evaluator absence, automatic copy and selectable copy-failure feedback, plugin-owned three-file publication, captured Session across navigation, cancellation, duplicate admission, partial coverage, safe failures, shutdown, retirement/replacement, read-only SQL snapshots and nonprimary Git provenance; temporary host path lookup and backend-side write gates, no paid provider); [command capture interaction](../../app/plugin_interactions_test/execution/command_output_capture_integration_test.dart) (real Git/Command Tools/evaluator AOT, full decoded command export beyond the model-result bound, unsealed prefix, evaluator-only reopen, and whole-export limit failure). Plugin-local summary, source/README, writer and operation lifecycle suites live under [`session_evaluator/packages/backend/test`](../../plugins/session_evaluator/packages/backend/test/); compiled completion/copy tests belong to its frontend package. See [focused checks](#focused-session-evaluator-checks); normal catalog/compiler-input/launcher selection belongs to tooling tests. |
 | Prepared Chat applicability/composer/history | [`chat_strategy_frontend/test/chat_frontend_eval_test.dart`](../../plugins/chat_strategy/packages/frontend/test/chat_frontend_eval_test.dart) (initializer strategy match without service acquisition, local service failure, plugin-owned layout, draft saves/submission/retry, latest-save deactivation settlement, recoverable failure/pending-Send refusal, stale snapshot protection, historical activity placement, and preserving live handles during refresh) |
 | Contributed-pane services and departure settlement | [`test/session_presentation_lifecycle_bridge_test.dart`](../../app/test/session_presentation_lifecycle_bridge_test.dart), [`test/prepared_session_services_test.dart`](../../app/test/prepared_session_services_test.dart), [`test/prepared_main_content_host_test.dart`](../../app/test/prepared_main_content_host_test.dart) (exact service/affinity capture, per-pane hooks, async acceptance/failure/retry, no-hook behavior, retirement during settlement, and action revocation on unbind/reopen without closing execution) |
 | Session execution/approval | [`test/session_execution_test.dart`](../../app/test/session_execution_test.dart), [`test/session_execution_bridge_test.dart`](../../app/test/session_execution_bridge_test.dart) (passive retained-owner lookup, independent Session advancement, shared IDs, exact approval isolation, semantic readiness, and all-owner shutdown) |
@@ -987,12 +1021,13 @@ For collector/handoff integration changes, run from `app/`, serializing Flutter
 invocations sharing its build directory:
 
 ```sh
-flutter test --no-pub --concurrency 1 test/core/session_evaluator_integration_test.dart test/core/command_output_capture_integration_test.dart test/core/backend_local_state_host_test.dart
+flutter test --no-pub --concurrency 1 test/core/session_evaluator_integration_test.dart plugin_interactions_test/execution/command_output_capture_integration_test.dart test/core/backend_local_state_host_test.dart
 ```
 
-The existing `adele_desktop` target and CI shards discover these app files;
-`session_evaluator_backend` and `session_evaluator_frontend` discover their
-plugin-local suites. For generic Command hosting changes, additionally run
+`adele_plugin_interactions` owns command capture; `adele_desktop` and its shards
+discover the other two files. The `session_evaluator_backend` and
+`session_evaluator_frontend` targets discover their plugin-local suites.
+For generic Command hosting changes, additionally run
 `test/prepared_session_command_test.dart` and `test/command_bridge_test.dart` from
 `app/`, plus the affected `adele_core_extensions`, `adele_ui`, and `plugin_runtime`
 targets. Public bridge stubs belong to `packages/ui/test/command_bridge_test.dart`;
@@ -1339,9 +1374,8 @@ owners on Session departure; this is fixture policy, not the stock
 These are test paths and intended assertions, not recorded passing
 outcomes, live-model checks, or human desktop evidence.
 
-The unrestricted maintained `adele_desktop` target discovers these app files
-without new test-list wiring or a CI concurrency change. For application-wide
-changes use `dart tools/adele.dart test --target adele_desktop --ci`, which also
+For changes across Main Content hosting, run the desktop target with
+`dart tools/adele.dart test --target adele_desktop --ci`. It discovers these files and
 prepares the native library/environment. Use the [editor checks](#focused-editor-checks)
 for lower-level native/bridge changes and the
 [manual grouped workspace](#manual-grouped-workspace) for interactive inspection.
@@ -1412,9 +1446,8 @@ replacement; their active-Run case uses local fake model responses, not paid/liv
 credentials. Provider encoding, confinement, one-MiB bound, and revision checks
 belong to `git_backend` and its
 [`git_worktree_environment_provider_test.dart`](../../plugins/git/packages/backend/test/git_worktree_environment_provider_test.dart).
-App files are discovered by the existing `adele_desktop` target; no new CI
-concurrency policy is needed. These checks do not establish human keyboard/IME,
-profile packaging, or macOS/Windows acceptance. Follow the
+The Source workflow app cases above run in `adele_desktop`. These checks do not
+establish human keyboard/IME, profile packaging, or macOS/Windows acceptance. Follow the
 [manual Source workflow](#manual-source-workflow) and preserve the
 [native limitations](../../app/README.md#known-limitations).
 
@@ -1424,14 +1457,14 @@ The current tests cover conventional CodeForge ownership and the thin EVC bounda
 not a custom input/cancellation policy. These are commands to run, not recorded
 pass results. Bootstrap with the explicit pinned SDK and native prerequisites from
 [toolchain policy](toolchain.md#native-editor-preparation). For the maintained
-tooling and complete app target, run from the repository root:
+tooling and desktop targets, run from the repository root:
 
 ```sh
 dart tools/adele.dart test --target adele_tools --ci
 dart tools/adele.dart test --target adele_desktop --ci
 ```
 
-The unrestricted app target discovers the editor tests and prepares their native
+The desktop target discovers the editor tests and prepares their native
 library/environment automatically. Tooling coverage includes
 [`code_editor_dependency_test.dart`](../../test/tools/code_editor_dependency_test.dart)
 for source verification, explicit reprepare, and source leases, plus
@@ -1478,8 +1511,8 @@ dart tools/adele.dart generate --check
 git diff --check
 ```
 
-Select proportional checks rather than running both focused files and the full app
-suite for every edit. Widget/evaluator coverage is not a packaged library-loading
+Select proportional checks rather than running both focused files and the full
+desktop target for every edit. Widget/evaluator coverage is not a packaged library-loading
 check or human keyboard/IME proof; use the separate
 [integrated smoke](#integrated-editor-smoke) for Linux profile packaging. No
 macOS/Windows acceptance is implied.
@@ -1539,7 +1572,7 @@ flutter test --no-pub --concurrency 1 test/tool_inspection_frontend_eval_test.da
 flutter test --no-pub --concurrency 1 test/terminal_projection_bridge_test.dart test/native_terminal_surface_test.dart test/terminal_surface_bridge_test.dart
 flutter test --no-pub --concurrency 1 test/console_bridge_test.dart test/console_controller_test.dart test/prepared_console_host_test.dart test/workbench_console_test.dart
 flutter test --no-pub --concurrency 1 test/core/normal_chatgpt_run_integration_test.dart
-flutter test --no-pub --concurrency 1 test/core/command_output_capture_integration_test.dart
+flutter test --no-pub --concurrency 1 plugin_interactions_test/execution/command_output_capture_integration_test.dart
 flutter test --no-pub --concurrency 1 test/core/remote_model_tool_host_test.dart test/core/remote_model_tool_integration_test.dart
 flutter test --no-pub --concurrency 1 test/core/project_storage_host_test.dart test/core/project_database_test.dart test/core/product_lifecycle_test.dart
 (cd .. && dart tools/adele.dart test --target chat_strategy_frontend)
@@ -1614,8 +1647,9 @@ The native process fixture is local and deterministic; these checks use
 no paid/live model or desktop/profile run. Command capture
 uses foreground pipes, not a PTY; the normal application's separate interactive
 Terminal coexistence check does run the stock PTY path.
-New app tests participate in the unrestricted maintained `adele_desktop` target;
-the new contract package has explicit workspace/analysis/test discovery.
+Run `dart tools/adele.dart test --target adele_plugin_interactions` from the root
+for the maintained cross-plugin capture suite. The normal application suite is
+still in `adele_desktop`.
 
 ### Focused terminal checks
 
@@ -1761,7 +1795,7 @@ dart tools/adele.dart generate
 ```
 
 For Session/storage work, use selected tests from `app/`, rather than routinely
-running the full application target:
+running the full desktop target:
 
 ```sh
 flutter test --no-pub test/core/project_database_test.dart test/core/durable_session_lifecycle_test.dart test/core/project_storage_host_test.dart

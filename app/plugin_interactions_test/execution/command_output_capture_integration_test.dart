@@ -30,9 +30,9 @@ import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:session_evaluator_contract/session_evaluator_contract.dart';
 import 'package:sqlite3/sqlite3.dart' hide Session;
 
-import '../../tool/command_output_frontend_compiler.dart';
-import '../fixtures/command_output_process.dart'
+import '../../test/fixtures/command_output_process.dart'
     show captureBlocks, captureBulk, captureEvidenceBlocks, captureMarker;
+import '../../tool/command_output_frontend_compiler.dart';
 
 const _gitId = 'dev.adele.plugin.git';
 const _projectId = 'dev.adele.plugin.local-directory-project';

@@ -20,7 +20,8 @@ const List<TestTarget> testTargets = <TestTarget>[
     name: 'adele_tools',
     path: '.',
     executable: 'dart',
-    arguments: <String>['test', 'test/tools'],
+    arguments: <String>['test'],
+    testDirectory: 'test/tools',
   ),
   TestTarget(
     name: 'adele_contract',
@@ -184,6 +185,7 @@ const List<TestTarget> testTargets = <TestTarget>[
     arguments: <String>['test', '--timeout', '4m'],
     ciTestConcurrency: 1,
     ciShards: 7,
+    linuxPtyDeps: true,
     // Rounded 10-second allocation hints from GitHub run 40231647341, with
     // review cases regrouped by suite. Not a discovery allowlist or timeouts.
     // New *_test.dart files are included automatically with cost 1 (~10s).
@@ -460,7 +462,6 @@ const List<TestTarget> testTargets = <TestTarget>[
     // Approximate 10-second allocation hints from CI runs 800/801, replayed
     // against 802/803. Unlisted files are still discovered and cost 1.
     ciTestFileCosts: <String, int>{
-      'test/core/command_output_capture_integration_test.dart': 7,
       'test/core/durable_chat_session_integration_test.dart': 4,
       'test/core/model_preset_integration_test.dart': 3,
       'test/core/normal_chatgpt_run_integration_test.dart': 14,
@@ -475,7 +476,17 @@ const List<TestTarget> testTargets = <TestTarget>[
       'test/record_settings_dialog_test.dart': 5,
     },
     linuxDesktopDeps: true,
+    linuxPtyDeps: true,
     nativeCodeEditor: true,
+    nativeToml: true,
+  ),
+  TestTarget(
+    name: 'adele_plugin_interactions',
+    path: 'app',
+    executable: 'flutter',
+    arguments: <String>['test'],
+    testDirectory: 'plugin_interactions_test',
+    ciTestConcurrency: 1,
     nativeToml: true,
   ),
 ];
@@ -1232,6 +1243,7 @@ String testPlanJson([List<TestTarget> targets = testTargets]) {
             'shard': target.ciShards > 1 ? shard : null,
             'shardCount': target.ciShards,
             'linuxDesktopDeps': target.linuxDesktopDeps,
+            'linuxPtyDeps': target.linuxPtyDeps,
             'nativeCodeEditor': target.nativeCodeEditor,
             'nativeToml': target.nativeToml,
             'ciTestConcurrency': target.ciTestConcurrency,
@@ -1254,13 +1266,24 @@ Future<int> _runTests(TestOptions options) async {
       ? testTargets
       : <TestTarget>[lookupTestTarget(options.target!)];
   // Validate discovery before source preparation, generation, or native builds.
-  final List<String>? testFiles = options.shard == null
-      ? null
-      : partitionTestFiles(
-          Directory(targets.single.path),
-          targets.single.ciShards,
-          costs: targets.single.ciTestFileCosts,
-        )[options.shard! - 1];
+  List<String>? testFiles;
+  for (final target in targets) {
+    if (target.ciShards == 1 && target.testDirectory == defaultTestDirectory) {
+      continue; // Ordinary package runner discovery (or a native command).
+    }
+    final shard = options.shard;
+    try {
+      final partitions = partitionTestFiles(
+        Directory(target.path),
+        shard == null ? 1 : target.ciShards,
+        testDirectory: target.testDirectory,
+        costs: shard == null ? null : target.ciTestFileCosts,
+      );
+      if (shard != null) testFiles = partitions[shard - 1];
+    } on FileSystemException catch (error) {
+      throw StateError('Cannot discover tests for ${target.name}: $error');
+    }
+  }
   final String? shardLabel = options.shard == null
       ? null
       : '${targets.single.name} (${options.shard}/${targets.single.ciShards})';
