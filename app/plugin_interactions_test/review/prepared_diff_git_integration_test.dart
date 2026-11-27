@@ -279,14 +279,30 @@ void main() {
   tearDownAll(() => artifacts.delete(recursive: true));
 
   late _Fixture fixture;
-  setUp(() async {
-    fixture = await _Fixture.create(
-      installations: installations,
-      host: host,
-      aotRuntime: aotRuntime,
-    );
-  });
-  tearDown(() => fixture.close());
+  void testWithFixture(
+    String description,
+    WidgetTesterCallback body, {
+    bool feedback = false,
+    Future<void> Function(Directory source)? initializeSource,
+    bool? skip,
+  }) {
+    testWidgets(description, (tester) async {
+      final initial = await tester.runAsync(
+        () => _Fixture.create(
+          installations: installations,
+          host: host,
+          aotRuntime: aotRuntime,
+          feedback: feedback,
+          initializeSource: initializeSource,
+        ),
+      );
+      if (initial == null) return; // runAsync reported the setup failure.
+      fixture = initial;
+      // A durable reopen replaces the runtime that teardown must close.
+      addTearDown(() => fixture.close());
+      await body(tester);
+    }, skip: skip);
+  }
 
   Future<void> mount(
     WidgetTester tester, {
@@ -322,7 +338,7 @@ void main() {
     );
   }
 
-  testWidgets(
+  testWithFixture(
     'stock EVC shows real nonprimary Git hunks, additions, deletion and refresh without mutations',
     (tester) async {
       await tester.runAsync(() async {
@@ -474,7 +490,7 @@ void main() {
   );
 
   for (final draftBackendFails in [false, true]) {
-    testWidgets(
+    testWithFixture(
       'stock Approve and Unapprove remain independent with ${draftBackendFails ? 'failed' : 'absent'} draft backend',
       (tester) async {
         await tester.runAsync(() async {
@@ -573,17 +589,10 @@ void main() {
   }
 
   for (final mountChat in [false, true]) {
-    testWidgets(
+    testWithFixture(
       'G7b2 stock AOT EVC review submits exact multi-layer batch ${mountChat ? 'with mounted Chat notification' : 'without a Chat mount'} and reopens authoritatively',
       (tester) async {
         await tester.runAsync(() async {
-          await fixture.close();
-          fixture = await _Fixture.create(
-            installations: installations,
-            host: host,
-            aotRuntime: aotRuntime,
-            feedback: true,
-          );
           await fixture.write(
             'a modified.txt',
             'context before\nCommitted review target\ncontext after\n',
@@ -1092,23 +1101,17 @@ void main() {
         expect(tester.takeException(), isNull);
         await tester.pumpWidget(const SizedBox.shrink());
       },
+      feedback: true,
       skip: !Platform.isLinux,
     );
   }
 
-  testWidgets(
+  testWithFixture(
     'G7c2 compiled feedback inspects before Run and survives scheduling, retrieval and renderer failures',
     (tester) async {
-      await tester.runAsync(() async {
-        await fixture.close();
-        fixture = await _Fixture.create(
-          installations: installations,
-          host: host,
-          aotRuntime: aotRuntime,
-          feedback: true,
-        );
-        await fixture.write('a modified.txt', 'Unscheduled review target\n');
-      });
+      await tester.runAsync(
+        () => fixture.write('a modified.txt', 'Unscheduled review target\n'),
+      );
       final gitBefore = (await tester.runAsync(fixture.snapshotState))!;
       await mount(
         tester,
@@ -1258,23 +1261,17 @@ void main() {
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox.shrink());
     },
+    feedback: true,
     skip: !Platform.isLinux,
   );
 
   for (final retirement in ['dismissal', 'backend', 'renderer']) {
-    testWidgets(
+    testWithFixture(
       'G7c2 actual Chat AOT read after $retirement cannot publish late feedback',
       (tester) async {
-        await tester.runAsync(() async {
-          await fixture.close();
-          fixture = await _Fixture.create(
-            installations: installations,
-            host: host,
-            aotRuntime: aotRuntime,
-            feedback: true,
-          );
-          await fixture.write('a modified.txt', 'Late feedback source\n');
-        });
+        await tester.runAsync(
+          () => fixture.write('a modified.txt', 'Late feedback source\n'),
+        );
         await mount(
           tester,
           catalog: withMountedChat,
@@ -1448,23 +1445,17 @@ void main() {
         expect(tester.takeException(), isNull);
         await tester.pumpWidget(const SizedBox.shrink());
       },
+      feedback: true,
       skip: !Platform.isLinux,
     );
   }
 
-  testWidgets(
+  testWithFixture(
     'G7b2 actual waiting Chat Run fences preparation from a retained compiled Submit callback',
     (tester) async {
-      await tester.runAsync(() async {
-        await fixture.close();
-        fixture = await _Fixture.create(
-          installations: installations,
-          host: host,
-          aotRuntime: aotRuntime,
-          feedback: true,
-        );
-        await fixture.write('a modified.txt', 'Waiting review target\n');
-      });
+      await tester.runAsync(
+        () => fixture.write('a modified.txt', 'Waiting review target\n'),
+      );
       final approval = fixture.extensions.register(
         point: toolAuthorizationPolicies,
         id: ExtensionId('test.review.ask-for-probe'),
@@ -1533,6 +1524,7 @@ void main() {
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox.shrink());
     },
+    feedback: true,
     skip: !Platform.isLinux,
   );
 
@@ -1541,19 +1533,12 @@ void main() {
     'beforeScheduling',
     'afterScheduling',
   ]) {
-    testWidgets(
+    testWithFixture(
       'G7b2 compiled retired view $checkpoint preserves durable status without duplicate delivery or scheduling',
       (tester) async {
-        await tester.runAsync(() async {
-          await fixture.close();
-          fixture = await _Fixture.create(
-            installations: installations,
-            host: host,
-            aotRuntime: aotRuntime,
-            feedback: true,
-          );
-          await fixture.write('a modified.txt', 'Retirement review target\n');
-        });
+        await tester.runAsync(
+          () => fixture.write('a modified.txt', 'Retirement review target\n'),
+        );
         final gitBefore = (await tester.runAsync(fixture.snapshotState))!;
         await mount(
           tester,
@@ -1683,11 +1668,12 @@ void main() {
         expect(tester.takeException(), isNull);
         await tester.pumpWidget(const SizedBox.shrink());
       },
+      feedback: true,
       skip: !Platform.isLinux,
     );
   }
 
-  testWidgets(
+  testWithFixture(
     'G7a2 compiled comments retain exact multi-file layered anchors and isolate Sessions without Git writes',
     (tester) async {
       const firstText = "  Review '\u03bb'; keep \u6771\u4eac and \u{1f642}  ";
@@ -1931,7 +1917,7 @@ void main() {
     skip: !Platform.isLinux,
   );
 
-  testWidgets(
+  testWithFixture(
     'G7a2 approval refresh preserves original pending anchor through remount and durable compiled UI reopen',
     (tester) async {
       await tester.runAsync(
@@ -2041,7 +2027,7 @@ void main() {
     skip: !Platform.isLinux,
   );
 
-  testWidgets(
+  testWithFixture(
     'G7a2 actual draft version conflict preserves editor text and requires explicit reload and reselection',
     (tester) async {
       await tester.runAsync(
@@ -2124,7 +2110,7 @@ void main() {
     skip: !Platform.isLinux,
   );
 
-  testWidgets(
+  testWithFixture(
     'stock file review changes only the selected nonprimary index and refreshes Uncommitted and Task layers',
     (tester) async {
       final baseline = fixture.baseline(fixture.additional);
@@ -2324,7 +2310,7 @@ void main() {
     skip: !Platform.isLinux,
   );
 
-  testWidgets(
+  testWithFixture(
     'G6c3b stock bulk review applies one mixed nonprimary patch per direction and preserves Source and scoped Git state',
     (tester) async {
       const added = 'New bulk text\nFinal line without newline';
@@ -2609,7 +2595,7 @@ void main() {
   );
 
   for (final empty in [false, true]) {
-    testWidgets(
+    testWithFixture(
       'G6c2a stock ${empty ? 'empty file' : 'new text file'} approval roundtrip preserves nonprimary Source and unrelated Git state',
       (tester) async {
         const path = _newFileReviewPath;
@@ -2788,7 +2774,7 @@ void main() {
   }
 
   for (final empty in [false, true]) {
-    testWidgets(
+    testWithFixture(
       'G6c2b stock ${empty ? 'empty tracked file' : 'executable text file'} deletion approval roundtrip preserves nonprimary Source and unrelated Git state',
       (tester) async {
         const path = 'c deleted.txt';
@@ -3057,7 +3043,7 @@ void main() {
     );
   }
 
-  testWidgets(
+  testWithFixture(
     'stock Uncommitted scope shows staged-only nonprimary changes and confines HEAD inventory',
     (tester) async {
       await tester.runAsync(() async {
@@ -3108,7 +3094,7 @@ void main() {
     },
   );
 
-  testWidgets(
+  testWithFixture(
     'stock Uncommitted scope omits an unchanged 1054288-byte binary image beside a staged text hunk',
     (tester) async {
       const imagePath = 'unchanged.bmp';
@@ -3226,31 +3212,12 @@ void main() {
   }
 
   for (final (scope, clean) in _scopes.take(2)) {
-    testWidgets(
+    const fileBytes = 1024 * 1024;
+    final paths = List.generate(9, (index) => 'budget-clean-$index.txt');
+    testWithFixture(
       'stock snapshot budgets allow $scope over 8 MiB of clean small tracked files and a small edit',
       (tester) async {
-        const fileBytes = 1024 * 1024;
-        final paths = List.generate(9, (index) => 'budget-clean-$index.txt');
         await tester.runAsync(() async {
-          final previous = fixture;
-          fixture = await _Fixture.create(
-            installations: installations,
-            host: host,
-            aotRuntime: aotRuntime,
-            initializeSource: (source) async {
-              // Each file fits the rendered-side bound, but together they exceed
-              // the transport budget. They exist before either Environment does.
-              final bytes = Uint8List(fileBytes)..fillRange(0, fileBytes, 0x61);
-              bytes[fileBytes - 1] = 0x0a;
-              for (var index = 0; index < paths.length; index++) {
-                bytes[0] = 0x30 + index;
-                await File(
-                  '${source.path}/${paths[index]}',
-                ).writeAsBytes(bytes);
-              }
-            },
-          );
-          await previous.close();
           expect(paths.length * fileBytes, greaterThan(8 * 1024 * 1024));
           for (final environment in [fixture.additional, fixture.primary]) {
             final root = fixture.sourceRoot(environment);
@@ -3339,11 +3306,21 @@ void main() {
         expect(tester.takeException(), isNull);
         await tester.pumpWidget(const SizedBox.shrink());
       },
+      initializeSource: (source) async {
+        // Each file fits the rendered-side bound, but together they exceed
+        // the transport budget. They exist before either Environment does.
+        final bytes = Uint8List(fileBytes)..fillRange(0, fileBytes, 0x61);
+        bytes[fileBytes - 1] = 0x0a;
+        for (var index = 0; index < paths.length; index++) {
+          bytes[0] = 0x30 + index;
+          await File('${source.path}/${paths[index]}').writeAsBytes(bytes);
+        }
+      },
       skip: !Platform.isLinux,
     );
   }
 
-  testWidgets(
+  testWithFixture(
     'stock snapshot budgets reject inventory overflow explicitly instead of reporting clean',
     (tester) async {
       await tester.runAsync(() async {
@@ -3391,7 +3368,7 @@ void main() {
     skip: !Platform.isLinux,
   );
 
-  testWidgets(
+  testWithFixture(
     'stock Uncommitted layers retain partial staging and cancellation and refresh the selected scope',
     (tester) async {
       await tester.runAsync(() async {
@@ -3483,7 +3460,7 @@ void main() {
     },
   );
 
-  testWidgets(
+  testWithFixture(
     'stock Task scope shows committed-only managed branch changes and refreshes after a real commit',
     (tester) async {
       await tester.runAsync(() async {
@@ -3567,7 +3544,7 @@ void main() {
     },
   );
 
-  testWidgets(
+  testWithFixture(
     'stock Task layers use the selected nonprimary baseline and confine committed staged and unstaged paths',
     (tester) async {
       const path = 'g baseline.txt';
@@ -3709,7 +3686,7 @@ void main() {
     },
   );
 
-  testWidgets(
+  testWithFixture(
     'actual Diff opens a tracked punctuated nonprimary path in Source and repeats without another read or pane',
     (tester) async {
       const path = _punctuatedPath;
@@ -3791,7 +3768,7 @@ void main() {
     skip: !Platform.isLinux,
   );
 
-  testWidgets(
+  testWithFixture(
     'actual Diff refuses ambiguous Source providers without reading or choosing one',
     (tester) async {
       const text = 'Actual Source remains explicitly selected\n';
@@ -3826,7 +3803,7 @@ void main() {
     },
   );
 
-  testWidgets(
+  testWithFixture(
     'actual Diff Unapprove preserves and focuses an existing dirty Source document without replacing text or undo',
     (tester) async {
       const path = 'a modified.txt';
@@ -3944,7 +3921,7 @@ void main() {
     },
   );
 
-  testWidgets(
+  testWithFixture(
     'navigation during a held actual Source read cannot publish or focus in the new Environment',
     (tester) async {
       const path = 'a modified.txt';
@@ -4016,7 +3993,7 @@ void main() {
   );
 
   for (final blocker in ['binary', 'unsupported mode', 'conflict']) {
-    testWidgets(
+    testWithFixture(
       'G6c3b stock $blocker fails closed for both whole layers while individual review remains available',
       (tester) async {
         await tester.runAsync(() async {
@@ -4107,7 +4084,7 @@ void main() {
   }
 
   for (final absent in [true, false]) {
-    testWidgets(
+    testWithFixture(
       'stock review ${absent ? 'missing provider' : 'denied frontend grant'} leaves real snapshots readable',
       (tester) async {
         await tester.runAsync(() async {
@@ -4196,7 +4173,7 @@ void main() {
   }
 
   for (final failure in ['manual staging', 'index lock']) {
-    testWidgets(
+    testWithFixture(
       'stock $failure rejects stale Approve without retry and requires a truthful refresh',
       (tester) async {
         await tester.runAsync(
@@ -4265,7 +4242,7 @@ void main() {
     );
   }
 
-  testWidgets(
+  testWithFixture(
     'stock review retirement before admission fences the captured button without touching the index',
     (tester) async {
       await tester.runAsync(
@@ -4303,7 +4280,7 @@ void main() {
   );
 
   for (final wholeLayer in [false, true]) {
-    testWidgets(
+    testWithFixture(
       'stock ${wholeLayer ? 'G6c3b bulk' : 'hunk'} review retirement after real index effect suppresses success without rollback or retry',
       (tester) async {
         final action = wholeLayer ? 'Approve All Unstaged' : 'Approve';
@@ -4389,7 +4366,7 @@ void main() {
     );
   }
 
-  testWidgets(
+  testWithFixture(
     'stock captured Approve control stays retired while fresh same-ID replacement access works',
     (tester) async {
       await tester.runAsync(
@@ -4503,7 +4480,7 @@ void main() {
     skip: !Platform.isLinux,
   );
 
-  testWidgets(
+  testWithFixture(
     'stock generated review client rejects another Session revision on the same Environment',
     (tester) async {
       await tester.runAsync(() async {
@@ -4587,7 +4564,7 @@ void main() {
   );
 
   for (final deletion in [false, true]) {
-    testWidgets(
+    testWithFixture(
       '${deletion ? 'G6c2b deletion' : 'G6c2a stock new-file'} approval and unapproval reject another Session revision on the same Environment',
       (tester) async {
         await tester.runAsync(() async {
@@ -4700,7 +4677,7 @@ void main() {
   }
 
   for (final (scope, clean) in _scopes) {
-    testWidgets(
+    testWithFixture(
       '$scope clean Environment is distinct from unavailable and Git failure',
       (tester) async {
         await mount(tester);
@@ -4773,7 +4750,7 @@ void main() {
 
   for (final (scope, clean) in _scopes) {
     for (final departure in ['navigation', 'provider retirement']) {
-      testWidgets(
+      testWithFixture(
         '$departure fences a pending actual Git $scope snapshot',
         (tester) async {
           await mount(tester);
