@@ -77,11 +77,12 @@ separate cold receipt construction from warm validation; a reported cache hit al
 does not establish launch savings. Run controlled measurements without concurrent
 pub resolution or source writers, which intentionally trip the mutation fences.
 
-For desktop preparation/revalidation changes, run the focused
-`backend_artifacts_test.dart`, `desktop_build_inputs_test.dart`, and
-`desktop_tool_artifacts_test.dart` files under `test/tools/`, then the maintained
-`adele_tools` target. The discovery suite compares the real bootstrapped repository
-graph through the worker/coordinator boundary. Compare several serial warm builds
+For desktop preparation changes, start with the relevant suite under `test/tools/`:
+`desktop_build_inputs_test.dart` compares the real bootstrapped repository graph
+across the worker/coordinator boundary. `desktop_tool_artifacts_test.dart` covers
+cache keys for the generator and discovery tools. `desktop_final_input_fence_test.dart`
+checks changes between discovery and use. Run `dart tools/adele.dart test --target adele_tools`
+for full preparation and revalidation coverage. Compare several serial warm builds
 with all tool/plugin components cached; separate worker execution, response
 validation, and the final input-fence subphases from Flutter build time. A launcher
 `run` total includes application lifetime; readiness/first-frame measurements need
@@ -413,8 +414,8 @@ Backend record opt-in uses the same maintained runtime target: discovery tests
 cover owned/multiple types, nested namespaces, same-collection foreign types,
 invalid requests and independently missing/malformed schemas without activating
 metadata-only or frontend-only installations. Stock publication assertions in
-`test/tools/backend_artifacts_test.dart` check the maintained OpenAI and Agent
-Configuration backend opt-ins against their authored record declarations.
+`test/tools/stock_installation_publication_test.dart` check the maintained OpenAI
+and Agent Configuration backend opt-ins against their authored record declarations.
 
 `app/test/core/startup_record_projection_test.dart` exercises real native TOML
 through the retained Settings worker: declared scalar presence, deterministic
@@ -731,7 +732,7 @@ After bootstrap/current generation, use the pinned toolchain:
 dart tools/adele.dart test --target plugin_runtime
 dart tools/adele.dart test --target openai_model_provider_backend
 dart tools/adele.dart test --target adele_capabilities
-dart test test/tools/app_plugin_boundary_test.dart test/tools/backend_artifacts_test.dart test/tools/adele_test.dart
+dart test test/tools/app_plugin_boundary_test.dart test/tools/stock_installation_publication_test.dart test/tools/adele_test.dart
 # app/
 flutter test --no-pub --concurrency 1 test/record_settings_dialog_test.dart test/record_credential_settings_dialog_test.dart test/core/record_apply_coordinator_test.dart
 flutter test --no-pub --concurrency 1 test/core/openai_record_startup_integration_test.dart test/core/backend_credential_integration_test.dart test/core/startup_credential_authority_test.dart test/session_execution_test.dart
@@ -902,10 +903,10 @@ Application dependency-boundary checks belong to
 [`test/tools/app_plugin_boundary_test.dart`](../../test/tools/app_plugin_boundary_test.dart)
 in `adele_tools`. They check production app manifest dependencies and import/export
 directives and run the generic application runtime under the Dart SDK without a
-Flutter engine; they do not check every repository dependency edge. Checkout preparation, driver,
-and launcher checks also live in that target:
-[`backend_artifacts_test.dart`](../../test/tools/backend_artifacts_test.dart) and
-[`adele_test.dart`](../../test/tools/adele_test.dart).
+Flutter engine; they do not check every repository dependency edge. The same target
+covers [stock installation publication](../../test/tools/stock_installation_publication_test.dart),
+[launcher routing](../../test/tools/desktop_launcher_routing_test.dart), and the
+[repository test driver](../../test/tools/adele_test.dart).
 
 ### Focused Session Evaluator checks
 
@@ -990,8 +991,9 @@ Command
 writer/schema changes require their own [Command Output checks](#focused-command-output-checks);
 the evaluator is a passive reader and must not initialize or migrate that schema.
 Catalog/launcher, compiler-input discovery, or dependency-boundary changes
-additionally use `adele_tools`, including `backend_artifacts_test.dart`,
-`desktop_build_inputs_test.dart`, `adele_test.dart`, and `app_plugin_boundary_test.dart`.
+additionally use `adele_tools`, in particular `stock_installation_publication_test.dart`,
+`desktop_launcher_routing_test.dart`, `desktop_build_inputs_test.dart`, `adele_test.dart`,
+and `app_plugin_boundary_test.dart`.
 For documentation-only edits, inspect those sources and run `git diff --check`
 rather than compiling the integration suite without a behavioral reason.
 
@@ -1008,7 +1010,7 @@ dart tools/adele.dart test --target source_editor_frontend
 dart tools/adele.dart test --target adele_ui
 dart tools/adele.dart test --target plugin_runtime
 dart tools/adele.dart test --target git_backend --ci
-dart test test/tools/adele_test.dart test/tools/backend_artifacts_test.dart test/tools/app_plugin_boundary_test.dart
+dart tools/adele.dart test --target adele_tools
 dart tools/adele.dart generate --check
 ```
 
@@ -1632,7 +1634,7 @@ From the repository root, the owning public/backend and preparation checks are:
 ```sh
 dart tools/adele.dart test --target adele_environment
 dart tools/adele.dart test --target git_backend
-dart test test/tools/backend_artifacts_test.dart test/tools/app_plugin_boundary_test.dart test/tools/adele_test.dart
+dart tools/adele.dart test --target adele_tools
 dart tools/adele.dart generate --check
 ```
 

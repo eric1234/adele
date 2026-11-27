@@ -172,6 +172,6 @@ See [dependency rules](../../docs/architecture/dependency-rules.md).
 
 Both packages are maintained analysis/test targets in
 [`tools/adele.dart`](../../tools/adele.dart). Prepared installation shape is covered
-by [preparation tests](../../test/tools/backend_artifacts_test.dart); generic
+by the [stock publication suite](../../test/tools/stock_installation_publication_test.dart); generic
 activation and captured authority are covered by the app's
 [remote model-tool integration tests](../../app/test/core/remote_model_tool_integration_test.dart).

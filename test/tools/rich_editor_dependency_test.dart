@@ -5,72 +5,8 @@ import 'dart:io';
 import 'package:test/test.dart';
 
 import '../../tools/rich_editor_dependency.dart';
-
-// Shared launcher fixture: real tar/git/hash/curl operations, no network or SDK
-// package resolution. Names do not collide with the separate CodeForge fixture.
-Future<File> createRichEditorDependencyFixture(
-  Directory root, {
-  bool additionalPatch = false,
-}) async {
-  final metadata = Directory('${root.path}/third_party/appflowy_editor')
-    ..createSync(recursive: true);
-  final helper = File('${root.path}/tools/rich_editor_dependency.dart');
-  helper.parent.createSync(recursive: true);
-  File('tools/rich_editor_dependency.dart').copySync(helper.path);
-  final input = Directory('${root.path}/rich-archive-input')..createSync();
-  final files = {
-    'pubspec.yaml': 'name: appflowy_editor\nversion: 6.2.0\n',
-    'LICENSE': 'fixture license retained verbatim\n',
-    'lib/editor.dart': 'one\n',
-    'build/archived-input': 'not disposable\n',
-    'pubspec.lock': 'archived lock stays immutable\n',
-    'tool.sh': '#!/bin/sh\nexit 0\n',
-  };
-  for (final entry in files.entries) {
-    final file = File('${input.path}/${entry.key}');
-    file.parent.createSync(recursive: true);
-    file.writeAsStringSync(entry.value);
-  }
-  await _run('chmod', ['755', '${input.path}/tool.sh']);
-  final archive = File('${root.path}/rich-fixture.tar.gz');
-  await _run('tar', ['-czf', archive.path, '-C', input.path, '.']);
-  for (final (name, before, after) in [
-    ('01.patch', 'one', 'two'),
-    if (additionalPatch) ('02.patch', 'two', 'three'),
-  ]) {
-    File('${metadata.path}/$name').writeAsStringSync('''
-diff --git a/lib/editor.dart b/lib/editor.dart
---- a/lib/editor.dart
-+++ b/lib/editor.dart
-@@ -1 +1 @@
--$before
-+$after
-''');
-  }
-  files['lib/editor.dart'] = additionalPatch ? 'three\n' : 'two\n';
-  final expected = <String, String>{'build': 'directory', 'lib': 'directory'};
-  for (final path in files.keys) {
-    expected[path] =
-        '${await _sha256(files[path]!)}:${path == 'tool.sh' ? 73 : 0}';
-  }
-  final canonical = {
-    for (final path in expected.keys.toList()..sort()) path: expected[path],
-  };
-  File('${metadata.path}/preparation.json').writeAsStringSync(
-    jsonEncode({
-      'schema': 1,
-      'package': 'appflowy_editor',
-      'version': '6.2.0',
-      'archiveUrl': archive.uri.toString(),
-      'archiveSha256': (await _run('sha256sum', [
-        archive.path,
-      ])).stdout.toString().split(' ').first,
-      'preparedTreeSha256': await _sha256(jsonEncode(canonical)),
-      'patches': ['01.patch', if (additionalPatch) '02.patch'],
-    }),
-  );
-  return archive;
-}
+import 'support/editor_fixture_io.dart';
+import 'support/rich_editor_dependency_fixture.dart';
 
 void main() {
   late Directory root;
@@ -98,7 +34,7 @@ void main() {
   test(
     'fresh source applies patch inside ignored Git tree, then reuses without archive',
     () async {
-      await _run('git', ['init', '--quiet', root.path]);
+      await runEditorFixtureCommand('git', ['init', '--quiet', root.path]);
       File('${root.path}/.gitignore').writeAsStringSync('.adele/\n');
       expect((await prepare()).path, source.path);
       expect(file('lib/editor.dart').readAsStringSync(), 'two\n');
@@ -171,7 +107,7 @@ void main() {
             file('lib/editor.dart').path,
           ).createSync('${root.path}/rich-archive-input/lib/editor.dart');
         case 'mode':
-          await _run('chmod', ['644', file('tool.sh').path]);
+          await runEditorFixtureCommand('chmod', ['644', file('tool.sh').path]);
         case 'ledger':
           file('.adele-preparation.json').deleteSync();
         case 'root-link':
@@ -190,7 +126,7 @@ void main() {
       final state = jsonDecode(ledger.readAsStringSync()) as Map;
       file('lib/editor.dart').writeAsStringSync('forged\n');
       (state['files'] as Map)['lib/editor.dart'] =
-          '${await _sha256('forged\n')}:0';
+          '${await richEditorDigests.sha256('forged\n')}:0';
       (state['files'] as Map).remove('build/archived-input');
       file('build/archived-input').writeAsStringSync('hidden');
       ledger.writeAsStringSync(jsonEncode(state));
@@ -269,7 +205,7 @@ void main() {
     'trusted archive containing a link is rejected before extraction',
     () async {
       Link('${root.path}/rich-archive-input/linked').createSync('/outside');
-      await _run('tar', [
+      await runEditorFixtureCommand('tar', [
         '-czf',
         archive.path,
         '-C',
@@ -278,7 +214,7 @@ void main() {
       ]);
       changeMetadata(
         'archiveSha256',
-        (await _run('sha256sum', [
+        (await runEditorFixtureCommand('sha256sum', [
           archive.path,
         ])).stdout.toString().split(' ').first,
       );
@@ -534,28 +470,6 @@ Future<void> main() async {
 Matcher _throws(String text) => throwsA(
   isA<StateError>().having((e) => e.message, 'message', contains(text)),
 );
-
-Future<ProcessResult> _run(String command, List<String> args) async {
-  final result = await Process.run(
-    command,
-    args,
-  ).timeout(const Duration(seconds: 15));
-  if (result.exitCode != 0) {
-    throw StateError('${result.stdout}\n${result.stderr}');
-  }
-  return result;
-}
-
-final _digests = <String, Future<String>>{};
-Future<String> _sha256(String text) => _digests.putIfAbsent(text, () async {
-  final process = await Process.start('sha256sum', []);
-  final output = process.stdout.transform(utf8.decoder).join();
-  final errors = process.stderr.transform(utf8.decoder).join();
-  process.stdin.add(utf8.encode(text));
-  await process.stdin.close();
-  if (await process.exitCode != 0) throw StateError(await errors);
-  return (await output).split(' ').first;
-});
 
 // Fault injection at actual I/O boundaries, without production testing hooks.
 final class _StageOverride extends IOOverrides {

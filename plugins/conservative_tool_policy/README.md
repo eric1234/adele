@@ -98,6 +98,6 @@ covers prepared AOT installation and generic activation, including stock approva
 the disabled setting on restart, optional absence, and unavailable expected policy.
 Package tests alone do not establish those integration boundaries.
 The stock publication and catalog-discovery checks in
-[`backend_artifacts_test.dart`](../../test/tools/backend_artifacts_test.dart)
+[`stock_installation_publication_test.dart`](../../test/tools/stock_installation_publication_test.dart)
 cover the exact installed declaration, unrelated/optional absence, and retained
 expectations with missing or invalid backend components without activating code.
