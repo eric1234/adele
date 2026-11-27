@@ -11,19 +11,29 @@ import 'support/desktop_launcher_fixture.dart';
 import 'support/desktop_launcher_inputs.dart';
 
 void main() {
+  const interactions = 'adele_plugin_interactions';
+  const review =
+      'plugin_interactions_test/review/prepared_diff_git_integration_test.dart';
+  const capture =
+      'plugin_interactions_test/execution/command_output_capture_integration_test.dart';
+  const inspection =
+      'plugin_interactions_test/inspection/tool_inspection_interaction_test.dart';
+  const wholeAppRuns = [
+    ['test'],
+    ['test', 'plugin_interactions_test'],
+  ];
+
   late DesktopLauncherFixture fixture;
   setUp(() async {
     fixture = await DesktopLauncherFixture.create();
-    for (final name in [
-      'adele_tools',
-      'git_backend',
-      'adele_desktop',
-      'adele_plugin_interactions',
-    ]) {
+    for (final name in ['adele_tools', 'git_backend', 'adele_desktop']) {
       final target = tooling.lookupTestTarget(name);
       File(
         '${fixture.root.path}/${target.path}/${target.testDirectory}/nested/example_test.dart',
       ).createSync(recursive: true);
+    }
+    for (final path in [review, capture, inspection]) {
+      File('${fixture.root.path}/app/$path').createSync(recursive: true);
     }
   });
 
@@ -57,6 +67,9 @@ void main() {
     'test-plan runs pre-bootstrap without generating, inspecting or compiling',
     () async {
       fixture.removeBootstrapMetadata();
+      Directory(
+        '${fixture.root.path}/app/plugin_interactions_test',
+      ).deleteSync(recursive: true);
       final ProcessResult result = await fixture.invoke(<String>[
         'test-plan',
         '--json',
@@ -64,15 +77,14 @@ void main() {
       expect(result.exitCode, 0, reason: result.stderr.toString());
       final Map<String, Object?> plan =
           jsonDecode(result.stdout.toString()) as Map<String, Object?>;
+      final entries = (plan['include']! as List<Object?>)
+          .cast<Map<String, Object?>>();
       expect(
-        (plan['include']! as List<Object?>).cast<Map<String, Object?>>().map(
-          (Map<String, Object?> item) => item['name'],
-        ),
+        entries.map((item) => item['name']),
         containsAll([
           'adele_ui',
           'plugin_runtime',
           'adele_tools',
-          'adele_plugin_interactions',
           'adele_plugin_backend_support',
           'agents_md_backend',
           'agent_configuration_contract',
@@ -92,6 +104,12 @@ void main() {
           'terminal_frontend',
           'source_editor_frontend',
         ]),
+      );
+      expect(
+        entries
+            .where((item) => item['name'] == interactions)
+            .map((item) => item['shard']),
+        [1, 2],
       );
       expect(fixture.commands.existsSync(), isFalse);
       expect(fixture.generatedContract.existsSync(), isFalse);
@@ -155,6 +173,7 @@ void main() {
     ['analyze', '--invalid'],
     ['build', 'linux', '--invalid'],
     ['test', '--jobs', '0'],
+    ['test', '--target=$interactions', '--ci', '--shard=3'],
   ]) {
     test(
       '${arguments.join(' ')} never prepares source or invokes tools',
@@ -307,7 +326,7 @@ void main() {
       final result = await fixture.invoke([
         'test',
         '--target',
-        'adele_plugin_interactions',
+        interactions,
         '--ci',
       ]);
       expect(result.exitCode, 0, reason: '${result.stderr}');
@@ -316,14 +335,40 @@ void main() {
         'generate|path',
         'test|flutter|${fixture.root.path}/app',
       ]);
-      expect(fixture.launchArguments.readAsLinesSync(), [
-        'test',
-        '--concurrency',
-        '1',
-        'plugin_interactions_test',
+      expect(fixture.appTestInvocations(), [
+        ['test', '--concurrency', '1', 'plugin_interactions_test'],
       ]);
     },
   );
+
+  for (final (shard, files) in [
+    (1, [review]),
+    (2, [capture, inspection]),
+  ]) {
+    test(
+      'interaction CI shard $shard/2 runs only its files with CodeForge',
+      () async {
+        final result = await fixture.invoke([
+          'test',
+          '--target=$interactions',
+          '--ci',
+          '--shard=$shard',
+        ]);
+        expect(
+          result.exitCode,
+          0,
+          reason: '${result.stdout}\n${result.stderr}',
+        );
+        expect(fixture.commands.readAsLinesSync(), [
+          'generate|path',
+          'test|flutter|${fixture.root.path}/app',
+        ]);
+        expect(fixture.appTestInvocations(), [
+          ['test', '--concurrency', '1', ...files],
+        ]);
+      },
+    );
+  }
 
   test('Diff frontend CI runs its package without building CodeForge', () async {
     final result = await fixture.invoke([
@@ -342,6 +387,7 @@ void main() {
   for (final targetName in [
     'adele_tools',
     'adele_desktop',
+    interactions,
     'adele_credential_store_native',
     null,
   ]) {
@@ -379,6 +425,13 @@ void main() {
           for (final target in targets) '==> START test: ${target.name}',
         ]),
       );
+      if (targetName == null) {
+        expect(fixture.appTestInvocations(), unorderedEquals(wholeAppRuns));
+      } else if (targetName == interactions) {
+        expect(fixture.appTestInvocations(), [
+          ['test', 'plugin_interactions_test'],
+        ]);
+      }
       fixture.expectGenerationArguments();
     });
   }
@@ -425,10 +478,7 @@ void main() {
         result.stderr,
         'FAILED TEST TARGETS:\n  adele_plugin_interactions (exit 36)\n',
       );
-      expect(fixture.launchArguments.readAsLinesSync(), [
-        'test',
-        'plugin_interactions_test',
-      ]);
+      expect(fixture.appTestInvocations(), unorderedEquals(wholeAppRuns));
     },
   );
 

@@ -21,6 +21,7 @@ final class DesktopLauncherFixture {
   late final File buildInputs;
   late final File sdkVersion;
   late final File launchArguments;
+  late final Directory _appTestInvocations;
   late final File frontendArguments;
   late final File frontendEnvironment;
   late final Map<String, String> environment;
@@ -294,6 +295,7 @@ ${package.value.devDependencies.map((name) => '  $name: any').join('\n')}
         }),
       );
     launchArguments = File('${logs.path}/launch-arguments.txt');
+    _appTestInvocations = Directory('${logs.path}/app-tests')..createSync();
     frontendArguments = File('${logs.path}/frontend-arguments.txt');
     frontendEnvironment = File('${logs.path}/frontend-environment.txt');
     environment = <String, String>{
@@ -361,12 +363,15 @@ elif [ "\$1" = pub ]; then
 elif [ "\$1" = analyze ] || { [ "\$1" = test ] && [ "\$2" != --no-pub ]; }; then
   test -f '${generatedContract.path}' || exit 95
   if [ "\$1" = test ] && [ "\$PWD" = '${root.path}/app' ]; then
-    test -f "\$FRB_DART_LOAD_EXTERNAL_LIBRARY_NATIVE_LIB_DIR/libcode_forge.so" || exit 94
-    case "\$*" in
-      'test plugin_interactions_test'|'test --concurrency 1 plugin_interactions_test')
-        printf '%s\n' "\$@" > '${launchArguments.path}'
-        if [ "\$ADELE_TEST_FAIL_INTERACTION" = 1 ]; then exit 36; fi ;;
-    esac
+    library_dir=\$(cat '${logs.path}/codeforge-build-dir') || exit 94
+    test "\$FRB_DART_LOAD_EXTERNAL_LIBRARY_NATIVE_LIB_DIR" = "\$library_dir" || exit 94
+    test -s "\$FRB_DART_LOAD_EXTERNAL_LIBRARY_NATIVE_LIB_DIR/libcode_forge.so" || exit 94
+    printf '%s\n' "\$@" > '${_appTestInvocations.path}/'\$\$
+    if [ "\$ADELE_TEST_FAIL_INTERACTION" = 1 ]; then
+      for arg do
+        case "\$arg" in plugin_interactions_test|plugin_interactions_test/*) exit 36 ;; esac
+      done
+    fi
   elif [ "\$1" = test ] && [ "\$PWD" = '${root.path}/plugins/diff_viewer/packages/frontend' ]; then
     test -z "\$FRB_DART_LOAD_EXTERNAL_LIBRARY_NATIVE_LIB_DIR" || exit 94
   fi
@@ -488,6 +493,7 @@ test "\${11}" = --target && test "\${12}" = x86_64-unknown-linux-gnu || exit 96
 if [ "\$ADELE_TEST_FAIL_CODEFORGE_NATIVE" = 1 ]; then exit 35; fi
 mkdir -p "\${10}/\${12}/release"
 printf 'native fixture' > "\${10}/\${12}/release/libcode_forge.so"
+printf '%s\n' "\${10}/\${12}/release" > '${logs.path}/codeforge-build-dir'
 ''');
     writeExecutableScript(File('${bin.path}/dartaotruntime'), 'exit 99');
     writeExecutableScript(File('${sdkBin.path}/dartaotruntime'), '''
@@ -633,6 +639,11 @@ printf 'compiled|%s\n' "\$entrypoint" >> '${commands.path}'
     workingDirectory: root.path,
     environment: environment,
   );
+
+  List<List<String>> appTestInvocations() => [
+    for (final log in _appTestInvocations.listSync().whereType<File>())
+      log.readAsLinesSync(),
+  ];
 
   void expectGenerationArguments([
     List<String> options = const [],
