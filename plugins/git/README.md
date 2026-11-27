@@ -516,9 +516,14 @@ three scopes over generated Environment calls, and binds generated infrastructur
 storage to the owning backend generation. Its storage double validates transport,
 not SQL durability. Worktree tests cover exact initial SQL, SHA-1/SHA-256 capture,
 strict v2 state, restoration without baseline objects, and no restore-time replay.
-The application stock lifecycle and Diff/Git integration suites cover atomic
-initialization with real Project SQL, backend replacement/reopen/moves, and stock
-Diff's process-only grants without changing generic read/sibling contracts.
+The [hosted Task comparison suite](packages/desktop_tests/test/durable_task_git_comparison_test.dart)
+checks the stock service after reopen: a missing anchor or unavailable commit
+returns `baseline_unavailable`, a different branch returns `unexpected_branch`,
+and Unstaged and Uncommitted remain usable. The app owns publication failure
+after real Git establishment; the Local Directory + Git interaction owns lazy
+restore after restart or a whole-Project move. See [focused durable Git Task checks](../../docs/development/testing.md#focused-durable-git-task-checks)
+for the suite paths, commands and prerequisites. Stock Diff's process-only grants
+belong to the separate review interaction suites.
 
 ### Comment Comparison Identity
 

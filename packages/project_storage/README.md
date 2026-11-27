@@ -134,6 +134,8 @@ dart tools/adele.dart test --target adele_project_storage
 Application integration lives in `app/test/core/project_storage_host_test.dart`,
 `app/test/core/backend_capability_integration_test.dart` (compiled infrastructure),
 `plugins/git/packages/desktop_tests/test/git_task_anchor_store_test.dart` (pre-Session Git enrollment), and
-`app/test/core/durable_chat_session_integration_test.dart`. See the canonical
-[testing map](../../docs/development/testing.md) and
+`app/test/core/durable_chat_session_integration_test.dart`. For establishment
+against real Project SQLite storage, see the [focused durable Git Task checks](../../docs/development/testing.md#focused-durable-git-task-checks):
+desktop verifies atomic publication, Git verifies retained comparison, and the
+Local Directory/Git interaction verifies reopen and relocation. See also
 [generation-scoped host services](../../docs/architecture/contracts-and-capabilities.md).
