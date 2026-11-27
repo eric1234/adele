@@ -11,8 +11,14 @@ void main() {
     fixture = await DesktopLauncherFixture.create();
   });
 
-  for (final String command in <String>['run', 'build']) {
-    for (final kind in frontendCompilations.keys) {
+  // Linux run and build share preparation. Exercise every target on run and
+  // repeat all three failures on build at the first and last targets.
+  final targets = frontendCompilations.keys;
+  for (final (command, kinds) in [
+    ('run', targets),
+    ('build', [targets.first, targets.last]),
+  ]) {
+    for (final kind in kinds) {
       for (final String failure in <String>['exit', 'missing', 'empty']) {
         test(
           '$command never launches after $kind frontend $failure failure',

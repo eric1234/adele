@@ -11,8 +11,13 @@ void main() {
     fixture = await DesktopLauncherFixture.create();
   });
 
-  for (final String failedEntrypoint in backendEntrypoints) {
-    for (final String command in <String>['run', 'build']) {
+  // Linux run and build share preparation. Fail every entrypoint on run and
+  // check build at both ends of the same compilation sequence.
+  for (final (command, entrypoints) in [
+    ('run', backendEntrypoints),
+    ('build', [backendEntrypoints.first, backendEntrypoints.last]),
+  ]) {
+    for (final failedEntrypoint in entrypoints) {
       test('$command never launches after $failedEntrypoint fails', () async {
         fixture.environment['ADELE_TEST_FAIL_ENTRYPOINT'] = failedEntrypoint;
         final ProcessResult result = await fixture.invoke(<String>[

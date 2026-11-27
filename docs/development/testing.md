@@ -88,6 +88,13 @@ validation, and the final input-fence subphases from Flutter build time. A launc
 `run` total includes application lifetime; readiness/first-frame measurements need
 an explicit runtime observation rather than that total.
 
+Linux `run` and `build` share preparation before constructing their different
+Flutter invocations. Use `run` to test compiler failure at every backend
+entrypoint and compiler failure, missing output, and empty output at every
+frontend target. Repeat these checks through `build` at the first and last
+positions of each sequence. The routing and publication tests check the final
+Flutter arguments for both commands.
+
 ## Maintained test targets
 
 `dart tools/adele.dart test` runs all maintained targets with bounded package-level
