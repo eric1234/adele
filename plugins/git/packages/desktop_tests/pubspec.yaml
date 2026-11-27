@@ -11,11 +11,15 @@ resolution: workspace
 
 dev_dependencies:
   adele_capabilities: ^0.1.0
+  adele_contract: ^0.1.0
+  adele_core_extensions: ^0.1.0
   adele_desktop: ^0.1.0
   adele_environment: ^0.1.0
+  adele_orchestration: ^0.1.0
   adele_plugin_api: ^0.1.0
   adele_product: ^0.1.0
   adele_project_storage: ^0.1.0
+  crypto: ^3.0.6
   diff_viewer_contract: ^0.1.0
   flutter:
     sdk: flutter
@@ -23,3 +27,4 @@ dev_dependencies:
     sdk: flutter
   git_backend: ^0.1.0
   plugin_runtime: ^0.1.0
+  sqlite3: ^3.5.2

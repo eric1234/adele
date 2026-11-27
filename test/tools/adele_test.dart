@@ -1307,13 +1307,36 @@ exit "$CLIPPY_EXIT"
       expect(plugin, containsAll(costs.keys));
       expect(plugin, contains(stockPortable));
       expect(core, contains(independentPortable));
+      expect(
+        core,
+        contains(
+          'test/prepared_environment_buffered_process_integration_test.dart',
+        ),
+      );
       const gitService =
           'test/prepared_portable_git_service_integration_test.dart';
       const sourceGuard = 'test/portable_git_source_boundary_test.dart';
+      const hostedGitSuites = {
+        'git_task_anchor_store_test.dart',
+        'prepared_git_buffered_process_integration_test.dart',
+      };
       final hosted = lookupTestTarget('git_desktop_tests');
       expect(
         checkoutSuites(hosted.path, hosted.testDirectory),
-        containsAll([gitService, sourceGuard]),
+        containsAll([
+          gitService,
+          sourceGuard,
+          for (final suite in hostedGitSuites) 'test/$suite',
+        ]),
+      );
+      final backend = lookupTestTarget('git_backend');
+      expect(
+        [
+          ...core,
+          ...plugin,
+          ...checkoutSuites(backend.path, backend.testDirectory),
+        ].where((path) => hostedGitSuites.contains(path.split('/').last)),
+        isEmpty,
       );
       expect(core, isNot(contains(gitService)));
       expect(costs[stockPortable], 8);
@@ -1523,7 +1546,7 @@ exit "$CLIPPY_EXIT"
             'git_backend',
           ]),
         );
-        for (final directory in ['lib', 'bin']) {
+        for (final directory in ['lib', 'bin', 'hook']) {
           expect(Directory('$path/$directory').existsSync(), isFalse);
         }
         final target = testTargets.singleWhere(
