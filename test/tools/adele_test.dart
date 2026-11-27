@@ -12,6 +12,12 @@ import '../../tools/stock_frontend_descriptors.dart';
 import '../../tools/test_runner.dart';
 
 void main() {
+  const ciShardCounts = {
+    'git_backend': 7,
+    'adele_desktop': 4,
+    'adele_plugin_interactions': 2,
+  };
+
   test(
     'editor-smoke wires workspace and preparation as independent opt-ins',
     () {
@@ -271,8 +277,8 @@ void main() {
       expect(parseTestOptions(['--ci', '--target=adele_tools']).ci, isTrue);
     });
 
-    test('accepts each 1-based desktop and Git shard in either form', () {
-      for (final (name, count) in [('adele_desktop', 4), ('git_backend', 7)]) {
+    test('accepts each 1-based CI shard in either form', () {
+      for (final MapEntry(key: name, value: count) in ciShardCounts.entries) {
         for (var shard = 1; shard <= count; shard++) {
           for (final option in [
             ['--shard', '$shard'],
@@ -309,15 +315,16 @@ void main() {
       ['--target=one', '--ci', '--ci'],
       ['--other'],
       ['--shard', '1'],
-      ['--target=adele_desktop', '--shard=1'],
-      ['--target=git_backend', '--shard=1'],
-      ['--target=adele_desktop', '--ci', '--shard=5'],
-      ['--target=git_backend', '--ci', '--shard=8'],
+      for (final MapEntry(key: name, value: count)
+          in ciShardCounts.entries) ...[
+        ['--target=$name', '--shard=1'],
+        ['--target=$name', '--ci', '--shard=${count + 1}'],
+      ],
       ['--target=adele_tools', '--ci', '--shard=1'],
-      ['--target=adele_plugin_interactions', '--ci', '--shard=1'],
+      ['--target=adele_plugin_interactions', '--ci', '--shard=1', '--jobs=2'],
       ['--target=missing', '--ci', '--shard=1'],
       ['--jobs=2', '--ci', '--shard=1'],
-      for (final name in ['adele_desktop', 'git_backend'])
+      for (final name in ciShardCounts.keys)
         for (final shard in [
           ['--shard'],
           ['--shard='],
@@ -525,7 +532,7 @@ exit "$CLIPPY_EXIT"
     );
 
     test(
-      'expands only Git into seven and desktop into four early CI entries',
+      'expands Git, desktop and interaction shards before unsharded targets',
       () {
         final Map<String, Object?> plan =
             jsonDecode(testPlanJson())! as Map<String, Object?>;
@@ -540,13 +547,11 @@ exit "$CLIPPY_EXIT"
           testTargets.map((target) => target.name).toSet(),
           hasLength(testTargets.length),
         );
-        expect(include, hasLength(testTargets.length + 9));
         expect(names, <String>[
-          for (var shard = 1; shard <= 7; shard++) 'git_backend',
-          for (var shard = 1; shard <= 4; shard++) 'adele_desktop',
+          for (final MapEntry(key: name, value: count) in ciShardCounts.entries)
+            for (var shard = 1; shard <= count; shard++) name,
           for (final TestTarget target in testTargets)
-            if (target.name != 'adele_desktop' && target.name != 'git_backend')
-              target.name,
+            if (!ciShardCounts.containsKey(target.name)) target.name,
         ]);
         expect(names.toSet(), hasLength(testTargets.length));
         expect(
@@ -557,11 +562,7 @@ exit "$CLIPPY_EXIT"
           final selected = entries
               .where((entry) => entry['name'] == target.name)
               .toList();
-          final count = switch (target.name) {
-            'adele_desktop' => 4,
-            'git_backend' => 7,
-            _ => 1,
-          };
+          final count = ciShardCounts[target.name] ?? 1;
           expect(selected, hasLength(count));
           expect(target.ciShards, count);
           expect(target.ciTestFileCosts, count > 1 ? isNotEmpty : isNull);
@@ -838,10 +839,15 @@ exit "$CLIPPY_EXIT"
         final plan = jsonDecode(testPlanJson()) as Map<String, Object?>;
         final entries = (plan['include']! as List<Object?>)
             .cast<Map<String, Object?>>();
+        expect(
+          entries
+              .where((entry) => entry['name'] == 'adele_plugin_interactions')
+              .map((entry) => entry['shard']),
+          [1, 2],
+        );
         for (final entry in [
           ...entries,
-          {'name': 'adele_desktop', 'shard': null},
-          {'name': 'git_backend', 'shard': null},
+          for (final name in ciShardCounts.keys) {'name': name, 'shard': null},
         ]) {
           final name = entry['name']! as String;
           final shard = entry['shard']?.toString() ?? '';
@@ -901,6 +907,11 @@ exit "$CLIPPY_EXIT"
   });
 
   group('test file partitions', () {
+    const interactionRoot = 'plugin_interactions_test';
+    const review = 'prepared_diff_git_integration_test.dart';
+    const capture = 'command_output_capture_integration_test.dart';
+    const reviewPath = '$interactionRoot/review/$review';
+    const capturePath = '$interactionRoot/execution/$capture';
     late Directory fixture;
     setUp(() {
       fixture = Directory.systemTemp.createTempSync('adele-shards-');
@@ -928,6 +939,14 @@ exit "$CLIPPY_EXIT"
                   .substring('$package/'.length),
             )
             .toList();
+
+    List<List<String>> shardsFor(TestTarget target, Directory package) =>
+        partitionTestFiles(
+          package,
+          target.ciShards,
+          testDirectory: target.testDirectory,
+          costs: target.ciTestFileCosts,
+        );
 
     test(
       'complete, disjoint, ordered and stable across discovery and additions',
@@ -998,6 +1017,24 @@ exit "$CLIPPY_EXIT"
           [first],
         ],
       );
+    });
+
+    test('interaction shards pick up a new nested suite at default cost', () {
+      final target = lookupTestTarget('adele_plugin_interactions');
+      addFile(reviewPath);
+      addFile(capturePath);
+      addFile('test/unrelated_test.dart');
+      expect(shardsFor(target, fixture), [
+        [reviewPath],
+        [capturePath],
+      ]);
+
+      const added = '$interactionRoot/new/nested/unhinted_test.dart';
+      addFile(added);
+      expect(shardsFor(target, fixture), [
+        [reviewPath],
+        [capturePath, added],
+      ]);
     });
 
     test(
@@ -1144,7 +1181,7 @@ exit "$CLIPPY_EXIT"
             throwsArgumentError,
           );
         }
-        for (final name in ['adele_desktop', 'git_backend']) {
+        for (final name in ciShardCounts.keys) {
           expect(
             () => lookupTestTarget(name).argumentsFor(ci: true, testFiles: []),
             throwsArgumentError,
@@ -1153,11 +1190,11 @@ exit "$CLIPPY_EXIT"
       },
     );
 
-    for (final name in ['adele_desktop', 'git_backend']) {
+    for (final name in ciShardCounts.keys) {
       test('CLI refuses an empty $name shard before preparation', () async {
         final target = lookupTestTarget(name);
         Directory(
-          '${fixture.path}/${target.path}/test',
+          '${fixture.path}/${target.path}/${target.testDirectory}',
         ).createSync(recursive: true);
         final result = await Process.run(Platform.resolvedExecutable, [
           File('tools/adele.dart').absolute.path,
@@ -1176,19 +1213,26 @@ exit "$CLIPPY_EXIT"
       });
     }
 
-    for (final kind in ['missing', 'empty']) {
+    for (final (kind, options) in [
+      ('missing', <String>[]),
+      ('empty', ['--ci']),
+      ('missing shard root', ['--ci', '--shard=1']),
+      ('too few suites', ['--ci', '--shard=2']),
+    ]) {
       test(
         'CLI refuses $kind interactions discovery before preparation',
         () async {
           addFile('app/test/unrelated_test.dart');
           if (kind == 'empty') {
             addFile('app/plugin_interactions_test/nested/helper.dart');
+          } else if (kind == 'too few suites') {
+            addFile('app/$reviewPath');
           }
           final result = await Process.run(Platform.resolvedExecutable, [
             File('tools/adele.dart').absolute.path,
             'test',
             '--target=adele_plugin_interactions',
-            if (kind == 'empty') '--ci',
+            ...options,
           ], workingDirectory: fixture.path);
           expect(result.exitCode, 1);
           expect(result.stderr, contains('plugin_interactions_test'));
@@ -1202,23 +1246,33 @@ exit "$CLIPPY_EXIT"
     test('app and Diff targets discover suites under their own roots', () {
       final desktop = lookupTestTarget('adele_desktop');
       final interactions = lookupTestTarget('adele_plugin_interactions');
-      List<String> selected(TestTarget target) => partitionTestFiles(
-        Directory(target.path),
-        target.ciShards,
-        testDirectory: target.testDirectory,
-        costs: target.ciTestFileCosts,
-      ).expand((shard) => shard).toList();
-      final core = selected(desktop);
-      final plugin = selected(interactions);
+      final core = shardsFor(desktop, Directory(desktop.path)).expand((s) => s);
+      final package = Directory(interactions.path);
+      final shards = shardsFor(interactions, package);
+      final plugin = shards.expand((files) => files);
       expect(core, unorderedEquals(checkoutSuites('app', 'test')));
-      expect(
-        plugin,
-        unorderedEquals(checkoutSuites('app', 'plugin_interactions_test')),
-      );
+      expect(plugin, unorderedEquals(checkoutSuites('app', interactionRoot)));
       expect(core.toSet().intersection(plugin.toSet()), isEmpty);
-      const review = 'prepared_diff_git_integration_test.dart';
+      expect(shards, hasLength(2));
+      expect(shards, everyElement(isNotEmpty));
+      expect(shardsFor(interactions, package), shards);
+      final costs = interactions.ciTestFileCosts!;
+      expect(plugin, containsAll(costs.keys));
+      expect(costs[reviewPath], 20);
+      expect(costs[capturePath], 12);
+      expect(
+        shards.singleWhere((s) => s.contains(reviewPath)),
+        isNot(contains(capturePath)),
+      );
+      for (final files in shards) {
+        expect(interactions.argumentsFor(ci: true, testFiles: files), [
+          'test',
+          '--concurrency',
+          '1',
+          ...files,
+        ]);
+      }
       expect(core, isNot(contains('test/$review')));
-      expect(plugin, contains('plugin_interactions_test/review/$review'));
       final diff = lookupTestTarget('diff_viewer_frontend');
       // No explicit paths: Flutter recursively discovers the default test root.
       expect(diff.argumentsFor(ci: true), ['test']);
@@ -1229,16 +1283,12 @@ exit "$CLIPPY_EXIT"
           'test/diff_viewer_frontend_test.dart',
         ]),
       );
-      const suite = 'command_output_capture_integration_test.dart';
-      expect(core, isNot(contains('test/core/$suite')));
-      expect(plugin, contains('plugin_interactions_test/execution/$suite'));
+      expect(core, isNot(contains('test/core/$capture')));
       expect(core, contains('test/tool_inspection_frontend_eval_test.dart'));
-      expect(
-        plugin,
-        contains(
-          'plugin_interactions_test/inspection/tool_inspection_interaction_test.dart',
-        ),
-      );
+      const inspection =
+          '$interactionRoot/inspection/tool_inspection_interaction_test.dart';
+      expect(plugin, contains(inspection));
+      expect(costs[inspection], isNull);
       expect(
         core,
         contains('test/core/normal_chatgpt_run_integration_test.dart'),
@@ -1398,7 +1448,7 @@ exit "$CLIPPY_EXIT"
       expect(target.path, 'app');
       expect(target.executable, 'flutter');
       expect(target.testDirectory, root);
-      expect(target.ciShards, 1);
+      expect(target.ciShards, 2);
       expect(target.ciTestConcurrency, 1);
       expect(target.nativeToml, isTrue);
       expect(target.nativeCodeEditor, isTrue);

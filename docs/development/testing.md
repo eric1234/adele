@@ -139,12 +139,12 @@ It is not automatic discovery of every package containing tests.
 | `--jobs N` | Positive integer controlling concurrent target processes; `--jobs=N` also works. Cannot be combined with `--target`. An explicit value may exceed the default of two. |
 | `--target NAME` | Runs exactly one named maintained target. Unknown names fail; `--target=NAME` also works, including with `--ci`. |
 | `--ci` | Valid only with `--target`. Applies that target's CI runner arguments/concurrency policy. It is not a generic credential/environment scrub. |
-| `--shard N` | Selects one 1-based CI shard; `--shard=N` also works. Requires `--ci` and either `--target adele_desktop` (1 through 4) or `--target git_backend` (1 through 7). Missing, malformed, duplicate, out-of-range, and unsupported selections fail before preparation. |
+| `--shard N` | Selects one 1-based CI shard; `--shard=N` also works. Requires `--ci` and a sharded target: `adele_desktop` (1 through 4), `adele_plugin_interactions` (1 or 2), or `git_backend` (1 through 7). Missing, malformed, duplicate, out-of-range, and unsupported selections fail before preparation. |
 
 The [CI workflow](../../.github/workflows/ci.yaml) consumes `test-plan --json` and
 runs each matrix entry with `test --target NAME --ci` after `resolve-workspace`,
-adding `--shard N` for the four desktop and seven Git backend entries. Analysis
-uses the same narrower preparation: the maintained test and analysis commands
+adding `--shard N` for the four desktop, two interaction, and seven Git backend
+entries. Analysis uses the same narrower preparation: the test and analysis commands
 already generate before starting workers or analyzers. The separate `generated`
 job runs full bootstrap then `generate --check` to verify the materialized parts
 without repairing them.
@@ -160,23 +160,25 @@ The local two-process default does not limit CI matrix parallelism. The aggregat
 `test` gate requires every matrix entry to pass; `fail-fast: false` lets other
 entries continue after a failure.
 
-Desktop and Git backend shards recursively discover `*_test.dart` under
-`app/test/` and `plugins/git/packages/backend/test/`, respectively. New nested
-suites are included automatically; support files without that suffix are ignored.
-Both targets use duration-weighted longest-processing-time-first (LPT) allocation
-with one CI test worker per shard. Each target's `ciTestFileCosts` in
-`tools/adele.dart` contains relative cost hints in approximate ten-second units,
-not an allowlist or timeouts. Unlisted files cost **1**. See the
+Desktop, interaction, and Git backend shards recursively discover `*_test.dart`
+under `app/test/`, `app/plugin_interactions_test/`, and
+`plugins/git/packages/backend/test/`, respectively. New nested suites are included
+automatically; support files without that suffix are ignored. All three targets
+use duration-weighted longest-processing-time-first (LPT) allocation with one CI
+test worker per shard. Each target's `ciTestFileCosts` in `tools/adele.dart`
+contains relative hints in approximate ten-second units, not measured shard
+durations, an allowlist, or timeouts. Unlisted files cost **1**. See the
 [desktop CI replay](../research/ci-performance-2026-11-26.md#desktop-fix-the-distribution-then-move-coverage-to-its-owner)
-for the desktop hints' provenance.
+and [interaction timing comparison](https://github.com/eric1234/adele/pull/277)
+for the evidence behind those targets' hints.
 
 Whole files are considered by descending cost, then ascending package-relative
 path (with `/` separators). Each goes to the least-loaded shard, with the lower
 1-based shard id breaking load ties. Identical inventories and hints produce
 identical assignments regardless of filesystem discovery order. Adding files or
-updating hints can rebalance existing assignments on either target.
+updating hints can rebalance existing assignments.
 
-For both targets, every discovered file belongs to exactly one nonempty shard.
+For each target, every discovered file belongs to exactly one nonempty shard.
 Empty partitions fail before preparation rather than falling back to full-suite
 execution. Normal test annotations, skips, environment gates, timeouts, and
 assertions remain in effect.
@@ -185,6 +187,8 @@ To reproduce a single CI selection locally:
 
 ```sh
 dart tools/adele.dart test --target adele_desktop --ci --shard 1
+dart tools/adele.dart test --target adele_plugin_interactions --ci --shard 1
+dart tools/adele.dart test --target adele_plugin_interactions --ci --shard 2
 dart tools/adele.dart test --target git_backend --ci --shard 1
 ```
 
@@ -192,8 +196,7 @@ Logs list the shard identity, selected file count and paths before preparation,
 then the existing START/PASS/FAIL and elapsed-time summary. Omitting `--shard`
 still runs the complete selected target, with or without `--ci`. Unsharded Git CI
 retains one worker; non-CI Git retains the normal Dart worker default. The ordinary
-`test` and `check` commands retain one logical target each for desktop and Git,
-not extra shard runs. Other targets' shard and concurrency policies are unchanged.
+`test` and `check` commands run each logical target once, not extra shard runs.
 
 The full-suite local Git command is unchanged:
 
@@ -214,16 +217,18 @@ plugins installed in its fixture:
 
 The two app targets use the same `app/` Flutter package and working directory.
 Both participate in `test`, `check`, and application analysis. The interaction
-target selects its directory explicitly and runs one unsharded CI job with one
-Flutter worker. Only `*_test.dart` files are suites; shared fixtures and compiler
+target selects its whole directory when unsharded and explicit files for each shard.
+Only `*_test.dart` files are suites; shared fixtures and compiler
 helpers remain development-only. Migration is incremental: `adele_desktop` still
 runs unmigrated integration files, not just generic host tests.
 
-To reproduce the interaction CI job, run
-`dart tools/adele.dart test --target adele_plugin_interactions --ci` from the
-root; the maintained target prepares the native CodeForge library for the review
-suite. For a direct run of the whole directory, bootstrap and configure the
-[native editor loader](#focused-editor-checks) first, then run
+For the complete interaction target, run
+`dart tools/adele.dart test --target adele_plugin_interactions` from the root;
+add `--ci` without `--shard` to run the same directory with one Flutter worker.
+Both CI shards prepare the native CodeForge library because prerequisites are
+target-level, though only review needs it. For a direct run of the whole
+directory, bootstrap and configure the [native editor loader](#focused-editor-checks)
+first, then run
 `flutter test --no-pub --concurrency 1 plugin_interactions_test` from `app/`.
 Plain `flutter test` there selects only `test/`, not all application-level
 integration coverage.

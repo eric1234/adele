@@ -486,6 +486,15 @@ const List<TestTarget> testTargets = <TestTarget>[
     arguments: <String>['test'],
     testDirectory: 'plugin_interactions_test',
     ciTestConcurrency: 1,
+    ciShards: 2,
+    // Run 823 serial-worker completion intervals in roughly 10-second units;
+    // command capture includes startup. These are hints, not suite benchmarks.
+    ciTestFileCosts: <String, int>{
+      'plugin_interactions_test/review/prepared_diff_git_integration_test.dart':
+          20,
+      'plugin_interactions_test/execution/command_output_capture_integration_test.dart':
+          12,
+    },
     nativeCodeEditor: true,
     nativeToml: true,
   ),
