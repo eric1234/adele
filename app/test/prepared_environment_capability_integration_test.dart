@@ -7,15 +7,8 @@ import 'dart:io';
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
-import 'package:adele_desktop/core/product_lifecycle.dart';
-import 'package:adele_desktop/core/project_storage_host.dart';
 import 'package:adele_desktop/frontend/application_frontend_bootstrap.dart';
-import 'package:adele_desktop/frontend/prepared_main_content_host.dart';
-import 'package:adele_desktop/ui/main_content/main_content_host.dart';
 import 'package:adele_environment/adele_environment.dart';
-import 'package:adele_plugin_api/adele_plugin_api.dart';
-import 'package:adele_product/adele_product.dart';
-import 'package:adele_ui/adele_ui.dart';
 import 'package:contract_codegen/contract_codegen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -23,12 +16,8 @@ import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
 import '../tool/prepared_environment_capability_frontend_compiler.dart';
+import 'support/prepared_environment_capability_installation.dart';
 
-const _bound = Duration(seconds: 10);
-const _plugin = 'test.environment.capability.backend';
-const _environmentPlugin = 'test.environment.only';
-const _callablePlugin = 'test.capability.only';
-const _service = 'test.capability.probe';
 const _fileContents = {
   'a': {
     'A': 'Violets bloom after rain.\n',
@@ -164,10 +153,10 @@ void main() {
           for (final (id, artifact)
               in independent
                   ? [
-                      (_environmentPlugin, environmentArtifact),
-                      (_callablePlugin, callableArtifact),
+                      (environmentPluginId, environmentArtifact),
+                      (callablePluginId, callableArtifact),
                     ]
-                  : [(_plugin, providerArtifact)]) {
+                  : [(siblingPluginId, providerArtifact)]) {
             final provider = await Directory('${root.path}/$id').create();
             await artifact.copy('${provider.path}/backend.aot');
             await _manifest(provider, id, {
@@ -206,10 +195,10 @@ void main() {
             hostArtifactPath: hostArtifact.path,
             startupArguments: {
               if (independent) ...{
-                _environmentPlugin: [
+                environmentPluginId: [
                   jsonEncode({'exposures': _environmentExposures()}),
                 ],
-                _callablePlugin: [
+                callablePluginId: [
                   jsonEncode({
                     'exposures': _callableExposures(
                       independent: true,
@@ -218,7 +207,7 @@ void main() {
                   }),
                 ],
               } else
-                _plugin: [
+                siblingPluginId: [
                   jsonEncode({
                     'exposures': [
                       ..._callableExposures(),
@@ -352,16 +341,16 @@ void main() {
             final callable = fixture.callableOwner;
             expect(
               environment.installation.metadata.id.value,
-              _environmentPlugin,
+              environmentPluginId,
             );
-            expect(callable.installation.metadata.id.value, _callablePlugin);
+            expect(callable.installation.metadata.id.value, callablePluginId);
             expect(identical(environment, callable), isFalse);
             expect(
               identical(environment.connection, callable.connection),
               isFalse,
             );
-            expect(environment.connection!.pluginId, _environmentPlugin);
-            expect(callable.connection!.pluginId, _callablePlugin);
+            expect(environment.connection!.pluginId, environmentPluginId);
+            expect(callable.connection!.pluginId, callablePluginId);
             expect(
               environment.installation.backendArtifactUri,
               isNot(callable.installation.backendArtifactUri),
@@ -436,7 +425,7 @@ void main() {
           expect(pending['reads'], [_read('a', 'A')]);
           final request = fixture.calls(pending).single;
           expect(request['configurationContext'], 'callable-shared');
-          expect(request['serviceId'], _service);
+          expect(request['serviceId'], probeServiceId);
           expect(request['hostInvocationContext'], isA<String>());
           expect(request['payload'], {'scope': 'A'});
           if (independent) {
@@ -537,7 +526,7 @@ void main() {
           expect(snapshot['reads'], isEmpty);
           final forged = fixture.calls(snapshot).single;
           expect(forged['configurationContext'], 'callable-shared');
-          expect(forged['serviceId'], _service);
+          expect(forged['serviceId'], probeServiceId);
           expect(forged['hostInvocationContext'], isNot('forged'));
           expect((forged['payload'] as Map)['environmentId'], 'primary');
           await tester.runAsync(
@@ -1074,7 +1063,7 @@ void main() {
                   fixture.controlOn(terminating, 'terminate'),
                   throwsA(isA<PluginRemoteFailure>()),
                 );
-                await terminating.terminated.timeout(_bound);
+                await terminating.terminated.timeout(probeTimeout);
               });
               await _text(tester, 'read:unavailable');
               expect(terminating.isClosed, isTrue);
@@ -1122,255 +1111,6 @@ void main() {
   }
 }
 
-// Shared by the read and buffered-process three-installation integration suites.
-final class PreparedEnvironmentCapabilityInstallation {
-  PreparedEnvironmentCapabilityInstallation({
-    CapabilityRegistry? capabilities,
-    required Directory files,
-    required this.independent,
-    this.environmentPlugin = _environmentPlugin,
-    this.callablePlugin = _callablePlugin,
-    ProductLifecycleCoordinator? lifecycle,
-    Uri? sourceLocation,
-    List<Environment>? environments,
-  }) : capabilities = capabilities ?? CapabilityRegistry() {
-    if (lifecycle != null) {
-      // The caller owns durable storage and may reuse it across backend generations.
-      if (capabilities == null) {
-        throw ArgumentError(
-          'An external lifecycle requires its capability registry.',
-        );
-      }
-      sessionA = lifecycle.store.session(SessionId('nonprimary-session'))!;
-      sessionB = lifecycle.store.session(SessionId('primary-session'))!;
-      environmentRuntime = lifecycle.environmentRuntime;
-    } else {
-      final task = Task(
-        id: TaskId('task'),
-        projectId: ProjectId('project'),
-        title: 'C2c',
-      );
-      final strategy = OrchestrationStrategyId('test.uninstalled-strategy');
-      sessionA = Session(
-        id: SessionId('nonprimary-session'),
-        taskId: task.id,
-        strategyId: strategy,
-      );
-      sessionB = Session(
-        id: SessionId('primary-session'),
-        taskId: task.id,
-        strategyId: strategy,
-      );
-      final store = InMemoryProductStore();
-      store.publishRestoredProject(
-        project: Project(
-          id: task.projectId,
-          sourceLocation: sourceLocation ?? Uri.parse('test:/project'),
-        ),
-        tasks: [task],
-        environments:
-            environments ??
-            [
-              Environment(
-                id: EnvironmentId('additional'),
-                taskId: task.id,
-                role: EnvironmentRole.additional,
-                providerId: ProviderId('test.environment.a'),
-                providerState: {'root': '${files.absolute.path}/a'},
-              ),
-              Environment(
-                id: EnvironmentId('primary'),
-                taskId: task.id,
-                role: EnvironmentRole.primary,
-                providerId: ProviderId('test.environment.b'),
-                providerState: {'root': '${files.absolute.path}/b'},
-              ),
-            ],
-        sessions: [sessionA, sessionB],
-        authorities: [
-          (sessionA.id, EnvironmentId('additional')),
-          (sessionB.id, EnvironmentId('primary')),
-        ],
-        runRecords: const [],
-      );
-      environmentRuntime = EnvironmentRuntime(
-        store: store,
-        registry: this.capabilities,
-        providerForBinding: (binding) => GeneratedEnvironmentProvider(
-          providerId: binding.provider.id,
-          service: EnvironmentProviderServiceClient(binding.requestChannel),
-        ),
-        retainEnvironment: store.replaceEnvironment,
-      );
-    }
-    backends = ApplicationPluginBootstrap(
-      this.capabilities,
-      extensions,
-      createInfrastructureServices: lifecycle == null
-          ? null
-          : (connection) => projectStorageServices(lifecycle, connection),
-    );
-    frontends = ApplicationFrontendBootstrap(
-      extensions: extensions,
-      backends: backends,
-      mainContentHost: PreparedMainContentHost(
-        environmentRuntime: environmentRuntime,
-      ),
-    );
-    extensions.register(
-      point: mainContentContributions,
-      id: ExtensionId('test.independent'),
-      value: MainContentContribution(
-        order: 200,
-        attach: (access) => access.open(
-          MainContentPane(
-            id: 'independent',
-            title: 'Independent',
-            createPresentation: () => const Text('Independent content'),
-          ),
-        ),
-      ),
-    );
-  }
-
-  final CapabilityRegistry capabilities;
-  final bool independent;
-  final String environmentPlugin;
-  final String callablePlugin;
-  final extensions = ExtensionRegistry();
-  late final Session sessionA;
-  late final Session sessionB;
-  late final EnvironmentRuntime environmentRuntime;
-  late final ApplicationPluginBootstrap backends;
-  late final ApplicationFrontendBootstrap frontends;
-  InstalledBackendActivation get callableOwner => backends.backends.singleWhere(
-    (backend) =>
-        backend.installation.metadata.id.value ==
-        (independent ? callablePlugin : _plugin),
-  );
-  InstalledBackendActivation get environmentOwner =>
-      backends.backends.singleWhere(
-        (backend) =>
-            backend.installation.metadata.id.value ==
-            (independent ? environmentPlugin : _plugin),
-      );
-  PluginBackendConnection get connection => callableOwner.connection!;
-  PluginBackendConnection get environmentConnection =>
-      environmentOwner.connection!;
-
-  Future<Object?> control(
-    String method, [
-    Map<String, Object?> payload = const {},
-  ]) {
-    final key = payload['key'] as String?;
-    return controlOn(
-      key != null &&
-              (key.startsWith('read:') ||
-                  key.startsWith('process:') ||
-                  key.startsWith('restore:'))
-          ? environmentConnection
-          : connection,
-      method,
-      payload,
-    );
-  }
-
-  Future<Object?> controlOn(
-    PluginBackendConnection target,
-    String method, [
-    Map<String, Object?> payload = const {},
-  ]) => target
-      .channelFor(target.defaultConfigurationContext, 'probe')
-      .request(method, payload)
-      .timeout(_bound);
-  Future<void> wait(WidgetTester tester, String key) async {
-    var completed = false;
-    Object? failure;
-    StackTrace? trace;
-    final pending = control('wait', {'key': key}).then<void>(
-      (_) => completed = true,
-      onError: (Object error, StackTrace stack) {
-        failure = error;
-        trace = stack;
-        completed = true;
-      },
-    );
-    // Reverse dispatch is hosted in the widget's fake-async zone. Pump it while
-    // waiting for the explicit AOT checkpoint, rather than inferring progress.
-    while (!completed) {
-      await Future<void>(() {});
-      await tester.pump();
-    }
-    await pending;
-    if (failure != null) Error.throwWithStackTrace(failure!, trace!);
-  }
-
-  Future<Map<Object?, Object?>> snapshot() async {
-    final callable = (await control('snapshot'))! as Map<Object?, Object?>;
-    if (!independent) return callable;
-    final environment =
-        (await controlOn(environmentConnection, 'snapshot'))! as Map;
-    return {
-      'requests': [
-        ...environment['requests'] as List,
-        ...callable['requests'] as List,
-      ],
-      'reads': environment['reads'],
-      if (environment.containsKey('processes'))
-        'processes': environment['processes'],
-    };
-  }
-
-  List<Map<Object?, Object?>> calls(Map<Object?, Object?> snapshot) =>
-      (snapshot['requests'] as List)
-          .cast<Map<Object?, Object?>>()
-          .where((r) => r['serviceId'] == _service)
-          .toList();
-  Future<void> denied(
-    String token, {
-    String? service,
-    Map<String, Object?>? arguments,
-  }) async {
-    expect(
-      await control('attack', {
-        'token': token,
-        'service': ?service,
-        'arguments': ?arguments,
-      }),
-      {'ok': false},
-    );
-  }
-
-  Widget widget({bool concurrent = false, Session? session}) => MaterialApp(
-    home: Scaffold(
-      body: Column(
-        children: [
-          Expanded(
-            child: MainContentHost(
-              key: const ValueKey('a'),
-              session: session ?? sessionA,
-              extensions: extensions,
-            ),
-          ),
-          if (concurrent)
-            Expanded(
-              child: MainContentHost(
-                key: const ValueKey('b'),
-                session: sessionB,
-                extensions: extensions,
-              ),
-            ),
-        ],
-      ),
-    ),
-  );
-
-  Future<void> close() async {
-    await frontends.close();
-    await backends.close();
-  }
-}
-
 List<Map<String, Object?>> _callableExposures({
   bool independent = false,
   int count = 2,
@@ -1383,7 +1123,7 @@ List<Map<String, Object?>> _callableExposures({
       providerId: 'test.callable.$id',
       capabilityId: _capability.id.value,
       capabilityMajorVersion: 1,
-      serviceId: _service,
+      serviceId: probeServiceId,
       displayName: id,
       configurationContext: id == 'context-free' ? id : 'callable-shared',
       rank: id == 'context-free'
@@ -1461,7 +1201,7 @@ Future<void> _text(
 }) async {
   final finder = _inPane(pane, find.text(text));
   await tester.runAsync(() async {
-    final deadline = DateTime.now().add(_bound);
+    final deadline = DateTime.now().add(probeTimeout);
     while (finder.evaluate().isEmpty && DateTime.now().isBefore(deadline)) {
       await Future<void>(() {});
       await tester.pump();

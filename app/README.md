@@ -2344,9 +2344,13 @@ respective frontend suites. See [test ownership and commands](../docs/developmen
 
 The [prepared Diff/Git review suite](plugin_interactions_test/review/prepared_diff_git_integration_test.dart)
 runs in `adele_plugin_interactions`, including Open in Source and Diff-to-Chat
-feedback. Diff's behavior without a change source belongs to `diff_viewer_frontend`,
-not to either app test target. See [focused Diff checks](../docs/development/testing.md#focused-diff-checks)
-for the independent commands and their different native prerequisites.
+feedback. The [stock portable review suite](plugin_interactions_test/review/prepared_portable_git_stock_integration_test.dart)
+in that target pairs stock Git and Diff over an independent Environment. The
+[portable Git probe suite](test/prepared_portable_git_integration_test.dart)
+remains in `adele_desktop`: its generated-client consumer is not the stock Diff
+UI. See [focused portable Git commands](../docs/development/testing.md#focused-buffered-process-checks)
+to run either file. Diff's behavior without a change source belongs to
+`diff_viewer_frontend`; see [focused Diff checks](../docs/development/testing.md#focused-diff-checks).
 
 Application changes should use the repository's
 [testing and validation workflow](../docs/development/testing.md), including its

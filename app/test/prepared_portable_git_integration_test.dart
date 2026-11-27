@@ -4,685 +4,34 @@ library;
 
 import 'dart:convert';
 import 'dart:io';
-import 'dart:isolate';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_contract/adele_contract.dart';
-import 'package:adele_core_extensions/adele_core_extensions.dart';
-import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/environment_capability_invocation.dart';
 import 'package:adele_desktop/core/environment_capability_selection.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
-import 'package:adele_desktop/core/project_database.dart';
 import 'package:adele_desktop/core/project_storage_host.dart';
-import 'package:adele_desktop/frontend/application_frontend_bootstrap.dart';
-import 'package:adele_desktop/frontend/environment_capability_access_bridge.dart';
-import 'package:adele_desktop/frontend/main_content_bridge.dart';
 import 'package:adele_environment/adele_environment.dart';
-import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:adele_project_storage/adele_project_storage.dart';
-import 'package:contract_codegen/contract_codegen.dart';
-import 'package:crypto/crypto.dart';
-import 'package:dart_eval/dart_eval.dart';
 import 'package:diff_viewer_contract/diff_viewer_contract.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_eval/flutter_eval.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:git_backend/git_backend.dart';
-import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
-import '../../tools/stock_frontend_descriptors.dart';
-import '../tool/diff_viewer_frontend_compiler.dart';
-import 'prepared_environment_capability_integration_test.dart'
-    show PreparedEnvironmentCapabilityInstallation;
-
-const _bound = Duration(seconds: 15);
-const _environmentPlugin = 'test.environment.only';
-const _callablePlugin = 'test.capability.only';
-const _service = 'diff.changeSetSource';
-const _approvalProvider = 'test.callable.approval';
-const _selectedBranch = 'selected-task';
-const _selectedBranchRef = 'refs/heads/$_selectedBranch';
-const _newFileReviewPath = "new review + [file]; 'quoted'.txt";
-const _deletedFileReviewPath = "deleted review + [file]; 'quoted'.txt";
-const _library = 'package:portable_git_consumer/main.dart';
-final _capability = CapabilityKey(
-  id: CapabilityId('adele.diff.change-set-source'),
-  majorVersion: 1,
-);
+import 'support/portable_git_review_repository.dart';
+import 'support/prepared_environment_capability_installation.dart';
+import 'support/prepared_portable_git.dart';
 
 void main() {
-  late Directory temporary;
-  late Map<String, String> roots;
-  late String selectedBaseline;
-  late String primaryBaseline;
-  late String committedRoot;
-  late File hostArtifact;
-  late File environmentArtifact;
-  late File callableArtifact;
-  late File frontendArtifact;
-  late File stockGitArtifact;
-  late File stockDiffArtifact;
-  late String aotRuntime;
-  var sequence = 0;
-
-  setUpAll(() async {
-    final parent = await Directory('.dart_tool').create(recursive: true);
-    temporary = await parent.createTemp('prepared-portable-git-');
-    roots = {};
-    for (final id in ['additional', 'primary']) {
-      final repository = await Directory(
-        '${temporary.absolute.path}/$id',
-      ).create();
-      roots[id] = await repository.resolveSymbolicLinks();
-      await _git(repository, [
-        'init',
-        '--initial-branch=${id == 'additional' ? _selectedBranch : 'main'}',
-      ]);
-      final files = id == 'additional'
-          ? {
-              'file with spaces.txt': 'old selected\n',
-              'deleted.txt': 'deleted selected\n',
-              'staged-only.txt': 'old staged\n',
-              'staged deleted.txt': 'deleted staged\n',
-              'partial.txt': 'head partial\n',
-              'cancel.txt': 'head cancellation\n',
-              'conflicted.txt': 'base conflict\n',
-              'committed-only.txt': 'baseline committed\n',
-              'committed deleted.txt': 'baseline deleted\n',
-              'three-layer.txt': 'baseline layer\n',
-            }
-          : {'primary-only.txt': 'old primary\n'};
-      for (final entry in files.entries) {
-        await File(
-          '${repository.path}/${entry.key}',
-        ).writeAsString(entry.value);
-      }
-      await _git(repository, ['add', '--all']);
-      await _git(repository, [
-        '-c',
-        'user.name=Fixture',
-        '-c',
-        'user.email=fixture@example.invalid',
-        'commit',
-        '-m',
-        'baseline',
-      ]);
-      if (id == 'additional') {
-        // Retain the exact baseline before subsequent commits. Trusted setup
-        // provisions it; no invocation derives it from current HEAD.
-        selectedBaseline = await _git(repository, ['rev-parse', 'HEAD']);
-        for (final side in ['conflict-side', _selectedBranch]) {
-          await _git(repository, [
-            'checkout',
-            if (side == 'conflict-side') '-b',
-            side,
-          ]);
-          await File(
-            '${repository.path}/conflicted.txt',
-          ).writeAsString('$side conflict\n');
-          if (side == _selectedBranch) {
-            for (final entry in {
-              'committed-only.txt': 'head committed\n',
-              'committed added.txt': 'head added\n',
-              'three-layer.txt': 'head layer\n',
-            }.entries) {
-              await File(
-                '${repository.path}/${entry.key}',
-              ).writeAsString(entry.value);
-            }
-            await File('${repository.path}/committed deleted.txt').delete();
-            await _git(repository, ['add', '--all']);
-          }
-          await _git(repository, [
-            '-c',
-            'user.name=Fixture',
-            '-c',
-            'user.email=fixture@example.invalid',
-            'commit',
-            '-am',
-            side,
-          ]);
-        }
-        await _git(repository, [
-          '-c',
-          'user.name=Fixture',
-          '-c',
-          'user.email=fixture@example.invalid',
-          'merge',
-          '--no-commit',
-          'conflict-side',
-        ], exitCode: 1);
-        for (final entry in {
-          'staged-only.txt': 'new staged\n',
-          'added\nstaged.txt': 'added staged\n',
-          'partial.txt': 'index partial\n',
-          'cancel.txt': 'index cancellation\n',
-          'three-layer.txt': 'index layer\n',
-        }.entries) {
-          await File(
-            '${repository.path}/${entry.key}',
-          ).writeAsString(entry.value);
-          await _git(repository, ['add', '--', entry.key]);
-        }
-        await _git(repository, ['rm', '--', 'staged deleted.txt']);
-        await File(
-          '${repository.path}/partial.txt',
-        ).writeAsString('work partial\n');
-        await File(
-          '${repository.path}/cancel.txt',
-        ).writeAsString('head cancellation\n');
-        await File(
-          '${repository.path}/three-layer.txt',
-        ).writeAsString('baseline layer\n');
-        await File(
-          '${repository.path}/file with spaces.txt',
-        ).writeAsString('new selected\n');
-        await File('${repository.path}/deleted.txt').delete();
-        await File(
-          '${repository.path}/line\nname.txt',
-        ).writeAsString('added selected\n');
-      } else {
-        primaryBaseline = await _git(repository, ['rev-parse', 'HEAD']);
-        await File(
-          '${repository.path}/primary-only.txt',
-        ).writeAsString('new primary\n');
-      }
-    }
-    expect(selectedBaseline, isNot(primaryBaseline));
-    expect(
-      await _git(Directory(roots['additional']!), ['rev-parse', 'HEAD']),
-      isNot(selectedBaseline),
-    );
-    // Clone committed history only, leaving the layered/conflicted fixture intact.
-    await _git(temporary, [
-      'clone',
-      '--no-hardlinks',
-      '--single-branch',
-      '--branch',
-      _selectedBranch,
-      roots['additional']!,
-      'committed-only',
-    ]);
-    committedRoot = await Directory(
-      '${temporary.path}/committed-only',
-    ).resolveSymbolicLinks();
-    final dart =
-        '${Platform.environment['FLUTTER_ROOT']!}/bin/cache/dart-sdk/bin/dart';
-    final sdk = File(dart).parent.parent.path;
-    aotRuntime = File(dart).parent.uri.resolve('dartaotruntime').toFilePath();
-    for (final name in [
-      'prepared_environment_capability_support',
-      'portable_git_environment',
-      'portable_git_callable',
-    ]) {
-      await File('${temporary.path}/$name.dart').writeAsString(
-        await File('test/fixtures/$name.dart.txt').readAsString(),
-      );
-    }
-    hostArtifact = File('${temporary.path}/host.aot');
-    environmentArtifact = File('${temporary.path}/environment.aot');
-    callableArtifact = File('${temporary.path}/callable.aot');
-    frontendArtifact = File('${temporary.path}/frontend.evc');
-    stockGitArtifact = File('${temporary.path}/stock-git.aot');
-    stockDiffArtifact = File('${temporary.path}/stock-diff.evc');
-    await _compileFrontend(sdk, frontendArtifact);
-    await _compileStockFrontend(sdk, stockDiffArtifact.path);
-    for (final target in [
-      (
-        'packages/plugin_backend_host/bin/adele_backend_host.dart',
-        hostArtifact,
-      ),
-      (
-        '${temporary.absolute.path}/portable_git_environment.dart',
-        environmentArtifact,
-      ),
-      (
-        '${temporary.absolute.path}/portable_git_callable.dart',
-        callableArtifact,
-      ),
-      ('plugins/git/packages/backend/bin/git_backend.dart', stockGitArtifact),
-    ]) {
-      await compileAotSnapshot(
-        dartExecutable: dart,
-        workingDirectory: Directory.current.parent,
-        entrypoint: target.$1,
-        artifact: target.$2.absolute,
-        stage: 'prepared-portable-git',
-      );
-    }
-  });
-  tearDownAll(() => temporary.delete(recursive: true));
-
-  late PreparedEnvironmentCapabilityInstallation fixture;
-  Future<void> mount(
-    WidgetTester tester, {
-    bool processGrant = true,
-    bool providerPermission = true,
-    bool providerPresent = true,
-    bool approvalGrant = false,
-    bool approvalProviderPermission = true,
-    bool approvalProviderPresent = false,
-    bool noBufferedFacet = false,
-    bool unavailable = false,
-    bool concurrent = false,
-    bool present = true,
-    CapabilityRegistry? registry,
-    ProductLifecycleCoordinator? lifecycle,
-    String? additionalRoot,
-    String? primaryRoot,
-    bool withTaskAnchor = true,
-    String? baselineCommit,
-    String expectedBranchRef = _selectedBranchRef,
-    bool stock = false,
-  }) async {
-    if (stock) expect(lifecycle, isNotNull);
-    final selectedRoots = {
-      ...roots,
-      'additional': ?additionalRoot,
-      'primary': ?primaryRoot,
-    };
-    final callablePlugin = lifecycle == null ? _callablePlugin : gitPluginId;
-    tester.view.physicalSize = const Size(1600, 2400);
-    tester.view.devicePixelRatio = 1;
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
-    fixture = PreparedEnvironmentCapabilityInstallation(
-      files: temporary,
-      independent: true,
-      capabilities: registry,
-      lifecycle: lifecycle,
-      callablePlugin: callablePlugin,
-      environments: [
-        for (final id in ['additional', 'primary'])
-          Environment(
-            id: EnvironmentId(id),
-            taskId: TaskId('task'),
-            role: id == 'additional'
-                ? EnvironmentRole.additional
-                : EnvironmentRole.primary,
-            providerId: ProviderId(
-              'test.environment.${id == 'additional' ? 'a' : 'b'}',
-            ),
-            providerState: {'root': selectedRoots[id]},
-          ),
-      ],
-    );
-    addTearDown(fixture.close);
-    await tester.runAsync(() async {
-      final root = await Directory(
-        '${temporary.path}/case-${sequence++}',
-      ).create();
-      for (final (id, artifact) in [
-        (_environmentPlugin, environmentArtifact),
-        (callablePlugin, stock ? stockGitArtifact : callableArtifact),
-      ]) {
-        final installation = await Directory('${root.path}/$id').create();
-        await artifact.copy('${installation.path}/backend.aot');
-        await _manifest(installation, id, {
-          'backend': {'artifact': 'backend.aot'},
-        });
-      }
-      final consumer = await Directory('${root.path}/consumer').create();
-      await (stock ? stockDiffArtifact : frontendArtifact).copy(
-        '${consumer.path}/frontend.evc',
-      );
-      await _manifest(
-        consumer,
-        stock ? 'dev.adele.diff-viewer' : 'test.portable.git.consumer',
-        {
-          'frontend': {
-            'artifact': 'frontend.evc',
-            'presentations': stock
-                ? stockFrontendDescriptors['dev.adele.diff-viewer']!
-                : [
-                    {
-                      'role': 'mainContent',
-                      'extensionId': 'test.portable.git.pane',
-                      'order': 100,
-                      'library': _library,
-                      'initialize': 'initialize',
-                      'entrypoint': 'buildPane',
-                      'capabilities': [
-                        {'id': _capability.id.value, 'majorVersion': 1},
-                        if (approvalProviderPresent)
-                          {
-                            'id': reviewApprovalCapability.id.value,
-                            'majorVersion': 1,
-                          },
-                      ],
-                      if (processGrant || approvalGrant)
-                        'environmentBufferedProcessCapabilities': [
-                          if (processGrant)
-                            {'id': _capability.id.value, 'majorVersion': 1},
-                          if (approvalGrant)
-                            {
-                              'id': reviewApprovalCapability.id.value,
-                              'majorVersion': 1,
-                            },
-                        ],
-                    },
-                  ],
-          },
-        },
-      );
-      await fixture.backends.start(
-        installationRoot: root.path,
-        dartaotruntimeExecutable: aotRuntime,
-        hostArtifactPath: hostArtifact.path,
-        startupArguments: {
-          _environmentPlugin: [
-            jsonEncode({
-              'roots': selectedRoots,
-              'noBufferedFacet': noBufferedFacet,
-              'unavailable': unavailable,
-              'exposures': [
-                for (final id in ['a', 'b'])
-                  AdeleCapabilityExposure(
-                    providerId: 'test.environment.$id',
-                    capabilityId: environmentProviderCapability.id.value,
-                    capabilityMajorVersion:
-                        environmentProviderCapability.majorVersion,
-                    serviceId: environmentProviderServiceId,
-                    displayName: id,
-                    configurationContext: id,
-                  ).toMap(),
-              ],
-            }),
-          ],
-          if (!stock)
-            callablePlugin: [
-              jsonEncode({
-                'persisted': lifecycle != null,
-                if (lifecycle == null && withTaskAnchor)
-                  'taskAnchor': {
-                    'baselineCommit': baselineCommit ?? selectedBaseline,
-                    'expectedBranchRef': expectedBranchRef,
-                  },
-                'exposures': [
-                  if (providerPresent)
-                    AdeleCapabilityExposure(
-                      providerId: lifecycle == null
-                          ? 'test.callable.a'
-                          : gitChangeSetSourceProviderId,
-                      capabilityId: _capability.id.value,
-                      capabilityMajorVersion: 1,
-                      serviceId: _service,
-                      displayName: 'Independent portable Git',
-                      configurationContext: 'callable-shared',
-                      environmentBound: true,
-                      environmentHostServices: [
-                        if (providerPermission)
-                          AdeleEnvironmentHostService.bufferedProcess,
-                      ],
-                    ).toMap(),
-                  if (approvalProviderPresent)
-                    AdeleCapabilityExposure(
-                      providerId: _approvalProvider,
-                      capabilityId: reviewApprovalCapability.id.value,
-                      capabilityMajorVersion: 1,
-                      serviceId: reviewApprovalHandlerServiceId,
-                      displayName: 'Independent portable Git approval',
-                      configurationContext: 'callable-shared',
-                      environmentBound: true,
-                      environmentHostServices: [
-                        if (approvalProviderPermission)
-                          AdeleEnvironmentHostService.bufferedProcess,
-                      ],
-                    ).toMap(),
-                ],
-              }),
-            ],
-        },
-      );
-      expect(fixture.backends.state, ApplicationPluginState.ready);
-      expect(fixture.backends.failure, isNull);
-      expect(fixture.backends.catalog!.issues, isEmpty);
-      expect(fixture.backends.catalog!.installations, hasLength(3));
-      expect(fixture.backends.backends, hasLength(2));
-      for (final backend in fixture.backends.backends) {
-        expect(
-          backend.state,
-          InstalledBackendState.active,
-          reason: '${backend.failure}',
-        );
-        expect(backend.installation.frontend, isNull);
-      }
-      await fixture.frontends.start(fixture.backends.catalog!);
-      final frontend = fixture.frontends.generations.single;
-      expect(
-        frontend.state,
-        InstalledFrontendState.active,
-        reason: '${frontend.failure}',
-      );
-      expect(frontend.installation.backendArtifactUri, isNull);
-    });
-    if (present) {
-      await tester.pumpWidget(fixture.widget(concurrent: concurrent));
-      await tester.pumpAndSettle();
-      if (!stock) expect(find.text('idle'), findsNWidgets(concurrent ? 2 : 1));
-    }
-  }
-
-  Future<Map<String, String>> reviewRepositories(
-    WidgetTester tester, {
-    bool wholeFile = false,
-    bool wholeLayer = false,
-    String? newFileContent,
-    String? deletedFileContent,
-  }) async => (await tester.runAsync(() async {
-    final result = <String, String>{};
-    final name = 'review-${sequence++}';
-    for (final id in ['additional', 'primary']) {
-      final root = await Directory('${temporary.path}/$name-$id').create();
-      await _git(root, [
-        'init',
-        '--object-format=sha1',
-        '--initial-branch=main',
-      ]);
-      await File('${root.path}/review.txt').writeAsString(
-        wholeFile || wholeLayer ? _fileReviewContent(id) : _reviewContent(id),
-      );
-      await File('${root.path}/untouched.txt').writeAsString('$id sentinel\n');
-      if (wholeLayer) {
-        await File(
-          '${root.path}/$_deletedFileReviewPath',
-        ).writeAsString('$id deleted layer\n');
-      }
-      if (deletedFileContent != null) {
-        final deleted = File('${root.path}/$_deletedFileReviewPath');
-        await deleted.writeAsString(deletedFileContent);
-        if (deletedFileContent.isNotEmpty) {
-          final chmod = await Process.run('/bin/chmod', ['755', deleted.path]);
-          expect(chmod.exitCode, 0, reason: '${chmod.stderr}');
-        }
-      }
-      if (wholeFile || wholeLayer) {
-        await File(
-          '${root.path}/z-other.txt',
-        ).writeAsString('$id other baseline\n');
-      }
-      await _git(root, ['add', '--all']);
-      await _git(root, [
-        '-c',
-        'user.name=Fixture',
-        '-c',
-        'user.email=fixture@example.invalid',
-        'commit',
-        '-m',
-        'approval baseline',
-      ]);
-      if (wholeFile || wholeLayer) {
-        await File(
-          '${root.path}/review.txt',
-        ).writeAsString(_fileReviewContent(id, staged: true));
-        await File(
-          '${root.path}/untouched.txt',
-        ).writeAsString('$id staged sentinel\n');
-        await _git(root, ['add', '--', 'review.txt', 'untouched.txt']);
-        await File(
-          '${root.path}/z-other.txt',
-        ).writeAsString('$id other working\n');
-      }
-      if (deletedFileContent != null) {
-        await File(
-          '${root.path}/untouched.txt',
-        ).writeAsString('$id unrelated staged deletion sentinel\n');
-        await _git(root, ['add', '--', 'untouched.txt']);
-        final deleted = File('${root.path}/$_deletedFileReviewPath');
-        if (id == 'primary') {
-          await deleted.writeAsString('Primary staged deletion sentinel\n');
-          await _git(root, ['add', '--', _deletedFileReviewPath]);
-          await deleted.writeAsString('Primary working deletion sentinel\n');
-        } else {
-          await deleted.delete();
-        }
-      } else if (newFileContent != null) {
-        await File(
-          '${root.path}/untouched.txt',
-        ).writeAsString('$id unrelated staged sentinel\n');
-        await _git(root, ['add', '--', 'untouched.txt']);
-        final added = File('${root.path}/$_newFileReviewPath');
-        if (id == 'primary') {
-          await added.writeAsString('Primary staged new file\n');
-          await _git(root, ['add', '--', _newFileReviewPath]);
-          await added.writeAsString('Primary working new file\n');
-        } else {
-          await added.writeAsString(newFileContent);
-        }
-      } else {
-        await File('${root.path}/review.txt').writeAsString(
-          wholeFile || wholeLayer
-              ? _fileReviewContent(id, staged: true, changed: true)
-              : _reviewContent(id, first: true, second: true),
-        );
-      }
-      if (wholeLayer) {
-        await File('${root.path}/$_deletedFileReviewPath').delete();
-        await File(
-          '${root.path}/$_newFileReviewPath',
-        ).writeAsString('$id added layer\n');
-      }
-      result[id] = await root.resolveSymbolicLinks();
-    }
-    return result;
-  }))!;
-
-  Future<
-    ({
-      Directory backing,
-      ProductLifecycleCoordinator lifecycle,
-      CapabilityRegistry registry,
-    })
-  >
-  openDurable(
-    WidgetTester tester, {
-    Directory? backing,
-    String? additionalRoot,
-    String? primaryRoot,
-    Map<String, GitTaskComparisonAnchor> initialAnchors = const {},
-  }) async => (await tester.runAsync(() async {
-    final source =
-        backing ??
-        await Directory(
-          '${temporary.absolute.path}/project-${sequence++}',
-        ).create();
-    if (backing == null) {
-      _seedProject(source, {
-        ...roots,
-        'additional': ?additionalRoot,
-        'primary': ?primaryRoot,
-      });
-    }
-    final registry = CapabilityRegistry();
-    final providerId = ProviderId('test.portable.project');
-    final registration = registry.register(
-      provider: ProviderDescriptor(
-        id: providerId,
-        capability: projectProviderCapability,
-        pluginId: 'test.portable.project',
-        displayName: 'Durable fixture Project',
-        serviceId: projectProviderServiceId,
-      ),
-      endpoint: AdeleRequestChannelEndpoint(
-        channel: _ProjectChannel(),
-        serviceId: projectProviderServiceId,
-        isAvailable: () => true,
-      ),
-    );
-    addTearDown(registration.close);
-    final extensions = ExtensionRegistry();
-    final lifecycle = ProductLifecycleCoordinator.generated(
-      store: InMemoryProductStore(),
-      registry: registry,
-      extensions: extensions,
-      ids: _FixtureSessionIds(),
-    );
-    addTearDown(lifecycle.close);
-    final project = await lifecycle.openProject(
-      sourceLocation: source.uri,
-      provider: lifecycle.resolveProjectProvider(providerId),
-    );
-    expect(project.id, ProjectId('project'));
-    if (backing == null) {
-      final database = lifecycle.databaseForEnvironment(
-        EnvironmentId('primary'),
-      )!;
-      expect(database.loadProductGraph().sessions, isEmpty);
-      // Trusted fixture provisioning, before either Sessions or AOT invocation
-      // grants exist. Production snapshots only read the retained Git state.
-      final anchors = GitTaskAnchorStore(
-        ProjectStorageHost(
-          lifecycle: lifecycle,
-          owner: PluginId(gitPluginId),
-          validateAccess: () {},
-        ),
-      );
-      for (final entry in initialAnchors.entries) {
-        await anchors.enrollForEnvironment(
-          environmentId: entry.key,
-          anchor: entry.value,
-        );
-      }
-      expect(database.loadProductGraph().sessions, isEmpty);
-      final strategy = OrchestrationStrategyId('test.uninstalled-strategy');
-      final strategyRegistration = extensions.register(
-        point: orchestrationStrategyContributions,
-        id: ExtensionId('test.fixture.strategy'),
-        value: OrchestrationStrategyContribution(
-          strategyId: strategy,
-          materialize: (_) => fail('Fixture must not materialize a strategy.'),
-        ),
-      );
-      try {
-        for (final environment in ['additional', 'primary', 'additional']) {
-          lifecycle.createSession(
-            taskId: TaskId('task'),
-            strategyId: strategy,
-            environmentId: EnvironmentId(environment),
-          );
-        }
-      } finally {
-        strategyRegistration.close();
-      }
-    } else {
-      expect(
-        initialAnchors,
-        isEmpty,
-        reason: 'Reopen never reenrolls anchors.',
-      );
-    }
-    for (final id in ['additional', 'primary']) {
-      expect(
-        lifecycle.environmentRuntime.currentMaterialization(EnvironmentId(id)),
-        isNull,
-      );
-    }
-    return (backing: source, lifecycle: lifecycle, registry: registry);
-  }))!;
+  final suite = PreparedPortableGit(
+    stock: false,
+    repositoryRoot: Directory.current.parent,
+  );
+  setUpAll(suite.prepare);
+  tearDownAll(suite.close);
 
   test(
     'independent A and semantic B/C preserve implementation boundaries',
@@ -803,11 +152,9 @@ void main() {
   testWidgets(
     'G6a independent approval stages one hunk and unapproves without crossing same-path repositories',
     (tester) async {
-      final repositories = await reviewRepositories(tester);
-      final before = (await tester.runAsync(
-        () => _reviewStates(repositories),
-      ))!;
-      await mount(
+      final repositories = await suite.reviewRepositories(tester);
+      final before = (await tester.runAsync(() => reviewStates(repositories)))!;
+      final fixture = await suite.mount(
         tester,
         additionalRoot: repositories['additional'],
         primaryRoot: repositories['primary'],
@@ -825,17 +172,17 @@ void main() {
       ))!;
       expect(selected.environment.id, EnvironmentId('additional'));
       expect(selected.environment.role, EnvironmentRole.additional);
-      expect(selected.binding.provider.id.value, _approvalProvider);
+      expect(selected.binding.provider.id.value, portableApprovalProvider);
       expect(fixture.callableOwner.associationFor(selected.binding), isNull);
       for (final pane in ['a', 'b']) {
-        _press(tester, 'Select approval', pane: pane);
+        pressPaneButton(tester, 'Select approval', pane: pane);
         await _text(tester, 'approval-selected', pane: pane);
         // A client without a snapshot selection must remain non-actionable.
-        _press(tester, 'Approve', pane: pane);
-        _press(tester, 'Unapprove', pane: pane);
+        pressPaneButton(tester, 'Approve', pane: pane);
+        pressPaneButton(tester, 'Unapprove', pane: pane);
         await _text(tester, 'approval:idle', pane: pane);
         await _select(tester, pane: pane);
-        _press(tester, 'Uncommitted', pane: pane);
+        pressPaneButton(tester, 'Uncommitted', pane: pane);
         final snapshot = await _snapshot(tester, pane: pane);
         expect(snapshot, contains('review.txt|modified|text'));
         expect(snapshot.split('\n@@'), hasLength(3));
@@ -852,17 +199,17 @@ void main() {
         ),
         isEmpty,
       );
-      expect(await tester.runAsync(() => _reviewStates(repositories)), before);
-      _press(tester, 'Approve');
+      expect(await tester.runAsync(() => reviewStates(repositories)), before);
+      pressPaneButton(tester, 'Approve');
       await _text(tester, 'approval:success');
       final approved = (await tester.runAsync(
-        () => _reviewStates(repositories),
+        () => reviewStates(repositories),
       ))!;
-      _expectReviewIndex(
+      expectReviewIndex(
         approved,
         before,
         'additional',
-        _reviewContent('additional', first: true),
+        reviewContent('additional', first: true),
       );
       final calls = (await tester.runAsync(
         () => _calls(fixture, serviceId: reviewApprovalHandlerServiceId),
@@ -884,17 +231,14 @@ void main() {
         () => _denied(fixture, calls.single['hostInvocationContext'] as String),
       );
       // The EVC retains the exact old DTO; duplicate submission must not replay.
-      _press(tester, 'Approve');
+      pressPaneButton(tester, 'Approve');
       await _text(tester, 'approval:unavailable');
-      expect(
-        await tester.runAsync(() => _reviewStates(repositories)),
-        approved,
-      );
+      expect(await tester.runAsync(() => reviewStates(repositories)), approved);
       final probe =
           (await tester.runAsync(() => fixture.control('snapshot')))! as Map;
       expect(probe['failures'], ['stale_selection']);
 
-      _press(tester, 'Uncommitted');
+      pressPaneButton(tester, 'Uncommitted');
       final partial = await _snapshot(tester);
       final staged = partial.split('\nstaged')[1].split('\nunstaged')[0];
       final unstaged = partial.split('\nunstaged')[1].split('\nconflicts')[0];
@@ -904,12 +248,12 @@ void main() {
       expect(staged, isNot(contains('second change')));
       expect(unstaged, contains('addition:additional second change:false'));
       expect(unstaged, isNot(contains('first change')));
-      _press(tester, 'Unapprove');
+      pressPaneButton(tester, 'Unapprove');
       await _text(tester, 'approval:success');
-      expect(await tester.runAsync(() => _reviewStates(repositories)), before);
-      _press(tester, 'Unapprove');
+      expect(await tester.runAsync(() => reviewStates(repositories)), before);
+      pressPaneButton(tester, 'Unapprove');
       await _text(tester, 'approval:unavailable');
-      expect(await tester.runAsync(() => _reviewStates(repositories)), before);
+      expect(await tester.runAsync(() => reviewStates(repositories)), before);
       final duplicate =
           (await tester.runAsync(() => fixture.control('snapshot')))! as Map;
       expect(duplicate['failures'], ['stale_selection', 'stale_selection']);
@@ -932,8 +276,8 @@ void main() {
         isNot(selection['expectedRevision']),
       );
       final evidence = (await tester.runAsync(fixture.snapshot))!;
-      expect(_reviewWrites(evidence), hasLength(2));
-      for (final write in _reviewWrites(evidence)) {
+      expect(reviewWrites(evidence), hasLength(2));
+      for (final write in reviewWrites(evidence)) {
         expect(write['environmentId'], 'additional');
         expect(write['cwd'], repositories['additional']);
         expect(write['exitCode'], 0);
@@ -952,11 +296,14 @@ void main() {
     testWidgets(
       'G6a/G6c3a $denial denies approval independently of snapshot access',
       (tester) async {
-        final repositories = await reviewRepositories(tester, wholeLayer: true);
+        final repositories = await suite.reviewRepositories(
+          tester,
+          wholeLayer: true,
+        );
         final before = (await tester.runAsync(
-          () => _reviewStates(repositories),
+          () => reviewStates(repositories),
         ))!;
-        await mount(
+        final fixture = await suite.mount(
           tester,
           additionalRoot: repositories['additional'],
           primaryRoot: repositories['primary'],
@@ -964,7 +311,7 @@ void main() {
           approvalProviderPermission: denial != 'provider permission',
           approvalProviderPresent: denial != 'absent provider',
         );
-        _press(tester, 'Select approval');
+        pressPaneButton(tester, 'Select approval');
         await _text(tester, 'approval-selection:unavailable');
         expect(
           await tester.runAsync(
@@ -977,16 +324,16 @@ void main() {
           isEmpty,
         );
         await _select(tester);
-        _press(tester, 'Uncommitted');
+        pressPaneButton(tester, 'Uncommitted');
         expect(
           await _snapshot(tester),
           contains('addition:additional inserted first:false'),
         );
-        _press(tester, 'Approve');
-        _press(tester, 'Approve File');
-        _press(tester, 'Unapprove File');
-        _press(tester, 'Approve All');
-        _press(tester, 'Unapprove All');
+        pressPaneButton(tester, 'Approve');
+        pressPaneButton(tester, 'Approve File');
+        pressPaneButton(tester, 'Unapprove File');
+        pressPaneButton(tester, 'Approve All');
+        pressPaneButton(tester, 'Unapprove All');
         await _text(tester, 'approval:idle');
         expect(
           await tester.runAsync(
@@ -994,10 +341,7 @@ void main() {
           ),
           isEmpty,
         );
-        expect(
-          await tester.runAsync(() => _reviewStates(repositories)),
-          before,
-        );
+        expect(await tester.runAsync(() => reviewStates(repositories)), before);
         expect(tester.takeException(), isNull);
         await tester.pumpWidget(const SizedBox.shrink());
       },
@@ -1007,18 +351,19 @@ void main() {
   testWidgets(
     'G6c1 independent generated file methods preserve other entries and reject consumed selections',
     (tester) async {
-      final repositories = await reviewRepositories(tester, wholeFile: true);
-      final before = (await tester.runAsync(
-        () => _reviewStates(repositories),
-      ))!;
-      final partial = _fileReviewContent('additional', staged: true);
-      final working = _fileReviewContent(
+      final repositories = await suite.reviewRepositories(
+        tester,
+        wholeFile: true,
+      );
+      final before = (await tester.runAsync(() => reviewStates(repositories)))!;
+      final partial = fileReviewContent('additional', staged: true);
+      final working = fileReviewContent(
         'additional',
         staged: true,
         changed: true,
       );
-      final original = _fileReviewContent('additional');
-      await mount(
+      final original = fileReviewContent('additional');
+      final fixture = await suite.mount(
         tester,
         additionalRoot: repositories['additional'],
         primaryRoot: repositories['primary'],
@@ -1029,10 +374,10 @@ void main() {
       );
       expect(fixture.connection, isNot(same(fixture.environmentConnection)));
       await _select(tester);
-      _press(tester, 'Select approval');
+      pressPaneButton(tester, 'Select approval');
       await _text(tester, 'approval-selected');
-      _press(tester, 'Approve File');
-      _press(tester, 'Unapprove File');
+      pressPaneButton(tester, 'Approve File');
+      pressPaneButton(tester, 'Unapprove File');
       await _text(tester, 'approval:idle');
       expect(
         await tester.runAsync(
@@ -1040,7 +385,7 @@ void main() {
         ),
         isEmpty,
       );
-      _press(tester, 'Uncommitted');
+      pressPaneButton(tester, 'Uncommitted');
       final initial = await _snapshot(tester);
       expect(initial.split('\n@@'), hasLength(7));
       expect(initial, contains('addition:additional staged change:false'));
@@ -1049,12 +394,12 @@ void main() {
       expect(initial, contains('addition:additional final replacement:false'));
       expect(initial, isNot(contains('primary')));
 
-      _press(tester, 'Approve File');
+      pressPaneButton(tester, 'Approve File');
       await _text(tester, 'approval:success');
       final approved = (await tester.runAsync(
-        () => _reviewStates(repositories),
+        () => reviewStates(repositories),
       ))!;
-      _expectReviewIndex(
+      expectReviewIndex(
         approved,
         before,
         'additional',
@@ -1064,46 +409,43 @@ void main() {
       await tester.runAsync(() async {
         final root = Directory(repositories['additional']!);
         expect(
-          await _git(root, ['rev-parse', ':review.txt']),
-          _reviewBlobOid(working),
+          await runGit(root, ['rev-parse', ':review.txt']),
+          reviewBlobOid(working),
         );
         expect(
-          await _git(root, ['cat-file', 'blob', _reviewBlobOid(working)]),
+          await runGit(root, ['cat-file', 'blob', reviewBlobOid(working)]),
           working.trim(),
         );
       });
-      _press(tester, 'Approve File');
+      pressPaneButton(tester, 'Approve File');
       await _text(tester, 'approval:unavailable');
-      expect(
-        await tester.runAsync(() => _reviewStates(repositories)),
-        approved,
-      );
+      expect(await tester.runAsync(() => reviewStates(repositories)), approved);
 
-      _press(tester, 'Task');
+      pressPaneButton(tester, 'Task');
       final staged = await _snapshot(tester);
       expect(staged, startsWith('snapshot\ncommitted\nstaged\nreview.txt'));
       expect(staged.split('\nunstaged')[1], isNot(contains('review.txt')));
       expect(staged, contains('untouched.txt|modified|text'));
       expect(staged, contains('z-other.txt|modified|text'));
-      _press(tester, 'Unapprove File');
+      pressPaneButton(tester, 'Unapprove File');
       await _text(tester, 'approval:success');
       final unapproved = (await tester.runAsync(
-        () => _reviewStates(repositories),
+        () => reviewStates(repositories),
       ))!;
-      _expectReviewIndex(
+      expectReviewIndex(
         unapproved,
         before,
         'additional',
         original,
         originalContent: partial,
       );
-      _press(tester, 'Unapprove File');
+      pressPaneButton(tester, 'Unapprove File');
       await _text(tester, 'approval:unavailable');
       expect(
-        await tester.runAsync(() => _reviewStates(repositories)),
+        await tester.runAsync(() => reviewStates(repositories)),
         unapproved,
       );
-      _press(tester, 'Uncommitted');
+      pressPaneButton(tester, 'Uncommitted');
       final refreshed = await _snapshot(tester);
       expect(
         refreshed.split('\nstaged')[1].split('\nunstaged')[0],
@@ -1151,7 +493,7 @@ void main() {
           (await tester.runAsync(() => fixture.control('snapshot')))! as Map;
       expect(probe['failures'], ['stale_selection', 'stale_selection']);
       final evidence = (await tester.runAsync(fixture.snapshot))!;
-      final writes = _reviewWrites(evidence);
+      final writes = reviewWrites(evidence);
       expect(writes, hasLength(2));
       final applies = (evidence['processes'] as List)
           .cast<Map<Object?, Object?>>()
@@ -1176,7 +518,7 @@ void main() {
         expect(
           patch,
           contains(
-            'index ${_reviewBlobOid(i == 0 ? partial : original)}..${_reviewBlobOid(working)} 100644',
+            'index ${reviewBlobOid(i == 0 ? partial : original)}..${reviewBlobOid(working)} 100644',
           ),
         );
         expect(
@@ -1187,11 +529,11 @@ void main() {
       await tester.runAsync(() async {
         final root = Directory(repositories['additional']!);
         expect(
-          await _git(root, ['rev-parse', ':review.txt']),
-          _reviewBlobOid(original),
+          await runGit(root, ['rev-parse', ':review.txt']),
+          reviewBlobOid(original),
         );
         expect(
-          await _git(root, ['cat-file', 'blob', _reviewBlobOid(original)]),
+          await runGit(root, ['cat-file', 'blob', reviewBlobOid(original)]),
           original.trim(),
         );
         expect(
@@ -1207,8 +549,8 @@ void main() {
         isNull,
       );
       debugPrint(
-        'Independent file review verified index ${_reviewBlobOid(partial)} -> '
-        '${_reviewBlobOid(working)} -> ${_reviewBlobOid(original)}; '
+        'Independent file review verified index ${reviewBlobOid(partial)} -> '
+        '${reviewBlobOid(working)} -> ${reviewBlobOid(original)}; '
         'unchanged HEAD=${before['additional']!['head']} '
         'ref=${before['additional']!['branch']}; '
         'unchanged working hashes, primary and unrelated index entries.',
@@ -1221,17 +563,18 @@ void main() {
   testWidgets(
     'G6c3a generated whole-layer methods apply one mixed patch and preserve exact selected repository state',
     (tester) async {
-      final repositories = await reviewRepositories(tester, wholeLayer: true);
-      final before = (await tester.runAsync(
-        () => _reviewStates(repositories),
-      ))!;
+      final repositories = await suite.reviewRepositories(
+        tester,
+        wholeLayer: true,
+      );
+      final before = (await tester.runAsync(() => reviewStates(repositories)))!;
       expect(
         before['additional']!['index'],
         contains(
-          '${_reviewBlobOid(_fileReviewContent('additional', staged: true))} 0\treview.txt\u0000',
+          '${reviewBlobOid(fileReviewContent('additional', staged: true))} 0\treview.txt\u0000',
         ),
       );
-      await mount(
+      final fixture = await suite.mount(
         tester,
         additionalRoot: repositories['additional'],
         primaryRoot: repositories['primary'],
@@ -1241,10 +584,10 @@ void main() {
         expectedBranchRef: 'refs/heads/main',
       );
       expect(fixture.connection, isNot(same(fixture.environmentConnection)));
-      _press(tester, 'Select approval');
+      pressPaneButton(tester, 'Select approval');
       await _text(tester, 'approval-selected');
-      _press(tester, 'Approve All');
-      _press(tester, 'Unapprove All');
+      pressPaneButton(tester, 'Approve All');
+      pressPaneButton(tester, 'Unapprove All');
       await _text(tester, 'approval:idle');
       expect(
         await tester.runAsync(
@@ -1253,38 +596,35 @@ void main() {
         isEmpty,
       );
       await _select(tester);
-      _press(tester, 'Uncommitted');
+      pressPaneButton(tester, 'Uncommitted');
       final initial = await _snapshot(tester);
       expect(initial, contains('review.txt|modified|text'));
-      expect(initial, contains('$_newFileReviewPath|added|text'));
-      expect(initial, contains('$_deletedFileReviewPath|deleted|text'));
+      expect(initial, contains('$newFileReviewPath|added|text'));
+      expect(initial, contains('$deletedFileReviewPath|deleted|text'));
       expect(initial, contains('z-other.txt|modified|text'));
       expect(initial, contains('untouched.txt|modified|text'));
       expect(initial, isNot(contains('primary')));
 
-      _press(tester, 'Approve All');
+      pressPaneButton(tester, 'Approve All');
       await _text(tester, 'approval:success');
       final approved = (await tester.runAsync(
-        () => _reviewStates(repositories),
+        () => reviewStates(repositories),
       ))!;
-      _expectLayerReviewIndex(approved, before, approved: true);
+      expectLayerReviewIndex(approved, before, approved: true);
       expect(
-        _reviewWrites((await tester.runAsync(fixture.snapshot))!),
+        reviewWrites((await tester.runAsync(fixture.snapshot))!),
         hasLength(1),
       );
-      _press(tester, 'Approve All');
+      pressPaneButton(tester, 'Approve All');
       await _text(tester, 'approval:unavailable');
-      expect(
-        await tester.runAsync(() => _reviewStates(repositories)),
-        approved,
-      );
+      expect(await tester.runAsync(() => reviewStates(repositories)), approved);
 
       // Task decoding must retain the same layer-only token, not select a file.
-      _press(tester, 'Task');
+      pressPaneButton(tester, 'Task');
       final staged = await _snapshot(tester);
       expect(staged, startsWith('snapshot\ncommitted\nstaged\n'));
       expect(staged.split('\nunstaged')[1], '\nconflicts');
-      _press(tester, 'Approve All');
+      pressPaneButton(tester, 'Approve All');
       await _text(tester, 'approval:unavailable');
       expect(
         await tester.runAsync(
@@ -1293,25 +633,25 @@ void main() {
         hasLength(2),
         reason: 'An empty layer has no actionable revision.',
       );
-      _press(tester, 'Unapprove All');
+      pressPaneButton(tester, 'Unapprove All');
       await _text(tester, 'approval:success');
       final unapproved = (await tester.runAsync(
-        () => _reviewStates(repositories),
+        () => reviewStates(repositories),
       ))!;
-      _expectLayerReviewIndex(unapproved, before, approved: false);
-      _press(tester, 'Unapprove All');
+      expectLayerReviewIndex(unapproved, before, approved: false);
+      pressPaneButton(tester, 'Unapprove All');
       await _text(tester, 'approval:unavailable');
       expect(
-        await tester.runAsync(() => _reviewStates(repositories)),
+        await tester.runAsync(() => reviewStates(repositories)),
         unapproved,
       );
-      _press(tester, 'Uncommitted');
+      pressPaneButton(tester, 'Uncommitted');
       final refreshed = await _snapshot(tester);
       expect(refreshed, startsWith('snapshot\nstaged\nunstaged\n'));
       expect(refreshed, contains('untouched.txt|modified|text'));
-      expect(refreshed, contains('$_newFileReviewPath|added|text'));
-      expect(refreshed, contains('$_deletedFileReviewPath|deleted|text'));
-      _press(tester, 'Unapprove All');
+      expect(refreshed, contains('$newFileReviewPath|added|text'));
+      expect(refreshed, contains('$deletedFileReviewPath|deleted|text'));
+      pressPaneButton(tester, 'Unapprove All');
       await _text(tester, 'approval:unavailable');
 
       final calls = (await tester.runAsync(
@@ -1359,7 +699,7 @@ void main() {
         ),
         [true, false, true, false],
       );
-      final writes = _reviewWrites(evidence);
+      final writes = reviewWrites(evidence);
       expect(writes, hasLength(2));
       for (var i = 0; i < writes.length; i++) {
         final write = writes[i];
@@ -1380,8 +720,8 @@ void main() {
         for (final path in [
           'review.txt',
           'z-other.txt',
-          _newFileReviewPath,
-          _deletedFileReviewPath,
+          newFileReviewPath,
+          deletedFileReviewPath,
         ]) {
           expect(patch, contains(path));
         }
@@ -1392,18 +732,21 @@ void main() {
       }
       await tester.runAsync(() async {
         final root = Directory(repositories['additional']!);
-        expect(await _git(root, ['diff', '--cached', '--exit-code']), isEmpty);
-        for (final entry in _layerReviewContents(
+        expect(
+          await runGit(root, ['diff', '--cached', '--exit-code']),
+          isEmpty,
+        );
+        for (final entry in layerReviewContents(
           'additional',
           approved: false,
         ).entries) {
           expect(
-            await _git(root, ['show', ':${entry.key}'], trim: false),
+            await runGit(root, ['show', ':${entry.key}'], trim: false),
             entry.value,
           );
         }
         expect(
-          await File('${root.path}/$_deletedFileReviewPath').exists(),
+          await File('${root.path}/$deletedFileReviewPath').exists(),
           isFalse,
         );
       });
@@ -1423,8 +766,11 @@ void main() {
     testWidgets(
       'G6c3a stale ${reverse ? 'staged' : 'unstaged'} layer rejects an external edit without any index write',
       (tester) async {
-        final repositories = await reviewRepositories(tester, wholeLayer: true);
-        await mount(
+        final repositories = await suite.reviewRepositories(
+          tester,
+          wholeLayer: true,
+        );
+        final fixture = await suite.mount(
           tester,
           additionalRoot: repositories['additional'],
           primaryRoot: repositories['primary'],
@@ -1432,36 +778,33 @@ void main() {
           approvalProviderPresent: true,
         );
         await _select(tester);
-        _press(tester, 'Uncommitted');
+        pressPaneButton(tester, 'Uncommitted');
         await _snapshot(tester);
-        _press(tester, 'Select approval');
+        pressPaneButton(tester, 'Select approval');
         await _text(tester, 'approval-selected');
         final before = (await tester.runAsync(() async {
           await File(
             '${repositories['additional']}/z-other.txt',
           ).writeAsString('external edit outside the first file\n');
           if (reverse) {
-            await _git(Directory(repositories['additional']!), [
+            await runGit(Directory(repositories['additional']!), [
               'add',
               '--',
               'z-other.txt',
             ]);
           }
-          return _reviewStates(repositories);
+          return reviewStates(repositories);
         }))!;
-        _press(tester, reverse ? 'Unapprove All' : 'Approve All');
+        pressPaneButton(tester, reverse ? 'Unapprove All' : 'Approve All');
         await _text(tester, 'approval:unavailable');
         final probe =
             (await tester.runAsync(() => fixture.control('snapshot')))! as Map;
         expect(probe['failures'], ['stale_selection']);
         expect(
-          _reviewWrites((await tester.runAsync(fixture.snapshot))!),
+          reviewWrites((await tester.runAsync(fixture.snapshot))!),
           isEmpty,
         );
-        expect(
-          await tester.runAsync(() => _reviewStates(repositories)),
-          before,
-        );
+        expect(await tester.runAsync(() => reviewStates(repositories)), before);
         final calls = (await tester.runAsync(
           () => _calls(fixture, serviceId: reviewApprovalHandlerServiceId),
         ))!;
@@ -1481,8 +824,8 @@ void main() {
   testWidgets(
     'G6a stale EVC selection rejects a working-tree edit without index or unrelated writes',
     (tester) async {
-      final repositories = await reviewRepositories(tester);
-      await mount(
+      final repositories = await suite.reviewRepositories(tester);
+      final fixture = await suite.mount(
         tester,
         additionalRoot: repositories['additional'],
         primaryRoot: repositories['primary'],
@@ -1490,26 +833,23 @@ void main() {
         approvalProviderPresent: true,
       );
       await _select(tester);
-      _press(tester, 'Uncommitted');
+      pressPaneButton(tester, 'Uncommitted');
       await _snapshot(tester);
-      _press(tester, 'Select approval');
+      pressPaneButton(tester, 'Select approval');
       await _text(tester, 'approval-selected');
       final before = (await tester.runAsync(() async {
         await File('${repositories['additional']}/review.txt').writeAsString(
-          '${_reviewContent('additional', first: true, second: true)}external edit\n',
+          '${reviewContent('additional', first: true, second: true)}external edit\n',
         );
-        return _reviewStates(repositories);
+        return reviewStates(repositories);
       }))!;
-      _press(tester, 'Approve');
+      pressPaneButton(tester, 'Approve');
       await _text(tester, 'approval:unavailable');
       final probe =
           (await tester.runAsync(() => fixture.control('snapshot')))! as Map;
       expect(probe['failures'], ['stale_selection']);
-      expect(
-        _reviewWrites((await tester.runAsync(fixture.snapshot))!),
-        isEmpty,
-      );
-      expect(await tester.runAsync(() => _reviewStates(repositories)), before);
+      expect(reviewWrites((await tester.runAsync(fixture.snapshot))!), isEmpty);
+      expect(await tester.runAsync(() => reviewStates(repositories)), before);
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox.shrink());
     },
@@ -1518,11 +858,9 @@ void main() {
   testWidgets(
     'G6a malformed approval transport cannot inject selectors or bypass native selection bounds',
     (tester) async {
-      final repositories = await reviewRepositories(tester);
-      final before = (await tester.runAsync(
-        () => _reviewStates(repositories),
-      ))!;
-      await mount(
+      final repositories = await suite.reviewRepositories(tester);
+      final before = (await tester.runAsync(() => reviewStates(repositories)))!;
+      final fixture = await suite.mount(
         tester,
         additionalRoot: repositories['additional'],
         primaryRoot: repositories['primary'],
@@ -1627,7 +965,7 @@ void main() {
           reason: 'Malformed DTOs never enter the implementation.',
         );
         expect((await fixture.snapshot())['processes'], isEmpty);
-        expect(await _reviewStates(repositories), before);
+        expect(await reviewStates(repositories), before);
       });
     },
   );
@@ -1660,22 +998,22 @@ void main() {
           ? 'G6c1 $action'
           : 'G6a'} $side ${termination ? 'backend' : 'provider'} retirement after effect suppresses success without replay or rollback',
       (tester) async {
-        final repositories = await reviewRepositories(
+        final repositories = await suite.reviewRepositories(
           tester,
           wholeLayer: wholeLayer,
         );
         if (reverse) {
           await tester.runAsync(
-            () => _git(Directory(repositories['additional']!), [
+            () => runGit(Directory(repositories['additional']!), [
               'add',
               if (wholeLayer) '--all' else ...['--', 'review.txt'],
             ]),
           );
         }
         final before = (await tester.runAsync(
-          () => _reviewStates(repositories),
+          () => reviewStates(repositories),
         ))!;
-        await mount(
+        final fixture = await suite.mount(
           tester,
           additionalRoot: repositories['additional'],
           primaryRoot: repositories['primary'],
@@ -1683,42 +1021,42 @@ void main() {
           approvalProviderPresent: true,
         );
         await _select(tester);
-        _press(tester, 'Uncommitted');
+        pressPaneButton(tester, 'Uncommitted');
         await _snapshot(tester);
-        _press(tester, 'Select approval');
+        pressPaneButton(tester, 'Select approval');
         await _text(tester, 'approval-selected');
         await tester.runAsync(
           () => fixture.control('hold', {'key': 'after:$method'}),
         );
-        _press(tester, action);
+        pressPaneButton(tester, action);
         await tester.runAsync(() => fixture.wait(tester, 'after:$method'));
         final token = (await tester.runAsync(
           () => _token(fixture, serviceId: reviewApprovalHandlerServiceId),
         ))!;
-        final stale = _callback(tester, action);
+        final stale = paneCallback(tester, action);
         final effected = (await tester.runAsync(
-          () => _reviewStates(repositories),
+          () => reviewStates(repositories),
         ))!;
         if (wholeLayer) {
-          _expectLayerReviewIndex(effected, before, approved: !reverse);
+          expectLayerReviewIndex(effected, before, approved: !reverse);
         } else {
-          _expectReviewIndex(
+          expectReviewIndex(
             effected,
             before,
             'additional',
-            _reviewContent(
+            reviewContent(
               'additional',
               first: !reverse,
               second: fileAction && !reverse,
             ),
             originalContent: reverse
-                ? _reviewContent('additional', first: true, second: true)
+                ? reviewContent('additional', first: true, second: true)
                 : null,
           );
         }
         final evidence = (await tester.runAsync(fixture.snapshot))!;
-        expect(_reviewWrites(evidence), hasLength(1));
-        expect(_reviewWrites(evidence).single['exitCode'], 0);
+        expect(reviewWrites(evidence), hasLength(1));
+        expect(reviewWrites(evidence).single['exitCode'], 0);
         await _text(tester, 'approval:pending');
         final target = side == 'environment'
             ? fixture.environmentConnection
@@ -1732,7 +1070,7 @@ void main() {
               fixture.controlOn(target, 'terminate'),
               throwsA(isA<PluginRemoteFailure>()),
             );
-            await target.terminated.timeout(_bound);
+            await target.terminated.timeout(portableGitWait);
           });
           expect(target.isClosed, isTrue);
           expect(survivor.isClosed, isFalse);
@@ -1743,7 +1081,9 @@ void main() {
                 ? environmentProviderCapability
                 : reviewApprovalCapability,
             providerId: ProviderId(
-              side == 'environment' ? 'test.environment.a' : _approvalProvider,
+              side == 'environment'
+                  ? 'test.environment.a'
+                  : portableApprovalProvider,
             ),
           );
           await tester.runAsync(
@@ -1780,7 +1120,7 @@ void main() {
               }),
               {'ok': false},
             );
-            expect(await _reviewStates(repositories), effected);
+            expect(await reviewStates(repositories), effected);
             await fixture.control('release', {'key': 'after:$method'});
             await fixture.wait(tester, 'settled:$method');
           }
@@ -1804,7 +1144,7 @@ void main() {
                     as Map<Object?, Object?>;
             expect(after['processes'], evidence['processes']);
           }
-          expect(await _reviewStates(repositories), effected);
+          expect(await reviewStates(repositories), effected);
         });
         expect(find.text('approval:success'), findsNothing);
         expect(tester.takeException(), isNull);
@@ -1816,11 +1156,12 @@ void main() {
   testWidgets(
     'G6c3a departure never retargets an effected whole-layer request to the primary Session',
     (tester) async {
-      final repositories = await reviewRepositories(tester, wholeLayer: true);
-      final before = (await tester.runAsync(
-        () => _reviewStates(repositories),
-      ))!;
-      await mount(
+      final repositories = await suite.reviewRepositories(
+        tester,
+        wholeLayer: true,
+      );
+      final before = (await tester.runAsync(() => reviewStates(repositories)))!;
+      final fixture = await suite.mount(
         tester,
         additionalRoot: repositories['additional'],
         primaryRoot: repositories['primary'],
@@ -1828,15 +1169,15 @@ void main() {
         approvalProviderPresent: true,
       );
       await _select(tester);
-      _press(tester, 'Uncommitted');
+      pressPaneButton(tester, 'Uncommitted');
       await _snapshot(tester);
-      _press(tester, 'Select approval');
+      pressPaneButton(tester, 'Select approval');
       await _text(tester, 'approval-selected');
       await tester.runAsync(
         () => fixture.control('hold', {'key': 'after:approveAllUnstaged'}),
       );
-      final stale = _callback(tester, 'Approve All');
-      _press(tester, 'Approve All');
+      final stale = paneCallback(tester, 'Approve All');
+      pressPaneButton(tester, 'Approve All');
       await tester.runAsync(
         () => fixture.wait(tester, 'after:approveAllUnstaged'),
       );
@@ -1844,9 +1185,9 @@ void main() {
         () => _token(fixture, serviceId: reviewApprovalHandlerServiceId),
       ))!;
       final effected = (await tester.runAsync(
-        () => _reviewStates(repositories),
+        () => reviewStates(repositories),
       ))!;
-      _expectLayerReviewIndex(effected, before, approved: true);
+      expectLayerReviewIndex(effected, before, approved: true);
       fixture.frontends.unbind(fixture.sessionA);
       await tester.pumpWidget(fixture.widget(session: fixture.sessionB));
       await tester.pumpAndSettle();
@@ -1857,7 +1198,7 @@ void main() {
         await fixture.wait(tester, 'settled:approveAllUnstaged');
       });
       await _select(tester);
-      _press(tester, 'Uncommitted');
+      pressPaneButton(tester, 'Uncommitted');
       expect(
         await _snapshot(tester),
         contains('addition:primary inserted first:false'),
@@ -1869,14 +1210,11 @@ void main() {
         ),
         hasLength(1),
       );
-      final writes = _reviewWrites((await tester.runAsync(fixture.snapshot))!);
+      final writes = reviewWrites((await tester.runAsync(fixture.snapshot))!);
       expect(writes, hasLength(1));
       expect(writes.single['environmentId'], 'additional');
       expect(writes.single['cwd'], repositories['additional']);
-      expect(
-        await tester.runAsync(() => _reviewStates(repositories)),
-        effected,
-      );
+      expect(await tester.runAsync(() => reviewStates(repositories)), effected);
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox.shrink());
     },
@@ -1889,14 +1227,14 @@ void main() {
     testWidgets(
       '${wholeLayer ? 'G6c3a' : 'G6a'} same-ID replacement requires fresh approval access and never replays an effected old request',
       (tester) async {
-        final repositories = await reviewRepositories(
+        final repositories = await suite.reviewRepositories(
           tester,
           wholeLayer: wholeLayer,
         );
         final before = (await tester.runAsync(
-          () => _reviewStates(repositories),
+          () => reviewStates(repositories),
         ))!;
-        await mount(
+        var fixture = await suite.mount(
           tester,
           additionalRoot: repositories['additional'],
           primaryRoot: repositories['primary'],
@@ -1904,48 +1242,48 @@ void main() {
           approvalProviderPresent: true,
         );
         await _select(tester);
-        _press(tester, 'Uncommitted');
+        pressPaneButton(tester, 'Uncommitted');
         await _snapshot(tester);
-        _press(tester, 'Select approval');
+        pressPaneButton(tester, 'Select approval');
         await _text(tester, 'approval-selected');
         final old = fixture;
         final oldApproval = old.capabilities.resolve(
           reviewApprovalCapability,
-          providerId: ProviderId(_approvalProvider),
+          providerId: ProviderId(portableApprovalProvider),
         );
         final oldEnvironment = old.capabilities.resolve(
           environmentProviderCapability,
           providerId: ProviderId('test.environment.a'),
         );
-        final stale = _callback(tester, action);
+        final stale = paneCallback(tester, action);
         await tester.runAsync(
           () => old.control('hold', {'key': 'after:$method'}),
         );
-        _press(tester, action);
+        pressPaneButton(tester, action);
         await tester.runAsync(() => old.wait(tester, 'after:$method'));
         final token = (await tester.runAsync(
           () => _token(old, serviceId: reviewApprovalHandlerServiceId),
         ))!;
         final effected = (await tester.runAsync(
-          () => _reviewStates(repositories),
+          () => reviewStates(repositories),
         ))!;
         if (wholeLayer) {
-          _expectLayerReviewIndex(effected, before, approved: true);
+          expectLayerReviewIndex(effected, before, approved: true);
         } else {
-          _expectReviewIndex(
+          expectReviewIndex(
             effected,
             before,
             'additional',
-            _reviewContent('additional', first: true),
+            reviewContent('additional', first: true),
           );
         }
         expect(
-          _reviewWrites((await tester.runAsync(old.snapshot))!),
+          reviewWrites((await tester.runAsync(old.snapshot))!),
           hasLength(1),
         );
         await tester.runAsync(old.backends.close);
         await _text(tester, 'approval:unavailable');
-        await mount(
+        fixture = await suite.mount(
           tester,
           additionalRoot: repositories['additional'],
           primaryRoot: repositories['primary'],
@@ -1963,7 +1301,7 @@ void main() {
           fixture.capabilities
               .resolve(
                 reviewApprovalCapability,
-                providerId: ProviderId(_approvalProvider),
+                providerId: ProviderId(portableApprovalProvider),
               )
               .isSameRegistration(oldApproval),
           isFalse,
@@ -1991,23 +1329,23 @@ void main() {
           isEmpty,
         );
         expect(
-          await tester.runAsync(() => _reviewStates(repositories)),
+          await tester.runAsync(() => reviewStates(repositories)),
           effected,
         );
         await tester.pumpWidget(fixture.widget());
         await tester.pumpAndSettle();
         await _select(tester);
-        _press(tester, 'Uncommitted');
+        pressPaneButton(tester, 'Uncommitted');
         await _snapshot(tester);
-        _press(tester, 'Select approval');
+        pressPaneButton(tester, 'Select approval');
         await _text(tester, 'approval-selected');
-        _press(tester, reverseAction);
+        pressPaneButton(tester, reverseAction);
         await _text(tester, 'approval:success');
         final restored = (await tester.runAsync(
-          () => _reviewStates(repositories),
+          () => reviewStates(repositories),
         ))!;
         if (wholeLayer) {
-          _expectLayerReviewIndex(restored, before, approved: false);
+          expectLayerReviewIndex(restored, before, approved: false);
         } else {
           expect(restored, before);
         }
@@ -2023,7 +1361,7 @@ void main() {
         );
         expect(calls.single['hostInvocationContext'], isNot(token));
         expect(
-          _reviewWrites((await tester.runAsync(fixture.snapshot))!),
+          reviewWrites((await tester.runAsync(fixture.snapshot))!),
           hasLength(1),
         );
         await tester.runAsync(
@@ -2039,20 +1377,20 @@ void main() {
   testWidgets(
     'persisted Task anchors select exact nonprimary and primary Environments and shared Sessions',
     (tester) async {
-      final durable = await openDurable(
+      final durable = await suite.openDurable(
         tester,
         initialAnchors: {
           'additional': GitTaskComparisonAnchor(
-            baselineCommit: selectedBaseline,
-            expectedBranchRef: _selectedBranchRef,
+            baselineCommit: suite.selectedBaseline,
+            expectedBranchRef: selectedBranchRef,
           ),
           'primary': GitTaskComparisonAnchor(
-            baselineCommit: primaryBaseline,
+            baselineCommit: suite.primaryBaseline,
             expectedBranchRef: 'refs/heads/main',
           ),
         },
       );
-      await mount(
+      final fixture = await suite.mount(
         tester,
         registry: durable.registry,
         lifecycle: durable.lifecycle,
@@ -2074,16 +1412,16 @@ void main() {
           {'owner_id': gitPluginId, 'version': 1},
         ],
       );
-      final retained = _anchorRows(durable.lifecycle);
+      final retained = anchorRows(durable.lifecycle);
       expect(retained, [
         {
           'environment_id': 'additional',
-          'baseline_commit': selectedBaseline,
-          'expected_branch_ref': _selectedBranchRef,
+          'baseline_commit': suite.selectedBaseline,
+          'expected_branch_ref': selectedBranchRef,
         },
         {
           'environment_id': 'primary',
-          'baseline_commit': primaryBaseline,
+          'baseline_commit': suite.primaryBaseline,
           'expected_branch_ref': 'refs/heads/main',
         },
       ]);
@@ -2092,7 +1430,7 @@ void main() {
       await tester.pumpAndSettle();
       for (final pane in ['a', 'b']) {
         await _select(tester, pane: pane);
-        _press(tester, 'Task', pane: pane);
+        pressPaneButton(tester, 'Task', pane: pane);
         final snapshot = await _snapshot(tester, pane: pane);
         if (pane == 'a') {
           _expectAdditional(snapshot, scope: 'Task');
@@ -2112,7 +1450,7 @@ void main() {
           environmentRuntime: fixture.environmentRuntime,
           backends: fixture.backends,
           session: fixture.sessionA,
-        ).resolve(_capability),
+        ).resolve(changeSetCapability),
       ))!;
       expect(selected.environment.id, EnvironmentId('additional'));
       expect(selected.environment.role, EnvironmentRole.additional);
@@ -2138,9 +1476,9 @@ void main() {
       await tester.pumpWidget(fixture.widget(session: sibling));
       await tester.pumpAndSettle();
       await _select(tester);
-      _press(tester, 'Task');
+      pressPaneButton(tester, 'Task');
       _expectAdditional(await _snapshot(tester), scope: 'Task');
-      expect(_anchorRows(durable.lifecycle), retained);
+      expect(anchorRows(durable.lifecycle), retained);
       final calls = (await tester.runAsync(() => _calls(fixture)))!;
       expect(calls, hasLength(3));
       expect(
@@ -2163,7 +1501,7 @@ void main() {
         'primary',
       });
       for (final process in processes) {
-        expect(process['cwd'], roots[process['environmentId']]);
+        expect(process['cwd'], suite.roots[process['environmentId']]);
       }
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox.shrink());
@@ -2173,41 +1511,41 @@ void main() {
   testWidgets(
     'persisted missing anchor never borrows primary and leaves Unstaged and Uncommitted usable',
     (tester) async {
-      final durable = await openDurable(
+      final durable = await suite.openDurable(
         tester,
         initialAnchors: {
           'primary': GitTaskComparisonAnchor(
-            baselineCommit: primaryBaseline,
+            baselineCommit: suite.primaryBaseline,
             expectedBranchRef: 'refs/heads/main',
           ),
         },
       );
-      await mount(
+      final fixture = await suite.mount(
         tester,
         registry: durable.registry,
         lifecycle: durable.lifecycle,
         present: false,
       );
-      final retained = _anchorRows(durable.lifecycle);
+      final retained = anchorRows(durable.lifecycle);
       await tester.pumpWidget(fixture.widget());
       await tester.pumpAndSettle();
       for (final label in ['Wrong service', 'Missing provider']) {
-        _press(tester, label);
+        pressPaneButton(tester, label);
         await _text(tester, 'selection:unavailable');
       }
       expect(await tester.runAsync(() => _calls(fixture)), isEmpty);
       await _select(tester);
-      _press(tester, 'Task');
+      pressPaneButton(tester, 'Task');
       await _text(tester, 'snapshot:unavailable');
       final probe =
           (await tester.runAsync(() => fixture.control('snapshot')))! as Map;
       expect(probe['failures'], ['baseline_unavailable']);
       expect((await tester.runAsync(fixture.snapshot))!['processes'], isEmpty);
       for (final scope in ['Unstaged', 'Uncommitted']) {
-        _press(tester, scope);
+        pressPaneButton(tester, scope);
         _expectAdditional(await _snapshot(tester), scope: scope);
       }
-      expect(_anchorRows(durable.lifecycle), retained);
+      expect(anchorRows(durable.lifecycle), retained);
       final processes =
           ((await tester.runAsync(fixture.snapshot))!['processes'] as List)
               .cast<Map<Object?, Object?>>();
@@ -2225,21 +1563,28 @@ void main() {
     'persisted Task replacement and durable reopen retain old baseline after HEAD changes without reenrollment',
     (tester) async {
       final repository = (await tester.runAsync(() async {
-        final name = 'persisted-reopen-${sequence++}';
-        await _git(temporary, ['clone', '--no-hardlinks', committedRoot, name]);
-        return Directory('${temporary.path}/$name').resolveSymbolicLinks();
+        final name = 'persisted-reopen-${suite.nextSequence()}';
+        await runGit(suite.temporary, [
+          'clone',
+          '--no-hardlinks',
+          suite.committedRoot,
+          name,
+        ]);
+        return Directory(
+          '${suite.temporary.path}/$name',
+        ).resolveSymbolicLinks();
       }))!;
-      final durable = await openDurable(
+      final durable = await suite.openDurable(
         tester,
         additionalRoot: repository,
         initialAnchors: {
           'additional': GitTaskComparisonAnchor(
-            baselineCommit: selectedBaseline,
-            expectedBranchRef: _selectedBranchRef,
+            baselineCommit: suite.selectedBaseline,
+            expectedBranchRef: selectedBranchRef,
           ),
         },
       );
-      await mount(
+      var fixture = await suite.mount(
         tester,
         registry: durable.registry,
         lifecycle: durable.lifecycle,
@@ -2251,20 +1596,20 @@ void main() {
         environmentId: 'additional',
       );
       final anchors = _anchorStore(durable.lifecycle, fixture);
-      final retained = _anchorRows(durable.lifecycle);
+      final retained = anchorRows(durable.lifecycle);
       await tester.pumpWidget(fixture.widget());
       await tester.pumpAndSettle();
       await _select(tester);
       final old = fixture;
       final oldBinding = old.capabilities.resolve(
-        _capability,
+        changeSetCapability,
         providerId: ProviderId(gitChangeSetSourceProviderId),
       );
-      final stale = _callback(tester, 'Task');
+      final stale = paneCallback(tester, 'Task');
       await tester.runAsync(
         () => old.control('hold', {'key': 'process:completed'}),
       );
-      _press(tester, 'Task');
+      pressPaneButton(tester, 'Task');
       await tester.runAsync(() => old.wait(tester, 'process:completed'));
       final token = (await tester.runAsync(() => _token(old)))!;
       await tester.runAsync(() async {
@@ -2290,7 +1635,7 @@ void main() {
         await expectLater(anchors.read(identity), throwsA(isA<Exception>()));
       });
       await _text(tester, 'snapshot:unavailable');
-      await mount(
+      fixture = await suite.mount(
         tester,
         registry: durable.registry,
         lifecycle: durable.lifecycle,
@@ -2301,7 +1646,7 @@ void main() {
       expect(
         fixture.capabilities
             .resolve(
-              _capability,
+              changeSetCapability,
               providerId: ProviderId(gitChangeSetSourceProviderId),
             )
             .isSameRegistration(oldBinding),
@@ -2315,9 +1660,9 @@ void main() {
       await tester.pumpWidget(fixture.widget());
       await tester.pumpAndSettle();
       await _select(tester);
-      _press(tester, 'Task');
+      pressPaneButton(tester, 'Task');
       _expectCommitted(await _snapshot(tester));
-      expect(_anchorRows(durable.lifecycle), retained);
+      expect(anchorRows(durable.lifecycle), retained);
       final oldSession = fixture.sessionA;
       await tester.pumpWidget(const SizedBox.shrink());
       await tester.runAsync(() async {
@@ -2328,8 +1673,8 @@ void main() {
         await File(
           '$repository/after-enrollment.txt',
         ).writeAsString('committed after enrollment\n');
-        await _git(root, ['add', '--all']);
-        await _git(root, [
+        await runGit(root, ['add', '--all']);
+        await runGit(root, [
           '-c',
           'user.name=Fixture',
           '-c',
@@ -2339,13 +1684,16 @@ void main() {
           'after enrollment',
         ]);
         expect(
-          await _git(root, ['rev-parse', 'HEAD']),
-          isNot(selectedBaseline),
+          await runGit(root, ['rev-parse', 'HEAD']),
+          isNot(suite.selectedBaseline),
         );
       });
-      final reopened = await openDurable(tester, backing: durable.backing);
-      expect(_anchorRows(reopened.lifecycle), retained);
-      await mount(
+      final reopened = await suite.openDurable(
+        tester,
+        backing: durable.backing,
+      );
+      expect(anchorRows(reopened.lifecycle), retained);
+      fixture = await suite.mount(
         tester,
         registry: reopened.registry,
         lifecycle: reopened.lifecycle,
@@ -2355,15 +1703,15 @@ void main() {
       expect(fixture.sessionA.id, oldSession.id);
       expect((await tester.runAsync(fixture.snapshot))!['processes'], isEmpty);
       await _select(tester);
-      _press(tester, 'Uncommitted');
+      pressPaneButton(tester, 'Uncommitted');
       await _text(tester, 'snapshot\nstaged\nunstaged\nconflicts');
-      _press(tester, 'Task');
+      pressPaneButton(tester, 'Task');
       final snapshot = await _snapshot(tester);
       _expectCommitted(snapshot);
       expect(snapshot, contains('after-enrollment.txt|added|text'));
       expect(snapshot, contains('addition:committed after enrollment:false'));
       expect(snapshot, endsWith('\nstaged\nunstaged\nconflicts'));
-      expect(_anchorRows(reopened.lifecycle), retained);
+      expect(anchorRows(reopened.lifecycle), retained);
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox.shrink());
     },
@@ -2375,7 +1723,7 @@ void main() {
       // Reuse the harness's canonical volatile graph, without opening a Project
       // provider or starting this seed installation's backend/frontend owners.
       final seed = PreparedEnvironmentCapabilityInstallation(
-        files: temporary,
+        files: suite.temporary,
         independent: true,
         sourceLocation: Uri.parse('test:/volatile-portable-git'),
         environments: [
@@ -2389,7 +1737,7 @@ void main() {
               providerId: ProviderId(
                 'test.environment.${id == 'additional' ? 'a' : 'b'}',
               ),
-              providerState: {'root': roots[id]},
+              providerState: {'root': suite.roots[id]},
             ),
         ],
       );
@@ -2401,7 +1749,7 @@ void main() {
       );
       addTearDown(lifecycle.close);
       expect(lifecycle.databaseForSession(seed.sessionA.id), isNull);
-      await mount(
+      var fixture = await suite.mount(
         tester,
         registry: seed.capabilities,
         lifecycle: lifecycle,
@@ -2416,8 +1764,8 @@ void main() {
         () => anchors.enrollForEnvironment(
           environmentId: identity.environmentId,
           anchor: GitTaskComparisonAnchor(
-            baselineCommit: selectedBaseline,
-            expectedBranchRef: _selectedBranchRef,
+            baselineCommit: suite.selectedBaseline,
+            expectedBranchRef: selectedBranchRef,
           ),
         ),
       );
@@ -2427,26 +1775,26 @@ void main() {
       )!;
       final backing = File(database.path);
       expect(backing.existsSync(), isTrue);
-      expect(database.path, isNot(startsWith(temporary.absolute.path)));
+      expect(database.path, isNot(startsWith(suite.temporary.absolute.path)));
       expect(lifecycle.databaseForSession(fixture.sessionA.id), isNull);
       await tester.pumpWidget(fixture.widget());
       await tester.pumpAndSettle();
       await _select(tester);
-      _press(tester, 'Task');
+      pressPaneButton(tester, 'Task');
       _expectAdditional(await _snapshot(tester), scope: 'Task');
 
       final old = fixture;
       final oldBinding = old.capabilities.resolve(
-        _capability,
+        changeSetCapability,
         providerId: ProviderId(gitChangeSetSourceProviderId),
       );
       final token = (await tester.runAsync(() => _token(old)))!;
-      final stale = _callback(tester, 'Task');
+      final stale = paneCallback(tester, 'Task');
       await tester.runAsync(() async {
         await old.backends.close();
         await expectLater(anchors.read(identity), throwsA(isA<Exception>()));
       });
-      await mount(
+      fixture = await suite.mount(
         tester,
         registry: seed.capabilities,
         lifecycle: lifecycle,
@@ -2456,7 +1804,7 @@ void main() {
       expect(
         fixture.capabilities
             .resolve(
-              _capability,
+              changeSetCapability,
               providerId: ProviderId(gitChangeSetSourceProviderId),
             )
             .isSameRegistration(oldBinding),
@@ -2478,13 +1826,13 @@ void main() {
       final retained = (await tester.runAsync(
         () => _anchorStore(lifecycle, fixture).read(identity),
       ))!;
-      expect(retained.baselineCommit, selectedBaseline);
-      expect(retained.expectedBranchRef, _selectedBranchRef);
+      expect(retained.baselineCommit, suite.selectedBaseline);
+      expect(retained.expectedBranchRef, selectedBranchRef);
       expect(lifecycle.databaseForSession(fixture.sessionA.id), isNull);
       await tester.pumpWidget(fixture.widget());
       await tester.pumpAndSettle();
       await _select(tester);
-      _press(tester, 'Task');
+      pressPaneButton(tester, 'Task');
       _expectAdditional(await _snapshot(tester), scope: 'Task');
       final calls = (await tester.runAsync(() => _calls(fixture)))!;
       expect(calls, hasLength(1));
@@ -2506,14 +1854,14 @@ void main() {
     testWidgets(
       'real independent AOT repositories produce typed nonprimary EVC $scope changes',
       (tester) async {
-        await mount(tester, concurrent: true);
+        final fixture = await suite.mount(tester, concurrent: true);
         expect(fixture.connection, isNot(same(fixture.environmentConnection)));
         final selected = (await tester.runAsync(
           () => CapturedEnvironmentCapabilities(
             environmentRuntime: fixture.environmentRuntime,
             backends: fixture.backends,
             session: fixture.sessionA,
-          ).resolve(_capability),
+          ).resolve(changeSetCapability),
         ))!;
         expect(selected.environment.id.value, 'additional');
         expect(selected.environment.role, EnvironmentRole.additional);
@@ -2536,7 +1884,7 @@ void main() {
         await _select(tester);
         await _select(tester, pane: 'b');
         final elapsed = Stopwatch()..start();
-        _press(tester, scope);
+        pressPaneButton(tester, scope);
         final additional = await _snapshot(tester);
         elapsed.stop();
         _expectAdditional(additional, scope: scope);
@@ -2559,13 +1907,13 @@ void main() {
           '${selectedProcesses.length} process requests, '
           '${elapsed.elapsedMilliseconds} ms (diagnostic only).',
         );
-        _press(tester, scope, pane: 'b');
+        pressPaneButton(tester, scope, pane: 'b');
         if (scope == 'Task') {
           // The single fixed B anchor belongs to the selected repository, not
           // this unrelated primary. No inference, substitution, or clean result.
           await _text(tester, 'snapshot:unavailable', pane: 'b');
           expect(
-            _pane('b', find.textContaining('primary-only.txt|')),
+            inPane('b', find.textContaining('primary-only.txt|')),
             findsNothing,
           );
           final probe =
@@ -2605,7 +1953,7 @@ void main() {
           isTrue,
         );
         for (final process in processes) {
-          expect(process['cwd'], roots[process['environmentId']]);
+          expect(process['cwd'], suite.roots[process['environmentId']]);
           expect(process['exitCode'], isA<int>());
           expect(
             process['providerId'],
@@ -2639,17 +1987,17 @@ void main() {
       (tester) async {
         final repository = (await tester.runAsync(() async {
           final root = await Directory(
-            '${temporary.path}/scaling-$count',
+            '${suite.temporary.path}/scaling-$count',
           ).create();
-          await _git(root, ['init', '--initial-branch=main']);
+          await runGit(root, ['init', '--initial-branch=main']);
           await Directory('${root.path}/tracked').create();
           for (var i = 0; i < count; i++) {
             await File(
               '${root.path}/tracked/file $i.txt',
             ).writeAsString('clean selected $i\n');
           }
-          await _git(root, ['add', '--all']);
-          await _git(root, [
+          await runGit(root, ['add', '--all']);
+          await runGit(root, [
             '-c',
             'user.name=Fixture',
             '-c',
@@ -2661,9 +2009,9 @@ void main() {
           return root.resolveSymbolicLinks();
         }))!;
         final baseline = (await tester.runAsync(
-          () => _git(Directory(repository), ['rev-parse', 'HEAD']),
+          () => runGit(Directory(repository), ['rev-parse', 'HEAD']),
         ))!;
-        await mount(
+        var fixture = await suite.mount(
           tester,
           additionalRoot: repository,
           baselineCommit: baseline,
@@ -2677,7 +2025,7 @@ void main() {
         var comparisonTaskProcesses = 0;
         for (final scope in ['Unstaged', 'Uncommitted', 'Task']) {
           final elapsed = Stopwatch()..start();
-          _press(tester, scope);
+          pressPaneButton(tester, scope);
           await _text(tester, switch (scope) {
             'Unstaged' => 'snapshot',
             'Task' => 'snapshot\ncommitted\nstaged\nunstaged\nconflicts',
@@ -2739,7 +2087,7 @@ void main() {
         if (count >= 500) {
           await tester.pumpWidget(const SizedBox.shrink());
           await tester.runAsync(fixture.close);
-          final durable = await openDurable(
+          final durable = await suite.openDurable(
             tester,
             additionalRoot: repository,
             initialAnchors: {
@@ -2749,7 +2097,7 @@ void main() {
               ),
             },
           );
-          await mount(
+          fixture = await suite.mount(
             tester,
             registry: durable.registry,
             lifecycle: durable.lifecycle,
@@ -2771,7 +2119,7 @@ void main() {
           await tester.pumpAndSettle();
           await _select(tester);
           final elapsed = Stopwatch()..start();
-          _press(tester, 'Task');
+          pressPaneButton(tester, 'Task');
           await _text(
             tester,
             'snapshot\ncommitted\nstaged\nunstaged\nconflicts',
@@ -2800,1080 +2148,6 @@ void main() {
     );
   }
 
-  testWidgets(
-    'actual stock Git and Diff approve and unapprove through independent Environment AOT without Task anchors',
-    (tester) async {
-      final repositories = await reviewRepositories(tester);
-      final before = (await tester.runAsync(
-        () => _reviewStates(repositories),
-      ))!;
-      final durable = await openDurable(
-        tester,
-        additionalRoot: repositories['additional'],
-        primaryRoot: repositories['primary'],
-      );
-      final database = durable.lifecycle.databaseForEnvironment(
-        EnvironmentId('additional'),
-      )!;
-      const anchorTable =
-          "SELECT name FROM sqlite_master WHERE name='adele_git_task_anchors'";
-      expect(database.queryPluginRows(anchorTable, const {}), isEmpty);
-      await mount(
-        tester,
-        registry: durable.registry,
-        lifecycle: durable.lifecycle,
-        additionalRoot: repositories['additional'],
-        primaryRoot: repositories['primary'],
-        stock: true,
-      );
-      expect(fixture.connection.pluginId, gitPluginId);
-      expect(fixture.connection, isNot(same(fixture.environmentConnection)));
-      final approval = fixture.capabilities.resolve(reviewApprovalCapability);
-      expect(approval.provider.id.value, gitReviewApprovalProviderId);
-      expect(fixture.callableOwner.associationFor(approval), isNull);
-      expect(fixture.callableOwner.isEnvironmentBound(approval), isTrue);
-
-      final approve = _pane('a', find.widgetWithText(TextButton, 'Approve'));
-      final unapprove = _pane(
-        'a',
-        find.widgetWithText(TextButton, 'Unapprove'),
-      );
-      await _waitFor(tester, approve, count: 2);
-      expect(approve, findsNWidgets(2));
-      expect(unapprove, findsNothing);
-      expect(find.textContaining('+additional first change'), findsOneWidget);
-      expect(find.textContaining('+additional second change'), findsOneWidget);
-      expect(find.textContaining('primary first change'), findsNothing);
-      await tester.runAsync(() => tester.tap(approve.first));
-      await _waitFor(tester, approve);
-      expect(find.textContaining('+additional first change'), findsNothing);
-      expect(find.textContaining('+additional second change'), findsOneWidget);
-      _expectReviewIndex(
-        (await tester.runAsync(() => _reviewStates(repositories)))!,
-        before,
-        'additional',
-        _reviewContent('additional', first: true),
-      );
-      expect(
-        _reviewWrites((await tester.runAsync(() => _stockEvidence(fixture)))!),
-        hasLength(1),
-      );
-
-      _press(tester, 'Uncommitted changes');
-      await _waitFor(tester, unapprove);
-      expect(approve, findsOneWidget);
-      expect(find.text('review.txt  [modified]'), findsNWidgets(2));
-      final unstagedY = tester
-          .getTopLeft(find.text('Unstaged changes').last)
-          .dy;
-      expect(
-        tester.getTopLeft(find.textContaining('+additional first change')).dy,
-        lessThan(unstagedY),
-      );
-      expect(
-        tester.getTopLeft(find.textContaining('+additional second change')).dy,
-        greaterThan(unstagedY),
-      );
-      await tester.runAsync(() => tester.tap(unapprove));
-      await _stockVisible(tester, 'No staged changes');
-      await _waitFor(tester, approve, count: 2);
-      expect(approve, findsNWidgets(2));
-      expect(unapprove, findsNothing);
-      expect(find.text('review.txt  [modified]'), findsOneWidget);
-      expect(find.textContaining('+additional first change'), findsOneWidget);
-      expect(find.textContaining('+additional second change'), findsOneWidget);
-      expect(await tester.runAsync(() => _reviewStates(repositories)), before);
-      for (final entry in repositories.entries) {
-        expect(
-          await tester.runAsync(
-            () => File('${entry.value}/review.txt').readAsBytes(),
-          ),
-          utf8.encode(_reviewContent(entry.key, first: true, second: true)),
-        );
-      }
-      final evidence = (await tester.runAsync(() => _stockEvidence(fixture)))!;
-      final writes = _reviewWrites(evidence);
-      expect(writes, hasLength(2));
-      expect(writes.first['arguments'] as List, isNot(contains('--reverse')));
-      expect(writes.last['arguments'] as List, contains('--reverse'));
-      for (final write in writes) {
-        expect(write['exitCode'], 0);
-      }
-      for (final process
-          in (evidence['processes'] as List).cast<Map<Object?, Object?>>()) {
-        expect(process['environmentId'], 'additional');
-        expect(process['providerId'], 'test.environment.a');
-        expect(process['cwd'], repositories['additional']);
-      }
-      expect(
-        fixture.environmentRuntime.currentMaterialization(
-          EnvironmentId('primary'),
-        ),
-        isNull,
-      );
-      expect(database.queryPluginRows(anchorTable, const {}), isEmpty);
-      expect(tester.takeException(), isNull);
-      await tester.pumpWidget(const SizedBox.shrink());
-    },
-  );
-
-  testWidgets(
-    'G6c3b stock bulk controls roundtrip mixed changes through independent Environment AOT without Task anchors',
-    (tester) async {
-      final repositories = await reviewRepositories(tester, wholeLayer: true);
-      final before = (await tester.runAsync(
-        () => _reviewStates(repositories),
-      ))!;
-      final durable = await openDurable(
-        tester,
-        additionalRoot: repositories['additional'],
-        primaryRoot: repositories['primary'],
-      );
-      final database = durable.lifecycle.databaseForEnvironment(
-        EnvironmentId('additional'),
-      )!;
-      const anchorTable =
-          "SELECT name FROM sqlite_master WHERE name='adele_git_task_anchors'";
-      expect(database.queryPluginRows(anchorTable, const {}), isEmpty);
-      await mount(
-        tester,
-        registry: durable.registry,
-        lifecycle: durable.lifecycle,
-        additionalRoot: repositories['additional'],
-        primaryRoot: repositories['primary'],
-        withTaskAnchor: false,
-        stock: true,
-      );
-      tester.view.physicalSize = const Size(1600, 5000);
-      await tester.pump();
-      expect(fixture.connection.pluginId, gitPluginId);
-      expect(fixture.connection, isNot(same(fixture.environmentConnection)));
-      final approval = fixture.capabilities.resolve(reviewApprovalCapability);
-      expect(approval.provider.id.value, gitReviewApprovalProviderId);
-      expect(fixture.callableOwner.associationFor(approval), isNull);
-      expect(fixture.callableOwner.isEnvironmentBound(approval), isTrue);
-      expect(
-        durable.lifecycle.store
-            .requireSessionAuthority(fixture.sessionA.id)
-            .environmentId,
-        EnvironmentId('additional'),
-      );
-      final approve = _pane(
-        'a',
-        find.widgetWithText(TextButton, 'Approve All Unstaged'),
-      );
-      final unapprove = _pane(
-        'a',
-        find.widgetWithText(TextButton, 'Unapprove All Staged'),
-      );
-      await _waitFor(tester, approve);
-      await _waitFor(
-        tester,
-        find.widgetWithText(TextButton, 'Approve File'),
-        count: 4,
-      );
-      for (final header in [
-        'review.txt  [modified]',
-        'z-other.txt  [modified]',
-        '$_newFileReviewPath  [added]',
-        '$_deletedFileReviewPath  [deleted]',
-      ]) {
-        expect(find.text(header), findsOneWidget);
-      }
-      expect(unapprove, findsNothing);
-      expect(find.widgetWithText(TextButton, 'Approve'), findsWidgets);
-      expect(find.textContaining('primary'), findsNothing);
-      final staleApprove = tester.widget<TextButton>(approve).onPressed!;
-      await tester.runAsync(() => tester.tap(approve));
-      await _stockVisible(tester, 'No unstaged changes');
-      expect(approve, findsNothing);
-      final approved = (await tester.runAsync(
-        () => _reviewStates(repositories),
-      ))!;
-      _expectLayerReviewIndex(approved, before, approved: true);
-      staleApprove();
-      await tester.pump();
-      expect(
-        await tester.runAsync(() => _reviewStates(repositories)),
-        approved,
-      );
-      expect(
-        _reviewWrites((await tester.runAsync(() => _stockEvidence(fixture)))!),
-        hasLength(1),
-      );
-
-      _press(tester, 'Uncommitted changes');
-      await _waitFor(tester, unapprove);
-      await _waitFor(
-        tester,
-        find.widgetWithText(TextButton, 'Unapprove File'),
-        count: 5,
-      );
-      expect(find.widgetWithText(TextButton, 'Unapprove'), findsWidgets);
-      expect(approve, findsNothing);
-      await _stockVisible(tester, 'No unstaged changes');
-      final staleUnapprove = tester.widget<TextButton>(unapprove).onPressed!;
-      await tester.runAsync(() => tester.tap(unapprove));
-      await _stockVisible(tester, 'No staged changes');
-      await _waitFor(tester, approve);
-      await _waitFor(
-        tester,
-        find.widgetWithText(TextButton, 'Approve File'),
-        count: 5,
-      );
-      expect(unapprove, findsNothing);
-      expect(find.widgetWithText(TextButton, 'Unapprove File'), findsNothing);
-      final unstagedY = tester
-          .getTopLeft(find.text('Unstaged changes').last)
-          .dy;
-      for (final header in [
-        'review.txt  [modified]',
-        'z-other.txt  [modified]',
-        'untouched.txt  [modified]',
-        '$_newFileReviewPath  [added]',
-        '$_deletedFileReviewPath  [deleted]',
-      ]) {
-        expect(find.text(header), findsOneWidget);
-        expect(tester.getTopLeft(find.text(header)).dy, greaterThan(unstagedY));
-      }
-      final unapproved = (await tester.runAsync(
-        () => _reviewStates(repositories),
-      ))!;
-      _expectLayerReviewIndex(unapproved, before, approved: false);
-      staleApprove();
-      staleUnapprove();
-      await tester.pump();
-      expect(
-        await tester.runAsync(() => _reviewStates(repositories)),
-        unapproved,
-      );
-      final evidence = (await tester.runAsync(() => _stockEvidence(fixture)))!;
-      final applies = (evidence['processes'] as List)
-          .cast<Map<Object?, Object?>>()
-          .where((process) => (process['arguments'] as List).contains('apply'))
-          .toList();
-      expect(
-        applies.map(
-          (process) => (process['arguments'] as List).contains('--check'),
-        ),
-        [true, false, true, false],
-      );
-      final writes = _reviewWrites(evidence);
-      expect(writes, hasLength(2));
-      for (var i = 0; i < writes.length; i++) {
-        final write = writes[i];
-        expect(write['exitCode'], 0);
-        expect(write['stdinBase64'], applies[i * 2]['stdinBase64']);
-        expect(
-          write['arguments'] as List,
-          i == 0 ? isNot(contains('--reverse')) : contains('--reverse'),
-        );
-        final patch = utf8.decode(base64Decode(write['stdinBase64'] as String));
-        expect(
-          RegExp(r'^diff --git ', multiLine: true).allMatches(patch),
-          hasLength(i == 0 ? 4 : 5),
-        );
-        for (final path in [
-          'review.txt',
-          'z-other.txt',
-          _newFileReviewPath,
-          _deletedFileReviewPath,
-        ]) {
-          expect(patch, contains(path));
-        }
-        expect(
-          patch,
-          i == 0 ? isNot(contains('untouched.txt')) : contains('untouched.txt'),
-        );
-      }
-      for (final process
-          in (evidence['processes'] as List).cast<Map<Object?, Object?>>()) {
-        expect(process['environmentId'], 'additional');
-        expect(process['providerId'], 'test.environment.a');
-        expect(process['cwd'], repositories['additional']);
-      }
-      await tester.runAsync(() async {
-        final root = Directory(repositories['additional']!);
-        expect(await _git(root, ['diff', '--cached', '--exit-code']), isEmpty);
-        for (final entry in _layerReviewContents(
-          'additional',
-          approved: false,
-        ).entries) {
-          expect(
-            await _git(root, ['show', ':${entry.key}'], trim: false),
-            entry.value,
-          );
-        }
-        expect(
-          await File('${root.path}/$_deletedFileReviewPath').exists(),
-          isFalse,
-        );
-      });
-      expect(
-        fixture.environmentRuntime.currentMaterialization(
-          EnvironmentId('primary'),
-        ),
-        isNull,
-      );
-      expect(database.queryPluginRows(anchorTable, const {}), isEmpty);
-      expect(
-        durable.lifecycle.store.runsForSession(fixture.sessionA.id),
-        isEmpty,
-      );
-      expect(tester.takeException(), isNull);
-      await tester.pumpWidget(const SizedBox.shrink());
-    },
-  );
-
-  for (final empty in [false, true]) {
-    testWidgets(
-      'G6c2a stock ${empty ? 'empty file' : 'new text file'} approval roundtrip uses independent Environment AOT without Task anchors',
-      (tester) async {
-        const path = _newFileReviewPath;
-        final content = empty
-            ? ''
-            : 'Independent new text\nFinal line without newline';
-        final repositories = await reviewRepositories(
-          tester,
-          newFileContent: content,
-        );
-        final before = (await tester.runAsync(
-          () => _reviewStates(repositories),
-        ))!;
-        await tester.runAsync(
-          () => _expectNewFileIndex(
-            repositories,
-            before,
-            content,
-            approved: false,
-          ),
-        );
-        final durable = await openDurable(
-          tester,
-          additionalRoot: repositories['additional'],
-          primaryRoot: repositories['primary'],
-        );
-        final database = durable.lifecycle.databaseForEnvironment(
-          EnvironmentId('additional'),
-        )!;
-        const anchorTable =
-            "SELECT name FROM sqlite_master WHERE name='adele_git_task_anchors'";
-        expect(database.queryPluginRows(anchorTable, const {}), isEmpty);
-        await mount(
-          tester,
-          registry: durable.registry,
-          lifecycle: durable.lifecycle,
-          additionalRoot: repositories['additional'],
-          primaryRoot: repositories['primary'],
-          withTaskAnchor: false,
-          stock: true,
-        );
-        expect(fixture.connection.pluginId, gitPluginId);
-        expect(fixture.connection, isNot(same(fixture.environmentConnection)));
-        final approval = fixture.capabilities.resolve(reviewApprovalCapability);
-        expect(approval.provider.id.value, gitReviewApprovalProviderId);
-        expect(fixture.callableOwner.associationFor(approval), isNull);
-        expect(fixture.callableOwner.isEnvironmentBound(approval), isTrue);
-        expect(
-          durable.lifecycle.store
-              .requireSessionAuthority(fixture.sessionA.id)
-              .environmentId,
-          EnvironmentId('additional'),
-        );
-        final approve = _pane(
-          'a',
-          find.widgetWithText(TextButton, 'Approve File'),
-        );
-        final unapprove = _pane(
-          'a',
-          find.widgetWithText(TextButton, 'Unapprove File'),
-        );
-        await _waitFor(tester, approve);
-        expect(find.text('$path  [added]'), findsOneWidget);
-        expect(find.widgetWithText(TextButton, 'Approve'), findsNothing);
-        expect(find.widgetWithText(TextButton, 'Unapprove'), findsNothing);
-        expect(
-          find.textContaining('@@ -'),
-          empty ? findsNothing : findsOneWidget,
-        );
-        if (!empty) {
-          expect(find.textContaining('+Independent new text'), findsOneWidget);
-          expect(
-            find.textContaining('+Final line without newline'),
-            findsOneWidget,
-          );
-        }
-        final staleApprove = tester.widget<TextButton>(approve).onPressed!;
-        await tester.runAsync(() => tester.tap(approve));
-        await _stockVisible(tester, 'No unstaged changes');
-        expect(approve, findsNothing);
-        await tester.runAsync(
-          () => _expectNewFileIndex(
-            repositories,
-            before,
-            content,
-            approved: true,
-          ),
-        );
-        final approved = (await tester.runAsync(
-          () => _reviewStates(repositories),
-        ))!;
-        staleApprove();
-        await tester.pump();
-        expect(
-          await tester.runAsync(() => _reviewStates(repositories)),
-          approved,
-        );
-        expect(
-          _reviewWrites(
-            (await tester.runAsync(() => _stockEvidence(fixture)))!,
-          ),
-          hasLength(1),
-        );
-
-        _press(tester, 'Uncommitted changes');
-        await _waitFor(tester, unapprove, count: 2);
-        expect(find.text('$path  [added]'), findsOneWidget);
-        // The other file action belongs to the unrelated staged sentinel.
-        expect(find.widgetWithText(TextButton, 'Unapprove'), findsOneWidget);
-        expect(
-          tester.getTopLeft(find.text('$path  [added]')).dy,
-          lessThan(tester.getTopLeft(find.text('Unstaged changes').last).dy),
-        );
-        final staleUnapprove = tester
-            .widget<TextButton>(unapprove.first)
-            .onPressed!;
-        await tester.runAsync(() => tester.tap(unapprove.first));
-        await _waitFor(tester, approve);
-        expect(unapprove, findsOneWidget);
-        expect(find.text('$path  [added]'), findsOneWidget);
-        expect(
-          tester.getTopLeft(find.text('$path  [added]')).dy,
-          greaterThan(tester.getTopLeft(find.text('Unstaged changes').last).dy),
-        );
-        expect(
-          find.textContaining('+additional unrelated staged sentinel'),
-          findsOneWidget,
-        );
-        expect(find.textContaining('Primary'), findsNothing);
-        await tester.runAsync(
-          () => _expectNewFileIndex(
-            repositories,
-            before,
-            content,
-            approved: false,
-          ),
-        );
-        staleUnapprove();
-        await tester.pump();
-        expect(
-          await tester.runAsync(() => _reviewStates(repositories)),
-          before,
-        );
-        final evidence = (await tester.runAsync(
-          () => _stockEvidence(fixture),
-        ))!;
-        final writes = _reviewWrites(evidence);
-        expect(writes, hasLength(2));
-        expect(writes.first['arguments'] as List, isNot(contains('--reverse')));
-        expect(writes.last['arguments'] as List, contains('--reverse'));
-        for (final write in writes) {
-          expect(write['exitCode'], 0);
-        }
-        for (final process
-            in (evidence['processes'] as List).cast<Map<Object?, Object?>>()) {
-          expect(process['environmentId'], 'additional');
-          expect(process['providerId'], 'test.environment.a');
-          expect(process['cwd'], repositories['additional']);
-        }
-        expect(
-          fixture.environmentRuntime.currentMaterialization(
-            EnvironmentId('primary'),
-          ),
-          isNull,
-        );
-        expect(database.queryPluginRows(anchorTable, const {}), isEmpty);
-        expect(
-          durable.lifecycle.store.runsForSession(fixture.sessionA.id),
-          isEmpty,
-        );
-        expect(tester.takeException(), isNull);
-        await tester.pumpWidget(const SizedBox.shrink());
-      },
-    );
-  }
-
-  for (final empty in [false, true]) {
-    testWidgets(
-      'G6c2b stock ${empty ? 'empty tracked file' : 'executable text file'} deletion approval roundtrip uses independent Environment AOT without Task anchors',
-      (tester) async {
-        const path = _deletedFileReviewPath;
-        final content = empty
-            ? ''
-            : 'Independent deletion HEAD\nFinal line without newline';
-        final mode = empty ? '100644' : '100755';
-        final repositories = await reviewRepositories(
-          tester,
-          deletedFileContent: content,
-        );
-        final before = (await tester.runAsync(
-          () => _reviewStates(repositories),
-        ))!;
-        await tester.runAsync(
-          () => _expectDeletedFileIndex(
-            repositories,
-            before,
-            content,
-            mode,
-            approved: false,
-          ),
-        );
-        final durable = await openDurable(
-          tester,
-          additionalRoot: repositories['additional'],
-          primaryRoot: repositories['primary'],
-        );
-        final database = durable.lifecycle.databaseForEnvironment(
-          EnvironmentId('additional'),
-        )!;
-        const anchorTable =
-            "SELECT name FROM sqlite_master WHERE name='adele_git_task_anchors'";
-        expect(database.queryPluginRows(anchorTable, const {}), isEmpty);
-        await mount(
-          tester,
-          registry: durable.registry,
-          lifecycle: durable.lifecycle,
-          additionalRoot: repositories['additional'],
-          primaryRoot: repositories['primary'],
-          withTaskAnchor: false,
-          stock: true,
-        );
-        expect(fixture.connection.pluginId, gitPluginId);
-        expect(fixture.connection, isNot(same(fixture.environmentConnection)));
-        expect(fixture.environmentConnection.pluginId, _environmentPlugin);
-        final approval = fixture.capabilities.resolve(reviewApprovalCapability);
-        expect(approval.provider.id.value, gitReviewApprovalProviderId);
-        expect(fixture.callableOwner.associationFor(approval), isNull);
-        expect(fixture.callableOwner.isEnvironmentBound(approval), isTrue);
-        expect(
-          durable.lifecycle.store
-              .requireSessionAuthority(fixture.sessionA.id)
-              .environmentId,
-          EnvironmentId('additional'),
-        );
-        final approve = _pane(
-          'a',
-          find.widgetWithText(TextButton, 'Approve File'),
-        );
-        final unapprove = _pane(
-          'a',
-          find.widgetWithText(TextButton, 'Unapprove File'),
-        );
-        await _waitFor(tester, approve);
-        expect(find.text('$path  [deleted]'), findsOneWidget);
-        expect(find.widgetWithText(TextButton, 'Approve'), findsNothing);
-        expect(find.widgetWithText(TextButton, 'Unapprove'), findsNothing);
-        expect(find.widgetWithText(TextButton, 'Open in Source'), findsNothing);
-        expect(
-          find.textContaining('@@ -'),
-          empty ? findsNothing : findsOneWidget,
-        );
-        if (!empty) {
-          expect(
-            find.textContaining('-Independent deletion HEAD'),
-            findsOneWidget,
-          );
-          expect(
-            find.textContaining('-Final line without newline'),
-            findsOneWidget,
-          );
-        }
-        final staleApprove = tester.widget<TextButton>(approve).onPressed!;
-        await tester.runAsync(() => tester.tap(approve));
-        await _stockVisible(tester, 'No unstaged changes');
-        expect(approve, findsNothing);
-        await tester.runAsync(
-          () => _expectDeletedFileIndex(
-            repositories,
-            before,
-            content,
-            mode,
-            approved: true,
-          ),
-        );
-        final approved = (await tester.runAsync(
-          () => _reviewStates(repositories),
-        ))!;
-        staleApprove();
-        await tester.pump();
-        expect(
-          await tester.runAsync(() => _reviewStates(repositories)),
-          approved,
-        );
-        expect(
-          _reviewWrites(
-            (await tester.runAsync(() => _stockEvidence(fixture)))!,
-          ),
-          hasLength(1),
-        );
-
-        _press(tester, 'Uncommitted changes');
-        await _waitFor(tester, unapprove, count: 2);
-        expect(find.text('$path  [deleted]'), findsOneWidget);
-        // Only the unrelated staged sentinel has a hunk action.
-        expect(find.widgetWithText(TextButton, 'Unapprove'), findsOneWidget);
-        expect(find.widgetWithText(TextButton, 'Open in Source'), findsNothing);
-        expect(
-          tester.getTopLeft(find.text('$path  [deleted]')).dy,
-          greaterThan(tester.getTopLeft(find.text('Staged changes')).dy),
-        );
-        expect(
-          tester.getTopLeft(find.text('$path  [deleted]')).dy,
-          lessThan(tester.getTopLeft(find.text('Unstaged changes').last).dy),
-        );
-        final staleUnapprove = tester
-            .widget<TextButton>(unapprove.first)
-            .onPressed!;
-        await tester.runAsync(() => tester.tap(unapprove.first));
-        await _waitFor(tester, approve);
-        expect(unapprove, findsOneWidget);
-        expect(find.text('$path  [deleted]'), findsOneWidget);
-        expect(
-          tester.getTopLeft(find.text('$path  [deleted]')).dy,
-          greaterThan(tester.getTopLeft(find.text('Unstaged changes').last).dy),
-        );
-        expect(
-          find.textContaining('+additional unrelated staged deletion sentinel'),
-          findsOneWidget,
-        );
-        expect(find.textContaining('Primary'), findsNothing);
-        expect(find.widgetWithText(TextButton, 'Approve'), findsNothing);
-        expect(find.widgetWithText(TextButton, 'Open in Source'), findsNothing);
-        await tester.runAsync(
-          () => _expectDeletedFileIndex(
-            repositories,
-            before,
-            content,
-            mode,
-            approved: false,
-          ),
-        );
-        staleUnapprove();
-        await tester.pump();
-        expect(
-          await tester.runAsync(() => _reviewStates(repositories)),
-          before,
-        );
-        final evidence = (await tester.runAsync(
-          () => _stockEvidence(fixture),
-        ))!;
-        final writes = _reviewWrites(evidence);
-        expect(writes, hasLength(2));
-        expect(writes.first['arguments'] as List, isNot(contains('--reverse')));
-        expect(writes.last['arguments'] as List, contains('--reverse'));
-        for (final write in writes) {
-          expect(write['exitCode'], 0);
-        }
-        for (final process
-            in (evidence['processes'] as List).cast<Map<Object?, Object?>>()) {
-          expect(process['environmentId'], 'additional');
-          expect(process['providerId'], 'test.environment.a');
-          expect(process['cwd'], repositories['additional']);
-        }
-        expect(
-          fixture.environmentRuntime.currentMaterialization(
-            EnvironmentId('primary'),
-          ),
-          isNull,
-        );
-        expect(database.queryPluginRows(anchorTable, const {}), isEmpty);
-        expect(
-          durable.lifecycle.store.runsForSession(fixture.sessionA.id),
-          isEmpty,
-        );
-        expect(tester.takeException(), isNull);
-        await tester.pumpWidget(const SizedBox.shrink());
-      },
-    );
-  }
-
-  for (final count in [100, 500, 900]) {
-    testWidgets(
-      'actual stock Git and Diff use independent Environment AOT for $count clean files and layered changes',
-      (tester) async {
-        final repository = (await tester.runAsync(() async {
-          final root = await Directory(
-            '${temporary.path}/stock-$count',
-          ).create();
-          await _git(root, ['init', '--initial-branch=main']);
-          await Directory('${root.path}/tracked').create();
-          for (var i = 0; i < count; i++) {
-            await File(
-              '${root.path}/tracked/file $i.txt',
-            ).writeAsString('baseline $i\n');
-          }
-          await _git(root, ['add', '--all']);
-          await _git(root, [
-            '-c',
-            'user.name=Fixture',
-            '-c',
-            'user.email=fixture@example.invalid',
-            'commit',
-            '-m',
-            'stock route baseline',
-          ]);
-          return root.resolveSymbolicLinks();
-        }))!;
-        final baseline = (await tester.runAsync(
-          () => _git(Directory(repository), ['rev-parse', 'HEAD']),
-        ))!;
-        final durable = await openDurable(
-          tester,
-          additionalRoot: repository,
-          initialAnchors: {
-            'additional': GitTaskComparisonAnchor(
-              baselineCommit: baseline,
-              expectedBranchRef: 'refs/heads/main',
-            ),
-            'primary': GitTaskComparisonAnchor(
-              baselineCommit: primaryBaseline,
-              expectedBranchRef: 'refs/heads/main',
-            ),
-          },
-        );
-        await mount(
-          tester,
-          registry: durable.registry,
-          lifecycle: durable.lifecycle,
-          additionalRoot: repository,
-          stock: true,
-          present: false,
-        );
-        final retained = _anchorRows(durable.lifecycle);
-        expect(fixture.connection.pluginId, gitPluginId);
-        expect(fixture.connection, isNot(same(fixture.environmentConnection)));
-        expect(
-          fixture.capabilities.providersFor(environmentProviderCapability),
-          hasLength(3),
-        );
-        final binding = fixture.capabilities.resolve(_capability);
-        expect(binding.provider.id.value, gitChangeSetSourceProviderId);
-        expect(fixture.callableOwner.associationFor(binding), isNull);
-        expect(fixture.callableOwner.isEnvironmentBound(binding), isTrue);
-        expect(
-          fixture.callableOwner.allowsEnvironmentHostService(
-            binding,
-            AdeleEnvironmentHostService.bufferedProcess,
-          ),
-          isTrue,
-        );
-        expect(
-          fixture.callableOwner.allowsEnvironmentHostService(
-            binding,
-            AdeleEnvironmentHostService.read,
-          ),
-          isFalse,
-        );
-        var previousCount = 0;
-        final batches = (count + 127) ~/ 128;
-        for (final (scope, clean, expected) in [
-          ('Unstaged changes', 'No unstaged changes', 21 + 4 * batches),
-          ('Uncommitted changes', 'No uncommitted changes', 27 + 4 * batches),
-          ('Task / Branch', 'No task changes', 36 + 4 * batches),
-        ]) {
-          final elapsed = Stopwatch()..start();
-          if (previousCount == 0) {
-            await tester.pumpWidget(fixture.widget());
-          } else {
-            _press(tester, scope);
-          }
-          await _stockVisible(tester, clean);
-          elapsed.stop();
-          final evidence = (await tester.runAsync(
-            () => _stockEvidence(fixture),
-          ))!;
-          final processes = (evidence['processes'] as List)
-              .cast<Map<Object?, Object?>>();
-          final requests = processes.length - previousCount;
-          expect(requests, expected);
-          for (final process in processes) {
-            expect(process['environmentId'], 'additional');
-            expect(process['providerId'], 'test.environment.a');
-            expect(process['cwd'], repository);
-            expect(process['exitCode'], 0);
-          }
-          debugPrint(
-            'Actual stock $scope $count clean files: $requests process requests, '
-            '${elapsed.elapsedMilliseconds} ms (diagnostic only).',
-          );
-          previousCount = processes.length;
-        }
-        final selected = (await tester.runAsync(
-          () => CapturedEnvironmentCapabilities(
-            environmentRuntime: fixture.environmentRuntime,
-            backends: fixture.backends,
-            session: fixture.sessionA,
-          ).resolve(_capability),
-        ))!;
-        expect(selected.environment.id, EnvironmentId('additional'));
-        expect(selected.environment.role, EnvironmentRole.additional);
-        expect(
-          selected.materialization.binding.provider.id.value,
-          'test.environment.a',
-        );
-        expect(
-          fixture.environmentRuntime.currentMaterialization(
-            EnvironmentId('primary'),
-          ),
-          isNull,
-        );
-        expect(
-          fixture.environmentRuntime.store
-              .environment(EnvironmentId('additional'))!
-              .providerState,
-          {'root': repository},
-        );
-
-        for (final committed in [false, true]) {
-          await tester.runAsync(() async {
-            final file = File('$repository/tracked/file 0.txt');
-            if (committed) {
-              await file.writeAsString('committed layer\n');
-              await _git(Directory(repository), ['add', '--all']);
-              await _git(Directory(repository), [
-                '-c',
-                'user.name=Fixture',
-                '-c',
-                'user.email=fixture@example.invalid',
-                'commit',
-                '-m',
-                'after retained anchor',
-              ]);
-            }
-            await file.writeAsString('staged layer\n');
-            await _git(Directory(repository), ['add', '--all']);
-            await file.writeAsString('working layer\n');
-          });
-          int? firstCount;
-          for (var refresh = 0; refresh < 2; refresh++) {
-            final elapsed = Stopwatch()..start();
-            _press(
-              tester,
-              refresh == 1
-                  ? 'Refresh'
-                  : committed
-                  ? 'Task / Branch'
-                  : 'Uncommitted changes',
-            );
-            await _stockVisible(tester, '+working layer');
-            elapsed.stop();
-            expect(
-              find.text('tracked/file 0.txt  [modified]'),
-              findsNWidgets(committed ? 3 : 2),
-            );
-            expect(find.textContaining('+staged layer'), findsOneWidget);
-            expect(find.textContaining('-staged layer'), findsOneWidget);
-            expect(find.textContaining('-baseline 0'), findsOneWidget);
-            if (committed) {
-              expect(find.textContaining('+committed layer'), findsOneWidget);
-              expect(find.textContaining('-committed layer'), findsOneWidget);
-            }
-            final evidence = (await tester.runAsync(
-              () => _stockEvidence(fixture),
-            ))!;
-            final total = (evidence['processes'] as List).length;
-            final requests = total - previousCount;
-            if (firstCount != null) expect(requests, firstCount);
-            firstCount = requests;
-            // Fixed rendered-file work, not a subprocess for every clean file.
-            expect(requests, (committed ? 66 : 42) + 4 * batches);
-            debugPrint(
-              'Actual stock ${committed ? 'committed+staged+unstaged' : 'staged+unstaged'} '
-              '$count files refresh $refresh: $requests process requests, '
-              '${elapsed.elapsedMilliseconds} ms (diagnostic only).',
-            );
-            previousCount = total;
-            expect(_anchorRows(durable.lifecycle), retained);
-          }
-        }
-        if (count == 100) {
-          final oldSession = fixture.sessionA;
-          await tester.pumpWidget(const SizedBox.shrink());
-          await tester.runAsync(() async {
-            await fixture.close();
-            await durable.lifecycle.close();
-          });
-          final reopened = await openDurable(tester, backing: durable.backing);
-          expect(_anchorRows(reopened.lifecycle), retained);
-          await mount(
-            tester,
-            registry: reopened.registry,
-            lifecycle: reopened.lifecycle,
-            additionalRoot: repository,
-            stock: true,
-          );
-          expect(fixture.sessionA, isNot(same(oldSession)));
-          await _stockVisible(tester, '+working layer');
-          _press(tester, 'Task / Branch');
-          await _stockVisible(tester, '+committed layer');
-          expect(find.textContaining('-baseline 0'), findsOneWidget);
-          fixture.frontends.unbind(fixture.sessionA);
-          await tester.pumpWidget(fixture.widget(session: fixture.sessionB));
-          await _stockVisible(tester, '+new primary');
-          _press(tester, 'Task / Branch');
-          await _stockVisible(tester, 'No committed changes');
-          expect(find.textContaining('tracked/file 0.txt'), findsNothing);
-          expect(_anchorRows(reopened.lifecycle), retained);
-        }
-        expect(tester.takeException(), isNull);
-        await tester.pumpWidget(const SizedBox.shrink());
-      },
-    );
-  }
-
-  testWidgets(
-    'actual stock layers retain conflicts and unsupported files without Source authority',
-    (tester) async {
-      final link = Link('${roots['additional']}/unsupported-link.txt');
-      await tester.runAsync(() => link.create('file with spaces.txt'));
-      addTearDown(() async {
-        if (await link.exists()) await link.delete();
-      });
-      final durable = await openDurable(
-        tester,
-        initialAnchors: {
-          'additional': GitTaskComparisonAnchor(
-            baselineCommit: selectedBaseline,
-            expectedBranchRef: _selectedBranchRef,
-          ),
-        },
-      );
-      await mount(
-        tester,
-        registry: durable.registry,
-        lifecycle: durable.lifecycle,
-        stock: true,
-      );
-      // Eligibility assertions inspect every lazy row across all four layers,
-      // including the extra header controls, rather than only the viewport.
-      tester.view.physicalSize = const Size(1600, 5000);
-      await tester.pump();
-      await _stockVisible(tester, '+new selected');
-      final retained = _anchorRows(durable.lifecycle);
-      for (final scope in [
-        'Unstaged changes',
-        'Uncommitted changes',
-        'Task / Branch',
-      ]) {
-        if (scope != 'Unstaged changes') {
-          _press(tester, scope);
-          await _stockVisible(tester, '+new staged');
-          expect(find.text('Conflicts'), findsOneWidget);
-        }
-        expect(find.text('conflicted.txt  [conflicted]'), findsOneWidget);
-        expect(find.text('conflicted'), findsOneWidget);
-        expect(
-          find.text('unsupported-link.txt  [unsupported]'),
-          findsOneWidget,
-        );
-        expect(find.text('unsupported'), findsOneWidget);
-        expect(
-          find.textContaining('Symbolic links and special working files'),
-          findsOneWidget,
-        );
-        expect(find.textContaining('<<<<<<<'), findsNothing);
-        expect(find.text('Open in Source'), findsNothing);
-        expect(find.text('Source is unavailable.'), findsWidgets);
-        await _waitFor(
-          tester,
-          find.widgetWithText(TextButton, 'Approve'),
-          count: 4,
-        );
-        // Only the four ordinary modified paths have reviewable hunks. The
-        // ordinary deletion adds one file-only action in each mutable layer.
-        expect(find.widgetWithText(TextButton, 'Approve'), findsNWidgets(4));
-        expect(
-          find.widgetWithText(TextButton, 'Unapprove'),
-          scope == 'Unstaged changes' ? findsNothing : findsNWidgets(4),
-        );
-        expect(
-          find.widgetWithText(TextButton, 'Approve File'),
-          findsNWidgets(5),
-        );
-        expect(find.text('deleted.txt  [deleted]'), findsOneWidget);
-        expect(
-          find.widgetWithText(TextButton, 'Unapprove File'),
-          scope == 'Unstaged changes' ? findsNothing : findsNWidgets(5),
-        );
-        expect(
-          find.text('staged deleted.txt  [deleted]'),
-          scope == 'Unstaged changes' ? findsNothing : findsOneWidget,
-        );
-        if (scope == 'Task / Branch') {
-          // An unmerged path keeps its independent committed change, not an
-          // invented staged/unstaged text patch from the conflict workfile.
-          expect(find.text('conflicted.txt  [modified]'), findsOneWidget);
-          expect(find.textContaining('-base conflict'), findsOneWidget);
-          expect(
-            find.textContaining('+$_selectedBranch conflict'),
-            findsOneWidget,
-          );
-        }
-        expect(_anchorRows(durable.lifecycle), retained);
-      }
-      final evidence = (await tester.runAsync(() => _stockEvidence(fixture)))!;
-      expect(_reviewWrites(evidence), isEmpty);
-      for (final process
-          in (evidence['processes'] as List).cast<Map<Object?, Object?>>()) {
-        expect(process['environmentId'], 'additional');
-        expect(process['providerId'], 'test.environment.a');
-      }
-      expect(tester.takeException(), isNull);
-      await tester.pumpWidget(const SizedBox.shrink());
-    },
-  );
-
-  testWidgets(
-    'actual stock Task without a selected anchor does not borrow primary or disable other scopes',
-    (tester) async {
-      final durable = await openDurable(
-        tester,
-        initialAnchors: {
-          'primary': GitTaskComparisonAnchor(
-            baselineCommit: primaryBaseline,
-            expectedBranchRef: 'refs/heads/main',
-          ),
-        },
-      );
-      await mount(
-        tester,
-        registry: durable.registry,
-        lifecycle: durable.lifecycle,
-        stock: true,
-      );
-      await _stockVisible(tester, '+new selected');
-      final retained = _anchorRows(durable.lifecycle);
-      final before =
-          ((await tester.runAsync(() => _stockEvidence(fixture)))!['processes']
-                  as List)
-              .length;
-      _press(tester, 'Task / Branch');
-      await _stockVisible(tester, 'Unable to load');
-      expect(find.textContaining('No task changes'), findsNothing);
-      expect(
-        ((await tester.runAsync(() => _stockEvidence(fixture)))!['processes']
-            as List),
-        hasLength(before),
-      );
-      _press(tester, 'Uncommitted changes');
-      await _stockVisible(tester, '+new staged');
-      expect(find.textContaining('+new selected'), findsOneWidget);
-      expect(_anchorRows(durable.lifecycle), retained);
-      expect(tester.takeException(), isNull);
-      await tester.pumpWidget(const SizedBox.shrink());
-    },
-  );
-
   for (final denial in [
     'frontend declaration',
     'provider permission',
@@ -3882,13 +2156,13 @@ void main() {
     testWidgets('$denial prevents portable Git admission without fallback', (
       tester,
     ) async {
-      await mount(
+      final fixture = await suite.mount(
         tester,
         processGrant: denial != 'frontend declaration',
         providerPermission: denial != 'provider permission',
         providerPresent: denial != 'absent provider',
       );
-      _press(tester, 'Select');
+      pressPaneButton(tester, 'Select');
       await _text(tester, 'selection:unavailable');
       expect(await tester.runAsync(() => _calls(fixture)), isEmpty);
       expect((await tester.runAsync(fixture.snapshot))!['processes'], isEmpty);
@@ -3900,9 +2174,9 @@ void main() {
     testWidgets(
       '$scope wrong service and explicit missing provider do not select the available provider',
       (tester) async {
-        await mount(tester);
+        final fixture = await suite.mount(tester);
         for (final label in ['Wrong service', 'Missing provider']) {
-          _press(tester, label);
+          pressPaneButton(tester, label);
           await _text(tester, 'selection:unavailable');
         }
         expect(await tester.runAsync(() => _calls(fixture)), isEmpty);
@@ -3911,7 +2185,7 @@ void main() {
           isEmpty,
         );
         await _select(tester);
-        _press(tester, scope);
+        pressPaneButton(tester, scope);
         _expectAdditional(await _snapshot(tester), scope: scope);
         await tester.pumpWidget(const SizedBox.shrink());
       },
@@ -3921,21 +2195,21 @@ void main() {
       testWidgets(
         '$scope ${noFacet ? 'absent process facet' : 'explicit unavailable Environment'} never falls back to primary',
         (tester) async {
-          await mount(
+          final fixture = await suite.mount(
             tester,
             noBufferedFacet: noFacet,
             unavailable: !noFacet,
             concurrent: true,
           );
           await _select(tester);
-          _press(tester, scope);
+          pressPaneButton(tester, scope);
           await _text(tester, 'snapshot:unavailable');
           expect(
             (await tester.runAsync(fixture.snapshot))!['processes'],
             isEmpty,
           );
           await _select(tester, pane: 'b');
-          _press(tester, scope, pane: 'b');
+          pressPaneButton(tester, scope, pane: 'b');
           if (scope == 'Task') {
             await _text(tester, 'snapshot:unavailable', pane: 'b');
           } else {
@@ -3961,16 +2235,19 @@ void main() {
   testWidgets(
     'Task retains committed-only nonprimary changes after Uncommitted is clean',
     (tester) async {
-      await mount(tester, additionalRoot: committedRoot);
+      final fixture = await suite.mount(
+        tester,
+        additionalRoot: suite.committedRoot,
+      );
       await _select(tester);
-      _press(tester, 'Uncommitted');
+      pressPaneButton(tester, 'Uncommitted');
       await _text(tester, 'snapshot\nstaged\nunstaged\nconflicts');
       var previousProcessCount =
           ((await tester.runAsync(fixture.snapshot))!['processes'] as List)
               .length;
       for (var refresh = 0; refresh < 2; refresh++) {
         final elapsed = Stopwatch()..start();
-        _press(tester, 'Task');
+        pressPaneButton(tester, 'Task');
         final snapshot = await _snapshot(tester);
         elapsed.stop();
         final processCount =
@@ -4006,7 +2283,7 @@ void main() {
           in (evidence['processes'] as List).cast<Map<Object?, Object?>>()) {
         expect(process['environmentId'], 'additional');
         expect(process['providerId'], 'test.environment.a');
-        expect(process['cwd'], committedRoot);
+        expect(process['cwd'], suite.committedRoot);
       }
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox.shrink());
@@ -4025,18 +2302,18 @@ void main() {
     testWidgets('Task $invalid fails without inferring or replacing its anchor', (
       tester,
     ) async {
-      var repository = committedRoot;
+      var repository = suite.committedRoot;
       if (invalid == 'wrong branch' || invalid == 'detached HEAD') {
         repository = (await tester.runAsync(() async {
-          final name = 'invalid-anchor-${sequence++}';
-          await _git(temporary, [
+          final name = 'invalid-anchor-${suite.nextSequence()}';
+          await runGit(suite.temporary, [
             'clone',
             '--no-hardlinks',
-            committedRoot,
+            suite.committedRoot,
             name,
           ]);
-          final root = Directory('${temporary.path}/$name');
-          await _git(root, [
+          final root = Directory('${suite.temporary.path}/$name');
+          await runGit(root, [
             'checkout',
             if (invalid == 'wrong branch') ...[
               '-b',
@@ -4047,7 +2324,7 @@ void main() {
           return root.resolveSymbolicLinks();
         }))!;
       }
-      await mount(
+      final fixture = await suite.mount(
         tester,
         additionalRoot: repository,
         withTaskAnchor: invalid != 'missing anchor',
@@ -4055,15 +2332,15 @@ void main() {
           'empty baseline' => '',
           'invalid baseline' => 'HEAD',
           // A real but unrelated primary commit must not cause primary fallback.
-          'unavailable baseline' => primaryBaseline,
-          _ => selectedBaseline,
+          'unavailable baseline' => suite.primaryBaseline,
+          _ => suite.selectedBaseline,
         },
         expectedBranchRef: invalid == 'invalid branch'
             ? 'HEAD'
-            : _selectedBranchRef,
+            : selectedBranchRef,
       );
       await _select(tester);
-      _press(tester, 'Task');
+      pressPaneButton(tester, 'Task');
       await _text(tester, 'snapshot:unavailable');
       final calls = (await tester.runAsync(() => _calls(fixture)))!;
       expect(calls, hasLength(1));
@@ -4081,9 +2358,9 @@ void main() {
       }
       // Optional Task metadata must not disable either existing scope, including
       // on the detached checkout. These calls still inspect the selected root.
-      _press(tester, 'Unstaged');
+      pressPaneButton(tester, 'Unstaged');
       await _text(tester, 'snapshot');
-      _press(tester, 'Uncommitted');
+      pressPaneButton(tester, 'Uncommitted');
       await _text(tester, 'snapshot\nstaged\nunstaged\nconflicts');
       final allCalls = (await tester.runAsync(() => _calls(fixture)))!;
       expect(allCalls.map((call) => call['method']), [
@@ -4111,12 +2388,12 @@ void main() {
   testWidgets(
     'pending Task grants no extra services or foreign activation authority',
     (tester) async {
-      await mount(tester);
+      final fixture = await suite.mount(tester);
       await _select(tester);
       await tester.runAsync(
         () => fixture.control('hold', {'key': 'process:completed'}),
       );
-      _press(tester, 'Task');
+      pressPaneButton(tester, 'Task');
       await tester.runAsync(() => fixture.wait(tester, 'process:completed'));
       final token = (await tester.runAsync(() => _token(fixture)))!;
       await tester.runAsync(() async {
@@ -4181,7 +2458,7 @@ void main() {
       testWidgets(
         '$scope exact $side retirement fences outstanding real process result',
         (tester) async {
-          await mount(tester, concurrent: true);
+          final fixture = await suite.mount(tester, concurrent: true);
           await _select(tester);
           await _select(tester, pane: 'b');
           final environment = fixture.capabilities.resolve(
@@ -4189,7 +2466,7 @@ void main() {
             providerId: ProviderId('test.environment.a'),
           );
           final callable = fixture.capabilities.resolve(
-            _capability,
+            changeSetCapability,
             providerId: ProviderId('test.callable.a'),
           );
           final target = side == 'environment' ? environment : callable;
@@ -4199,12 +2476,12 @@ void main() {
           await tester.runAsync(
             () => fixture.control('hold', {'key': 'process:completed'}),
           );
-          _press(tester, scope);
+          pressPaneButton(tester, scope);
           await tester.runAsync(
             () => fixture.wait(tester, 'process:completed'),
           );
           final token = (await tester.runAsync(() => _token(fixture)))!;
-          final stale = _callback(tester, scope);
+          final stale = paneCallback(tester, scope);
           await tester.runAsync(() => owner.retireProvider(target));
           await _text(tester, 'snapshot:unavailable');
           expect(
@@ -4217,13 +2494,13 @@ void main() {
           expect(fixture.environmentConnection.isClosed, isFalse);
           await tester.runAsync(() => _denied(fixture, token));
           stale();
-          _press(tester, 'Select');
+          pressPaneButton(tester, 'Select');
           await _text(tester, 'selection:unavailable');
           await tester.runAsync(() async {
             await fixture.control('release', {'key': 'process:completed'});
             await fixture.wait(tester, 'settled:${scope.toLowerCase()}');
           });
-          _press(tester, scope, pane: 'b');
+          pressPaneButton(tester, scope, pane: 'b');
           if (side == 'environment' && scope != 'Task') {
             expect(
               await _snapshot(tester, pane: 'b'),
@@ -4233,7 +2510,7 @@ void main() {
             await _text(tester, 'snapshot:unavailable', pane: 'b');
           }
           expect(
-            _pane('a', find.textContaining('file with spaces.txt|')),
+            inPane('a', find.textContaining('file with spaces.txt|')),
             findsNothing,
           );
           final processes =
@@ -4260,15 +2537,15 @@ void main() {
     testWidgets(
       '$scope departure suppresses outstanding snapshot without moving its authority',
       (tester) async {
-        await mount(tester);
+        final fixture = await suite.mount(tester);
         await _select(tester);
         await tester.runAsync(
           () => fixture.control('hold', {'key': 'process:completed'}),
         );
-        _press(tester, scope);
+        pressPaneButton(tester, scope);
         await tester.runAsync(() => fixture.wait(tester, 'process:completed'));
         final token = (await tester.runAsync(() => _token(fixture)))!;
-        final stale = _callback(tester, scope);
+        final stale = paneCallback(tester, scope);
         fixture.frontends.unbind(fixture.sessionA);
         await tester.pumpWidget(fixture.widget(session: fixture.sessionB));
         await tester.pumpAndSettle();
@@ -4281,7 +2558,7 @@ void main() {
         expect(await tester.runAsync(() => _calls(fixture)), hasLength(1));
         expect(find.textContaining('file with spaces.txt|'), findsNothing);
         await _select(tester);
-        _press(tester, scope);
+        pressPaneButton(tester, scope);
         if (scope == 'Task') {
           await _text(tester, 'snapshot:unavailable');
         } else {
@@ -4319,31 +2596,38 @@ void main() {
     testWidgets(
       '$scope same-ID replacement never revives a retained generated client or token',
       (tester) async {
-        await mount(tester);
+        var fixture = await suite.mount(tester);
         await _select(tester);
         final old = fixture;
         final oldBinding = old.capabilities.resolve(
-          _capability,
+          changeSetCapability,
           providerId: ProviderId('test.callable.a'),
         );
         final oldEnvironment = old.capabilities.resolve(
           environmentProviderCapability,
           providerId: ProviderId('test.environment.a'),
         );
-        final stale = _callback(tester, scope);
+        final stale = paneCallback(tester, scope);
         await tester.runAsync(
           () => old.control('hold', {'key': 'process:completed'}),
         );
-        _press(tester, scope);
+        pressPaneButton(tester, scope);
         await tester.runAsync(() => old.wait(tester, 'process:completed'));
         final token = (await tester.runAsync(() => _token(old)))!;
         await tester.runAsync(old.backends.close);
         await _text(tester, 'snapshot:unavailable');
-        await mount(tester, present: false, registry: old.capabilities);
+        fixture = await suite.mount(
+          tester,
+          present: false,
+          registry: old.capabilities,
+        );
         expect(fixture.connection, isNot(same(old.connection)));
         expect(
           fixture.capabilities
-              .resolve(_capability, providerId: ProviderId('test.callable.a'))
+              .resolve(
+                changeSetCapability,
+                providerId: ProviderId('test.callable.a'),
+              )
               .isSameRegistration(oldBinding),
           isFalse,
         );
@@ -4367,7 +2651,7 @@ void main() {
         await tester.pumpWidget(fixture.widget());
         await tester.pumpAndSettle();
         await _select(tester);
-        _press(tester, scope);
+        pressPaneButton(tester, scope);
         _expectAdditional(await _snapshot(tester), scope: scope);
         final calls = (await tester.runAsync(() => _calls(fixture)))!;
         expect(calls, hasLength(1));
@@ -4382,72 +2666,6 @@ void main() {
       },
     );
   }
-}
-
-void _seedProject(Directory source, Map<String, String> roots) {
-  final database = ProjectDatabase.open(
-    ProjectBacking(sourceLocation: source.uri, databaseRelativePath: 'data.db'),
-  );
-  try {
-    final project = database.openProject(
-      sourceLocation: source.uri,
-      nextProjectId: () => ProjectId('project'),
-    );
-    final task = Task(
-      id: TaskId('task'),
-      projectId: project.id,
-      title: 'Portable Git',
-    );
-    database.insertTaskWithPrimaryEnvironment(
-      task,
-      Environment(
-        id: EnvironmentId('primary'),
-        taskId: task.id,
-        role: EnvironmentRole.primary,
-        providerId: ProviderId('test.environment.b'),
-        providerState: {'root': roots['primary']},
-      ),
-    );
-    // No public additional-Environment creation API exists. Seed only the core
-    // graph here; Git anchors are enrolled later through the production store.
-    database.executePluginTransaction([
-      RelationalStatement(
-        sql: '''INSERT INTO adele_product_environments
-          (id, task_id, role, provider_id, provider_state_json)
-          VALUES ('additional', :task, 'additional', :provider, :state)''',
-        parameters: {
-          ':task': task.id.value,
-          ':provider': 'test.environment.a',
-          ':state': jsonEncode({'root': roots['additional']}),
-        },
-        expectedRows: 1,
-      ),
-    ]);
-  } finally {
-    database.close();
-  }
-}
-
-final class _FixtureSessionIds implements ProductIdSource {
-  var _nextSession = 0;
-
-  @override
-  SessionId nextSessionId() => SessionId(
-    const [
-      'nonprimary-session',
-      'primary-session',
-      'shared-session',
-    ][_nextSession++],
-  );
-
-  @override
-  ProjectId nextProjectId() => fail('Project must already exist.');
-
-  @override
-  TaskId nextTaskId() => fail('Task must already exist.');
-
-  @override
-  EnvironmentId nextEnvironmentId() => fail('Environment must already exist.');
 }
 
 GitTaskAnchorStore _anchorStore(
@@ -4465,352 +2683,12 @@ GitTaskAnchorStore _anchorStore(
   );
 }
 
-List<Map<String, Object?>> _anchorRows(ProductLifecycleCoordinator lifecycle) =>
-    lifecycle
-        .databaseForSession(SessionId('nonprimary-session'))!
-        .queryPluginRows(
-          'SELECT environment_id, baseline_commit, expected_branch_ref '
-          'FROM adele_git_task_anchors ORDER BY environment_id',
-          const {},
-        )
-        .map((row) => row.values)
-        .toList();
-
-final class _ProjectChannel implements AdeleRequestChannel {
-  @override
-  Future<Object?> request(String method, Map<String, Object?> payload) async {
-    expect(method, projectProviderServicePrepareSourceId);
-    return {
-      'sourceLocation': payload['sourceLocation'],
-      'databaseRelativePath': 'data.db',
-    };
-  }
-}
-
-Future<void> _compileFrontend(String sdk, File artifact) async {
-  final root = Directory.current.parent.path;
-  final generated = await ContractGenerator(sdkPath: sdk).generateEvalClient(
-    File(
-      '$root/plugins/diff_viewer/packages/contract/lib/diff_viewer_contract.dart',
-    ),
-  );
-  final program =
-      (Compiler()
-            ..addPlugin(flutterEvalPlugin)
-            ..addPlugin(const MainContentDeclarations())
-            ..addPlugin(const EnvironmentCapabilityAccessDeclarations())
-            ..entrypoints.addAll([
-              _library,
-              'package:diff_viewer_contract/diff_viewer_contract.dart',
-              'package:adele_contract/adele_contract.dart',
-            ]))
-          .compile({
-            'portable_git_consumer': {
-              'main.dart': await File(
-                'test/fixtures/portable_git_frontend.dart.txt',
-              ).readAsString(),
-            },
-            'diff_viewer_contract': {'diff_viewer_contract.dart': generated},
-            'adele_contract': {
-              'adele_contract.dart': evalContractSupportSource,
-            },
-            'adele_ui': {
-              for (final library in [
-                'environment_capability_bridge',
-                'main_content_bridge',
-              ])
-                '$library.dart': await File(
-                  '$root/packages/ui/lib/$library.dart',
-                ).readAsString(),
-            },
-          });
-  await artifact.writeAsBytes(program.write());
-}
-
-Future<void> _compileStockFrontend(String sdk, String output) => Isolate.run(
-  // The pinned compiler retains TypeRefs by library ID across Compiler instances.
-  // Keep the independently prepared probe and stock EVC type universes separate.
-  () => compileDiffViewerFrontend(
-    repositoryRoot: Directory.current.parent,
-    sdkPath: sdk,
-    artifact: File(output),
-  ),
-);
-
-Future<void> _manifest(
-  Directory root,
-  String id,
-  Map<String, Object?> components,
-) => File('${root.path}/adele_plugin.installation.json').writeAsString(
-  jsonEncode({
-    'manifestVersion': 1,
-    'metadata': {'id': id, 'version': '1', 'displayName': id},
-    'components': components,
-  }),
-);
-
-Future<String> _git(
-  Directory root,
-  List<String> arguments, {
-  int exitCode = 0,
-  bool trim = true,
-}) async {
-  final result = await Process.run(
-    '/usr/bin/git',
-    arguments,
-    workingDirectory: root.path,
-  );
-  expect(
-    result.exitCode,
-    exitCode,
-    reason: '${result.stdout}\n${result.stderr}',
-  );
-  final output = result.stdout as String;
-  return trim ? output.trim() : output;
-}
-
-String _reviewContent(String id, {bool first = false, bool second = false}) =>
-    '${List.generate(30, (index) {
-      if (index == 3 && first) return '$id first change';
-      if (index == 24 && second) return '$id second change';
-      return '$id line $index';
-    }).join('\n')}\n';
-
-String _fileReviewContent(
-  String id, {
-  bool staged = false,
-  bool changed = false,
-}) => [
-  for (var index = 0; index < 90; index++) ...[
-    if (index == 32 && changed) ...[
-      '$id inserted first',
-      '$id inserted second',
-    ],
-    if (!changed || (index != 54 && index != 55))
-      if (index == 16 && staged)
-        '$id staged change'
-      else if (index == 76 && changed)
-        '$id final replacement'
-      else
-        '$id line $index',
-  ],
-  '',
-].join('\n');
-
-String _reviewBlobOid(String content) {
-  final bytes = utf8.encode(content);
-  return sha1.convert([
-    ...utf8.encode('blob ${bytes.length}\u0000'),
-    ...bytes,
-  ]).toString();
-}
-
-Map<String, String> _layerReviewContents(String id, {required bool approved}) =>
-    {
-      if (!approved) _deletedFileReviewPath: '$id deleted layer\n',
-      if (approved) _newFileReviewPath: '$id added layer\n',
-      'review.txt': _fileReviewContent(id, staged: approved, changed: approved),
-      'untouched.txt': approved ? '$id staged sentinel\n' : '$id sentinel\n',
-      'z-other.txt': approved ? '$id other working\n' : '$id other baseline\n',
-    };
-
-void _expectLayerReviewIndex(
-  Map<String, Map<String, Object>> actual,
-  Map<String, Map<String, Object>> before, {
-  required bool approved,
-}) {
-  final contents = _layerReviewContents('additional', approved: approved);
-  final paths = contents.keys.toList()..sort();
-  expect(actual, {
-    ...before,
-    'additional': {
-      ...before['additional']!,
-      'index': paths
-          .map(
-            (path) =>
-                '100644 ${_reviewBlobOid(contents[path]!)} 0\t$path\u0000',
-          )
-          .join(),
-    },
-  });
-}
-
-Future<Map<String, Map<String, Object>>> _reviewStates(
-  Map<String, String> roots,
-) async {
-  final result = <String, Map<String, Object>>{};
-  for (final entry in roots.entries) {
-    final root = Directory(entry.value);
-    final hashes = <String, String>{};
-    final workingBytes = <String, String>{};
-    final workingModes = <String, int>{};
-    await for (final entity in root.list(recursive: true, followLinks: false)) {
-      final path = entity.path.substring(root.path.length + 1);
-      if (path == '.git' || path.startsWith('.git/')) continue;
-      expect(entity, isA<File>(), reason: 'Unexpected worktree entry: $path');
-      final bytes = await File(entity.path).readAsBytes();
-      hashes[path] = sha256.convert(bytes).toString();
-      workingBytes[path] = base64Encode(bytes);
-      workingModes[path] = (await entity.stat()).mode;
-    }
-    result[entry.key] = {
-      'head': await _git(root, ['rev-parse', 'HEAD']),
-      'branch': await _git(root, ['symbolic-ref', 'HEAD']),
-      'refs': await _git(root, ['show-ref']),
-      'index': await _git(root, ['ls-files', '--stage', '-z']),
-      'workingHashes': hashes,
-      'workingBytes': workingBytes,
-      'workingModes': workingModes,
-    };
-  }
-  return result;
-}
-
-void _expectReviewIndex(
-  Map<String, Map<String, Object>> actual,
-  Map<String, Map<String, Object>> before,
-  String environment,
-  String expectedContent, {
-  String? originalContent,
-}) {
-  final oldOid = _reviewBlobOid(originalContent ?? _reviewContent(environment));
-  final newOid = _reviewBlobOid(expectedContent);
-  expect(newOid, matches(RegExp(r'^[0-9a-f]{40}$')));
-  expect(newOid, isNot(oldOid));
-  expect(
-    before[environment]!['index'],
-    contains('$oldOid 0\treview.txt\u0000'),
-  );
-  expect(actual, {
-    ...before,
-    environment: {
-      ...before[environment]!,
-      'index': (before[environment]!['index']! as String).replaceFirst(
-        '$oldOid 0\treview.txt\u0000',
-        '$newOid 0\treview.txt\u0000',
-      ),
-    },
-  });
-}
-
-Future<void> _expectNewFileIndex(
-  Map<String, String> roots,
-  Map<String, Map<String, Object>> before,
-  String content, {
-  required bool approved,
-}) async {
-  const path = _newFileReviewPath;
-  const suffix = '\t$path';
-  expect(
-    (before['additional']!['index']! as String)
-        .split('\u0000')
-        .where((entry) => entry.endsWith(suffix)),
-    isEmpty,
-  );
-  final current = await _reviewStates(roots);
-  final entries = (current['additional']!['index']! as String)
-      .split('\u0000')
-      .where((entry) => entry.isNotEmpty)
-      .toList();
-  final oid = _reviewBlobOid(content);
-  expect(
-    entries.where((entry) => entry.endsWith(suffix)),
-    approved ? ['100644 $oid 0$suffix'] : isEmpty,
-  );
-  expect({
-    ...current,
-    'additional': {
-      ...current['additional']!,
-      'index': entries
-          .where((entry) => !entry.endsWith(suffix))
-          .map((entry) => '$entry\u0000')
-          .join(),
-    },
-  }, before);
-  final root = Directory(roots['additional']!);
-  expect(
-    await _git(root, [
-      'status',
-      '--porcelain=v1',
-      '-z',
-      '--',
-      path,
-    ], trim: false),
-    '${approved ? 'A ' : '??'} $path\u0000',
-  );
-  expect(await File('${root.path}/$path').readAsBytes(), utf8.encode(content));
-  if (approved) {
-    expect(await _git(root, ['cat-file', 'blob', oid], trim: false), content);
-  }
-}
-
-Future<void> _expectDeletedFileIndex(
-  Map<String, String> roots,
-  Map<String, Map<String, Object>> before,
-  String content,
-  String mode, {
-  required bool approved,
-}) async {
-  const path = _deletedFileReviewPath;
-  final oid = _reviewBlobOid(content);
-  final entry = '$mode $oid 0\t$path\u0000';
-  final originalIndex = before['additional']!['index']! as String;
-  expect(
-    originalIndex.split('\u0000'),
-    contains(entry.substring(0, entry.length - 1)),
-  );
-  expect(await _reviewStates(roots), {
-    ...before,
-    'additional': {
-      ...before['additional']!,
-      'index': approved ? originalIndex.replaceFirst(entry, '') : originalIndex,
-    },
-  });
-  final root = Directory(roots['additional']!);
-  expect(
-    await _git(root, ['ls-tree', '-z', 'HEAD', '--', path], trim: false),
-    '$mode blob $oid\t$path\u0000',
-  );
-  expect(
-    await _git(root, ['ls-files', '--stage', '-z', '--', path], trim: false),
-    approved ? '' : entry,
-  );
-  expect(
-    await _git(root, [
-      'status',
-      '--porcelain=v1',
-      '-z',
-      '--',
-      path,
-    ], trim: false),
-    '${approved ? 'D ' : ' D'} $path\u0000',
-  );
-  expect(await _git(root, ['cat-file', 'blob', oid], trim: false), content);
-  if (!approved) {
-    expect(await _git(root, ['show', ':$path'], trim: false), content);
-  }
-  expect(
-    await FileSystemEntity.type('${root.path}/$path', followLinks: false),
-    FileSystemEntityType.notFound,
-  );
-}
-
-List<Map<Object?, Object?>> _reviewWrites(Map<Object?, Object?> evidence) =>
-    (evidence['processes'] as List).cast<Map<Object?, Object?>>().where((
-      process,
-    ) {
-      final arguments = process['arguments'] as List;
-      return arguments.contains('apply') &&
-          arguments.contains('--cached') &&
-          !arguments.contains('--check');
-    }).toList();
-
 String _method(String scope) =>
-    '$_service.snapshot${scope == 'Task' ? 'TaskChanges' : scope}';
+    '$changeSetService.snapshot${scope == 'Task' ? 'TaskChanges' : scope}';
 
 Future<List<Map<Object?, Object?>>> _calls(
   PreparedEnvironmentCapabilityInstallation fixture, {
-  String serviceId = _service,
+  String serviceId = changeSetService,
 }) async {
   final snapshot = (await fixture.control('snapshot'))! as Map;
   return (snapshot['requests'] as List)
@@ -4819,30 +2697,9 @@ Future<List<Map<Object?, Object?>>> _calls(
       .toList();
 }
 
-Future<Map<Object?, Object?>> _stockEvidence(
-  PreparedEnvironmentCapabilityInstallation fixture,
-) async {
-  // Stock Git exposes no probe. Observe only the independent process owner.
-  final evidence =
-      (await fixture.controlOn(fixture.environmentConnection, 'snapshot'))!
-          as Map<Object?, Object?>;
-  expect(evidence['reads'], isEmpty);
-  final requests = (evidence['requests'] as List)
-      .cast<Map<Object?, Object?>>()
-      .where(
-        (request) =>
-            request['method'] == environmentProviderServiceRunBufferedProcessId,
-      );
-  expect(requests, hasLength((evidence['processes'] as List).length));
-  return evidence;
-}
-
-Future<void> _stockVisible(WidgetTester tester, String text) =>
-    _waitFor(tester, _pane('a', find.textContaining(text)));
-
 Future<String> _token(
   PreparedEnvironmentCapabilityInstallation fixture, {
-  String serviceId = _service,
+  String serviceId = changeSetService,
 }) async =>
     (await _calls(fixture, serviceId: serviceId)).last['hostInvocationContext']
         as String;
@@ -4868,64 +2725,26 @@ Future<void> _denied(
   );
 }
 
-Finder _pane(String pane, Finder matching) =>
-    find.descendant(of: find.byKey(ValueKey(pane)), matching: matching);
-
-VoidCallback _callback(
-  WidgetTester tester,
-  String label, {
-  String pane = 'a',
-}) => tester
-    .widget<TextButton>(_pane(pane, find.widgetWithText(TextButton, label)))
-    .onPressed!;
-
-void _press(WidgetTester tester, String label, {String pane = 'a'}) =>
-    _callback(tester, label, pane: pane)();
-
 Future<void> _text(
   WidgetTester tester,
   String text, {
   String pane = 'a',
-}) async => _waitFor(tester, _pane(pane, find.text(text)));
-
-Future<void> _waitFor(
-  WidgetTester tester,
-  Finder finder, {
-  int count = 1,
-}) async {
-  await tester.pump();
-  await tester.runAsync(() async {
-    final deadline = DateTime.now().add(_bound);
-    while (finder.evaluate().length != count &&
-        DateTime.now().isBefore(deadline)) {
-      await Future<void>(() {});
-      await tester.pump();
-    }
-  });
-  expect(
-    finder,
-    findsNWidgets(count),
-    reason: tester
-        .widgetList<Text>(find.byType(Text))
-        .map((text) => text.data)
-        .join(' | '),
-  );
-}
+}) async => waitForFinder(tester, inPane(pane, find.text(text)));
 
 Future<void> _select(WidgetTester tester, {String pane = 'a'}) async {
-  _press(tester, 'Select', pane: pane);
+  pressPaneButton(tester, 'Select', pane: pane);
   await _text(tester, 'selected', pane: pane);
 }
 
 Future<String> _snapshot(WidgetTester tester, {String pane = 'a'}) async {
-  final finder = _pane(
+  final finder = inPane(
     pane,
     find.byWidgetPredicate(
       (widget) =>
           widget is Text && (widget.data?.startsWith('snapshot\n') ?? false),
     ),
   );
-  await _waitFor(tester, finder);
+  await waitForFinder(tester, finder);
   return tester.widget<Text>(finder).data!;
 }
 
@@ -5000,7 +2819,7 @@ void _expectCommitted(String snapshot) {
   // A currently unmerged path retains its independent committed change too.
   expect(committed, contains('conflicted.txt|modified|text\n@@1,1:1,1'));
   expect(committed, contains('deletion:base conflict:false'));
-  expect(committed, contains('addition:$_selectedBranch conflict:false'));
+  expect(committed, contains('addition:$selectedBranch conflict:false'));
   expect(committed, isNot(contains('index layer')));
   expect(committed, isNot(contains('staged-only.txt')));
   expect(committed, isNot(contains('file with spaces.txt')));

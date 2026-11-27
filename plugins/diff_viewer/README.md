@@ -595,8 +595,16 @@ retirement/navigation. Hunk, atomic file and mixed whole-layer mutation acceptan
 checks real selected index objects, unchanged working bytes and HEAD, nonprimary
 isolation, stale selections, lock rejection and retirement after an index effect.
 That suite also checks approval/unapproval with a failed draft backend. Its
-Source cases require the native CodeForge library. In contrast, the
-[frontend-only installation test](packages/frontend/test/desktop/change_source_absent_test.dart)
+Source cases require the native CodeForge library.
+
+The [stock portable review suite](../../app/plugin_interactions_test/review/prepared_portable_git_stock_integration_test.dart)
+also runs in `adele_plugin_interactions`. Diff's compiled controls approve and
+unapprove hunks, added/deleted files and whole layers against stock Git over
+an independent real-process Environment, without Source or CodeForge. The
+[desktop probe suite](../../app/test/prepared_portable_git_integration_test.dart)
+uses Diff's generated contract, not its UI. See [focused commands for both](../../docs/development/testing.md#focused-buffered-process-checks).
+
+The [frontend-only installation test](packages/frontend/test/desktop/change_source_absent_test.dart)
 in `diff_viewer_frontend` needs the app's native TOML hook but no CodeForge
 library. With no active backend, Diff stays mounted and reports unavailable,
 not clean, on Refresh and across all three scopes.
