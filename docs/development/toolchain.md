@@ -423,6 +423,12 @@ location and the declaration's `part` directive remain unchanged. Run
 and listing precede generation of the sources in `contract_codegen.yaml`, leaving
 ordinary IDE analysis and direct Dart/Flutter compilation ready to use.
 
+`dart tools/adele.dart resolve-workspace` stops after dependency preparation. Like
+bootstrap it prepares and verifies both editor sources, runs `flutter pub get`,
+then `dart pub workspace list`. It leaves missing or stale contract parts as they
+are and neither validates nor publishes a generation receipt. Use bootstrap, not
+resolution alone, when setting up a checkout for direct compilation.
+
 `tools/adele.dart` regenerates before analysis and before starting test workers.
 Linux development `run` and `build` validate every configured contract using the
 selected Flutter SDK's prepared AOT generator before dependency discovery or any
@@ -444,11 +450,12 @@ selected-plugin contract source before backend compilation, not the repository s
 Explicit generation recomputes prospective output and writes only changed content.
 It can replace stale siblings left by branch switches without manual deletion; no
 timestamp dependency engine or alternate build system is involved. `generate --check` writes
-nothing and fails for missing/stale local outputs. Each independent CI consumer job
-bootstraps; the generated job runs bootstrap then check as an independent
-idempotence/freshness verification, independent of incremental receipts. Root `check`
-checks freshness before any automatic regeneration so it does not hide stale local
-output.
+nothing and fails for missing/stale local outputs. CI test and analysis jobs use
+`resolve-workspace` because the maintained consumers generate before they run. The
+generated job uses full bootstrap followed by `generate --check` to verify the
+materialized output independently of incremental receipts. The Linux build job
+also retains full bootstrap. Root `check` checks freshness before any automatic
+regeneration so it does not hide stale local output.
 
 Linux incremental receipts live in `.dart_tool/adele/contracts/`, separate from
 immutable plugin artifacts. They validate source-specific transitive inputs,
