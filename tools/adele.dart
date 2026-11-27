@@ -835,8 +835,9 @@ Future<void> main(List<String> arguments) async {
         );
         return;
       case 'bootstrap':
+      case 'resolve-workspace':
         if (arguments.length != 1) {
-          throw const TestUsageException('bootstrap takes no options.');
+          throw TestUsageException('${arguments.first} takes no options.');
         }
         await _withEditorSources(Directory.current, (_) async {
           await _run('workspace dependency resolution', 'flutter', <String>[
@@ -848,7 +849,9 @@ Future<void> main(List<String> arguments) async {
             'workspace',
             'list',
           ]);
-          await runContractCodegen(repositoryRoot: Directory.current);
+          if (arguments.first == 'bootstrap') {
+            await runContractCodegen(repositoryRoot: Directory.current);
+          }
         });
         return;
       case 'format':
@@ -1448,6 +1451,7 @@ Usage: dart tools/adele.dart <command>
 
 Commands:
   bootstrap          Prepare editor sources, resolve pub, and generate contracts.
+  resolve-workspace  Prepare editor sources and resolve/list packages without generating contracts.
   prepare-code-editor [--reprepare] [--archive FILE]
                      Verify or prepare pinned source without invoking Rust or pub.
                      --reprepare explicitly replaces source under its exclusive lease.

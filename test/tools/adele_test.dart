@@ -669,6 +669,33 @@ exit "$CLIPPY_EXIT"
       }
     });
 
+    test('CI uses the preparation required by each consumer', () {
+      final workflow =
+          loadYaml(File('.github/workflows/ci.yaml').readAsStringSync())
+              as YamlMap;
+      final jobs = workflow['jobs'] as YamlMap;
+      const cli = 'dart tools/adele.dart';
+      Iterable<String> commands(String job) => (jobs[job]['steps'] as YamlList)
+          .cast<YamlMap>()
+          .map((step) => step['run'])
+          .whereType<String>()
+          .where((run) => run.contains(cli));
+
+      expect(commands('test-target'), [
+        '$cli resolve-workspace',
+        contains(r'dart tools/adele.dart "${args[@]}"'),
+      ]);
+      expect(commands('analyze'), ['$cli resolve-workspace', '$cli analyze']);
+      expect(commands('generated'), [
+        '$cli bootstrap',
+        '$cli generate --check',
+      ]);
+      expect(commands('build-linux'), [
+        '$cli bootstrap',
+        '$cli build linux --profile',
+      ]);
+    });
+
     test(
       'CI runs selected shards and propagates failures to the aggregate gate',
       () async {
@@ -687,12 +714,6 @@ exit "$CLIPPY_EXIT"
           r'${{ fromJSON(needs.discover-test-targets.outputs.matrix) }}',
         );
         final steps = (targetJob['steps'] as YamlList).cast<YamlMap>();
-        expect(
-          steps.singleWhere(
-            (step) => step['name'] == 'Bootstrap workspace',
-          )['run'],
-          'dart tools/adele.dart bootstrap',
-        );
         expect(
           steps.singleWhere(
             (step) => step['name'] == 'Install Linux desktop dependencies',

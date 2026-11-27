@@ -54,6 +54,7 @@ These are available operations, not a checklist to run for every edit.
 | Command | Current behavior |
 | --- | --- |
 | `bootstrap` | Prepares/verifies pinned CodeForge and AppFlowy source before `flutter pub get`, verifies that `dart pub workspace list` succeeds, then materializes configured ignored native contract parts. No Rust compilation. |
+| `resolve-workspace` | Performs the same editor source preparation, pub resolution and workspace listing as bootstrap, but does not generate or check contract parts. Use bootstrap for IDEs and direct Dart/Flutter compilation. |
 | `format --check` | Checks repository Dart formatting without rewriting files; formatting differences fail. |
 | `generate --check` | Fresh semantic generation compares current local siblings without writing or consulting incremental receipts; missing or stale output fails. |
 | `analyze` | Prepares/verifies both editor sources, regenerates current contracts, then analyzes repository tools, tool tests, and maintained Dart/Flutter analysis targets with fatal infos. |
@@ -136,9 +137,14 @@ discovery of every package containing tests.
 | `--shard N` | Selects one 1-based CI shard; `--shard=N` also works. Requires `--ci` and either `--target adele_desktop` (1 through 4) or `--target git_backend` (1 through 7). Missing, malformed, duplicate, out-of-range, and unsupported selections fail before preparation. |
 
 The [CI workflow](../../.github/workflows/ci.yaml) consumes `test-plan --json` and
-runs each matrix entry with `test --target NAME --ci` after independent bootstrap,
-adding `--shard N` for the four desktop and seven Git backend entries. Each gets an
-independent runner and its target's normal preparation and setup metadata. All Git
+runs each matrix entry with `test --target NAME --ci` after `resolve-workspace`,
+adding `--shard N` for the four desktop and seven Git backend entries. Analysis
+uses the same narrower preparation: the maintained test and analysis commands
+already generate before starting workers or analyzers. The separate `generated`
+job runs full bootstrap then `generate --check` to verify the materialized parts
+without repairing them.
+
+Each matrix entry gets an independent runner and its target's normal setup. All Git
 and desktop shards retain the Linux PTY prerequisites. Shards are
 emitted first to encourage early scheduling, not to guarantee runner launch order.
 The local two-process default does not limit CI matrix parallelism. The aggregate

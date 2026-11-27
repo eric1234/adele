@@ -66,8 +66,8 @@ jobs:
       - name: Verify toolchain
         run: flutter --version
 
-      - name: Bootstrap workspace
-        run: dart tools/adele.dart bootstrap
+      - name: Resolve workspace dependencies
+        run: dart tools/adele.dart resolve-workspace
 
       - name: Analyze packages
         run: dart tools/adele.dart analyze
@@ -134,8 +134,8 @@ jobs:
       - name: Verify toolchain
         run: flutter --version
 
-      - name: Bootstrap workspace
-        run: dart tools/adele.dart bootstrap
+      - name: Resolve workspace dependencies
+        run: dart tools/adele.dart resolve-workspace
 
       - name: Run test target
         env:

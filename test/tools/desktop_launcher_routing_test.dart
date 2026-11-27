@@ -16,6 +16,32 @@ void main() {
     fixture = await DesktopLauncherFixture.create();
   });
 
+  const dependencyCommands = ['pub-get', 'workspace-list'];
+
+  void expectNoNativeBuild() {
+    // Mock rustup writes its target directory rather than a command log entry.
+    expect(
+      Directory(
+        '${fixture.root.path}/.adele/dependencies/code_forge-native',
+      ).existsSync(),
+      isFalse,
+    );
+  }
+
+  Future<void> resolveWorkspace() async {
+    final result = await fixture.invoke(['resolve-workspace']);
+    expect(result.exitCode, 0, reason: '${result.stderr}');
+    expect(fixture.commands.readAsLinesSync(), dependencyCommands);
+    expect(fixture.generationArguments.existsSync(), isFalse);
+    expect(
+      File(
+        '${fixture.root.path}/.dart_tool/adele/contracts/freshness.json',
+      ).existsSync(),
+      isFalse,
+    );
+    expectNoNativeBuild();
+  }
+
   test(
     'test-plan runs pre-bootstrap without generating, inspecting or compiling',
     () async {
@@ -113,6 +139,7 @@ void main() {
     ['editor-smoke'],
     ['editor-smoke', 'linux', '--invalid'],
     ['bootstrap', '--invalid'],
+    ['resolve-workspace', '--invalid'],
     ['analyze', '--invalid'],
     ['build', 'linux', '--invalid'],
     ['test', '--jobs', '0'],
@@ -122,6 +149,9 @@ void main() {
       () async {
         final result = await fixture.invoke(arguments);
         expect(result.exitCode, arguments.first.contains('help') ? 0 : 64);
+        if (arguments.first == 'resolve-workspace') {
+          expect(result.stderr, contains('resolve-workspace takes no options'));
+        }
         expect(fixture.commands.existsSync(), isFalse);
         expect(Directory('${fixture.root.path}/.adele').existsSync(), isFalse);
       },
@@ -130,6 +160,7 @@ void main() {
 
   for (final arguments in [
     ['bootstrap'],
+    ['resolve-workspace'],
     ['analyze'],
     ['test', '--target', 'adele_tools'],
     ['build', 'linux'],
@@ -176,8 +207,7 @@ void main() {
     final result = await fixture.invoke(['bootstrap']);
     expect(result.exitCode, 0, reason: result.stderr.toString());
     expect(fixture.commands.readAsLinesSync(), [
-      'pub-get',
-      'workspace-list',
+      ...dependencyCommands,
       'generate|path',
     ]);
     fixture.expectGenerationArguments();
@@ -187,32 +217,76 @@ void main() {
     );
   });
 
-  for (final dependency in ['pub-get', 'workspace-list']) {
-    test('bootstrap $dependency failure prevents generation', () async {
-      fixture.environment['ADELE_TEST_FAIL_DEPENDENCY'] = dependency;
-      final result = await fixture.invoke(['bootstrap']);
-      expect(result.exitCode, 19);
-      expect(fixture.commands.readAsLinesSync(), [
-        'pub-get',
-        if (dependency == 'workspace-list') 'workspace-list',
-      ]);
-      expect(fixture.generationArguments.existsSync(), isFalse);
-      expect(fixture.generatedContract.existsSync(), isFalse);
-    });
+  for (final command in ['bootstrap', 'resolve-workspace']) {
+    for (final dependency in dependencyCommands) {
+      test('$command stops on $dependency failure', () async {
+        fixture.environment['ADELE_TEST_FAIL_DEPENDENCY'] = dependency;
+        final result = await fixture.invoke([command]);
+        expect(result.exitCode, 19);
+        expect(fixture.commands.readAsLinesSync(), [
+          'pub-get',
+          if (dependency == 'workspace-list') 'workspace-list',
+        ]);
+        expect(fixture.generationArguments.existsSync(), isFalse);
+        expect(fixture.generatedContract.existsSync(), isFalse);
+      });
+    }
   }
 
-  test('analyze generates once before every analysis subprocess', () async {
-    final result = await fixture.invoke(['analyze']);
-    expect(result.exitCode, 0, reason: result.stderr.toString());
-    expect(fixture.commands.readAsLinesSync(), [
-      'generate|path',
-      'analyze|dart|${fixture.root.path}',
-      'analyze|dart|${fixture.root.path}',
-      for (final target in tooling.analysisTargets)
-        'analyze|${target.flutter ? 'flutter' : 'dart'}|${fixture.root.path}/${target.path}',
-    ]);
-    fixture.expectGenerationArguments();
-  });
+  test(
+    'resolve leaves missing output for the selected CI test to generate',
+    () async {
+      await resolveWorkspace();
+      expect(fixture.generatedContract.existsSync(), isFalse);
+
+      final result = await fixture.invoke([
+        'test',
+        '--target',
+        'adele_tools',
+        '--ci',
+      ]);
+      expect(result.exitCode, 0, reason: '${result.stderr}');
+      expect(fixture.commands.readAsLinesSync(), [
+        ...dependencyCommands,
+        'generate|path',
+        'test|dart|${fixture.root.path}',
+      ]);
+      fixture.expectGenerationArguments();
+      expect(
+        fixture.generatedContract.readAsStringSync(),
+        fixture.contractSource.readAsStringSync(),
+      );
+      expect(result.stdout, contains('==> START test: adele_tools'));
+      expectNoNativeBuild();
+    },
+  );
+
+  test(
+    'resolve leaves stale output for analyze to refresh before every analyzer',
+    () async {
+      fixture.generatedContract.writeAsStringSync('stale contract');
+      fixture.generatedContract.setLastModifiedSync(DateTime.utc(2000));
+      final modified = fixture.generatedContract.lastModifiedSync();
+      await resolveWorkspace();
+      expect(fixture.generatedContract.readAsStringSync(), 'stale contract');
+      expect(fixture.generatedContract.lastModifiedSync(), modified);
+
+      const changedContract = 'changed since workspace resolution\n';
+      fixture.contractSource.writeAsStringSync(changedContract);
+      final result = await fixture.invoke(['analyze']);
+      expect(result.exitCode, 0, reason: result.stderr.toString());
+      expect(fixture.commands.readAsLinesSync(), [
+        ...dependencyCommands,
+        'generate|path',
+        'analyze|dart|${fixture.root.path}',
+        'analyze|dart|${fixture.root.path}',
+        for (final target in tooling.analysisTargets)
+          'analyze|${target.flutter ? 'flutter' : 'dart'}|${fixture.root.path}/${target.path}',
+      ]);
+      fixture.expectGenerationArguments();
+      expect(fixture.generatedContract.readAsStringSync(), changedContract);
+    },
+  );
 
   for (final targetName in [
     'adele_tools',
@@ -400,6 +474,7 @@ void main() {
     ['bootstrap'],
     ['analyze'],
     ['test', '--target', 'adele_tools'],
+    ['test', '--target', 'adele_desktop', '--ci'],
     ['test', '--jobs', '2'],
     ['run', 'linux'],
     ['build', 'linux'],
@@ -407,14 +482,17 @@ void main() {
     ['build', 'windows'],
     ['smoke', 'linux'],
   ]) {
+    final resolveFirst =
+        arguments.first == 'analyze' || arguments.contains('--ci');
     test(
-      '${arguments.join(' ')} stops consumers on generation failure',
+      '${resolveFirst ? 'resolve-workspace then ' : ''}${arguments.join(' ')} stops consumers on generation failure',
       () async {
         final incremental =
             arguments.contains('linux') && arguments.first != 'smoke';
         fixture.environment['ADELE_TEST_FAIL_GENERATION'] = '1';
         // Even retained output must not let consumers bypass failed generation.
         fixture.generatedContract.writeAsStringSync('retained contract');
+        if (resolveFirst) await resolveWorkspace();
         if (arguments.first == 'smoke') {
           fixture.environment.addAll({
             'ADELE_DEVELOPMENT_REPOSITORY_ROOT': fixture.root.path,
@@ -432,7 +510,8 @@ void main() {
           contains('contract-generation failed with exit code 29'),
         );
         expect(fixture.commands.readAsLinesSync(), [
-          if (arguments.first == 'bootstrap') ...['pub-get', 'workspace-list'],
+          if (arguments.first == 'bootstrap' || resolveFirst)
+            ...dependencyCommands,
           if (arguments.contains('linux')) 'inspect-sdk',
           if (incremental) ...toolCompilationEvents,
           incremental ? 'generate|aot|--incremental' : 'generate|path',
@@ -441,6 +520,7 @@ void main() {
           if (incremental) '--incremental',
         ], incremental);
         expect(result.stdout, isNot(contains('START test:')));
+        if (resolveFirst) expectNoNativeBuild();
         expect(
           fixture.generatedContract.readAsStringSync(),
           'retained contract',
