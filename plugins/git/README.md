@@ -504,9 +504,10 @@ in `adele_plugin_interactions` pairs stock Git AOT with compiled stock Diff EVC
 over the independent Environment. It checks nonprimary snapshots, conflicts,
 batch scaling, index-only review actions and behavior with a missing Task anchor.
 
-`app/test/core/git_task_anchor_store_test.dart`
-covers the Git store against maintained Project storage, including association,
-duplicate/concurrent enrollment, corruption, Project isolation and temporary backing.
+The [Task anchor store test](packages/desktop_tests/test/git_task_anchor_store_test.dart)
+in `git_desktop_tests` exercises Git's schema and Session/Environment association
+against real Project SQLite storage, including duplicate/concurrent enrollment,
+corruption, Project isolation and temporary backing.
 `git_persisted_change_set_source_test.dart` covers adapter failure/deadline boundaries;
 its controlled storage doubles do not stand in for persistence evidence.
 `backend_host_integration_test.dart` compiles the actual shared host and stock Git
@@ -1109,6 +1110,14 @@ Environment contract. Interpreted consumers invoke semantic Capabilities, not a
 generic process API. The stock Git ChangeSetSource uses that explicit grant for
 all three snapshot scopes; it neither inherits read authority nor exposes process
 execution directly to Diff.
+
+Use the plain-Dart [supervisor test](packages/backend/test/buffered_process_test.dart)
+for pipe and cleanup behavior, or the [hosted Worktree test](packages/desktop_tests/test/prepared_git_buffered_process_integration_test.dart)
+in `git_desktop_tests` for binary stdin and NUL-delimited filenames through the
+stock Git AOT provider. The latter uses an independent callable and compiled test
+frontend, not stock Command or Diff. Generic grant and retirement checks belong to
+`adele_desktop`; see [focused buffered process checks](../../docs/development/testing.md#focused-buffered-process-checks)
+for commands.
 
 ## Interactive terminals
 

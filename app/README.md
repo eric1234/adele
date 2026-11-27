@@ -722,11 +722,12 @@ path or shared provider registry. Native bridge lifetime/bounds coverage shares
 the contextual AOT suite below. None of these proof
 contracts is imported by production application code.
 
-[`prepared_environment_buffered_process_integration_test.dart`](test/prepared_environment_buffered_process_integration_test.dart)
-reuses that installation harness for an independent process-capable backend and
-compiled frontend, including a real stock Environment backend. It checks binary
-evidence through generated transport, separate declarations and grants, exact
-routing, and effectful-operation retirement without claiming rollback.
+The [buffered-process host suite](test/prepared_environment_buffered_process_integration_test.dart)
+uses independent Environment, callable and frontend fixtures to check separate
+grants, exact routing, concurrent presentations and retirement without claiming
+rollback. The [stock Git buffered-process case](../plugins/git/packages/desktop_tests/test/prepared_git_buffered_process_integration_test.dart)
+runs in `git_desktop_tests`, not `adele_desktop`: it checks the bytes returned
+by the selected Git worktree through the independent callable and compiled frontend.
 
 ### Environment-eligible Capability selection
 
@@ -2351,7 +2352,9 @@ uses real Git operations to check host admission, exact grants, and stale client
 or results after retirement, replacement or departure. It uses a synthetic EVC
 consumer, not stock Diff. The [Git-hosted service suite](../plugins/git/packages/desktop_tests/test/prepared_portable_git_service_integration_test.dart)
 uses the same fixture code in a separate test-only Flutter package for Git index,
-snapshot and anchor behavior. See [focused portable Git commands](../docs/development/testing.md#focused-buffered-process-checks).
+snapshot and anchor behavior. That package also owns the [Git anchor store test](../plugins/git/packages/desktop_tests/test/git_task_anchor_store_test.dart):
+the app supplies Project storage, but Git owns the schema and enrollment rules.
+See [focused Git commands](../docs/development/testing.md#focused-buffered-process-checks).
 Diff's behavior without a change source belongs to
 `diff_viewer_frontend`; see [focused Diff checks](../docs/development/testing.md#focused-diff-checks).
 

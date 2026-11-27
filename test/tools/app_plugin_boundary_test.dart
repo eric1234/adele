@@ -63,7 +63,7 @@ Future<void> main() async {
     });
   });
 
-  test('workspace production code never consumes Git hosted tests', () {
+  test('Git hosted tests and app test support stay development-only', () {
     const hosted = 'git_desktop_tests';
     // The AOT plugin may use its public contracts, not the test package's host.
     const backendDependencies = {
@@ -80,6 +80,7 @@ Future<void> main() async {
     final hostedRoot = Directory(
       'plugins/git/packages/desktop_tests',
     ).absolute.uri;
+    final appTestSupport = Directory('app/test/support').absolute.uri;
     final pending = [Directory.current];
     while (pending.isNotEmpty) {
       final root = pending.removeLast();
@@ -95,6 +96,24 @@ Future<void> main() async {
         isFalse,
         reason: manifestFile.path,
       );
+      if (manifest['name'] == hosted) {
+        final devDependencies = manifest['dev_dependencies'] as YamlMap;
+        final tests = Directory.fromUri(hostedRoot.resolve('test/'));
+        for (final file
+            in tests
+                .listSync(recursive: true, followLinks: false)
+                .whereType<File>()) {
+          if (!file.path.endsWith('.dart')) continue;
+          for (final uri in _directiveUris(file)) {
+            if (uri.scheme != 'package') continue;
+            expect(
+              devDependencies.containsKey(uri.pathSegments.first),
+              isTrue,
+              reason: '${file.path}: $uri needs a direct dev dependency',
+            );
+          }
+        }
+      }
       final backend = manifest['name'] == 'git_backend';
       if (backend) {
         expect(
@@ -118,7 +137,8 @@ Future<void> main() async {
             final resolved = file.uri.resolveUri(uri);
             expect(
               package == hosted ||
-                  resolved.toString().startsWith(hostedRoot.toString()),
+                  resolved.toString().startsWith(hostedRoot.toString()) ||
+                  resolved.toString().startsWith(appTestSupport.toString()),
               isFalse,
               reason: '${file.path}: $uri',
             );
