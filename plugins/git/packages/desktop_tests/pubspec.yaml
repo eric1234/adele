@@ -15,6 +15,7 @@ dev_dependencies:
   adele_core_extensions: ^0.1.0
   adele_desktop: ^0.1.0
   adele_environment: ^0.1.0
+  adele_model_provider: ^0.1.0
   adele_orchestration: ^0.1.0
   adele_plugin_api: ^0.1.0
   adele_product: ^0.1.0

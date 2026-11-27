@@ -23,6 +23,13 @@ Project source URIs that resolve to usable Git worktrees. If that source selects
 a repository subdirectory, the live Environment remains rooted at the matching
 subdirectory in the linked worktree.
 
+The [normal Git Task suite](packages/desktop_tests/test/normal_task_git_integration_test.dart)
+in `git_desktop_tests` exercises this provider through prepared startup: clean and
+dirty nested sources, non-Git rejection, retained anchors, and buffered processes
+in two distinct Task worktrees. The real OpenAI backend is active in these tests;
+it does not establish Tasks or execute Git operations. See the [focused commands](../../docs/development/testing.md#focused-normal-git-task-and-startup-checks)
+for this suite and the separate Git/OpenAI startup and desktop lifecycle checks.
+
 ### Placement and retained state
 
 Provider-owned Task worktrees live at

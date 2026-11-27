@@ -2,7 +2,6 @@
 library;
 
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
@@ -13,742 +12,34 @@ import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
-import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
-import 'package:adele_project_storage/adele_project_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
 import '../support/git_worktree_fixture.dart';
-
-const String _gitPluginId = 'dev.adele.plugin.git';
-final ProviderId _gitProviderId = ProviderId(
-  'dev.adele.environment.git-worktree',
-);
-const String _openaiPluginId = 'dev.adele.openai';
-final ProviderId _chatGptProviderId = ProviderId(
-  'dev.adele.openai.chatgpt-experimental',
-);
+import '../support/prepared_normal_task_git.dart';
 
 void main() {
-  late Directory artifacts;
-  late String dartaotruntime;
-  late File hostArtifact;
-  late File gitArtifact;
-  late File openaiArtifact;
+  final suite = PreparedNormalTaskGit(Directory.current.parent);
+  setUpAll(suite.prepare);
 
-  setUpAll(() async {
-    final Directory repository = Directory.current.parent;
-    artifacts = await Directory.systemTemp.createTemp('adele-normal-backends-');
-    addTearDown(() => artifacts.delete(recursive: true));
-    final String dart = _dartExecutable();
-    dartaotruntime = File.fromUri(
-      File(dart).parent.uri.resolve(
-        Platform.isWindows ? 'dartaotruntime.exe' : 'dartaotruntime',
-      ),
-    ).path;
-    hostArtifact = File.fromUri(artifacts.uri.resolve('host.aot'));
-    gitArtifact = File.fromUri(artifacts.uri.resolve('git.aot'));
-    openaiArtifact = File.fromUri(artifacts.uri.resolve('openai.aot'));
-    // Compile real artifacts once; startup only consumes their installed copies.
-    for (final target in [
-      (
-        entrypoint: 'packages/plugin_backend_host/bin/adele_backend_host.dart',
-        artifact: hostArtifact,
-        stage: 'normal-bootstrap-host',
-      ),
-      (
-        entrypoint: 'plugins/git/packages/backend/bin/git_backend.dart',
-        artifact: gitArtifact,
-        stage: 'normal-bootstrap-git',
-      ),
-      (
-        entrypoint:
-            'plugins/openai/packages/backend/bin/openai_model_provider_backend.dart',
-        artifact: openaiArtifact,
-        stage: 'normal-bootstrap-openai',
-      ),
-    ]) {
-      await compileAotSnapshot(
-        dartExecutable: dart,
-        workingDirectory: repository,
-        entrypoint: target.entrypoint,
-        artifact: target.artifact,
-        stage: target.stage,
-      );
-    }
-  });
-
-  late Directory container;
-  late Directory installationRoot;
+  late NormalTaskGitCase fixture;
   late AdeleRuntime runtime;
-  late File credentialFile;
-  late Map<String, List<String>> startupArguments;
-  late HttpServer server;
-  late int requests;
-
   setUp(() async {
-    container = await Directory.systemTemp.createTemp('adele-normal-startup-');
-    addTearDown(() => container.delete(recursive: true));
-    installationRoot = await Directory(
-      '${container.path}/installations',
-    ).create();
-    credentialFile = File('${container.path}/never-created-credentials.json');
-    requests = 0;
-    server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
-    server.listen((request) async {
-      requests++;
-      request.response.statusCode = HttpStatus.internalServerError;
-      await request.response.close();
-    });
-    addTearDown(() async {
-      await server.close(force: true);
-      expect(
-        requests,
-        0,
-        reason: 'Bootstrap must not make OAuth or model calls.',
-      );
-      expect(await credentialFile.exists(), isFalse);
-    });
-    final String endpoint = 'http://${server.address.address}:${server.port}';
-    startupArguments = {
-      _openaiPluginId: [
-        '--chatgpt-only',
-        jsonEncode({
-          'credentialFile': credentialFile.path,
-          'clientId': 'adele-test-client',
-          'issuer': endpoint,
-          'endpoint': '$endpoint/responses',
-        }),
-      ],
-    };
-    runtime = AdeleRuntime(ids: MonotonicProductIdSource(seed: 'normal'));
-    addTearDown(runtime.close);
+    fixture = await suite.createCase();
+    runtime = fixture.runtime;
   });
-
-  Future<void> installBackends() async {
-    await _install(installationRoot, '10-git', _gitPluginId, gitArtifact);
-    await _install(
-      installationRoot,
-      '30-openai',
-      _openaiPluginId,
-      openaiArtifact,
-    );
-  }
-
-  Future<void> start({bool argumentsFromFile = true}) async {
-    String argumentsFile = '';
-    if (argumentsFromFile) {
-      argumentsFile = '${container.path}/startup-arguments.json';
-      await File(argumentsFile).writeAsString(jsonEncode(startupArguments));
-    }
-    await runtime.plugins.start(
-      installationRoot: installationRoot.path,
-      dartaotruntimeExecutable: dartaotruntime,
-      hostArtifactPath: hostArtifact.path,
-      startupArgumentsFile: argumentsFile,
-      startupArguments: argumentsFromFile ? null : startupArguments,
-    );
-  }
-
-  InstalledBackendActivation backend(String id) => runtime.plugins.backends
-      .singleWhere((entry) => entry.installation.metadata.id.value == id);
-
-  void expectBothActive() {
-    expect(runtime.plugins.state, ApplicationPluginState.ready);
-    expect(runtime.plugins.failure, isNull);
-    expect(runtime.plugins.registry, same(runtime.registry));
-    expect(runtime.plugins.host!.isClosed, isFalse);
-    expect(runtime.plugins.catalog!.issues, isEmpty);
-    for (final id in [_gitPluginId, _openaiPluginId]) {
-      final InstalledBackendActivation entry = backend(id);
-      expect(entry.state, InstalledBackendState.active);
-      expect(entry.failure, isNull);
-      expect(entry.connection!.isClosed, isFalse);
-      expect(entry.connection!.pluginId, id);
-      expect(
-        runtime.plugins.catalog!.installations,
-        contains(same(entry.installation)),
-      );
-      expect(
-        entry.installation.backendArtifactUri!.path,
-        startsWith(installationRoot.uri.path),
-      );
-    }
-    final ProviderDescriptor git = runtime.registry
-        .providersFor(environmentProviderCapability)
-        .single;
-    expect(git.id, _gitProviderId);
-    expect(git.pluginId, _gitPluginId);
-    final ProviderDescriptor openai = runtime.registry
-        .providersFor(modelProviderCapability)
-        .single;
-    expect(openai.id, _chatGptProviderId);
-    expect(openai.pluginId, _openaiPluginId);
-    expect(requests, 0);
-    expect(credentialFile.existsSync(), isFalse);
-  }
-
-  for (final bool dirty in [false, true]) {
-    test(
-      'discovered backends establish a Task and preserve ${dirty ? 'dirty' : 'clean'} nested source',
-      () async {
-        final Directory repository = Directory('${container.path}/repo');
-        final Directory source = Directory(
-          '${repository.path}/packages/source',
-        );
-        await Directory('${source.path}/lib').create(recursive: true);
-        final File sourceFile = File('${source.path}/lib/example.dart');
-        const String baselineText = 'const answer = 42;\n';
-        await sourceFile.writeAsString(baselineText);
-        await File(
-          '${repository.path}/outside.txt',
-        ).writeAsString('Outside Project scope.\n');
-        await _git(repository, ['init', '--initial-branch=main']);
-        await _git(repository, ['add', '.']);
-        await _git(repository, ['commit', '-m', 'Fixture baseline']);
-        final String baseline = (await _git(repository, [
-          'rev-parse',
-          'HEAD',
-        ])).trim();
-        if (dirty) {
-          await sourceFile.writeAsString('const answer = 43;\n');
-          await _git(repository, ['add', 'packages/source/lib/example.dart']);
-          await sourceFile.writeAsString('const answer = 44;\n');
-          await File(
-            '${source.path}/scratch.txt',
-          ).writeAsString('Untracked source.\n');
-        }
-        final String sourceText = await sourceFile.readAsString();
-        final String status = await _git(repository, [
-          'status',
-          '--porcelain=v1',
-          '-z',
-        ]);
-        final String diff = await _git(repository, [
-          'diff',
-          '--binary',
-          'HEAD',
-        ]);
-        final String staged = await _git(repository, [
-          'diff',
-          '--cached',
-          '--binary',
-        ]);
-        expect(status.isNotEmpty, dirty);
-        final Project project = runtime.lifecycle.createProject(source.uri);
-        expect(runtime.store.project(project.id), same(project));
-        expect(project.sourceLocation, source.uri);
-        expect(runtime.store.tasksFor(project.id), isEmpty);
-        expect(
-          runtime.registry.providersFor(environmentProviderCapability),
-          isEmpty,
-        );
-
-        await installBackends();
-        await start();
-        expectBothActive();
-        expect(runtime.plugins.backends, hasLength(2));
-        expect(runtime.store.tasksFor(project.id), isEmpty);
-        final ProviderDescriptor descriptor = runtime.registry
-            .providersFor(environmentProviderCapability)
-            .single;
-        final TaskCreationResult created = await runtime.lifecycle.createTask(
-          projectId: project.id,
-          title: 'Normal nested Task',
-        );
-        expect(runtime.store.project(project.id), same(project));
-        expect(runtime.store.task(created.task.id), same(created.task));
-        expect(runtime.store.tasksFor(project.id).single, same(created.task));
-        expect(created.task.projectId, project.id);
-        expect(created.task.title, 'Normal nested Task');
-        expect(runtime.store.sessionsForTask(created.task.id), isEmpty);
-        // Establishment, not a later Session/storage read, created this backing.
-        final database = runtime.lifecycle.existingDatabaseForProject(project)!;
-        final temporaryBacking = File(database.path);
-        expect(await temporaryBacking.exists(), isTrue);
-        expect(database.path, isNot(startsWith(source.path)));
-        expect(await File('${source.path}/.adele/data.db').exists(), isFalse);
-        expect(
-          runtime.lifecycle.databaseForEnvironment(created.environment.id),
-          isNull,
-        );
-        expect(database.loadProductGraph().sessions, isEmpty);
-        expect(
-          database
-              .queryPluginRows('SELECT * FROM adele_git_task_anchors', {})
-              .map((row) => row.values),
-          [
-            {
-              'environment_id': created.environment.id.value,
-              'baseline_commit': baseline,
-              'expected_branch_ref':
-                  'refs/heads/${created.environment.providerState!['branch']}',
-            },
-          ],
-        );
-        expect(
-          runtime.store.environment(created.environment.id),
-          same(created.environment),
-        );
-        expect(
-          runtime.store.primaryEnvironmentFor(created.task.id),
-          same(created.environment),
-        );
-        expect(created.environment.taskId, created.task.id);
-        expect(created.environment.role, EnvironmentRole.primary);
-        expect(created.environment.providerId, descriptor.id);
-        expect(created.environment.providerState, isNotEmpty);
-        final EnvironmentMaterialization materialization = await runtime
-            .lifecycle
-            .environmentRuntime
-            .materialize(created.environment.id);
-        expect(materialization.environment, same(created.environment));
-        expect(
-          materialization,
-          same(
-            runtime.lifecycle.environmentRuntime.currentMaterialization(
-              created.environment.id,
-            ),
-          ),
-        );
-        expect(materialization.provider, isA<GeneratedEnvironmentProvider>());
-        expect(materialization.providerDescriptor, same(descriptor));
-        expect(materialization.validateBinding, returnsNormally);
-
-        // Inspect provider-owned state only to corroborate the real Git fixture.
-        final Map<String, Object?> state = created.environment.providerState!;
-        final Directory worktree = Directory(
-          gitWorktreeFixturePath(project, created.environment),
-        );
-        final String commonDirectory = (await _git(repository, [
-          'rev-parse',
-          '--path-format=absolute',
-          '--git-common-dir',
-        ])).trim();
-        expect(await worktree.exists(), isTrue);
-        expect(await File('${worktree.path}/.git').exists(), isTrue);
-        expect(
-          worktree.parent.path,
-          '${await source.resolveSymbolicLinks()}${Platform.pathSeparator}'
-          '.adele${Platform.pathSeparator}worktrees',
-        );
-        final String relativePath = state['worktreeRelativePath']! as String;
-        expect(relativePath, matches(r'^\.adele/worktrees/[^/]+$'));
-        expect(state, <String, Object?>{
-          'schemaVersion': 2,
-          'environmentId': created.environment.id.value,
-          'sourceRelativePath': 'packages/source',
-          'worktreeRelativePath': relativePath,
-          'branch': state['branch'],
-        });
-        expect(
-          (await _git(worktree, ['rev-parse', '--show-toplevel'])).trim(),
-          worktree.path,
-        );
-        expect((await _git(worktree, ['rev-parse', 'HEAD'])).trim(), baseline);
-        expect(
-          (await _git(worktree, [
-            'rev-parse',
-            '--path-format=absolute',
-            '--git-common-dir',
-          ])).trim(),
-          commonDirectory,
-        );
-        expect(
-          (await _git(worktree, ['branch', '--show-current'])).trim(),
-          state['branch'],
-        );
-        expect(
-          await _git(repository, ['worktree', 'list', '--porcelain']),
-          contains('worktree ${worktree.path}\n'),
-        );
-        expect(await _git(worktree, ['status', '--porcelain=v1']), isEmpty);
-        final EnvironmentTextFile read = await materialization.provider
-            .readFile(created.environment.id, 'lib/example.dart');
-        expect(read.text, baselineText);
-        expect(read.relativePath, 'lib/example.dart');
-        expect(read.revision, isNotEmpty);
-        final EnvironmentDirectoryListing listing = await materialization
-            .provider
-            .readDirectory(created.environment.id, '');
-        expect(listing.entries.map((entry) => entry.name), ['lib']);
-        await expectLater(
-          materialization.provider.readFile(
-            created.environment.id,
-            'outside.txt',
-          ),
-          throwsA(
-            isA<EnvironmentFailure>().having(
-              (failure) => failure.code,
-              'code',
-              'not_found',
-            ),
-          ),
-        );
-        expect(await sourceFile.readAsString(), sourceText);
-        // Provider storage is deliberately unignored; only that new entry is
-        // allowed alongside the exact pre-existing source/index changes.
-        final List<String> expectedStatus = <String>[
-          ...status.split('\u0000').where((entry) => entry.isNotEmpty),
-          '?? packages/source/.adele/',
-        ];
-        expect(
-          (await _git(repository, [
-            'status',
-            '--porcelain=v1',
-            '-z',
-          ])).split('\u0000').where((entry) => entry.isNotEmpty),
-          unorderedEquals(expectedStatus),
-        );
-        expect(await _git(repository, ['diff', '--binary', 'HEAD']), diff);
-        expect(
-          await _git(repository, ['diff', '--cached', '--binary']),
-          staged,
-        );
-
-        final Future<void> closing = runtime.close();
-        expect(runtime.close(), same(closing));
-        await closing;
-        expect(await temporaryBacking.exists(), isFalse);
-        expect(await temporaryBacking.parent.exists(), isFalse);
-        expect(runtime.close(), same(closing));
-        expect(runtime.plugins.state, ApplicationPluginState.closed);
-        expect(runtime.plugins.failure, isNull);
-        expect(
-          runtime.registry.providersFor(environmentProviderCapability),
-          isEmpty,
-        );
-        expect(runtime.registry.providersFor(modelProviderCapability), isEmpty);
-        expect(materialization.validateBinding, throwsA(_staleProvider));
-        await expectLater(
-          materialization.provider.readFile(
-            created.environment.id,
-            'lib/example.dart',
-          ),
-          throwsA(isA<PluginConnectionClosed>()),
-        );
-        expect(runtime.store.task(created.task.id), same(created.task));
-        expect(runtime.store.sessionsForTask(created.task.id), isEmpty);
-        expect(
-          runtime.store.environment(created.environment.id),
-          same(created.environment),
-        );
-        expect(await worktree.exists(), isTrue);
-        expect(
-          await File(
-            '${worktree.path}/packages/source/lib/example.dart',
-          ).readAsString(),
-          baselineText,
-        );
-        expect((await _git(worktree, ['rev-parse', 'HEAD'])).trim(), baseline);
-        expect(
-          await _git(repository, ['worktree', 'list', '--porcelain']),
-          contains('worktree ${worktree.path}\n'),
-        );
-        expect(
-          (await _git(repository, ['rev-parse', 'HEAD'])).trim(),
-          baseline,
-        );
-        expect(
-          (await _git(repository, ['branch', '--show-current'])).trim(),
-          'main',
-        );
-        expect(await sourceFile.readAsString(), sourceText);
-        expect(
-          (await _git(repository, [
-            'status',
-            '--porcelain=v1',
-            '-z',
-          ])).split('\u0000').where((entry) => entry.isNotEmpty),
-          unorderedEquals(expectedStatus),
-        );
-        expect(await _git(repository, ['diff', '--binary', 'HEAD']), diff);
-        expect(
-          await _git(repository, ['diff', '--cached', '--binary']),
-          staged,
-        );
-        if (dirty) {
-          expect(
-            await File('${source.path}/scratch.txt').readAsString(),
-            'Untracked source.\n',
-          );
-        }
-      },
-      timeout: const Timeout(Duration(seconds: 45)),
-    );
-  }
-
-  test(
-    'prepared Git buffered facet uses canonical materializations without process grants',
-    () async {
-      final repository = Directory('${container.path}/buffered-repo');
-      final source = Directory('${repository.path}/packages/source');
-      await Directory('${source.path}/data').create(recursive: true);
-      await File('${source.path}/data/seed.txt').writeAsString('Baseline\n');
-      await _git(repository, [
-        'init',
-        '--initial-branch=main',
-        '--object-format=sha1',
-      ]);
-      await _git(repository, ['add', '.']);
-      await _git(repository, ['commit', '-m', 'Buffered fixture baseline']);
-      final project = runtime.lifecycle.createProject(source.uri);
-      await installBackends();
-      await start();
-      expectBothActive();
-      final materializations = <EnvironmentMaterialization>[];
-      final roots = <Directory>[];
-      for (final title in [
-        'First binary Environment',
-        'Second binary Environment',
-      ]) {
-        final created = await runtime.lifecycle.createTask(
-          projectId: project.id,
-          title: title,
-        );
-        final materialization = await runtime.lifecycle.environmentRuntime
-            .materialize(created.environment.id);
-        expect(materialization.environment, same(created.environment));
-        expect(
-          runtime.store.environment(created.environment.id),
-          same(materialization.environment),
-        );
-        expect(materialization.provider, isA<GeneratedEnvironmentProvider>());
-        expect(
-          materialization.provider,
-          isA<EnvironmentBufferedProcessProvider>(),
-        );
-        expect(materialization.validateBinding, returnsNormally);
-        expect(runtime.store.sessionsForTask(created.task.id), isEmpty);
-        materializations.add(materialization);
-        roots.add(
-          Directory(gitWorktreeFixturePath(project, created.environment)),
-        );
-      }
-      expect(
-        materializations[0].environment.id,
-        isNot(materializations[1].environment.id),
-      );
-      expect(roots[0].path, isNot(roots[1].path));
-      final sourceHead = await _git(repository, ['rev-parse', 'HEAD']);
-      final sourceDiff = await _git(repository, ['diff', '--binary', 'HEAD']);
-      final sourceStatus = await _git(repository, [
-        'status',
-        '--porcelain=v1',
-        '-z',
-      ]);
-      final child =
-          '${Directory.current.parent.path}/plugins/git/'
-          'packages/backend/test/fixtures/buffered_process_child.dart';
-      const binary = [0, 255, 128, 192, 175, 13, 10, 27, 91, 50, 74, 1, 9, 127];
-
-      await Future.wait([
-        for (var i = 0; i < materializations.length; i++)
-          (() async {
-            final materialization = materializations[i];
-            final provider =
-                materialization.provider as EnvironmentBufferedProcessProvider;
-            final id = materialization.environment.id;
-            final data = Directory('${roots[i].path}/packages/source/data');
-            final paths = [
-              'line\nbreak.txt',
-              'space name.txt',
-              '${id.value}.txt',
-            ]..sort();
-            for (final path in paths) {
-              await File('${data.path}/$path').writeAsBytes(binary);
-            }
-            await _git(data, ['add', '--', ...paths]);
-            final index = File(
-              (await _git(data, [
-                'rev-parse',
-                '--path-format=absolute',
-                '--git-path',
-                'index',
-              ])).trim(),
-            );
-            final indexBefore = await index.readAsBytes();
-            final refsBefore = await _git(data, ['show-ref']);
-            Future<EnvironmentBufferedProcessResult> run(
-              String program,
-              List<String> arguments, {
-              List<int> input = const [],
-            }) {
-              materialization.validateBinding();
-              return provider.runBufferedProcess(
-                id,
-                EnvironmentBufferedProcessRequest(
-                  program: program,
-                  arguments: arguments,
-                  relativeWorkingDirectory: 'data',
-                  timeoutSeconds: 10,
-                  stdinBase64: encodeEnvironmentProcessBytes(
-                    input,
-                    maximumBytes: environmentBufferedProcessStdinLimit,
-                  ),
-                ),
-              );
-            }
-
-            final echoed = await run(_dartExecutable(), [
-              child,
-              'echo',
-              '17',
-            ], input: binary);
-            expect(echoed.exitCode, 17);
-            expect(
-              decodeEnvironmentProcessBytes(
-                echoed.stdoutBase64,
-                maximumBytes: environmentBufferedProcessStdoutLimit,
-              ),
-              binary,
-            );
-            expect(
-              decodeEnvironmentProcessBytes(
-                echoed.stderrBase64,
-                maximumBytes: environmentBufferedProcessStderrLimit,
-              ),
-              [0, 255, 128, 13, 10, 27, 91, 50, 74],
-            );
-            final identity = await run('git', [
-              'rev-parse',
-              '--show-toplevel',
-              '--show-prefix',
-            ]);
-            expect(identity.exitCode, 0);
-            expect(
-              base64Decode(identity.stdoutBase64),
-              utf8.encode('${roots[i].path}\npackages/source/data/\n'),
-            );
-            expect(identity.stderrBase64, isEmpty);
-            final names = await run('git', ['ls-files', '--cached', '-z']);
-            expect(names.exitCode, 0);
-            expect(names.stderrBase64, isEmpty);
-            final expectedPaths = [...paths, 'seed.txt']..sort();
-            expect(
-              base64Decode(names.stdoutBase64),
-              utf8.encode('${expectedPaths.join('\x00')}\x00'),
-            );
-            final hash = await run('git', [
-              'hash-object',
-              '--stdin',
-            ], input: binary);
-            expect(hash.exitCode, 0);
-            // SHA-1 of the raw Git blob header plus the fourteen fixture bytes.
-            expect(
-              base64Decode(hash.stdoutBase64),
-              ascii.encode('4fe223bb065d3f5a71b410ad26afa5c536483f07\n'),
-            );
-            expect(hash.stderrBase64, isEmpty);
-            final diagnostic = await run('git', [
-              'rev-parse',
-              '--verify',
-              'refs/heads/adele-missing-ref',
-            ]);
-            expect(diagnostic.exitCode, 128);
-            expect(diagnostic.stdoutBase64, isEmpty);
-            expect(base64Decode(diagnostic.stderrBase64), isNotEmpty);
-            expect(await index.readAsBytes(), indexBefore);
-            expect(await _git(data, ['show-ref']), refsBefore);
-            for (final path in paths) {
-              expect(await File('${data.path}/$path').readAsBytes(), binary);
-            }
-          })(),
-      ]);
-      expect(await _git(repository, ['rev-parse', 'HEAD']), sourceHead);
-      expect(await _git(repository, ['diff', '--binary', 'HEAD']), sourceDiff);
-      expect(
-        await _git(repository, ['status', '--porcelain=v1', '-z']),
-        sourceStatus,
-      );
-      await runtime.close();
-      for (final materialization in materializations) {
-        expect(materialization.validateBinding, throwsA(_staleProvider));
-        final provider =
-            materialization.provider as EnvironmentBufferedProcessProvider;
-        await expectLater(
-          provider.runBufferedProcess(
-            materialization.environment.id,
-            EnvironmentBufferedProcessRequest(
-              program: _dartExecutable(),
-              arguments: [child, 'empty'],
-              relativeWorkingDirectory: '',
-              timeoutSeconds: 10,
-              stdinBase64: '',
-            ),
-          ),
-          throwsA(isA<PluginConnectionClosed>()),
-        );
-      }
-    },
-    timeout: const Timeout(Duration(seconds: 45)),
-    skip: !Platform.isLinux ? 'Buffered Git processes require Linux.' : false,
-  );
-
-  test(
-    'discovered Git rejects non-Git Project without Task publication',
-    () async {
-      final Directory source = await Directory(
-        '${container.path}/not-git',
-      ).create();
-      await File(
-        '${source.path}/source.txt',
-      ).writeAsString('Not a repository.\n');
-      final Project project = runtime.lifecycle.createProject(source.uri);
-      await installBackends();
-      await start();
-      expectBothActive();
-      await expectLater(
-        runtime.lifecycle.createTask(
-          projectId: project.id,
-          title: 'Reject non-Git source',
-        ),
-        throwsA(
-          isA<EnvironmentFailure>().having(
-            (failure) => failure.code,
-            'code',
-            'invalid_git_source',
-          ),
-        ),
-      );
-      expect(runtime.store.project(project.id), same(project));
-      expect(runtime.store.tasksFor(project.id), isEmpty);
-      expect(runtime.store.task(TaskId('task-normal-1')), isNull);
-      expect(
-        runtime.store.environment(EnvironmentId('environment-normal-1')),
-        isNull,
-      );
-      expect(
-        runtime.store.primaryEnvironmentFor(TaskId('task-normal-1')),
-        isNull,
-      );
-      expect(
-        runtime.lifecycle.environmentRuntime.currentMaterialization(
-          EnvironmentId('environment-normal-1'),
-        ),
-        isNull,
-      );
-      expect(
-        await File('${source.path}/source.txt').readAsString(),
-        'Not a repository.\n',
-      );
-      expect(await Directory('${source.path}/.git').exists(), isFalse);
-      expectBothActive();
-    },
-  );
 
   test(
     'missing shared host artifact fails globally but leaves core usable',
     () async {
-      await installBackends();
+      await fixture.installBackends();
       await expectLater(
         runtime.plugins.start(
-          installationRoot: installationRoot.path,
-          dartaotruntimeExecutable: dartaotruntime,
-          hostArtifactPath: '${container.path}/missing-host.aot',
-          startupArguments: startupArguments,
+          installationRoot: fixture.installationRoot.path,
+          dartaotruntimeExecutable: suite.sdk.aotRuntime,
+          hostArtifactPath: '${fixture.container.path}/missing-host.aot',
+          startupArguments: fixture.startupArguments,
         ),
         throwsA(isA<PluginConnectionClosed>()),
       );
@@ -788,20 +79,20 @@ void main() {
   for (final document in [
     (name: 'invalid JSON', text: '{'),
     (name: 'non-object', text: '[]'),
-    (name: 'non-string argv', text: '{"$_openaiPluginId":[42]}'),
+    (name: 'non-string argv', text: '{"$openaiPluginId":[42]}'),
   ]) {
     test(
       'startup file with ${document.name} fails before host startup',
       () async {
-        await installBackends();
+        await fixture.installBackends();
         final File arguments = await File(
-          '${container.path}/invalid-startup.json',
+          '${fixture.container.path}/invalid-startup.json',
         ).writeAsString(document.text);
         await expectLater(
           runtime.plugins.start(
-            installationRoot: installationRoot.path,
-            dartaotruntimeExecutable: dartaotruntime,
-            hostArtifactPath: hostArtifact.path,
+            installationRoot: fixture.installationRoot.path,
+            dartaotruntimeExecutable: suite.sdk.aotRuntime,
+            hostArtifactPath: suite.hostArtifact.path,
             startupArgumentsFile: arguments.path,
           ),
           throwsA(isA<FormatException>()),
@@ -834,24 +125,22 @@ void main() {
   test(
     'activation failures before and after Git do not roll back or skip unrelated backends',
     () async {
-      await installBackends();
+      await fixture.installBackends();
       final File corrupt = await File(
-        '${container.path}/invalid.aot',
+        '${fixture.container.path}/invalid.aot',
       ).writeAsString('Not an AOT snapshot.');
-      await _install(
-        installationRoot,
+      await fixture.install(
         '00-broken',
         'dev.adele.test.broken-before',
         corrupt,
       );
-      await _install(
-        installationRoot,
+      await fixture.install(
         '20-broken',
         'dev.adele.test.broken-after',
         corrupt,
       );
-      await start();
-      expectBothActive();
+      await fixture.start();
+      fixture.expectBothActive();
       expect(runtime.plugins.backends.map((entry) => entry.state), [
         InstalledBackendState.failed,
         InstalledBackendState.active,
@@ -862,20 +151,20 @@ void main() {
         'dev.adele.test.broken-before',
         'dev.adele.test.broken-after',
       ]) {
-        expect(backend(id).failure, isNotNull);
-        expect(backend(id).connection, isNull);
+        expect(fixture.backend(id).failure, isNotNull);
+        expect(fixture.backend(id).connection, isNull);
       }
       final Directory source = await Directory(
-        '${container.path}/repo',
+        '${fixture.container.path}/repo',
       ).create();
-      await _git(source, ['init', '--initial-branch=main']);
-      await _git(source, ['commit', '--allow-empty', '-m', 'Fixture baseline']);
+      await git(source, ['init', '--initial-branch=main']);
+      await git(source, ['commit', '--allow-empty', '-m', 'Fixture baseline']);
       final Project project = runtime.lifecycle.createProject(source.uri);
       final TaskCreationResult created = await runtime.lifecycle.createTask(
         projectId: project.id,
         title: 'Independent Git survives',
       );
-      expect(created.environment.providerId, _gitProviderId);
+      expect(created.environment.providerId, gitProviderId);
     },
   );
 
@@ -883,15 +172,10 @@ void main() {
     'all local activation failures still leave shared bootstrap ready',
     () async {
       final File corrupt = await File(
-        '${container.path}/invalid.aot',
+        '${fixture.container.path}/invalid.aot',
       ).writeAsString('Not AOT.');
-      await _install(
-        installationRoot,
-        'broken',
-        'dev.adele.test.broken',
-        corrupt,
-      );
-      await start();
+      await fixture.install('broken', 'dev.adele.test.broken', corrupt);
+      await fixture.start();
       expect(runtime.plugins.state, ApplicationPluginState.ready);
       expect(runtime.plugins.failure, isNull);
       expect(runtime.plugins.host!.isClosed, isFalse);
@@ -925,14 +209,9 @@ void main() {
   test(
     'registration collision closes the partial plugin and preserves exact Git binding',
     () async {
-      await installBackends();
+      await fixture.installBackends();
       const String collisionId = 'dev.adele.test.git-collision';
-      await _install(
-        installationRoot,
-        '20-collision',
-        collisionId,
-        gitArtifact,
-      );
+      await fixture.install('20-collision', collisionId, suite.gitArtifact);
       ProviderBinding? retainedGit;
       final subscription = runtime.plugins.changes.listen((_) {
         if (retainedGit == null &&
@@ -943,9 +222,9 @@ void main() {
         }
       });
       addTearDown(subscription.cancel);
-      await start();
-      expectBothActive();
-      final InstalledBackendActivation failed = backend(collisionId);
+      await fixture.start();
+      fixture.expectBothActive();
+      final InstalledBackendActivation failed = fixture.backend(collisionId);
       expect(failed.state, InstalledBackendState.failed);
       expect(failed.failure, isA<DuplicateProviderRegistration>());
       expect(failed.connection, isNotNull);
@@ -971,230 +250,19 @@ void main() {
       try {
         expect(replacement, isNot(same(failed.connection)));
         expect(replacement.isClosed, isFalse);
-        expectBothActive();
+        fixture.expectBothActive();
       } finally {
         await replacement.close();
       }
     },
   );
 
-  for (final bool invalidConfiguration in [false, true]) {
-    test(
-      'OpenAI ${invalidConfiguration ? 'invalid' : 'absent'} configuration leaves Git available',
-      () async {
-        await installBackends();
-        startupArguments[_openaiPluginId] = [
-          '--chatgpt-only',
-          if (invalidConfiguration)
-            jsonEncode({
-              'credentialFile': credentialFile.path,
-              'clientId': 'adele-test-client',
-              'endpoint': 'relative',
-            }),
-        ];
-        await start(argumentsFromFile: invalidConfiguration);
-        expect(runtime.plugins.state, ApplicationPluginState.ready);
-        expect(runtime.plugins.failure, isNull);
-        expect(backend(_gitPluginId).state, InstalledBackendState.active);
-        expect(
-          runtime.registry.resolve(environmentProviderCapability).provider.id,
-          _gitProviderId,
-        );
-        final InstalledBackendActivation openai = backend(_openaiPluginId);
-        expect(
-          openai.state,
-          invalidConfiguration
-              ? InstalledBackendState.failed
-              : InstalledBackendState.active,
-        );
-        if (invalidConfiguration) {
-          expect(openai.failure, isNotNull);
-        } else {
-          expect(openai.failure, isNull);
-          expect(openai.connection!.isClosed, isFalse);
-          expect(openai.connection!.capabilityExposures, isEmpty);
-        }
-        expect(runtime.registry.providersFor(modelProviderCapability), isEmpty);
-      },
-    );
-  }
-
-  test(
-    'root-only startup leaves unconfigured OpenAI empty and Git active',
-    () async {
-      await installBackends();
-      await runtime.plugins.start(
-        installationRoot: installationRoot.path,
-        dartaotruntimeExecutable: dartaotruntime,
-        hostArtifactPath: hostArtifact.path,
-        startupArgumentsFile: '',
-      );
-      expect(runtime.plugins.state, ApplicationPluginState.ready);
-      expect(runtime.plugins.failure, isNull);
-      expect(backend(_gitPluginId).state, InstalledBackendState.active);
-      expect(backend(_openaiPluginId).state, InstalledBackendState.active);
-      expect(backend(_openaiPluginId).connection!.capabilityExposures, isEmpty);
-      expect(runtime.registry.providersFor(modelProviderCapability), isEmpty);
-      expect(
-        runtime.registry.resolve(environmentProviderCapability).provider.id,
-        _gitProviderId,
-      );
-    },
-  );
-
-  test(
-    'OpenAI termination preserves exact Git binding, Session and further Task creation',
-    () async {
-      await installBackends();
-      await start();
-      expectBothActive();
-      final PluginBackendHost host = runtime.plugins.host!;
-      final ProviderBinding git = runtime.registry.resolve(
-        environmentProviderCapability,
-      );
-      final CapabilityEndpoint gitEndpoint = git
-          .endpointAs<CapabilityEndpoint>();
-      final ProviderBinding model = runtime.registry.resolve(
-        modelProviderCapability,
-      );
-      final Directory source = await Directory(
-        '${container.path}/repo',
-      ).create();
-      await _git(source, ['init', '--initial-branch=main']);
-      await _git(source, ['commit', '--allow-empty', '-m', 'Fixture baseline']);
-      final Project project = runtime.lifecycle.createProject(source.uri);
-      final TaskCreationResult first = await runtime.lifecycle.createTask(
-        projectId: project.id,
-        title: 'Before OpenAI termination',
-      );
-      final database = runtime.lifecycle.existingDatabaseForProject(project)!;
-      final retainedAnchor = database
-          .queryPluginRows('SELECT * FROM adele_git_task_anchors', {})
-          .single
-          .values;
-      expect(
-        retainedAnchor['baseline_commit'],
-        (await _git(source, ['rev-parse', 'HEAD'])).trim(),
-      );
-      expect(database.loadProductGraph().sessions, isEmpty);
-      final EnvironmentMaterialization materialization = await runtime
-          .lifecycle
-          .environmentRuntime
-          .materialize(first.environment.id);
-      final strategyId = OrchestrationStrategyId('dev.adele.test.lifecycle');
-      addTearDown(
-        runtime.extensions
-            .register(
-              point: orchestrationStrategyContributions,
-              id: ExtensionId('dev.adele.test.lifecycle.strategy'),
-              value: OrchestrationStrategyContribution(
-                strategyId: strategyId,
-                materialize: (_) => throw StateError('No Run is started here.'),
-              ),
-            )
-            .close,
-      );
-      final Session session = runtime.lifecycle.createSession(
-        taskId: first.task.id,
-        strategyId: strategyId,
-      );
-      expect(
-        runtime.lifecycle.databaseForSession(
-          session.id,
-          accessMode: ProjectStorageAccessMode.durableOrTemporary,
-        ),
-        same(database),
-      );
-      final worktree = Directory(
-        gitWorktreeFixturePath(project, first.environment),
-      );
-      await _git(worktree, ['commit', '--allow-empty', '-m', 'Task progress']);
-      await _git(source, ['commit', '--allow-empty', '-m', 'Source progress']);
-      final laterSession = runtime.lifecycle.createSession(
-        taskId: first.task.id,
-        strategyId: strategyId,
-      );
-      expect(
-        runtime.lifecycle.databaseForSession(
-          laterSession.id,
-          accessMode: ProjectStorageAccessMode.durableOrTemporary,
-        ),
-        same(database),
-      );
-      expect(
-        database
-            .queryPluginRows(
-              '''SELECT g.* FROM adele_product_session_environment_authority a
-          JOIN adele_git_task_anchors g ON g.environment_id=a.environment_id
-          WHERE a.session_id=:session''',
-              {':session': laterSession.id.value},
-            )
-            .single
-            .values,
-        retainedAnchor,
-      );
-      final SessionEnvironmentAuthority authority = runtime.store
-          .requireSessionAuthority(session.id);
-      final Future<ApplicationPluginState> retired = runtime.plugins.changes
-          .firstWhere(
-            (_) =>
-                backend(_openaiPluginId).state ==
-                InstalledBackendState.terminated,
-          )
-          .timeout(const Duration(seconds: 10));
-      await host.stopPlugin(_openaiPluginId);
-      await retired;
-      expect(runtime.plugins.state, ApplicationPluginState.ready);
-      expect(runtime.plugins.failure, isNull);
-      expect(host.isClosed, isFalse);
-      expect(
-        backend(_openaiPluginId).failure,
-        same(await backend(_openaiPluginId).connection!.terminated),
-      );
-      expect(backend(_gitPluginId).state, InstalledBackendState.active);
-      expect(backend(_gitPluginId).connection!.isClosed, isFalse);
-      expect(git.endpointAs<CapabilityEndpoint>(), same(gitEndpoint));
-      expect(
-        runtime.registry.resolve(environmentProviderCapability).provider,
-        same(git.provider),
-      );
-      expect(materialization.validateBinding, returnsNormally);
-      expect(runtime.registry.providersFor(modelProviderCapability), isEmpty);
-      expect(
-        () => model.endpointAs<CapabilityEndpoint>(),
-        throwsA(_staleProvider),
-      );
-      expect(runtime.store.session(session.id), same(session));
-      expect(runtime.store.sessionsForTask(first.task.id), [
-        same(session),
-        same(laterSession),
-      ]);
-      expect(
-        runtime.store.requireSessionAuthority(session.id),
-        same(authority),
-      );
-      expect(authority.environmentId, first.environment.id);
-      final TaskCreationResult second = await runtime.lifecycle.createTask(
-        projectId: project.id,
-        title: 'After OpenAI termination',
-      );
-      expect(second.task.id, isNot(first.task.id));
-      expect(second.environment.providerId, _gitProviderId);
-      expect(
-        runtime.store.primaryEnvironmentFor(second.task.id),
-        same(second.environment),
-      );
-      expect(runtime.store.tasksFor(project.id), hasLength(2));
-      expect(runtime.store.sessionsForTask(second.task.id), isEmpty);
-    },
-  );
-
   test(
     'SIGKILL of shared host invalidates all exact provider bindings',
     () async {
-      await installBackends();
-      await start();
-      expectBothActive();
+      await fixture.installBackends();
+      await fixture.start();
+      fixture.expectBothActive();
       final PluginBackendHost host = runtime.plugins.host!;
       final List<ProviderBinding> bindings = [
         runtime.registry.resolve(environmentProviderCapability),
@@ -1223,7 +291,7 @@ void main() {
       for (final binding in bindings) {
         expect(
           () => binding.endpointAs<CapabilityEndpoint>(),
-          throwsA(_staleProvider),
+          throwsA(staleProvider),
         );
       }
       final Project project = runtime.lifecycle.createProject(
@@ -1245,9 +313,9 @@ void main() {
   test(
     'runtime close retires every binding before stopping connections then host',
     () async {
-      await installBackends();
-      await start();
-      expectBothActive();
+      await fixture.installBackends();
+      await fixture.start();
+      fixture.expectBothActive();
       final PluginBackendHost host = runtime.plugins.host!;
       final List<ProviderBinding> bindings = [
         runtime.registry.resolve(environmentProviderCapability),
@@ -1273,7 +341,7 @@ void main() {
             for (final binding in bindings) {
               expect(
                 () => binding.endpointAs<CapabilityEndpoint>(),
-                throwsA(_staleProvider),
+                throwsA(staleProvider),
               );
             }
             expect(
@@ -1291,7 +359,7 @@ void main() {
       await closing;
       await Future.wait(observations);
       expect(runtime.close(), same(closing));
-      expect(stopped, [_openaiPluginId, _gitPluginId]);
+      expect(stopped, [openaiPluginId, gitPluginId]);
       expect(host.isClosed, isTrue);
       expect(
         runtime.plugins.backends.every(
@@ -1315,9 +383,9 @@ void main() {
   test(
     'close during startup drains acquired backends and skips remaining installations',
     () async {
-      await installBackends();
+      await fixture.installBackends();
       const String skippedId = 'dev.adele.test.skipped';
-      await _install(installationRoot, '99-skipped', skippedId, gitArtifact);
+      await fixture.install('99-skipped', skippedId, suite.gitArtifact);
       final Completer<void> closeStarted = Completer<void>();
       late Future<void> shutdown;
       final List<ApplicationPluginState> states = [];
@@ -1334,7 +402,7 @@ void main() {
         }
       });
       addTearDown(subscription.cancel);
-      final Future<void> starting = start();
+      final Future<void> starting = fixture.start();
       await closeStarted.future.timeout(const Duration(seconds: 10));
       await starting;
       await shutdown;
@@ -1342,12 +410,12 @@ void main() {
       expect(runtime.plugins.state, ApplicationPluginState.closed);
       expect(runtime.plugins.failure, isNull);
       expect(runtime.plugins.host!.isClosed, isTrue);
-      expect(backend(_gitPluginId).connection!.isClosed, isTrue);
+      expect(fixture.backend(gitPluginId).connection!.isClosed, isTrue);
       for (final entry in runtime.plugins.backends) {
         expect(entry.connection == null || entry.connection!.isClosed, isTrue);
       }
-      expect(backend(skippedId).connection, isNull);
-      expect(backend(skippedId).state, InstalledBackendState.closed);
+      expect(fixture.backend(skippedId).connection, isNull);
+      expect(fixture.backend(skippedId).state, InstalledBackendState.closed);
       expect(
         runtime.registry.providersFor(environmentProviderCapability),
         isEmpty,
@@ -1358,64 +426,4 @@ void main() {
       expect(states.last, ApplicationPluginState.closed);
     },
   );
-}
-
-final Matcher _staleProvider = isA<ProviderUnavailable>().having(
-  (error) => error.stale,
-  'stale',
-  isTrue,
-);
-
-Future<void> _install(
-  Directory root,
-  String name,
-  String id,
-  File artifact,
-) async {
-  final Directory directory = await Directory('${root.path}/$name').create();
-  await artifact.copy('${directory.path}/backend.aot');
-  await File('${directory.path}/adele_plugin.installation.json').writeAsString(
-    jsonEncode({
-      'manifestVersion': 1,
-      'metadata': {'id': id, 'version': '1.0.0', 'displayName': name},
-      'components': {
-        'backend': {'artifact': 'backend.aot'},
-      },
-    }),
-  );
-}
-
-Future<String> _git(Directory directory, List<String> arguments) async {
-  final ProcessResult result = await Process.run('git', [
-    '-c',
-    'user.name=ADELE Test',
-    '-c',
-    'user.email=adele-test@example.invalid',
-    '-c',
-    'commit.gpgsign=false',
-    ...arguments,
-  ], workingDirectory: directory.path);
-  if (result.exitCode != 0) {
-    throw StateError('git ${arguments.join(' ')} failed: ${result.stderr}');
-  }
-  return result.stdout.toString();
-}
-
-String _dartExecutable() {
-  final String? flutterRoot = Platform.environment['FLUTTER_ROOT'];
-  if (flutterRoot != null) {
-    final File executable = File.fromUri(
-      Directory(flutterRoot).uri.resolve(
-        'bin/cache/dart-sdk/bin/${Platform.isWindows ? 'dart.exe' : 'dart'}',
-      ),
-    );
-    if (executable.existsSync()) return executable.path;
-  }
-  final File executable = File(Platform.resolvedExecutable);
-  if (executable.parent.path.endsWith(
-    '${Platform.pathSeparator}dart-sdk${Platform.pathSeparator}bin',
-  )) {
-    return executable.path;
-  }
-  throw StateError('Unable to locate the Dart SDK executable for AOT tests.');
 }

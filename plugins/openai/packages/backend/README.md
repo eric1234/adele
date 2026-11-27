@@ -786,6 +786,13 @@ authorization, with deterministic storage and loopback HTTP. See
 for ownership, lifecycle/failure coverage and commands; these are not live OpenAI or
 real Secret Service tests.
 
+The [Git/OpenAI startup interaction](../../../../app/plugin_interactions_test/startup/git_openai_startup_interaction_test.dart)
+in `adele_plugin_interactions` starts both stock backends in the shared host.
+With no configuration OpenAI stays active without advertising a model; invalid
+configuration fails only OpenAI. Stopping configured OpenAI preserves the exact
+Git binding, existing Session authority and ability to create another Task.
+This tests startup independence, not inference or OAuth. See the [focused command and prerequisites](../../../../docs/development/testing.md#focused-normal-git-task-and-startup-checks).
+
 Backend tests in `test/openai_native_presentation_test.dart` and
 `test/openai_model_provider_backend_test.dart` cover raw classification,
 projection, processing bounds, preservation, all seven explicit effort values and
