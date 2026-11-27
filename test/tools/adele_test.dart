@@ -1343,15 +1343,29 @@ exit "$CLIPPY_EXIT"
       const publication = 'durable_task_git_integration_test.dart';
       const comparison = 'durable_task_git_comparison_test.dart';
       const restart = 'durable_project_git_interaction_test.dart';
-      const durableSuites = {publication, comparison, restart};
+      const normalTask = 'normal_task_git_integration_test.dart';
+      const startup = 'git_openai_startup_interaction_test.dart';
+      const splitSuites = {
+        publication,
+        comparison,
+        restart,
+        normalTask,
+        startup,
+      };
       for (final (files, expected) in [
-        (core, ['test/core/$publication']),
-        (hostedFiles, ['test/$comparison']),
-        (plugin, ['$interactionRoot/project/$restart']),
+        (core, ['test/core/$publication', 'test/core/$normalTask']),
+        (hostedFiles, ['test/$comparison', 'test/$normalTask']),
+        (
+          plugin,
+          [
+            '$interactionRoot/project/$restart',
+            '$interactionRoot/startup/$startup',
+          ],
+        ),
         (backendFiles, <String>[]),
       ]) {
         expect(
-          files.where((path) => durableSuites.contains(path.split('/').last)),
+          files.where((path) => splitSuites.contains(path.split('/').last)),
           unorderedEquals(expected),
         );
       }

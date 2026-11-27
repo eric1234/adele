@@ -230,7 +230,8 @@ recursive Flutter discovery under its own `test/`. The pre-bootstrap
 does not accept `--shard`.
 The target participates in normal `test`, `check`, and the aggregate CI gate,
 separately from the seven plain-Dart `git_backend` shards. See the
-[focused buffered process checks](#focused-buffered-process-checks) and
+[normal Git Task and startup checks](#focused-normal-git-task-and-startup-checks),
+[buffered process checks](#focused-buffered-process-checks), and
 [durable Git Task checks](#focused-durable-git-task-checks) for commands and prerequisites.
 
 The two app targets use the same `app/` Flutter package and working directory.
@@ -985,7 +986,8 @@ relative to `app/`; this is a testing map, not an application architecture map.
 | Orchestration/authority adapters | [`test/core/orchestration_host_test.dart`](../../app/test/core/orchestration_host_test.dart), [`test/core/orchestration_authority_test.dart`](../../app/test/core/orchestration_authority_test.dart), [`test/core/model_tool_host_test.dart`](../../app/test/core/model_tool_host_test.dart), [`test/core/remote_inference_context_integration_test.dart`](../../app/test/core/remote_inference_context_integration_test.dart) |
 | Activity/Inspection | [`test/core/run_activity_projection_test.dart`](../../app/test/core/run_activity_projection_test.dart), [`test/inspection_host_test.dart`](../../app/test/inspection_host_test.dart), [`test/inspection_stack_test.dart`](../../app/test/inspection_stack_test.dart), [`openai_frontend/test/openai_activity_frontend_eval_test.dart`](../../plugins/openai/packages/frontend/test/openai_activity_frontend_eval_test.dart) |
 | Scoped activity reacquisition | [`test/session_execution_activity_test.dart`](../../app/test/session_execution_activity_test.dart), [`test/session_execution_bridge_test.dart`](../../app/test/session_execution_bridge_test.dart) (live/waiting/preparing and historical Session validation, fresh read-only opaque handles, permanent old-view revocation, unchanged activity/Inspection paths, and no execution authority) |
-| Prepared normal composition, no live model | [`test/core/normal_task_git_integration_test.dart`](../../app/test/core/normal_task_git_integration_test.dart), [`test/core/normal_chatgpt_run_integration_test.dart`](../../app/test/core/normal_chatgpt_run_integration_test.dart) (local fake Responses/credentials and picker; canonical Session opening with missing components or zero Main Content, ordinary Chat/editor coexistence, frontend retirement without Run closure, concurrent Session commands in separate Task worktrees through shared AOT hosting, warm Command Output switching and cold Session history return, browser running/attention status, live/terminal Chat/activity reentry, stale approval callbacks, delayed/failed draft settlement, Inspection clearing, and hidden-owner shutdown; not interactive native-picker proof) |
+| Prepared Git Task creation, Git/OpenAI startup, or shared host lifecycle | See [normal Git Task and startup checks](#focused-normal-git-task-and-startup-checks) for the three suites and their owners. |
+| Prepared normal Chat composition, no live model | [`test/core/normal_chatgpt_run_integration_test.dart`](../../app/test/core/normal_chatgpt_run_integration_test.dart) (local fake Responses/credentials and picker; canonical Session opening with missing components or zero Main Content, ordinary Chat/editor coexistence, frontend retirement without Run closure, concurrent Session commands in separate Task worktrees through shared AOT hosting, warm Command Output switching and cold Session history return, browser running/attention status, live/terminal Chat/activity reentry, stale approval callbacks, delayed/failed draft settlement, Inspection clearing, and hidden-owner shutdown; not interactive native-picker proof) |
 | Environment-authorized agent integration | [`test/development/agent/environment_read_agent_integration_test.dart`](../../app/test/development/agent/environment_read_agent_integration_test.dart) (remote context/tools, source reads/mutations, and commands in distinct Task worktrees with deterministic model fixtures) |
 
 Application dependency-boundary checks belong to
@@ -1180,11 +1182,13 @@ Then run from `app/`:
 ```sh
 flutter test --no-pub --concurrency 1 plugin_interactions_test/review/prepared_diff_git_integration_test.dart
 # Related desktop-owned Environment and Main Content checks:
-flutter test --no-pub --concurrency 1 test/prepared_environment_capability_integration_test.dart test/core/environment_capability_selection_test.dart test/core/environment_capability_integration_test.dart test/core/environment_capability_invocation_integration_test.dart test/prepared_main_content_host_test.dart test/core/normal_task_git_integration_test.dart
+flutter test --no-pub --concurrency 1 test/prepared_environment_capability_integration_test.dart test/core/environment_capability_selection_test.dart test/core/environment_capability_integration_test.dart test/core/environment_capability_invocation_integration_test.dart test/prepared_main_content_host_test.dart
 ```
 
-Use the pinned explicit `FLUTTER_ROOT` and the
-[native editor prerequisites](toolchain.md#native-editor-preparation). The integration
+For Git worktree establishment and materialization, see the separate
+[Git-hosted normal Task check](#focused-normal-git-task-and-startup-checks).
+For Diff/Git review, use the pinned explicit `FLUTTER_ROOT` and the
+[native editor prerequisites](toolchain.md#native-editor-preparation). The review suite
 uses independent Diff and Source EVC installations with real Git AOT and native
 Source editing, unlike the standalone text-only Diff tests. It checks committed-only
 visibility in Task while Uncommitted is clean, independent nonprimary baselines,
@@ -1327,18 +1331,21 @@ streamed foreground regressions. Strict framing regressions remain in
 changes also check `plugin_runtime` exposure/catalog/invocation and
 `plugin_backend_host` token allowlist tests.
 
-From `app/`, serialize the actual prepared/native-materialization and independent
-read-authority regressions with other Flutter invocations:
+For native buffered execution without process grants, select the Git-owned Task
+suite. For independent read-authority regressions, select the desktop suites:
 
 ```sh
-flutter test --no-pub --concurrency 1 test/core/normal_task_git_integration_test.dart test/core/environment_capability_invocation_integration_test.dart test/prepared_environment_capability_integration_test.dart
+# plugins/git/packages/desktop_tests/
+flutter test --no-pub --concurrency 1 test/normal_task_git_integration_test.dart
+# app/
+flutter test --no-pub --concurrency 1 test/core/environment_capability_invocation_integration_test.dart test/prepared_environment_capability_integration_test.dart
 ```
 
 The normal Git integration uses canonical Environments from `EnvironmentRuntime`,
 not a native process test helper. These tests do not grant buffered execution to
 independent Capability backends or interpreted frontends. Linux x64 with util-linux
 `setsid` is the real-process target; no equivalent process-group guarantee is
-claimed for other platforms. The existing desktop target discovers the app cases.
+claimed for other platforms.
 
 ### Focused backend Capability checks
 
@@ -1900,6 +1907,31 @@ canonical history. Failed-test cleanup releases the processes before application
 shutdown drains them. For application-wide ownership/navigation changes, follow
 focused checks with the maintained `dart tools/adele.dart test --target
 adele_desktop --ci`; preserve its single Flutter-worker policy.
+
+### Focused normal Git Task and startup checks
+
+Each suite compiles the actual shared host and stock Git and OpenAI backends to
+AOT. Each case gets fresh installations and a runtime; teardown checks that the
+loopback server received no OAuth or model requests and no credential file was
+created. Choose by the behavior that must hold:
+
+| Maintained target | What the suite checks |
+| --- | --- |
+| `git_desktop_tests` | [Git Task establishment and buffered processes](../../plugins/git/packages/desktop_tests/test/normal_task_git_integration_test.dart): clean and dirty nested sources produce isolated, anchored Task worktrees; a non-Git source publishes no Task or Environment. Native buffered operations select the exact worktree for each of two Tasks without granting process access to another backend. Both backends activate, but Git supplies the Environment. |
+| `adele_plugin_interactions` | [Git/OpenAI startup](../../app/plugin_interactions_test/startup/git_openai_startup_interaction_test.dart): absent configuration (including root-only startup) leaves OpenAI active without a model; invalid configuration fails only OpenAI. Stopping configured OpenAI leaves the shared host, exact Git binding, materialization and Session authority intact for continued use and further Task creation. |
+| `adele_desktop` | [Application startup and shutdown](../../app/test/core/normal_task_git_integration_test.dart): missing host or malformed startup arguments fail globally; installation failures and registration collisions stay local. Shared-host loss invalidates all bindings; close retires bindings before connections and host, drains acquired backends during startup, and skips later installations. |
+
+After bootstrap, use the pinned `FLUTTER_ROOT`, its matching Dart AOT runtime,
+Git, and the [native TOML prerequisites](toolchain.md#native-toml-documents).
+The buffered-process case needs Linux x64 and util-linux `setsid`. These files
+need no CodeForge loader, desktop bundle, Git PTY helper, or live credentials.
+Run the selected commands from the repository root, serializing the two `app/` runs:
+
+```sh
+(cd plugins/git/packages/desktop_tests && flutter test --no-pub --concurrency 1 test/normal_task_git_integration_test.dart)
+(cd app && flutter test --no-pub --concurrency 1 plugin_interactions_test/startup/git_openai_startup_interaction_test.dart)
+(cd app && flutter test --no-pub --concurrency 1 test/core/normal_task_git_integration_test.dart)
+```
 
 ### Focused durable Git Task checks
 

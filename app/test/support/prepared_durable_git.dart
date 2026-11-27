@@ -17,9 +17,12 @@ import 'package:diff_viewer_contract/diff_viewer_contract.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_builder/plugin_builder.dart';
 
-const gitPluginId = 'dev.adele.plugin.git';
+import 'backend_test_sdk.dart';
+import 'git_worktree_fixture.dart';
+
+export 'git_worktree_fixture.dart' show git, gitPluginId, gitProviderId;
+
 const _projectPluginId = 'dev.adele.plugin.local-directory-project';
-final gitProviderId = ProviderId('dev.adele.environment.git-worktree');
 final localDirectoryProviderId = ProviderId(
   'dev.adele.project.local-directory',
 );
@@ -40,15 +43,11 @@ final class PreparedDurableGit {
     addTearDown(() => artifacts.delete(recursive: true));
     _installations = await Directory('${artifacts.path}/installed').create();
     _hostArtifact = File('${artifacts.path}/host.aot');
-    final dart = _dartExecutable();
-    _dartaotruntime = File.fromUri(
-      File(dart).parent.uri.resolve(
-        Platform.isWindows ? 'dartaotruntime.exe' : 'dartaotruntime',
-      ),
-    ).path;
+    final sdk = backendTestSdk();
+    _dartaotruntime = sdk.aotRuntime;
     // Compile once, but start a fresh shared host and both backends per runtime.
     await compileAotSnapshot(
-      dartExecutable: dart,
+      dartExecutable: sdk.dart,
       workingDirectory: repository,
       entrypoint: 'packages/plugin_backend_host/bin/adele_backend_host.dart',
       artifact: _hostArtifact,
@@ -63,7 +62,7 @@ final class PreparedDurableGit {
         '${_installations.path}/${entry.key}',
       ).create();
       await compileAotSnapshot(
-        dartExecutable: dart,
+        dartExecutable: sdk.dart,
         workingDirectory: repository,
         entrypoint: entry.value,
         artifact: File('${installed.path}/backend.aot'),
@@ -201,39 +200,4 @@ final class NoAllocationIds implements ProductIdSource {
 
   @override
   SessionId nextSessionId() => _allocate();
-}
-
-Future<String> git(Directory directory, List<String> arguments) async {
-  final result = await Process.run('git', [
-    '-c',
-    'user.name=ADELE Test',
-    '-c',
-    'user.email=adele-test@example.invalid',
-    '-c',
-    'commit.gpgsign=false',
-    ...arguments,
-  ], workingDirectory: directory.path);
-  if (result.exitCode != 0) {
-    throw StateError('git ${arguments.join(' ')} failed: ${result.stderr}');
-  }
-  return result.stdout.toString();
-}
-
-String _dartExecutable() {
-  final flutterRoot = Platform.environment['FLUTTER_ROOT'];
-  if (flutterRoot != null) {
-    final executable = File.fromUri(
-      Directory(flutterRoot).uri.resolve(
-        'bin/cache/dart-sdk/bin/${Platform.isWindows ? 'dart.exe' : 'dart'}',
-      ),
-    );
-    if (executable.existsSync()) return executable.path;
-  }
-  final executable = File(Platform.resolvedExecutable);
-  if (executable.parent.path.endsWith(
-    '${Platform.pathSeparator}dart-sdk${Platform.pathSeparator}bin',
-  )) {
-    return executable.path;
-  }
-  throw StateError('Unable to locate the Dart SDK executable for AOT tests.');
 }

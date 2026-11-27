@@ -150,8 +150,11 @@ Exact formats and transport belong to [plugin layout](../docs/architecture/plugi
 [runtime catalog/startup documentation](../packages/plugin_runtime/README.md), and
 [contracts and capabilities](../docs/architecture/contracts-and-capabilities.md).
 The [bootstrap tests](test/core/application_plugin_bootstrap_test.dart) and
-[real-host integration](test/core/normal_task_git_integration_test.dart) map local
-ownership and failure boundaries.
+[real-host lifecycle suite](test/core/normal_task_git_integration_test.dart) in
+`adele_desktop` cover generic startup failures, registration rollback, shared-host
+loss and ordered shutdown, including close during startup. For Git's Task and
+buffered-process behavior or Git remaining usable when OpenAI fails or stops,
+see the [Git-hosted and interaction suites](../docs/development/testing.md#focused-normal-git-task-and-startup-checks).
 
 ### Backend Capability consumption
 
