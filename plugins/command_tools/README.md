@@ -719,10 +719,14 @@ once through the ordinary frontend target, from the repository root:
 dart tools/adele.dart test --target command_tools_frontend
 ```
 
-Mixed-plugin and generic Session/Inspection composition remains in
-`app/test/tool_inspection_frontend_eval_test.dart`; the real normal-application
-path belongs to `app/test/core/normal_chatgpt_run_integration_test.dart`. The
-latter uses local deterministic model responses and socket-gated Command/Git AOT
+The [generic Session first-mount test](../../app/test/tool_inspection_frontend_eval_test.dart)
+in `adele_desktop` keeps the real Command presenter available but shows the
+unexecuted `run_command` as a proposal, not a Command result. Tests that render
+Command alongside Filesystem belong to the [Inspection interaction suite](../../app/plugin_interactions_test/inspection/tool_inspection_interaction_test.dart)
+in `adele_plugin_interactions`.
+
+The normal-application test in `app/test/core/normal_chatgpt_run_integration_test.dart`
+uses local deterministic model responses and socket-gated Command/Git AOT
 output before completion, two identical invocations, simultaneous card/console
 views, two warm output tabs with hidden committed output and unchanged
 tab/mount/emulator identity, selected interactive Terminal coexistence, Session

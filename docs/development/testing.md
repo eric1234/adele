@@ -235,18 +235,33 @@ Single-plugin Apply Patch and Run Command rich/compact Inspection semantics live
 in the [Filesystem frontend suite](../../plugins/filesystem_tools/packages/frontend/test/filesystem_tools_frontend_eval_test.dart)
 and [Command Inspection suite](../../plugins/command_tools/packages/frontend/test/command_tools_inspection_frontend_eval_test.dart).
 The Command target also discovers its existing output presentation suite.
-[`app/test/tool_inspection_frontend_eval_test.dart`](../../app/test/tool_inspection_frontend_eval_test.dart)
-retains mixed-plugin retirement/failure isolation and generic Session/Inspection
-composition; generic activation rollback remains in
+Generic activation rollback remains in
 [`prepared_frontend_activation_test.dart`](../../app/test/prepared_frontend_activation_test.dart).
+
+The [generic Session/Inspection test](../../app/test/tool_inspection_frontend_eval_test.dart)
+stays in `adele_desktop`. Opening Inspection from the Session first mounts the real
+Filesystem compact row for a one-edit patch waiting for approval. The real Command
+presenter is also available as a negative control: with no corresponding tool
+activity, the unexecuted `run_command` proposal stays `Proposal: run_command`.
+
+The [Filesystem and Command interaction suite](../../app/plugin_interactions_test/inspection/tool_inspection_interaction_test.dart)
+belongs to `adele_plugin_interactions`. It checks both presenters together:
+
+- When the compact Filesystem renderer fails, the host refreshes its factual fallback without retrying the renderer or losing the Command row.
+- Retiring the Filesystem frontend invalidates its simultaneous rich views while Command stays live.
+- A mixed compact group follows model proposal order and keeps the Command row mounted after Filesystem retires.
+- A missing or corrupt Filesystem EVC does not disable the independent Command presenter.
+
 Focused commands after bootstrap/current generation:
 
 ```sh
 # Repository root: single-plugin presentation semantics.
 dart tools/adele.dart test --target filesystem_tools_frontend
 dart tools/adele.dart test --target command_tools_frontend
-# app/: mixed/generic composition.
+# app/: generic Session/Inspection first mount.
 flutter test --no-pub --concurrency 1 test/tool_inspection_frontend_eval_test.dart
+# app/: mixed Filesystem and Command presenters.
+flutter test --no-pub --concurrency 1 plugin_interactions_test/inspection/tool_inspection_interaction_test.dart
 ```
 
 Each `adele_desktop` CI shard runs Flutter test files with one worker. Its real-AOT
@@ -1569,6 +1584,7 @@ the PTY target. From `app/`:
 flutter test --no-pub --concurrency 1 test/owning_backend_stream_bridge_test.dart
 (cd .. && dart tools/adele.dart test --target command_tools_frontend)
 flutter test --no-pub --concurrency 1 test/tool_inspection_frontend_eval_test.dart test/tool_activity_inspection_bridge_test.dart test/inspection_host_test.dart
+flutter test --no-pub --concurrency 1 plugin_interactions_test/inspection/tool_inspection_interaction_test.dart
 flutter test --no-pub --concurrency 1 test/terminal_projection_bridge_test.dart test/native_terminal_surface_test.dart test/terminal_surface_bridge_test.dart
 flutter test --no-pub --concurrency 1 test/console_bridge_test.dart test/console_controller_test.dart test/prepared_console_host_test.dart test/workbench_console_test.dart
 flutter test --no-pub --concurrency 1 test/core/normal_chatgpt_run_integration_test.dart

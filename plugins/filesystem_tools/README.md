@@ -212,8 +212,10 @@ Rich/compact presentation integration belongs to
 canonical requested counts, safe path/outcome display, live identity and independent
 subscriptions/retirement, and stock dual-role registration rollback. It reuses the
 app compiler and prepared-installation support through development-only dependencies.
-Mixed-plugin and generic Session/Inspection composition remains app-owned; see
-[testing and validation](../../docs/development/testing.md).
+The [generic Session first-mount test](../../app/test/tool_inspection_frontend_eval_test.dart)
+uses the real patch presenter in `adele_desktop`. Tests of its behavior alongside
+Command belong to the [Inspection interaction suite](../../app/plugin_interactions_test/inspection/tool_inspection_interaction_test.dart)
+in `adele_plugin_interactions`. See [focused commands](../../docs/development/testing.md#application-level-test-ownership).
 
 From the repository root, run:
 
