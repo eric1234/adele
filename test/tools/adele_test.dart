@@ -911,6 +911,10 @@ exit "$CLIPPY_EXIT"
     const review = 'prepared_diff_git_integration_test.dart';
     const capture = 'command_output_capture_integration_test.dart';
     const reviewPath = '$interactionRoot/review/$review';
+    const stockPortable =
+        '$interactionRoot/review/prepared_portable_git_stock_integration_test.dart';
+    const independentPortable =
+        'test/prepared_portable_git_integration_test.dart';
     const capturePath = '$interactionRoot/execution/$capture';
     late Directory fixture;
     setUp(() {
@@ -1258,6 +1262,10 @@ exit "$CLIPPY_EXIT"
       expect(shardsFor(interactions, package), shards);
       final costs = interactions.ciTestFileCosts!;
       expect(plugin, containsAll(costs.keys));
+      expect(plugin, contains(stockPortable));
+      expect(core, contains(independentPortable));
+      expect(costs[stockPortable], 8);
+      expect(desktop.ciTestFileCosts![independentPortable], 15);
       expect(costs[reviewPath], 20);
       expect(costs[capturePath], 12);
       expect(

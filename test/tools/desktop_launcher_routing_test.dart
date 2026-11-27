@@ -7,6 +7,7 @@ import 'package:test/test.dart';
 import '../../packages/plugin_builder/lib/plugin_builder.dart';
 import '../../tools/adele.dart' as tooling;
 import '../../tools/contract_artifacts.dart';
+import '../../tools/test_runner.dart';
 import 'support/desktop_launcher_fixture.dart';
 import 'support/desktop_launcher_inputs.dart';
 
@@ -16,6 +17,8 @@ void main() {
       'plugin_interactions_test/review/prepared_diff_git_integration_test.dart';
   const capture =
       'plugin_interactions_test/execution/command_output_capture_integration_test.dart';
+  const stockPortable =
+      'plugin_interactions_test/review/prepared_portable_git_stock_integration_test.dart';
   const inspection =
       'plugin_interactions_test/inspection/tool_inspection_interaction_test.dart';
   const wholeAppRuns = [
@@ -32,7 +35,7 @@ void main() {
         '${fixture.root.path}/${target.path}/${target.testDirectory}/nested/example_test.dart',
       ).createSync(recursive: true);
     }
-    for (final path in [review, capture, inspection]) {
+    for (final path in [review, capture, stockPortable, inspection]) {
       File('${fixture.root.path}/app/$path').createSync(recursive: true);
     }
   });
@@ -341,13 +344,17 @@ void main() {
     },
   );
 
-  for (final (shard, files) in [
-    (1, [review]),
-    (2, [capture, inspection]),
-  ]) {
+  for (final shard in [1, 2]) {
     test(
       'interaction CI shard $shard/2 runs only its files with CodeForge',
       () async {
+        final target = tooling.lookupTestTarget(interactions);
+        final files = partitionTestFiles(
+          Directory('${fixture.root.path}/app'),
+          target.ciShards,
+          testDirectory: target.testDirectory,
+          costs: target.ciTestFileCosts,
+        )[shard - 1];
         final result = await fixture.invoke([
           'test',
           '--target=$interactions',

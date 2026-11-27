@@ -466,15 +466,19 @@ unsupported cases, limits and changed observations. `git_portable_discovery_test
 uses controlled process responses for root/prefix validation without creating a
 repository at the host filesystem root. The maintained `git_backend` target
 discovers those, `git_portable_cached_diff_test.dart`'s staged and commit-to-commit
-feasibility checks, and the extracted parser tests. Application
-`prepared_portable_git_integration_test.dart` independently prepares an Environment
-AOT backend that runs real processes, stock Git AOT with compiled stock Diff EVC,
-and separate probe-backed adapter/consumer lanes for controlled failure tests. It checks
-nonprimary Session binding, typed committed/staged/unstaged paths and hunks,
-conflict entries, one semantic invocation per request, clean-repository batch
-scaling, explicit process declarations and exact retirement/departure fencing.
-The independent Environment backend imports neither Git nor Diff implementation.
-The persisted path uses the actual Git plugin identity and exact-generation storage
+feasibility checks, and the extracted parser tests.
+
+The [stock portable review suite](../../app/plugin_interactions_test/review/prepared_portable_git_stock_integration_test.dart)
+in `adele_plugin_interactions` pairs stock Git AOT with compiled stock Diff EVC.
+An independent Environment backend runs real processes without importing either
+plugin. The suite checks nonprimary snapshots, conflicts, clean-repository batch
+scaling, index-only review actions and behavior with a missing Task anchor.
+
+The [desktop probe suite](../../app/test/prepared_portable_git_integration_test.dart)
+instead uses an Environment-bound adapter over Git's production services and a
+generated Diff client. It checks typed layered hunks, one semantic invocation per
+request, explicit process declarations and exact retirement/departure fencing.
+Its persisted cases use the actual Git plugin identity and exact-generation storage
 grant, real Project backing, distinct primary/nonprimary anchors, replacement and
 durable reopen without reenrollment. `app/test/core/git_task_anchor_store_test.dart`
 covers the Git store against maintained Project storage, including association,
@@ -810,10 +814,12 @@ none. The 16-file cap leaves measured headroom rather than promising that the
 256-entry inspection limit is whole-layer mutation capacity. CI checks deterministic
 request/mutation bounds, not these host-dependent elapsed times. Clean 100/500/900-file
 snapshots retain the existing batch-scaling model; revision calculation adds no requests.
-The existing `prepared_portable_git_integration_test.dart` adds independent
-Environment AOT, production-handler Capability AOT, and generated-client EVC proof.
-Its layer selections exercise the same generated Capability without adding stock
-frontend controls or a new grant.
+The [desktop probe suite](../../app/test/prepared_portable_git_integration_test.dart)
+invokes the production handler through the generated client without using stock UI.
+The [stock portable review suite](../../app/plugin_interactions_test/review/prepared_portable_git_stock_integration_test.dart)
+checks hunk, added/deleted file and whole-layer approval and unapproval from Diff
+against the actual Git index over an independent Environment. For direct commands,
+see [focused buffered process checks](../../docs/development/testing.md#focused-buffered-process-checks).
 The [prepared Diff/Git review suite](../../app/plugin_interactions_test/review/prepared_diff_git_integration_test.dart)
 in `adele_plugin_interactions` exercises the production advertisement and
 actual stock Diff controls against selected nonprimary Git indices, independently of

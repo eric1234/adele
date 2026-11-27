@@ -22,7 +22,7 @@ import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
 import '../tool/prepared_environment_capability_frontend_compiler.dart';
-import 'prepared_environment_capability_integration_test.dart'
+import 'support/prepared_environment_capability_installation.dart'
     show PreparedEnvironmentCapabilityInstallation;
 
 const _bound = Duration(seconds: 15);

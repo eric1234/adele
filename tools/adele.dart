@@ -470,7 +470,8 @@ const List<TestTarget> testTargets = <TestTarget>[
       'test/prepared_console_host_test.dart': 3,
       'test/prepared_environment_buffered_process_integration_test.dart': 3,
       'test/prepared_environment_capability_integration_test.dart': 2,
-      'test/prepared_portable_git_integration_test.dart': 19,
+      // Split portable Git: runs 825/826 and local cases, plus probe setup.
+      'test/prepared_portable_git_integration_test.dart': 15,
       'test/record_credential_settings_dialog_test.dart': 3,
       'test/record_settings_dialog_test.dart': 5,
     },
@@ -494,6 +495,9 @@ const List<TestTarget> testTargets = <TestTarget>[
           20,
       'plugin_interactions_test/execution/command_output_capture_integration_test.dart':
           12,
+      // Stock-only share of portable Git, including its own AOT/EVC setup.
+      'plugin_interactions_test/review/prepared_portable_git_stock_integration_test.dart':
+          8,
     },
     nativeCodeEditor: true,
     nativeToml: true,
