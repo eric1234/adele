@@ -81,7 +81,7 @@ Future<TestContractProvenance?> runTestContractCodegen({
 Future<TestContractProvenance?> _generate(Directory repositoryRoot) async {
   final root = Directory(repositoryRoot.resolveSymbolicLinksSync());
   Future<TestContractProvenance?> ordinary(String reason) async {
-    stderr.writeln(
+    stdout.writeln(
       'contract-provenance: $reason; using ordinary generation without sharing.',
     );
     await runContractCodegen(repositoryRoot: root);
@@ -255,7 +255,7 @@ Future<TestContractProvenance?> _generate(Directory repositoryRoot) async {
     // source bytes loaded by this VM, not every unrelated analyzer library.
     files.reads.retainAll({...actual, ...common});
     if (!proof.existsSync()) {
-      stderr.writeln(
+      stdout.writeln(
         'contract-provenance: unsupported analyzer discovery; no sharing.',
       );
       return null;
@@ -263,7 +263,7 @@ Future<TestContractProvenance?> _generate(Directory repositoryRoot) async {
     final decoded = jsonDecode(proof.readAsStringSync()) as Map;
     if (!matchedVm(decoded['executable']) ||
         decoded['packageConfig'] != config.uri.toString()) {
-      stderr.writeln(
+      stdout.writeln(
         'contract-provenance: generator SDK/config does not match workspace resolution; no sharing.',
       );
       return null;
