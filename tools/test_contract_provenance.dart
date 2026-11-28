@@ -90,6 +90,10 @@ Future<TestContractProvenance?> _generate(Directory repositoryRoot) async {
 
   final config = File('${root.path}/.dart_tool/package_config.json');
   final graph = File('${root.path}/.dart_tool/package_graph.json');
+  final tempRoot = Directory.systemTemp.resolveSymbolicLinksSync();
+  if (root.path == tempRoot || root.path.startsWith('$tempRoot/')) {
+    return ordinary('checkout inside mutable system temp');
+  }
   final entry = File(
     '${root.path}/packages/contract_codegen/bin/contract_codegen.dart',
   );

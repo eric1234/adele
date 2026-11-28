@@ -267,6 +267,8 @@ launcher verifies retained and copied bytes against the producer digest. The
 suite can overwrite or delete its original, independently named copy.
 Compiler failures and changing inputs are errors, never a reason to use an
 older file. Rerun maintained preparation after a generation input change.
+Checkouts inside system temp use ordinary fresh compilation: routine temp
+file creation can invalidate the generator's ancestor observations there.
 
 This is a trusted development-user boundary, not authentication against
 processes running as that user. Normal worker exit drains admitted requests
