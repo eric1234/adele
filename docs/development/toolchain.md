@@ -431,7 +431,8 @@ then `dart pub workspace list`. It leaves missing or stale contract parts as the
 are and neither validates nor publishes a generation receipt. Use bootstrap, not
 resolution alone, when setting up a checkout for direct compilation.
 
-`tools/adele.dart` regenerates before analysis and before starting test workers.
+`tools/adele.dart` regenerates before analysis and, except for the verified
+[same-workflow CI handoff](testing.md#maintained-test-targets), before starting test workers.
 Linux development `run` and `build` validate every configured contract using the
 selected Flutter SDK's prepared AOT generator before dependency discovery or any
 backend AOT or frontend harness compilation. A content-matching successful
@@ -453,7 +454,8 @@ Explicit generation recomputes prospective output and writes only changed conten
 It can replace stale siblings left by branch switches without manual deletion; no
 timestamp dependency engine or alternate build system is involved. `generate --check` writes
 nothing and fails for missing/stale local outputs. CI test and analysis jobs use
-`resolve-workspace` because the maintained consumers generate before they run. The
+`resolve-workspace` so each has its own package configuration. Analysis generates;
+matrix tests either generate or verify the explicit CI source artifact. The
 generated job uses full bootstrap followed by `generate --check` to verify the
 materialized output independently of incremental receipts. The Linux build job
 also retains full bootstrap. Root `check` checks freshness before any automatic

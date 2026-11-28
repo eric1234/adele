@@ -32,3 +32,4 @@ The model-provider survey builds on the broader harness survey rather than repla
 - [Invocation-scoped reuse of compiled test artifacts (2026-11-27)](test-artifact-reuse-2026-11-27.md): per-worker inventory, Git AOT pilot, correctness gates and hosted CI trend.
 - [Verified host-only reuse in desktop workers (2026-11-28)](desktop-host-reuse-2026-11-28.md): complete shard-4 comparison, validation costs and reasons to keep desktop fresh.
 - [Verified AOT observation costs (2026-11-28)](verified-aot-observations-2026-11-28.md): measured compiler/provenance overlap, checksum batching, and the subsequent decision to retire test AOT reuse.
+- [Workflow-scoped generated contract sources (2026-11-28)](workflow-generated-artifacts-2026-11-28.md): preparation across independent runners, producer placement and the source-only handoff experiment.

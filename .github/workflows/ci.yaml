@@ -91,10 +91,29 @@ jobs:
         id: test-plan
         run: echo "matrix=$(dart tools/adele.dart test-plan --json)" >> "$GITHUB_OUTPUT"
 
+      - name: Prepare configured contract sources
+        if: github.event_name != 'workflow_dispatch'
+        run: |
+          python3 -B -m unittest discover -s test -p ci_contract_sources_test.py
+          dart tools/adele.dart resolve-workspace
+          python3 tools/ci_contract_sources.py produce "$RUNNER_TEMP/contracts.json"
+
+      - name: Publish generated contract sources
+        if: github.event_name != 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: contracts-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/contracts.json
+          if-no-files-found: error
+          retention-days: 1
+
   test-target:
     needs: discover-test-targets
     name: test / ${{ matrix.displayName }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.discover-test-targets.outputs.matrix) }}
@@ -137,6 +156,24 @@ jobs:
       - name: Resolve workspace dependencies
         run: dart tools/adele.dart resolve-workspace
 
+      # Fetch bytes, not an extracted directory. Only the verified source
+      # inventory is materialized, inside the maintained test launcher.
+      - name: Download generated contract sources
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch || "$GITHUB_RUN_ATTEMPT" != 1 ]]; then
+            echo 'Fresh generation: dispatch or retry; not consulting artifacts from prior attempts.'
+            exit 0
+          fi
+          name="contracts-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          api="repos/$GITHUB_REPOSITORY/actions"
+          id=$(gh api "$api/runs/$GITHUB_RUN_ID/artifacts?name=$name" --jq '
+            if .total_count == 1 and (.artifacts[0].expired == false)
+            then .artifacts[0].id else error("Expected exactly one current contract artifact") end')
+          gh api "$api/artifacts/$id/zip" > "$RUNNER_TEMP/contracts.zip"
+          echo "ADELE_CI_CONTRACT_BUNDLE=$RUNNER_TEMP/contracts.zip" >> "$GITHUB_ENV"
+
       - name: Run test target
         env:
           TEST_TARGET: ${{ matrix.name }}
@@ -145,6 +182,10 @@ jobs:
           args=(test --target "$TEST_TARGET" --ci)
           if [[ -n "$TEST_SHARD" ]]; then
             args+=(--shard "$TEST_SHARD")
+          fi
+          if [[ -n "${ADELE_CI_CONTRACT_BUNDLE:-}" ]]; then
+            args+=("--ci-contracts=$ADELE_CI_CONTRACT_BUNDLE")
+            unset ADELE_CI_CONTRACT_BUNDLE
           fi
           dart tools/adele.dart "${args[@]}"
 

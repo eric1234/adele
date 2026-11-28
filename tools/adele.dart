@@ -1131,12 +1131,14 @@ final class TestOptions {
     required this.ci,
     this.target,
     this.shard,
+    this.contractBundle,
   });
 
   final bool ci;
   final int jobs;
   final String? target;
   final int? shard;
+  final String? contractBundle;
 }
 
 TestOptions parseTestOptions(
@@ -1146,6 +1148,7 @@ TestOptions parseTestOptions(
   int? jobs;
   String? target;
   int? shard;
+  String? contractBundle;
   bool ci = false;
   for (int index = 0; index < arguments.length; index++) {
     final String argument = arguments[index];
@@ -1192,6 +1195,14 @@ TestOptions parseTestOptions(
           'Invalid --shard value "$value"; expected a positive integer.',
         );
       }
+    } else if (argument.startsWith('--ci-contracts=')) {
+      final path = argument.substring('--ci-contracts='.length);
+      if (contractBundle != null || path.isEmpty) {
+        throw const TestUsageException(
+          'Supply one explicit --ci-contracts=FILE.',
+        );
+      }
+      contractBundle = path;
     } else if (argument == '--ci') {
       if (ci) {
         throw const TestUsageException('--ci may only be specified once.');
@@ -1206,6 +1217,11 @@ TestOptions parseTestOptions(
   }
   if (ci && target == null) {
     throw const TestUsageException('--ci requires --target.');
+  }
+  if (contractBundle != null && !ci) {
+    throw const TestUsageException(
+      '--ci-contracts requires --ci and --target.',
+    );
   }
   if (shard != null) {
     if (target == null || !ci) {
@@ -1226,6 +1242,7 @@ TestOptions parseTestOptions(
     ci: ci,
     target: target,
     shard: shard,
+    contractBundle: contractBundle,
   );
 }
 
@@ -1321,7 +1338,15 @@ Future<int> _runTests(TestOptions options) async {
   }
   await prepareCodeEditorSource(Directory.current);
   await prepareRichEditorSource(Directory.current);
-  await runContractCodegen(repositoryRoot: Directory.current);
+  if (options.contractBundle case final bundle?) {
+    await _run('verify CI contract sources', 'python3', [
+      'tools/ci_contract_sources.py',
+      'consume',
+      bundle,
+    ]);
+  } else {
+    await runContractCodegen(repositoryRoot: Directory.current);
+  }
   final Directory? codeEditorLibrary =
       targets.any((target) => target.nativeCodeEditor)
       ? await buildNativeCodeEditorForTests(Directory.current)
