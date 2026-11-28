@@ -7,7 +7,7 @@ import '../packages/contract_codegen/lib/src/provenance_files.dart';
 import 'contract_artifacts.dart';
 import 'desktop_artifact_cache.dart' show hashBuildFiles;
 import 'desktop_tool_artifacts.dart' show validateToolDepfile;
-import 'git_test_aot_inputs.dart' show gitTestAotPlatformEligible;
+import 'git_test_aot_inputs.dart' show GitTestAot, gitTestAotPlatformEligible;
 
 /// This capability is constructed only from a private successful generation.
 /// No checked-in, incremental, or worker-supplied receipt is admission proof.
@@ -67,10 +67,11 @@ final class TestContractProvenance {
 /// checkout is eligible for the additional, invocation-local test evidence.
 Future<TestContractProvenance?> runTestContractCodegen({
   required Directory repositoryRoot,
+  required Set<GitTestAot> allowedRecipes,
 }) async {
   final timer = Stopwatch()..start();
   try {
-    return await _generate(repositoryRoot);
+    return await _generate(repositoryRoot, allowedRecipes);
   } finally {
     stdout.writeln(
       'contract-provenance: full preparation ${timer.elapsedMicroseconds} us',
@@ -78,7 +79,10 @@ Future<TestContractProvenance?> runTestContractCodegen({
   }
 }
 
-Future<TestContractProvenance?> _generate(Directory repositoryRoot) async {
+Future<TestContractProvenance?> _generate(
+  Directory repositoryRoot,
+  Set<GitTestAot> allowedRecipes,
+) async {
   final root = Directory(repositoryRoot.resolveSymbolicLinksSync());
   Future<TestContractProvenance?> ordinary(String reason) async {
     stdout.writeln(
@@ -131,7 +135,7 @@ Future<TestContractProvenance?> _generate(Directory repositoryRoot) async {
     }
     hooks.createSync();
     // Discard the pre-creation observation, including decoded configuration.
-    return _generate(root);
+    return _generate(root, allowedRecipes);
   }
   if (hooks.resolveSymbolicLinksSync() != hooks.path) {
     return ordinary('noncanonical Flutter hooks directory');
@@ -248,9 +252,10 @@ Future<TestContractProvenance?> _generate(Directory repositoryRoot) async {
   try {
     final proof = File('${scratch.path}/proof.json');
     final depfile = File('${scratch.path}/generator.d');
+    // All configured sources are still generated. Only the witnesses used
+    // between generation and delivery are specific to the worker's recipes.
     final libraries = closure([
-      'plugin_backend_host',
-      'git_backend',
+      for (final recipe in allowedRecipes) recipe.package,
     ]).map((name) => library(name).path).toList();
     File(
       '${scratch.path}/libraries.json',

@@ -1325,10 +1325,16 @@ Future<int> _runTests(TestOptions options) async {
   }
   await prepareCodeEditorSource(Directory.current);
   await prepareRichEditorSource(Directory.current);
+  // The same explicit policy selects generation witnesses and serves requests.
+  // Sharing a fixture with this target does not authorize a desktop worker.
+  const gitHostedRecipes = {GitTestAot.host, GitTestAot.git};
   final TestContractProvenance? proof;
   if (gitTestAotPlatformEligible &&
       targets.any((target) => target.name == 'git_desktop_tests')) {
-    proof = await runTestContractCodegen(repositoryRoot: Directory.current);
+    proof = await runTestContractCodegen(
+      repositoryRoot: Directory.current,
+      allowedRecipes: gitHostedRecipes,
+    );
   } else {
     await runContractCodegen(repositoryRoot: Directory.current);
     proof = null;
@@ -1378,6 +1384,7 @@ Future<int> _runTests(TestOptions options) async {
           final dart = File.fromUri(bin.uri.resolve('dart')).path;
           return runGitTestAotWorker(
             repository: Directory.current,
+            allowedRecipes: gitHostedRecipes,
             dartExecutable: dart,
             suiteExecutable: File.fromUri(
               bin.uri.resolve(

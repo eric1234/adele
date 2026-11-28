@@ -98,6 +98,56 @@ void main() {
   );
 
   test(
+    'same checkout has independent host-only and Git worker stores',
+    () async {
+      final scopes = <Directory>[];
+      final publisher = AotStoreFixture(root);
+      await publisher.prepare();
+      expect(
+        await Future.wait([
+          for (final (name, recipes) in [
+            ('host-only', {GitTestAot.host}),
+            ('git', {GitTestAot.host, GitTestAot.git}),
+          ])
+            fixture.runFixtureWorker(File(_peer), root, name, (scope) {
+              scopes.add(scope);
+              return publisher.open(scope).deliver;
+            }, allowedRecipes: recipes),
+        ]),
+        [0, 0],
+      );
+      expect(scopes.map((s) => s.path).toSet(), hasLength(2));
+      expect(scopes.any((s) => s.existsSync()), isFalse);
+      // One host per worker; Git only in the two-recipe scope.
+      expect(publisher.compilations, 3);
+      expect(File('${root.path}/host-only-git.aot').existsSync(), isFalse);
+      for (final name in ['host-only-host', 'git-host', 'git-git']) {
+        expect(
+          File('${root.path}/$name.aot').readAsStringSync(),
+          'producer bytes',
+        );
+      }
+    },
+  );
+
+  test(
+    'group membership and an inherited locator do not identify a tester',
+    () async {
+      expect(
+        await fixture.runFixtureWorker(
+          File(_peer),
+          root,
+          'non-tester',
+          (_) =>
+              (_, _) => throw StateError('Unexpected delivery'),
+          suiteExecutable: '/not-the-running-executable',
+        ),
+        0,
+      );
+    },
+  );
+
+  test(
     'wrong SDK is ineligible; wrong checkout fails the worker and cleans up',
     () async {
       late Directory scope;
