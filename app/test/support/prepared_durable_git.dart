@@ -18,6 +18,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_builder/plugin_builder.dart';
 
 import 'backend_test_sdk.dart';
+import 'git_test_aot.dart';
 import 'git_worktree_fixture.dart';
 
 export 'git_worktree_fixture.dart' show git, gitPluginId, gitProviderId;
@@ -45,39 +46,38 @@ final class PreparedDurableGit {
     _hostArtifact = File('${artifacts.path}/host.aot');
     final sdk = backendTestSdk();
     _dartaotruntime = sdk.aotRuntime;
-    // Compile once, but start a fresh shared host and both backends per runtime.
-    await compileAotSnapshot(
+    await GitTestAot.host.prepare(
       dartExecutable: sdk.dart,
-      workingDirectory: repository,
-      entrypoint: 'packages/plugin_backend_host/bin/adele_backend_host.dart',
+      repositoryRoot: repository,
       artifact: _hostArtifact,
       stage: 'durable-git-host',
     );
-    for (final entry in const {
-      gitPluginId: 'plugins/git/packages/backend/bin/git_backend.dart',
-      _projectPluginId:
-          'plugins/local_directory_project/packages/backend/bin/local_directory_project_backend.dart',
-    }.entries) {
-      final installed = await Directory(
-        '${_installations.path}/${entry.key}',
-      ).create();
-      await compileAotSnapshot(
-        dartExecutable: sdk.dart,
-        workingDirectory: repository,
-        entrypoint: entry.value,
-        artifact: File('${installed.path}/backend.aot'),
-        stage: 'durable-git-${entry.key}',
-      );
+    for (final id in const [gitPluginId, _projectPluginId]) {
+      final installed = await Directory('${_installations.path}/$id').create();
+      final artifact = File('${installed.path}/backend.aot');
+      if (id == gitPluginId) {
+        await GitTestAot.git.prepare(
+          dartExecutable: sdk.dart,
+          repositoryRoot: repository,
+          artifact: artifact,
+          stage: 'durable-git-$id',
+        );
+      } else {
+        await compileAotSnapshot(
+          dartExecutable: sdk.dart,
+          workingDirectory: repository,
+          entrypoint:
+              'plugins/local_directory_project/packages/backend/bin/local_directory_project_backend.dart',
+          artifact: artifact,
+          stage: 'durable-git-$id',
+        );
+      }
       await File(
         '${installed.path}/adele_plugin.installation.json',
       ).writeAsString(
         jsonEncode({
           'manifestVersion': 1,
-          'metadata': {
-            'id': entry.key,
-            'version': '1.0.0',
-            'displayName': entry.key,
-          },
+          'metadata': {'id': id, 'version': '1.0.0', 'displayName': id},
           'components': {
             'backend': {'artifact': 'backend.aot'},
           },

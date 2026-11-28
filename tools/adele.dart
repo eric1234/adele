@@ -10,7 +10,11 @@ import 'build_timing.dart';
 import 'code_editor_dependency.dart';
 import 'code_editor_smoke.dart';
 import 'contract_artifacts.dart';
+import 'git_test_aot_inputs.dart' show gitTestAotPlatformEligible;
+import 'git_test_aot_store.dart';
+import 'git_test_aot_worker.dart';
 import 'rich_editor_dependency.dart';
+import 'test_contract_provenance.dart';
 import 'test_runner.dart';
 
 const int _maximumDefaultTestJobs = 2;
@@ -1321,7 +1325,14 @@ Future<int> _runTests(TestOptions options) async {
   }
   await prepareCodeEditorSource(Directory.current);
   await prepareRichEditorSource(Directory.current);
-  await runContractCodegen(repositoryRoot: Directory.current);
+  final TestContractProvenance? proof;
+  if (gitTestAotPlatformEligible &&
+      targets.any((target) => target.name == 'git_desktop_tests')) {
+    proof = await runTestContractCodegen(repositoryRoot: Directory.current);
+  } else {
+    await runContractCodegen(repositoryRoot: Directory.current);
+    proof = null;
+  }
   final Directory? codeEditorLibrary =
       targets.any((target) => target.nativeCodeEditor)
       ? await buildNativeCodeEditorForTests(Directory.current)
@@ -1351,18 +1362,51 @@ Future<int> _runTests(TestOptions options) async {
       targets: targets,
       jobs: options.jobs,
       execute: (TestTarget target) async {
+        final arguments = target.argumentsFor(
+          ci: options.ci,
+          testFiles: testFiles,
+        );
+        final environment = target.nativeCodeEditor
+            ? {
+                'FRB_DART_LOAD_EXTERNAL_LIBRARY_NATIVE_LIB_DIR':
+                    codeEditorLibrary!.path,
+              }
+            : null;
+        if (proof case final generation?
+            when target.name == 'git_desktop_tests') {
+          final bin = File(Platform.resolvedExecutable).parent;
+          final dart = File.fromUri(bin.uri.resolve('dart')).path;
+          return runGitTestAotWorker(
+            repository: Directory.current,
+            dartExecutable: dart,
+            suiteExecutable: File.fromUri(
+              bin.uri.resolve(
+                '../../artifacts/engine/linux-x64/flutter_tester',
+              ),
+            ).path,
+            openStore: (scope) => GitTestAotStore(
+              scope: scope,
+              repositoryRoot: Directory.current,
+              dartExecutable: dart,
+              runtimeExecutable: File.fromUri(
+                bin.uri.resolve('dartaotruntime'),
+              ).path,
+              checkProvenance: generation.verify,
+            ).deliver,
+            executable: target.executable,
+            arguments: arguments,
+            workingDirectory: target.path,
+            environment: environment,
+          );
+        }
         final Process process = await Process.start(
           target.executable,
-          target.argumentsFor(ci: options.ci, testFiles: testFiles),
+          arguments,
           mode: ProcessStartMode.inheritStdio,
           runInShell: Platform.isWindows,
           workingDirectory: target.path,
-          environment: target.nativeCodeEditor
-              ? {
-                  'FRB_DART_LOAD_EXTERNAL_LIBRARY_NATIVE_LIB_DIR':
-                      codeEditorLibrary!.path,
-                }
-              : null,
+          environment: testWorkerEnvironment(environment),
+          includeParentEnvironment: false,
         );
         return process.exitCode;
       },

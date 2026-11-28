@@ -7,6 +7,7 @@ import 'package:args/args.dart';
 import 'package:contract_codegen/contract_codegen.dart';
 import 'package:contract_codegen/src/contract_inputs.dart';
 import 'package:contract_codegen/src/incremental_generation.dart';
+import 'package:contract_codegen/src/test_generation.dart';
 import 'package:crypto/crypto.dart';
 import 'package:path/path.dart' as p;
 
@@ -15,13 +16,21 @@ Future<void> main(List<String> arguments) async {
     ..addFlag('check', negatable: false)
     ..addFlag('clean', negatable: false)
     ..addFlag('incremental', negatable: false)
+    ..addOption('test-provenance', hide: true)
     ..addMultiOption('source', abbr: 's');
   try {
     final ArgResults options = parser.parse(arguments);
     final bool check = options.flag('check');
     final bool clean = options.flag('clean');
     final bool incremental = options.flag('incremental');
+    final proofPath = options.option('test-provenance');
     if (options.rest.isNotEmpty ||
+        proofPath != null &&
+            (check ||
+                clean ||
+                incremental ||
+                options.wasParsed('source') ||
+                !Platform.isLinux) ||
         clean && (check || options.wasParsed('source')) ||
         incremental && (clean || check || options.wasParsed('source'))) {
       throw const FormatException(
@@ -94,8 +103,14 @@ Future<void> main(List<String> arguments) async {
       return;
     }
     final List<ContractGeneratedFile> outputs = <ContractGeneratedFile>[];
+    final proof = proofPath == null
+        ? null
+        : TestGeneration(Directory(proofPath));
     for (final File source in sources) {
-      outputs.add(await const ContractGenerator().generate(source));
+      outputs.add(
+        await (proof?.generate(source) ??
+            const ContractGenerator().generate(source)),
+      );
     }
     final List<ContractGeneratedFile> stale = <ContractGeneratedFile>[];
     for (final ContractGeneratedFile output in outputs) {
@@ -115,6 +130,7 @@ Future<void> main(List<String> arguments) async {
     for (final ContractGeneratedFile output in stale) {
       await const ContractGenerator().write(output);
     }
+    await proof?.finish(sources, wroteOutputs: stale.isNotEmpty);
   } on ContractDiagnostic catch (error) {
     stderr.writeln(error);
     exitCode = 1;

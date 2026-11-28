@@ -11,6 +11,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_builder/plugin_builder.dart';
 
 import 'backend_test_sdk.dart';
+import 'git_test_aot.dart';
 import 'git_worktree_fixture.dart';
 
 const String openaiPluginId = 'dev.adele.openai';
@@ -24,7 +25,7 @@ final Matcher staleProvider = isA<ProviderUnavailable>().having(
   isTrue,
 );
 
-/// Compiled once per suite. Installations and running backends are never shared.
+/// Suite-private artifacts. Installations and running backends are never shared.
 final class PreparedNormalTaskGit {
   PreparedNormalTaskGit(this.repositoryRoot);
 
@@ -42,33 +43,25 @@ final class PreparedNormalTaskGit {
     hostArtifact = File.fromUri(artifacts.uri.resolve('host.aot'));
     gitArtifact = File.fromUri(artifacts.uri.resolve('git.aot'));
     _openaiArtifact = File.fromUri(artifacts.uri.resolve('openai.aot'));
-    // Compile real artifacts once; startup only consumes their installed copies.
-    for (final target in [
-      (
-        entrypoint: 'packages/plugin_backend_host/bin/adele_backend_host.dart',
-        artifact: hostArtifact,
-        stage: 'normal-bootstrap-host',
-      ),
-      (
-        entrypoint: 'plugins/git/packages/backend/bin/git_backend.dart',
-        artifact: gitArtifact,
-        stage: 'normal-bootstrap-git',
-      ),
-      (
-        entrypoint:
-            'plugins/openai/packages/backend/bin/openai_model_provider_backend.dart',
-        artifact: _openaiArtifact,
-        stage: 'normal-bootstrap-openai',
-      ),
+    for (final (recipe, artifact) in [
+      (GitTestAot.host, hostArtifact),
+      (GitTestAot.git, gitArtifact),
     ]) {
-      await compileAotSnapshot(
+      await recipe.prepare(
         dartExecutable: sdk.dart,
-        workingDirectory: repositoryRoot,
-        entrypoint: target.entrypoint,
-        artifact: target.artifact,
-        stage: target.stage,
+        repositoryRoot: repositoryRoot,
+        artifact: artifact,
+        stage: 'normal-bootstrap-${recipe.name}',
       );
     }
+    await compileAotSnapshot(
+      dartExecutable: sdk.dart,
+      workingDirectory: repositoryRoot,
+      entrypoint:
+          'plugins/openai/packages/backend/bin/openai_model_provider_backend.dart',
+      artifact: _openaiArtifact,
+      stage: 'normal-bootstrap-openai',
+    );
   }
 
   Future<NormalTaskGitCase> createCase() async {

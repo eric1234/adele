@@ -323,11 +323,12 @@ final class _ToolInputs {
 
 /// The pinned Dart compiler emits one Make-style rule with backslash-escaped
 /// paths. Reject uncovered imports rather than publishing a partially keyed tool.
-void validateToolDepfile(
+Set<String> validateToolDepfile(
   String content, {
   required File output,
   required Directory root,
   required Set<String> inputs,
+  Set<String> requiredInputs = const {},
 }) {
   final tokens = <String>[];
   var token = StringBuffer();
@@ -351,6 +352,7 @@ void validateToolDepfile(
       tokens.first != '${output.absolute.path}:') {
     throw const PluginBuildFailure('Invalid build tool compiler depfile.');
   }
+  final observed = <String>{};
   for (final path in tokens.skip(1)) {
     final absolute = File.fromUri(
       root.uri.resolveUri(Uri.file(path)).normalizePath(),
@@ -362,5 +364,13 @@ void validateToolDepfile(
         'their resolved package library and tooling source trees.',
       );
     }
+    observed.add(absolute);
   }
+  final missing = requiredInputs.difference(observed);
+  if (missing.isNotEmpty) {
+    throw PluginBuildFailure(
+      'Missing required compiler depfile inputs: $missing',
+    );
+  }
+  return observed;
 }
