@@ -24,8 +24,6 @@ import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:resource_inspector_contract/resource_inspector_contract.dart';
 
-import '../support/git_test_aot.dart';
-
 const _bound = Duration(seconds: 10);
 const _controlService = 'test.controller';
 const _consumerService = 'adele.capabilityConsumer';
@@ -63,13 +61,11 @@ void main() {
       for (final id in ['b', 'c', 'catalog'])
         id: File('${artifacts.path}/provider-$id.aot'),
     };
-    await GitTestAot.host.prepare(
-      repositoryRoot: Directory.current.parent,
-      dartExecutable: dart,
-      artifact: hostArtifact,
-      stage: 'backend-capability-integration',
-    );
     for (final target in [
+      (
+        entrypoint: 'packages/plugin_backend_host/bin/adele_backend_host.dart',
+        artifact: hostArtifact,
+      ),
       (
         entrypoint: 'app/test/fixtures/backend_capability_consumer.dart',
         artifact: consumerArtifact,

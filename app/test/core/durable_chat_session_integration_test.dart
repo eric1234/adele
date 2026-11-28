@@ -38,7 +38,6 @@ import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:sqlite3/sqlite3.dart' hide Session;
 
 import '../../../tools/backend_artifacts.dart';
-import '../support/git_test_aot.dart';
 
 const _gitPluginId = 'dev.adele.plugin.git';
 const _projectPluginId = 'dev.adele.plugin.local-directory-project';
@@ -67,14 +66,9 @@ void main() {
       ),
     ).path;
     hostArtifact = File('${artifacts.path}/host.aot');
-    // Prepare once; every runtime and Chat generation starts fresh AOT isolates.
-    await GitTestAot.host.prepare(
-      repositoryRoot: Directory.current.parent,
-      dartExecutable: dart,
-      artifact: hostArtifact,
-      stage: 'durable-chat-host',
-    );
+    // Compile once; every runtime and Chat generation starts fresh AOT isolates.
     for (final entry in const {
+      'host': 'packages/plugin_backend_host/bin/adele_backend_host.dart',
       _projectPluginId:
           'plugins/local_directory_project/packages/backend/bin/local_directory_project_backend.dart',
       _gitPluginId: 'plugins/git/packages/backend/bin/git_backend.dart',

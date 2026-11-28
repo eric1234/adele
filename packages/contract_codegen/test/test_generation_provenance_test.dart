@@ -42,7 +42,7 @@ void main() {
         );
         final otherLib = Directory('${dir.path}/other')..createSync();
         final otherSource = File('${otherLib.path}/fixture.dart')
-          ..writeAsStringSync(minimalContract());
+          ..writeAsStringSync(minimalContract(namedValue: true));
         await fixture.source.writeAsString(
           "import 'support.dart' as support;\n${minimalContract(namedValue: true).replaceFirst("AdeleMethod('ping')", 'AdeleMethod(support.method)')}",
         );
@@ -54,7 +54,7 @@ void main() {
           '${scratch.path}/libraries.json',
         ).writeAsStringSync(jsonEncode([fixture.directory.path]));
         final gen = TestGeneration(scratch);
-        // A host-only worker still generates configured sources outside its
+        // A worker still generates configured sources outside its
         // compiler closure; they just don't get request-time witnesses.
         final otherOutput = await gen.generate(otherSource);
         await const ContractGenerator().write(otherOutput);

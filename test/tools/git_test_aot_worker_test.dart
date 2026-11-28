@@ -106,7 +106,7 @@ void main() {
       expect(
         await Future.wait([
           for (final (name, recipes) in [
-            ('desktop', {GitTestAot.host}),
+            ('host-only', {GitTestAot.host}),
             ('git', {GitTestAot.host, GitTestAot.git}),
           ])
             fixture.runFixtureWorker(File(_peer), root, name, (scope) {
@@ -118,17 +118,32 @@ void main() {
       );
       expect(scopes.map((s) => s.path).toSet(), hasLength(2));
       expect(scopes.any((s) => s.existsSync()), isFalse);
-      expect(
-        publisher.compilations,
-        3,
-      ); // One host per worker; Git only in Git.
-      expect(File('${root.path}/desktop-git.aot').existsSync(), isFalse);
-      for (final name in ['desktop-host', 'git-host', 'git-git']) {
+      // One host per worker; Git only in the two-recipe scope.
+      expect(publisher.compilations, 3);
+      expect(File('${root.path}/host-only-git.aot').existsSync(), isFalse);
+      for (final name in ['host-only-host', 'git-host', 'git-git']) {
         expect(
           File('${root.path}/$name.aot').readAsStringSync(),
           'producer bytes',
         );
       }
+    },
+  );
+
+  test(
+    'group membership and an inherited locator do not identify a tester',
+    () async {
+      expect(
+        await fixture.runFixtureWorker(
+          File(_peer),
+          root,
+          'non-tester',
+          (_) =>
+              (_, _) => throw StateError('Unexpected delivery'),
+          suiteExecutable: '/not-the-running-executable',
+        ),
+        0,
+      );
     },
   );
 

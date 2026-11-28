@@ -21,7 +21,6 @@ import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:resource_inspector_contract/resource_inspector_contract.dart';
 
-import '../support/git_test_aot.dart';
 import '../support/project_provider.dart';
 
 const _plugin = 'test.associated.backend';
@@ -40,19 +39,24 @@ void main() {
     aotRuntime = File(dart).parent.uri.resolve('dartaotruntime').toFilePath();
     hostArtifact = File('${artifacts.path}/host.aot');
     probeArtifact = File('${artifacts.path}/probe.aot');
-    await GitTestAot.host.prepare(
-      repositoryRoot: Directory.current.parent,
-      dartExecutable: dart,
-      artifact: hostArtifact,
-      stage: 'associated-capability-integration',
-    );
-    await compileAotSnapshot(
-      dartExecutable: dart,
-      workingDirectory: Directory.current.parent,
-      entrypoint: 'app/test/core/fixtures/associated_capability_probe.dart',
-      artifact: probeArtifact,
-      stage: 'associated-capability-integration',
-    );
+    for (final target in [
+      (
+        entrypoint: 'packages/plugin_backend_host/bin/adele_backend_host.dart',
+        artifact: hostArtifact,
+      ),
+      (
+        entrypoint: 'app/test/core/fixtures/associated_capability_probe.dart',
+        artifact: probeArtifact,
+      ),
+    ]) {
+      await compileAotSnapshot(
+        dartExecutable: dart,
+        workingDirectory: Directory.current.parent,
+        entrypoint: target.entrypoint,
+        artifact: target.artifact,
+        stage: 'associated-capability-integration',
+      );
+    }
   });
   tearDownAll(() => artifacts.delete(recursive: true));
 

@@ -11,11 +11,13 @@ Future<int> runFixtureWorker(
   String mode,
   GitTestDelivery Function(Directory) open, {
   Set<GitTestAot> allowedRecipes = const {GitTestAot.host},
+  String? suiteExecutable,
 }) => runGitTestAotWorker(
   repository: root,
   allowedRecipes: allowedRecipes,
   dartExecutable: Platform.resolvedExecutable,
-  suiteExecutable: File('/proc/self/exe').resolveSymbolicLinksSync(),
+  suiteExecutable:
+      suiteExecutable ?? File('/proc/self/exe').resolveSymbolicLinksSync(),
   workingDirectory: root.path,
   executable: Platform.resolvedExecutable,
   arguments: [peer.path, mode, root.path],
@@ -72,7 +74,18 @@ Future<void> main(List<String> args) async {
       '/fixture/native') {
     throw StateError('Lost loader environment');
   }
-  if (mode == 'desktop' || mode == 'git') {
+  if (mode == 'non-tester') {
+    try {
+      await request(mode);
+    } on StateError catch (error) {
+      if (!error.toString().contains('Not a suite in this Git test worker')) {
+        rethrow;
+      }
+      return;
+    }
+    throw StateError('An inherited locator authorized a non-tester');
+  }
+  if (mode == 'host-only' || mode == 'git') {
     if (!await request('$mode-host') ||
         await request('$mode-git', recipe: GitTestAot.git) != (mode == 'git')) {
       throw StateError('Wrong recipes admitted by $mode worker');

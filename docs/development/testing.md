@@ -289,7 +289,13 @@ To verify actual compiler counts, trace child `execve` events (e.g. Linux
 `strace -f -e trace=execve -o /tmp/git-test.exec ...`) and count successful
 SDK `dart compile aot-snapshot` invocations, not test requests or
 `gen_snapshot` children. Direct Flutter commands need current generated parts.
-Neither desktop nor interaction workers receive this handoff.
+Neither desktop nor interaction workers receive this handoff, **including
+explicit CI shards**. Their shared Git fixtures therefore compile fresh too.
+Worker admission is an explicit recipe list, not every entrypoint known to the
+helper; the same list selects the generation witnesses. The [host-only desktop
+experiment](../research/desktop-host-reuse-2026-11-28.md) reduced compiler calls
+without demonstrating a net preparation win. Do not enable it based solely on
+the number of files assigned to a shard.
 
 The two app targets use the same `app/` Flutter package and working directory.
 Both participate in `test`, `check`, and application analysis. The interaction

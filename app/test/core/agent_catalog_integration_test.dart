@@ -20,7 +20,6 @@ import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
 import '../../../tools/backend_artifacts.dart';
-import '../support/git_test_aot.dart';
 
 const _plugin = 'dev.adele.plugin.agent-configuration';
 const _foreign = '$_plugin.peer';
@@ -44,20 +43,21 @@ void main() {
     final dart =
         '${Platform.environment['FLUTTER_ROOT']!}/bin/cache/dart-sdk/bin/dart';
     runtime = File(dart).parent.uri.resolve('dartaotruntime').toFilePath();
-    await GitTestAot.host.prepare(
-      repositoryRoot: repository,
-      dartExecutable: dart,
-      artifact: host,
-      stage: 'agent-catalog-integration',
-    );
-    await compileAotSnapshot(
-      dartExecutable: dart,
-      workingDirectory: repository,
-      entrypoint:
-          'plugins/agent_configuration/packages/backend/bin/agent_configuration_backend.dart',
-      artifact: backend,
-      stage: 'agent-catalog-integration',
-    );
+    for (final (entrypoint, artifact) in [
+      ('packages/plugin_backend_host/bin/adele_backend_host.dart', host),
+      (
+        'plugins/agent_configuration/packages/backend/bin/agent_configuration_backend.dart',
+        backend,
+      ),
+    ]) {
+      await compileAotSnapshot(
+        dartExecutable: dart,
+        workingDirectory: repository,
+        entrypoint: entrypoint,
+        artifact: artifact,
+        stage: 'agent-catalog-integration',
+      );
+    }
     await publishStockPluginInstallation(
       repositoryRoot: repository,
       installationDirectory: backend.parent,

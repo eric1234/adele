@@ -18,7 +18,6 @@ import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
 import '../tool/prepared_capability_frontend_compiler.dart';
-import 'support/git_test_aot.dart';
 
 const _bound = Duration(seconds: 10);
 const _service = 'test.capability.probe';
@@ -63,20 +62,26 @@ void main() {
       sdkPath: sdk,
       artifact: frontendArtifact,
     );
-    await GitTestAot.host.prepare(
-      repositoryRoot: Directory.current.parent,
-      dartExecutable: dart,
-      artifact: hostArtifact.absolute,
-      stage: 'prepared-capability-integration',
-      absoluteEntrypoint: true,
-    );
-    await compileAotSnapshot(
-      dartExecutable: dart,
-      workingDirectory: Directory.current.parent,
-      entrypoint: '${temporary.absolute.path}/prepared_capability_backend.dart',
-      artifact: providerArtifact.absolute,
-      stage: 'prepared-capability-integration',
-    );
+    for (final target in [
+      (
+        entrypoint:
+            '${Directory.current.parent.path}/packages/plugin_backend_host/bin/adele_backend_host.dart',
+        artifact: hostArtifact,
+      ),
+      (
+        entrypoint:
+            '${temporary.absolute.path}/prepared_capability_backend.dart',
+        artifact: providerArtifact,
+      ),
+    ]) {
+      await compileAotSnapshot(
+        dartExecutable: dart,
+        workingDirectory: Directory.current.parent,
+        entrypoint: target.entrypoint,
+        artifact: target.artifact.absolute,
+        stage: 'prepared-capability-integration',
+      );
+    }
   });
   tearDownAll(() => temporary.delete(recursive: true));
 

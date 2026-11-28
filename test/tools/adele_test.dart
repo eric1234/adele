@@ -8,7 +8,6 @@ import 'package:yaml/yaml.dart';
 // ignore: avoid_relative_lib_imports
 import '../../packages/plugin_runtime/lib/plugin_runtime.dart';
 import '../../tools/adele.dart';
-import '../../tools/git_test_aot_client.dart';
 import '../../tools/stock_frontend_descriptors.dart';
 import '../../tools/test_runner.dart';
 
@@ -251,40 +250,6 @@ void main() {
   });
 
   group('test options', () {
-    test('AOT recipes belong to the selected worker and CI shard mode', () {
-      const gitRecipes = {GitTestAot.host, GitTestAot.git};
-      for (final worker in testTargets) {
-        final unsharded = worker.name == 'git_desktop_tests'
-            ? gitRecipes
-            : const <GitTestAot>{};
-        for (final (arguments, expected) in [
-          // Full test/check, local target and unsharded CI target.
-          (<String>[], unsharded),
-          (['--target=${worker.name}'], unsharded),
-          (['--target=${worker.name}', '--ci'], unsharded),
-          if (worker.ciShards > 1)
-            for (var i = 1; i <= worker.ciShards; i++)
-              (
-                ['--target=${worker.name}', '--ci', '--shard=$i'],
-                worker.name == 'adele_desktop'
-                    ? const {GitTestAot.host}
-                    : const <GitTestAot>{},
-              ),
-        ]) {
-          final selection = parseTestOptions(arguments);
-          expect(
-            selection.allowedAotRecipes(worker, platformEligible: true),
-            expected,
-            reason: '${worker.name}: $arguments',
-          );
-          expect(
-            selection.allowedAotRecipes(worker, platformEligible: false),
-            isEmpty,
-          );
-        }
-      }
-    });
-
     test('target forms produce equivalent options and maintained targets', () {
       for (final target in testTargets) {
         for (final ci in [false, true]) {

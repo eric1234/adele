@@ -399,7 +399,7 @@ void main() {
   }
 
   test(
-    'ineligible desktop CI shard keeps selection and native loader without a scope',
+    'desktop CI shard keeps selection and native loader without a scope',
     () async {
       final target = tooling.lookupTestTarget('adele_desktop');
       final app = Directory('${fixture.root.path}/${target.path}');
