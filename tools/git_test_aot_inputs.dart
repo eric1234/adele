@@ -344,10 +344,7 @@ _Inventory _discover(
   }
 
   final entry = inv.file('${root.path}/${recipe.entrypoint}');
-  final owner = switch (recipe) {
-    GitTestAot.host => 'plugin_backend_host',
-    GitTestAot.git => 'git_backend',
-  };
+  final owner = recipe.package;
   if (locations[owner]?.root != entry.parent.parent.path) {
     throw StateError('Stock entrypoint does not match resolved owner $owner.');
   }

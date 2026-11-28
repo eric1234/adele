@@ -20,6 +20,7 @@ Map<String, String> testWorkerEnvironment(Map<String, String>? overrides) =>
 /// Nothing on disk is a scope locator or an invitation to recover a store.
 Future<int> runGitTestAotWorker({
   required Directory repository,
+  required Set<GitTestAot> allowedRecipes,
   required String dartExecutable,
   required String suiteExecutable,
   required GitTestDelivery Function(Directory scope) openStore,
@@ -28,6 +29,10 @@ Future<int> runGitTestAotWorker({
   required String workingDirectory,
   required Map<String, String>? environment,
 }) async {
+  final admittedRecipes = {for (final r in allowedRecipes) r.entrypoint: r};
+  if (admittedRecipes.isEmpty) {
+    throw ArgumentError('A scoped test worker requires an allowed recipe.');
+  }
   final timer = Stopwatch()..start();
   Directory? owned;
   final sessions = <Socket>{};
@@ -100,9 +105,7 @@ Future<int> runGitTestAotWorker({
               Directory(checkout).resolveSymbolicLinksSync() != root) {
             throw StateError('Git test worker belongs to a different checkout');
           }
-          final stock = GitTestAot.values
-              .where((r) => r.entrypoint == recipe)
-              .firstOrNull;
+          final stock = admittedRecipes[recipe];
           if (stock == null || dart != dartExecutable) {
             response = false; // Not the recipe this launcher can supply.
           } else {

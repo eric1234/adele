@@ -17,6 +17,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
+import '../support/git_test_aot.dart';
 import '../support/orchestration_test_lifecycle.dart';
 
 const _pluginId = 'dev.adele.test.remote-tool-authorization';
@@ -39,25 +40,19 @@ void main() {
     ).path;
     hostArtifact = File.fromUri(artifacts.uri.resolve('host.aot'));
     probeArtifact = File.fromUri(artifacts.uri.resolve('probe.aot'));
-    for (final target in [
-      (
-        entrypoint: 'packages/plugin_backend_host/bin/adele_backend_host.dart',
-        artifact: hostArtifact,
-      ),
-      (
-        entrypoint:
-            'app/test/core/fixtures/remote_tool_authorization_probe.dart',
-        artifact: probeArtifact,
-      ),
-    ]) {
-      await compileAotSnapshot(
-        dartExecutable: dart,
-        workingDirectory: Directory.current.parent,
-        entrypoint: target.entrypoint,
-        artifact: target.artifact,
-        stage: 'remote-tool-authorization-integration',
-      );
-    }
+    await GitTestAot.host.prepare(
+      repositoryRoot: Directory.current.parent,
+      dartExecutable: dart,
+      artifact: hostArtifact,
+      stage: 'remote-tool-authorization-integration',
+    );
+    await compileAotSnapshot(
+      dartExecutable: dart,
+      workingDirectory: Directory.current.parent,
+      entrypoint: 'app/test/core/fixtures/remote_tool_authorization_probe.dart',
+      artifact: probeArtifact,
+      stage: 'remote-tool-authorization-integration',
+    );
   });
 
   late PluginBackendHost host;

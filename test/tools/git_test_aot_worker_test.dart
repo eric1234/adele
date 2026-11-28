@@ -98,6 +98,41 @@ void main() {
   );
 
   test(
+    'same checkout has independent host-only and Git worker stores',
+    () async {
+      final scopes = <Directory>[];
+      final publisher = AotStoreFixture(root);
+      await publisher.prepare();
+      expect(
+        await Future.wait([
+          for (final (name, recipes) in [
+            ('desktop', {GitTestAot.host}),
+            ('git', {GitTestAot.host, GitTestAot.git}),
+          ])
+            fixture.runFixtureWorker(File(_peer), root, name, (scope) {
+              scopes.add(scope);
+              return publisher.open(scope).deliver;
+            }, allowedRecipes: recipes),
+        ]),
+        [0, 0],
+      );
+      expect(scopes.map((s) => s.path).toSet(), hasLength(2));
+      expect(scopes.any((s) => s.existsSync()), isFalse);
+      expect(
+        publisher.compilations,
+        3,
+      ); // One host per worker; Git only in Git.
+      expect(File('${root.path}/desktop-git.aot').existsSync(), isFalse);
+      for (final name in ['desktop-host', 'git-host', 'git-git']) {
+        expect(
+          File('${root.path}/$name.aot').readAsStringSync(),
+          'producer bytes',
+        );
+      }
+    },
+  );
+
+  test(
     'wrong SDK is ineligible; wrong checkout fails the worker and cleans up',
     () async {
       late Directory scope;

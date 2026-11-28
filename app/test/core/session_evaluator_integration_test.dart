@@ -44,6 +44,7 @@ import '../../tool/session_evaluator_frontend_compiler.dart';
 import '../../tool/task_browser_frontend_compiler.dart';
 import '../fixtures/command_output_process.dart'
     show captureBulk, captureEvidenceBlocks, captureMarker;
+import '../support/git_test_aot.dart';
 import '../support/project_provider.dart';
 
 const _chatPlugin = 'dev.adele.plugin.chat-strategy';
@@ -86,8 +87,13 @@ void main() {
         '${Platform.environment['FLUTTER_ROOT']!}/bin/cache/dart-sdk/bin/dart';
     aotRuntime = File(dart).parent.uri.resolve('dartaotruntime').toFilePath();
     hostArtifact = File('${artifacts.path}/host.aot');
+    await GitTestAot.host.prepare(
+      repositoryRoot: Directory.current.parent,
+      dartExecutable: dart,
+      artifact: hostArtifact,
+      stage: 'session-evaluator-host',
+    );
     for (final entry in const {
-      'host': 'packages/plugin_backend_host/bin/adele_backend_host.dart',
       'child': 'app/test/fixtures/command_output_process.dart',
       'gated-evaluator': 'app/test/fixtures/session_evaluation_backend.dart',
       _chatPlugin:

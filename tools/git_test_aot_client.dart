@@ -5,10 +5,14 @@ import 'dart:io';
 const gitTestAotLocator = 'ADELE_GIT_TEST_AOT_SOCKET';
 
 enum GitTestAot {
-  host('packages/plugin_backend_host/bin/adele_backend_host.dart'),
-  git('plugins/git/packages/backend/bin/git_backend.dart');
+  host(
+    'plugin_backend_host',
+    'packages/plugin_backend_host/bin/adele_backend_host.dart',
+  ),
+  git('git_backend', 'plugins/git/packages/backend/bin/git_backend.dart');
 
-  const GitTestAot(this.entrypoint);
+  const GitTestAot(this.package, this.entrypoint);
+  final String package;
   final String entrypoint;
 }
 

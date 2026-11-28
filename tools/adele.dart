@@ -1141,6 +1141,22 @@ final class TestOptions {
   final int jobs;
   final String? target;
   final int? shard;
+
+  Set<GitTestAot> allowedAotRecipes(
+    TestTarget worker, {
+    required bool platformEligible,
+  }) {
+    if (!platformEligible || target != null && target != worker.name) {
+      return const {};
+    }
+    return switch (worker.name) {
+      'git_desktop_tests' => const {GitTestAot.host, GitTestAot.git},
+      'adele_desktop' when target != null && ci && shard != null => const {
+        GitTestAot.host,
+      },
+      _ => const {},
+    };
+  }
 }
 
 TestOptions parseTestOptions(
@@ -1325,10 +1341,20 @@ Future<int> _runTests(TestOptions options) async {
   }
   await prepareCodeEditorSource(Directory.current);
   await prepareRichEditorSource(Directory.current);
+  final eligible = gitTestAotPlatformEligible;
+  final recipesByWorker = {
+    for (final worker in targets)
+      worker: options.allowedAotRecipes(worker, platformEligible: eligible),
+  };
+  final generationRecipes = {
+    for (final recipes in recipesByWorker.values) ...recipes,
+  };
   final TestContractProvenance? proof;
-  if (gitTestAotPlatformEligible &&
-      targets.any((target) => target.name == 'git_desktop_tests')) {
-    proof = await runTestContractCodegen(repositoryRoot: Directory.current);
+  if (generationRecipes.isNotEmpty) {
+    proof = await runTestContractCodegen(
+      repositoryRoot: Directory.current,
+      allowedRecipes: generationRecipes,
+    );
   } else {
     await runContractCodegen(repositoryRoot: Directory.current);
     proof = null;
@@ -1372,12 +1398,13 @@ Future<int> _runTests(TestOptions options) async {
                     codeEditorLibrary!.path,
               }
             : null;
-        if (proof case final generation?
-            when target.name == 'git_desktop_tests') {
+        final allowedRecipes = recipesByWorker[target]!;
+        if (proof case final generation? when allowedRecipes.isNotEmpty) {
           final bin = File(Platform.resolvedExecutable).parent;
           final dart = File.fromUri(bin.uri.resolve('dart')).path;
           return runGitTestAotWorker(
             repository: Directory.current,
+            allowedRecipes: allowedRecipes,
             dartExecutable: dart,
             suiteExecutable: File.fromUri(
               bin.uri.resolve(

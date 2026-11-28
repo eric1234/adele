@@ -35,7 +35,14 @@ void main() {
         // independent directory under the same checkout and package config.
         final dir = Directory('test').absolute.createTempSync('provenance-');
         addTearDown(() => dir.deleteSync(recursive: true));
-        final fixture = ContractFixture(dir, File('${dir.path}/fixture.dart'));
+        final hostLib = Directory('${dir.path}/host')..createSync();
+        final fixture = ContractFixture(
+          hostLib,
+          File('${hostLib.path}/fixture.dart'),
+        );
+        final otherLib = Directory('${dir.path}/other')..createSync();
+        final otherSource = File('${otherLib.path}/fixture.dart')
+          ..writeAsStringSync(minimalContract());
         await fixture.source.writeAsString(
           "import 'support.dart' as support;\n${minimalContract(namedValue: true).replaceFirst("AdeleMethod('ping')", 'AdeleMethod(support.method)')}",
         );
@@ -47,17 +54,23 @@ void main() {
           '${scratch.path}/libraries.json',
         ).writeAsStringSync(jsonEncode([fixture.directory.path]));
         final gen = TestGeneration(scratch);
+        // A host-only worker still generates configured sources outside its
+        // compiler closure; they just don't get request-time witnesses.
+        final otherOutput = await gen.generate(otherSource);
+        await const ContractGenerator().write(otherOutput);
         final output = await gen.generate(fixture.source);
         expect(
           output.contents,
           (await const ContractGenerator().generate(fixture.source)).contents,
         );
         await const ContractGenerator().write(output);
-        await gen.finish([fixture.source], wroteOutputs: true);
+        await gen.finish([fixture.source, otherSource], wroteOutputs: true);
         final proof =
             jsonDecode(File('${scratch.path}/proof.json').readAsStringSync())
                 as Map;
         final hashes = proof['hashes'] as Map;
+        expect((proof['outputs'] as Map).keys, [output.path]);
+        expect(File(otherOutput.path).readAsStringSync(), otherOutput.contents);
         expect(
           proof['packageConfig'],
           (await Isolate.packageConfig).toString(),

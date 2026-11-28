@@ -16,6 +16,7 @@ import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
 import '../tool/prepared_environment_capability_frontend_compiler.dart';
+import 'support/git_test_aot.dart';
 import 'support/prepared_environment_capability_installation.dart';
 
 const _fileContents = {
@@ -95,28 +96,24 @@ void main() {
       sdkPath: sdk,
       artifact: frontendArtifact,
     );
-    for (final target in [
-      (
-        entrypoint:
-            '${Directory.current.parent.path}/packages/plugin_backend_host/bin/adele_backend_host.dart',
-        artifact: hostArtifact,
-      ),
-      for (final (name, artifact) in [
-        ('backend', providerArtifact),
-        ('environment', environmentArtifact),
-        ('callable', callableArtifact),
-      ])
-        (
-          entrypoint:
-              '${temporary.absolute.path}/prepared_environment_capability_$name.dart',
-          artifact: artifact,
-        ),
+    await GitTestAot.host.prepare(
+      repositoryRoot: Directory.current.parent,
+      dartExecutable: dart,
+      artifact: hostArtifact.absolute,
+      stage: 'prepared-environment-capability-integration',
+      absoluteEntrypoint: true,
+    );
+    for (final (name, artifact) in [
+      ('backend', providerArtifact),
+      ('environment', environmentArtifact),
+      ('callable', callableArtifact),
     ]) {
       await compileAotSnapshot(
         dartExecutable: dart,
         workingDirectory: Directory.current.parent,
-        entrypoint: target.entrypoint,
-        artifact: target.artifact.absolute,
+        entrypoint:
+            '${temporary.absolute.path}/prepared_environment_capability_$name.dart',
+        artifact: artifact.absolute,
         stage: 'prepared-environment-capability-integration',
       );
     }

@@ -25,6 +25,7 @@ import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:xterm2/xterm.dart';
 
 import '../../tools/git_pty_artifact.dart';
+import 'support/git_test_aot.dart';
 
 const _gitPluginId = 'dev.adele.plugin.git';
 const _library = 'package:terminal_probe/main.dart';
@@ -72,24 +73,19 @@ void main() {
       '-o',
       child.path,
     ]);
-    for (final target in [
-      (
-        entrypoint: 'packages/plugin_backend_host/bin/adele_backend_host.dart',
-        artifact: hostArtifact,
-      ),
-      (
-        entrypoint: 'plugins/git/packages/backend/bin/git_backend.dart',
-        artifact: gitArtifact,
-      ),
-    ]) {
-      await compileAotSnapshot(
-        dartExecutable: dart,
-        workingDirectory: repository,
-        entrypoint: target.entrypoint,
-        artifact: target.artifact,
-        stage: 'environment-terminal-integration',
-      );
-    }
+    await GitTestAot.host.prepare(
+      repositoryRoot: repository,
+      dartExecutable: dart,
+      artifact: hostArtifact,
+      stage: 'environment-terminal-integration',
+    );
+    await compileAotSnapshot(
+      dartExecutable: dart,
+      workingDirectory: repository,
+      entrypoint: 'plugins/git/packages/backend/bin/git_backend.dart',
+      artifact: gitArtifact,
+      stage: 'environment-terminal-integration',
+    );
     final program =
         (Compiler()
               ..addPlugin(flutterEvalPlugin)

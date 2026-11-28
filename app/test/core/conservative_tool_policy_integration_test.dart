@@ -26,6 +26,7 @@ import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
 import '../../../tools/backend_artifacts.dart';
+import '../support/git_test_aot.dart';
 
 const _pluginId = 'dev.adele.plugin.conservative-tool-policy';
 const _extensionId = '$_pluginId.authorization';
@@ -61,25 +62,20 @@ void main() {
     final backend = File.fromUri(
       installations.uri.resolve('conservative-tool-policy/backend.aot'),
     );
-    for (final target in [
-      (
-        entrypoint: 'packages/plugin_backend_host/bin/adele_backend_host.dart',
-        artifact: hostArtifact,
-      ),
-      (
-        entrypoint:
-            'plugins/conservative_tool_policy/packages/backend/bin/conservative_tool_policy_backend.dart',
-        artifact: backend,
-      ),
-    ]) {
-      await compileAotSnapshot(
-        dartExecutable: dart.path,
-        workingDirectory: Directory.current.parent,
-        entrypoint: target.entrypoint,
-        artifact: target.artifact,
-        stage: 'stock-policy-integration',
-      );
-    }
+    await GitTestAot.host.prepare(
+      repositoryRoot: Directory.current.parent,
+      dartExecutable: dart.path,
+      artifact: hostArtifact,
+      stage: 'stock-policy-integration',
+    );
+    await compileAotSnapshot(
+      dartExecutable: dart.path,
+      workingDirectory: Directory.current.parent,
+      entrypoint:
+          'plugins/conservative_tool_policy/packages/backend/bin/conservative_tool_policy_backend.dart',
+      artifact: backend,
+      stage: 'stock-policy-integration',
+    );
     await publishStockPluginInstallation(
       repositoryRoot: Directory.current.parent,
       installationDirectory: backend.parent,

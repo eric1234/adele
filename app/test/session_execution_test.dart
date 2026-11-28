@@ -36,6 +36,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
+import 'support/git_test_aot.dart';
+
 final _strategyId = OrchestrationStrategyId('dev.adele.test.execution');
 final _providerId = ProviderId('dev.adele.test.execution-model');
 final _effectToolId = ToolId('dev.adele.test.effect');
@@ -1588,25 +1590,19 @@ Widget build(String handle) => buildSessionActivity(handle);
         '${installationRoot.path}/probe',
       ).create();
       final backendArtifact = File('${installation.path}/backend.aot');
-      for (final target in [
-        (
-          entrypoint:
-              'packages/plugin_backend_host/bin/adele_backend_host.dart',
-          artifact: hostArtifact,
-        ),
-        (
-          entrypoint: 'app/test/core/fixtures/remote_orchestration_probe.dart',
-          artifact: backendArtifact,
-        ),
-      ]) {
-        await compileAotSnapshot(
-          dartExecutable: dart,
-          workingDirectory: Directory.current.parent,
-          entrypoint: target.entrypoint,
-          artifact: target.artifact,
-          stage: 'service-affinity',
-        );
-      }
+      await GitTestAot.host.prepare(
+        repositoryRoot: Directory.current.parent,
+        dartExecutable: dart,
+        artifact: hostArtifact,
+        stage: 'service-affinity',
+      );
+      await compileAotSnapshot(
+        dartExecutable: dart,
+        workingDirectory: Directory.current.parent,
+        entrypoint: 'app/test/core/fixtures/remote_orchestration_probe.dart',
+        artifact: backendArtifact,
+        stage: 'service-affinity',
+      );
       await File(
         '${installation.path}/adele_plugin.installation.json',
       ).writeAsString(

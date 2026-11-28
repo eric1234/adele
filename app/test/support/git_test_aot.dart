@@ -7,7 +7,7 @@ import '../../../tools/git_test_aot_client.dart';
 export '../../../tools/git_test_aot_client.dart' show GitTestAot;
 
 /// Only these stock, repository-root compilations may request a private copy
-/// from the maintained Git test worker. Other compilations use the builder
+/// from an eligible maintained worker. Other compilations use the builder
 /// directly, even if their output is also named host.aot or backend.aot.
 extension GitTestPreparation on GitTestAot {
   Future<void> prepare({
@@ -15,6 +15,7 @@ extension GitTestPreparation on GitTestAot {
     required String dartExecutable,
     required File artifact,
     required String stage,
+    bool absoluteEntrypoint = false,
   }) async {
     if (await requestGitTestAot(
       recipe: this,
@@ -27,7 +28,9 @@ extension GitTestPreparation on GitTestAot {
     await compileAotSnapshot(
       dartExecutable: dartExecutable,
       workingDirectory: repositoryRoot,
-      entrypoint: entrypoint,
+      entrypoint: absoluteEntrypoint
+          ? '${repositoryRoot.absolute.path}/$entrypoint'
+          : entrypoint,
       artifact: artifact,
       stage: stage,
     );

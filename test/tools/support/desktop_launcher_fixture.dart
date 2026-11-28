@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:test/test.dart';
 
 import '../../../tools/adele.dart' as tooling;
+import '../../../tools/git_test_aot_client.dart' show gitTestAotLocator;
 import 'code_editor_dependency_fixture.dart';
 import 'desktop_launcher_inputs.dart';
 import 'rich_editor_dependency_fixture.dart';
@@ -309,6 +310,7 @@ ${package.value.devDependencies.map((name) => '  $name: any').join('\n')}
     environment = <String, String>{
       'PATH': '${bin.path}:${Platform.environment['PATH']}',
       'FRB_DART_LOAD_EXTERNAL_LIBRARY_NATIVE_LIB_DIR': '',
+      gitTestAotLocator: '/inherited/worker.sock',
       for (final suffix in [
         'CREDENTIAL_FILE',
         'CLIENT_ID',
@@ -370,6 +372,8 @@ elif [ "\$1" = pub ]; then
   if [ "\$ADELE_TEST_FAIL_DEPENDENCY" = pub-get ]; then exit 19; fi
 elif [ "\$1" = analyze ] || { [ "\$1" = test ] && [ "\$2" != --no-pub ]; }; then
   test -f '${generatedContract.path}' || exit 95
+  # This checkout is inside system temp, hence no Flutter worker gets a scope.
+  if [ "\$1" = test ]; then test -z "\$$gitTestAotLocator" || exit 93; fi
   if [ "\$1" = test ] && [ "\$PWD" = '${root.path}/app' ]; then
     library_dir=\$(cat '${logs.path}/codeforge-build-dir') || exit 94
     test "\$FRB_DART_LOAD_EXTERNAL_LIBRARY_NATIVE_LIB_DIR" = "\$library_dir" || exit 94

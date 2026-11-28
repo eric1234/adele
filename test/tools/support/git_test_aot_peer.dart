@@ -9,15 +9,18 @@ Future<int> runFixtureWorker(
   File peer,
   Directory root,
   String mode,
-  GitTestDelivery Function(Directory) open,
-) => runGitTestAotWorker(
+  GitTestDelivery Function(Directory) open, {
+  Set<GitTestAot> allowedRecipes = const {GitTestAot.host},
+}) => runGitTestAotWorker(
   repository: root,
+  allowedRecipes: allowedRecipes,
   dartExecutable: Platform.resolvedExecutable,
   suiteExecutable: File('/proc/self/exe').resolveSymbolicLinksSync(),
   workingDirectory: root.path,
   executable: Platform.resolvedExecutable,
   arguments: [peer.path, mode, root.path],
   environment: {
+    gitTestAotLocator: '/stale/worker.sock',
     'FRB_DART_LOAD_EXTERNAL_LIBRARY_NATIVE_LIB_DIR': '/fixture/native',
   },
   openStore: open,
@@ -42,13 +45,17 @@ Future<void> main(List<String> args) async {
     return;
   }
   final socket = Platform.environment[gitTestAotLocator];
-  Future<bool> request(String name, {String? checkout, String? compiler}) =>
-      requestGitTestAot(
-        recipe: GitTestAot.host,
-        repositoryRoot: checkout ?? root,
-        dartExecutable: compiler ?? Platform.resolvedExecutable,
-        output: '$root/$name.aot',
-      );
+  Future<bool> request(
+    String name, {
+    String? checkout,
+    String? compiler,
+    GitTestAot recipe = GitTestAot.host,
+  }) => requestGitTestAot(
+    recipe: recipe,
+    repositoryRoot: checkout ?? root,
+    dartExecutable: compiler ?? Platform.resolvedExecutable,
+    output: '$root/$name.aot',
+  );
   if (mode == 'direct') {
     if (await request('direct')) throw StateError('Unexpected scope');
     return;
@@ -64,6 +71,13 @@ Future<void> main(List<String> args) async {
   if (Platform.environment['FRB_DART_LOAD_EXTERNAL_LIBRARY_NATIVE_LIB_DIR'] !=
       '/fixture/native') {
     throw StateError('Lost loader environment');
+  }
+  if (mode == 'desktop' || mode == 'git') {
+    if (!await request('$mode-host') ||
+        await request('$mode-git', recipe: GitTestAot.git) != (mode == 'git')) {
+      throw StateError('Wrong recipes admitted by $mode worker');
+    }
+    return;
   }
   await File('$root/locator').writeAsString(socket!);
   if (mode == 'empty') return;

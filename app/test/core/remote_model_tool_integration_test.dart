@@ -28,6 +28,7 @@ import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
 import '../support/fixed_tool_policy.dart';
+import '../support/git_test_aot.dart';
 import '../support/git_worktree_fixture.dart';
 
 const _searchId = 'dev.adele.plugin.search-tools';
@@ -61,11 +62,13 @@ void main() {
     filesystemArtifact = File.fromUri(artifacts.uri.resolve('filesystem.aot'));
     commandArtifact = File.fromUri(artifacts.uri.resolve('command.aot'));
     gitArtifact = File.fromUri(artifacts.uri.resolve('git.aot'));
+    await GitTestAot.host.prepare(
+      repositoryRoot: repository,
+      dartExecutable: dart,
+      artifact: hostArtifact,
+      stage: 'remote-search-integration',
+    );
     for (final target in [
-      (
-        entrypoint: 'packages/plugin_backend_host/bin/adele_backend_host.dart',
-        artifact: hostArtifact,
-      ),
       (
         entrypoint:
             'plugins/search_tools/packages/backend/bin/search_tools_backend.dart',

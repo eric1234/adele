@@ -25,6 +25,7 @@ import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
 import '../tool/local_directory_project_frontend_compiler.dart';
+import 'support/git_test_aot.dart';
 import 'support/prepared_frontend_installations.dart';
 import 'support/project_provider.dart';
 
@@ -60,24 +61,20 @@ void main() {
       ),
     ).path;
     backendArtifact = File('${temporary.path}/backend.aot');
-    for (final (entrypoint, artifact) in [
-      (
-        'packages/plugin_backend_host/bin/adele_backend_host.dart',
-        File('${temporary.path}/host.aot'),
-      ),
-      (
-        'plugins/local_directory_project/packages/backend/bin/local_directory_project_backend.dart',
-        backendArtifact,
-      ),
-    ]) {
-      await compileAotSnapshot(
-        dartExecutable: dart,
-        workingDirectory: repository,
-        entrypoint: entrypoint,
-        artifact: artifact,
-        stage: 'project-opening',
-      );
-    }
+    await GitTestAot.host.prepare(
+      repositoryRoot: repository,
+      dartExecutable: dart,
+      artifact: File('${temporary.path}/host.aot'),
+      stage: 'project-opening',
+    );
+    await compileAotSnapshot(
+      dartExecutable: dart,
+      workingDirectory: repository,
+      entrypoint:
+          'plugins/local_directory_project/packages/backend/bin/local_directory_project_backend.dart',
+      artifact: backendArtifact,
+      stage: 'project-opening',
+    );
     installations = await prepareFrontendInstallations(
       root: Directory('${temporary.path}/installed'),
       artifacts: {_localDirectoryProjectPluginId: frontendArtifact},
