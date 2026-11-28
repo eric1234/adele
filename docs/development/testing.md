@@ -144,20 +144,10 @@ It is not automatic discovery of every package containing tests.
 The [CI workflow](../../.github/workflows/ci.yaml) consumes `test-plan --json` and
 runs each matrix entry with `test --target NAME --ci` after `resolve-workspace`,
 adding `--shard N` for the four desktop, two interaction, and seven Git backend
-entries. On ordinary pushes and PRs, discovery then resolves and generates once,
-publishing just the configured native siblings. Each first-attempt matrix worker
-still resolves locally; its launcher takes an explicit `--ci-contracts=FILE`
-and verifies the current checkout, resolution, SDK, run/attempt and complete
-output inventory before restoring anything. Failed preparation, upload, download,
-verification or installation fails the job; the worker does not run. Discovery
-and matrix failures still fail the aggregate gate. Retried jobs (including
-consumer-only retries) and manual dispatches use ordinary full generation and
-never look for an older artifact. This is not a cache or a local generation flag.
-
-Analysis still resolves and generates for itself. The separate `generated` job
-runs full bootstrap then `generate --check` to verify the materialized parts
-without repairing them. The Linux build path is unchanged. See the
-[comparison and trust limits](../research/workflow-generated-artifacts-2026-11-28.md).
+entries. Analysis uses the same narrower preparation: the test and analysis commands
+already generate before starting workers or analyzers. The separate `generated`
+job runs full bootstrap then `generate --check` to verify the materialized parts
+without repairing them.
 
 Each matrix entry gets an independent runner and its target's normal setup. The
 registry declares `linuxDesktopDeps`, `linuxPtyDeps`, `nativeCodeEditor`, and
@@ -244,8 +234,8 @@ separately from the seven plain-Dart `git_backend` shards. See the
 [buffered process checks](#focused-buffered-process-checks), and
 [durable Git Task checks](#focused-durable-git-task-checks) for commands and prerequisites.
 
-Without the explicit CI artifact, the maintained launcher runs full contract
-generation before starting test workers. Git-hosted, desktop, and interaction suites compile their own AOT
+The maintained launcher runs full contract generation before starting test
+workers. Git-hosted, desktop, and interaction suites compile their own AOT
 fixtures with the pinned SDK; no host or backend snapshot is handed from one
 suite to another. After bootstrap, run the full Git-hosted selection with
 `dart tools/adele.dart test --target git_desktop_tests --ci`. Direct Flutter
