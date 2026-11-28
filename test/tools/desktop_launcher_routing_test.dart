@@ -398,39 +398,35 @@ void main() {
     );
   }
 
-  test(
-    'desktop CI shard keeps selection and native loader without a scope',
-    () async {
-      final target = tooling.lookupTestTarget('adele_desktop');
-      final app = Directory('${fixture.root.path}/${target.path}');
-      for (var i = 0; i < target.ciShards; i++) {
-        File(
-          '${app.path}/${target.testDirectory}/nested/case_${i}_test.dart',
-        ).createSync();
-      }
-      final shards = partitionTestFiles(
-        app,
-        target.ciShards,
-        testDirectory: target.testDirectory,
-        costs: target.ciTestFileCosts,
-      );
-      final result = await fixture.invoke([
-        'test',
-        '--target=${target.name}',
-        '--ci',
-        '--shard=${target.ciShards}',
-      ]);
-      expect(result.exitCode, 0, reason: '${result.stdout}\n${result.stderr}');
-      expect(result.stdout, isNot(contains('git-test-aot scope:')));
-      expect(fixture.commands.readAsLinesSync(), [
-        'generate|path',
-        'test|flutter|${app.path}',
-      ]);
-      expect(fixture.appTestInvocations(), [
-        ['test', '--concurrency', '1', ...shards.last],
-      ]);
-    },
-  );
+  test('desktop CI shard keeps selection and native loader', () async {
+    final target = tooling.lookupTestTarget('adele_desktop');
+    final app = Directory('${fixture.root.path}/${target.path}');
+    for (var i = 0; i < target.ciShards; i++) {
+      File(
+        '${app.path}/${target.testDirectory}/nested/case_${i}_test.dart',
+      ).createSync();
+    }
+    final shards = partitionTestFiles(
+      app,
+      target.ciShards,
+      testDirectory: target.testDirectory,
+      costs: target.ciTestFileCosts,
+    );
+    final result = await fixture.invoke([
+      'test',
+      '--target=${target.name}',
+      '--ci',
+      '--shard=${target.ciShards}',
+    ]);
+    expect(result.exitCode, 0, reason: '${result.stdout}\n${result.stderr}');
+    expect(fixture.commands.readAsLinesSync(), [
+      'generate|path',
+      'test|flutter|${app.path}',
+    ]);
+    expect(fixture.appTestInvocations(), [
+      ['test', '--concurrency', '1', ...shards.last],
+    ]);
+  });
 
   test('Diff frontend CI runs its package without building CodeForge', () async {
     final result = await fixture.invoke([

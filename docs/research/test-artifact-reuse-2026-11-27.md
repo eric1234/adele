@@ -1,5 +1,7 @@
 # Can independent test suites reuse compiled bytes?
 
+**Subsequent decision:** The pilot recommendation below is historical. The [follow-up measurements and retirement decision](verified-aot-observations-2026-11-28.md) explain why the maintained targets compile fresh.
+
 Role: Non-normative CI research, 2026-11-27. Source: [`32fb206478283b87fa10de046223fc945461c839`](https://github.com/eric1234/adele/commit/32fb206478283b87fa10de046223fc945461c839), fetched `origin/main` including [#283](https://github.com/eric1234/adele/pull/283). Follow-up to the [CI baseline](ci-performance-2026-11-26.md#2-eliminate-duplicate-desktop-setup-reuse-bytes-not-live-fixtures), not a cache specification. No pilot code, CI policy or fixture changes are part of this report.
 
 **Recommendation: implement lazy, worker-private reuse for just the shared host and stock Git AOT in the four Linux Git-hosted suite setups, gated on a complete input and publication fence.** In four local runs all 73 cases passed; two fresh controls compiled 12 AOTs each and two scoped workers compiled 7 each. On the closest warm pair the worker fell from **227 to 213 s**. The avoided compiles themselves cost **16-19 s** per control; validating the scope was not free. Expect to save roughly **13-16 s of preparation** on this machine, not 44 s on every hosted job. Expand to desktop/interaction host callers only after testing the identity boundary. Keep shards unchanged.

@@ -29,7 +29,6 @@ import 'package:plugin_runtime/plugin_runtime.dart';
 
 import '../../../tools/stock_frontend_descriptors.dart';
 import '../../tool/diff_viewer_frontend_compiler.dart';
-import 'git_test_aot.dart';
 import 'portable_git_review_repository.dart';
 import 'prepared_environment_capability_installation.dart';
 
@@ -239,13 +238,11 @@ final class PreparedPortableGit {
     } else {
       await _compileFrontend(repositoryRoot, sdk, _frontendArtifact);
     }
-    await GitTestAot.host.prepare(
-      repositoryRoot: repositoryRoot,
-      dartExecutable: dart,
-      artifact: _hostArtifact.absolute,
-      stage: 'prepared-portable-git',
-    );
     for (final target in [
+      (
+        'packages/plugin_backend_host/bin/adele_backend_host.dart',
+        _hostArtifact,
+      ),
       (
         '${temporary.absolute.path}/portable_git_environment.dart',
         _environmentArtifact,
