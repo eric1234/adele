@@ -13,6 +13,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_builder/plugin_builder.dart';
 
 import '../../tool/prepared_environment_capability_frontend_compiler.dart';
+import 'git_test_aot.dart';
 import 'prepared_environment_capability_installation.dart';
 
 const bufferedWait = Duration(seconds: 15);
@@ -21,7 +22,7 @@ final bufferedCapability = CapabilityKey(
   majorVersion: 1,
 );
 
-/// Each suite builds its own host, independent callable and EVC consumer.
+/// Each suite owns its host, independent callable and EVC consumer.
 /// The caller supplies the Environment backend for each fresh installation.
 final class PreparedBufferedProcess {
   PreparedBufferedProcess(this.repositoryRoot);
@@ -66,15 +67,22 @@ final class PreparedBufferedProcess {
       frontendFixture:
           'prepared_environment_buffered_process_frontend.dart.txt',
     );
-    _host = await compileBackend(
-      'packages/plugin_backend_host/bin/adele_backend_host.dart',
-      'host',
-    );
+    _host = await compileBackend(GitTestAot.host.entrypoint, 'host');
     _callable = await compileBackend(callable.path, 'callable');
   }
 
   Future<File> compileBackend(String entrypoint, String name) async {
     final artifact = File('${temporary.path}/$name.aot');
+    for (final recipe in GitTestAot.values) {
+      if (entrypoint != recipe.entrypoint) continue;
+      await recipe.prepare(
+        repositoryRoot: repositoryRoot,
+        dartExecutable: _dart.path,
+        artifact: artifact,
+        stage: 'prepared-buffered-process',
+      );
+      return artifact;
+    }
     await compileAotSnapshot(
       dartExecutable: _dart.path,
       workingDirectory: repositoryRoot,

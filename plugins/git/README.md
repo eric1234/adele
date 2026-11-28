@@ -485,7 +485,8 @@ Provide the pinned `FLUTTER_ROOT`, Rust 1.93.0 for the app's
 [native TOML hook](../../docs/development/toolchain.md#native-toml-documents), and
 the [Linux executables](#portable-unstaged-inspection) used by the Environment.
 The hosted target needs no CodeForge library or loader variable, Linux desktop
-bundle build, or Git PTY helper.
+bundle build, or Git PTY helper. See [Git-hosted test artifact preparation](../../docs/development/testing.md#git-hosted-test-artifact-preparation)
+for the two worker-local stock recipes and the direct fresh-compile control.
 
 `git_portable_unstaged_snapshot_test.dart` exercises real Git through an independent
 process-service adapter, including hostile configuration, unusual paths, explicit
@@ -497,7 +498,7 @@ feasibility checks, and the extracted parser tests.
 
 The [Git-hosted service suite](packages/desktop_tests/test/prepared_portable_git_service_integration_test.dart)
 and [desktop authority suite](../../app/test/prepared_portable_git_integration_test.dart)
-each compile a shared backend host, independent real-process Environment and
+each prepare a shared backend host, independent real-process Environment and
 Git service adapter as separate AOT artifacts, plus a synthetic EVC consumer of
 Diff's generated contract. The Git suite checks typed nonprimary snapshots, batch
 scaling, and exact index changes, including once-only writes across retirement.

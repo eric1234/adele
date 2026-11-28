@@ -234,6 +234,63 @@ separately from the seven plain-Dart `git_backend` shards. See the
 [buffered process checks](#focused-buffered-process-checks), and
 [durable Git Task checks](#focused-durable-git-task-checks) for commands and prerequisites.
 
+### Git-hosted test artifact preparation
+
+On the maintained Linux x64 pin, the four integration suites may use the
+[test-only helper](../../app/test/support/git_test_aot.dart) to ask their
+worker for **compiled bytes** of the shared backend host and the stock Git
+backend. The portable service's Environment and callable, the buffered callable,
+other stock backends, frontend compilation and all runtime/installation setup
+remain suite-owned. There is no eager compiler, installation cache or shared
+live backend.
+
+The launcher still runs full contract generation before admitting workers.
+The test preparation records the generator's inputs and the semantic reads
+and expected bytes for generated parts used by these recipes. It does not use
+an incremental freshness receipt; `generate --check` remains a separate,
+read-only semantic comparison. A recipe miss compiles with the pinned SDK in
+the checkout root against its actual package configuration. The compiler's
+depfile must name the expected target, entrypoint and configuration, with no
+inputs outside the observed inventory. A stable producer basename can differ
+from a suite's filename in ELF debug information; the ELF is never rewritten.
+
+One launcher-owned socket in a private temporary directory serves just that
+Flutter worker. Its locator is passed in the child's environment, not in
+Flutter compiler options. The socket checks the kernel-reported peer PID:
+only the pinned Flutter tester in this worker's process group can request
+delivery. A backend inheriting the locator is not an admitted client. Other
+maintained workers have the locator removed. For each request the launcher
+checks package resolution, source membership and bytes, compiler/runtime inputs
+and generation provenance. The per-recipe queue serializes independent suite
+processes. Publication and delivery each stage privately before renaming; the
+launcher verifies retained and copied bytes against the producer digest. The
+suite can overwrite or delete its original, independently named copy.
+Compiler failures and changing inputs are errors, never a reason to use an
+older file. Rerun maintained preparation after a generation input change.
+Checkouts inside system temp use ordinary fresh compilation: routine temp
+file creation can invalidate the generator's ancestor observations there.
+
+This is a trusted development-user boundary, not authentication against
+processes running as that user. Normal worker exit drains admitted requests
+before deleting the scope. Killing the launcher unconditionally can strand a
+private directory in OS temp; later launches never search for or reuse it.
+
+After pinned bootstrap, compare the complete selection as follows:
+
+```sh
+# Repository root: authoritative preparation and a new worker scope.
+dart tools/adele.dart test --target git_desktop_tests --ci
+# From plugins/git/packages/desktop_tests: independent fresh compilation.
+flutter test --no-pub --concurrency 1
+```
+
+The scoped run reports request phases separately from the worker elapsed time.
+To verify actual compiler counts, trace child `execve` events (e.g. Linux
+`strace -f -e trace=execve -o /tmp/git-test.exec ...`) and count successful
+SDK `dart compile aot-snapshot` invocations, not test requests or
+`gen_snapshot` children. Direct Flutter commands need current generated parts.
+Neither desktop nor interaction workers receive this handoff.
+
 The two app targets use the same `app/` Flutter package and working directory.
 Both participate in `test`, `check`, and application analysis. The interaction
 target selects its whole directory when unsharded and explicit files for each shard.
