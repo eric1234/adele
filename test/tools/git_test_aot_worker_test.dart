@@ -8,6 +8,7 @@ import 'dart:io';
 import 'package:test/test.dart';
 
 import '../../tools/git_test_aot_client.dart';
+import '../../tools/git_test_aot_inputs.dart' show gitTestAotPlatformEligible;
 import '../../tools/git_test_aot_worker.dart';
 import 'support/git_test_aot_peer.dart' as fixture;
 import 'support/git_test_aot_store_fixture.dart';
@@ -21,6 +22,7 @@ Future<int> _worker(
 ) => fixture.runFixtureWorker(File(_peer), root, mode, open);
 
 void main() {
+  if (!gitTestAotPlatformEligible) return;
   late Directory root;
   setUp(() => root = Directory.systemTemp.createTempSync('git-worker-test-'));
   tearDown(() => root.deleteSync(recursive: true));

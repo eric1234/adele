@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:test/test.dart';
 
+import '../../tools/git_test_aot_inputs.dart' show gitTestAotPlatformEligible;
 import '../../tools/git_test_aot_store.dart';
 import 'support/git_test_aot_store_fixture.dart';
 
@@ -311,5 +312,5 @@ void main() {
         expect(suite.listSync(), isEmpty);
       },
     );
-  }, skip: !Platform.isLinux);
+  }, skip: !gitTestAotPlatformEligible);
 }

@@ -6,6 +6,23 @@ import 'package:test/test.dart';
 import '../../tools/git_test_aot_inputs.dart';
 
 void main() {
+  if (!gitTestAotPlatformEligible) {
+    test(
+      'unsupported hosts reject inventory before inspecting paths',
+      () async {
+        await expectLater(
+          GitTestAotInputs.capture(
+            repositoryRoot: Directory.current,
+            recipe: GitTestAot.host,
+            dartExecutable: 'unused',
+            runtimeExecutable: 'unused',
+          ),
+          throwsUnsupportedError,
+        );
+      },
+    );
+    return;
+  }
   late Directory sandbox;
   late Directory root;
   late Directory flutter;
