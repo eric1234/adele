@@ -7,13 +7,11 @@ import '../packages/plugin_builder/lib/plugin_builder.dart';
 Future<void> runContractCodegen({
   required Directory repositoryRoot,
   String dartExecutable = 'dart',
-  List<String> vmOptions = const <String>[],
   List<String> options = const <String>[],
   File? snapshot,
 }) async {
   const stage = 'contract-generation';
   final arguments = <String>[
-    ...vmOptions,
     if (snapshot == null) ...[
       'run',
       'packages/contract_codegen/bin/contract_codegen.dart',

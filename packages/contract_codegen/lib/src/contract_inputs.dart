@@ -23,22 +23,12 @@ import 'package:path/path.dart' as p;
 /// a receipt. Unsupported discovery or filesystem operations decline caching,
 /// without replacing the ordinary analyzer operation or its diagnostics.
 final class ContractInputs {
-  ContractInputs({
-    required String excludedOutput,
-    this.testRead,
-    this.directiveCache,
-  }) : _excludedOutput = p.normalize(p.absolute(excludedOutput));
+  ContractInputs({required String excludedOutput})
+    : _excludedOutput = p.normalize(p.absolute(excludedOutput));
 
   static final _physical = PhysicalResourceProvider.INSTANCE;
 
   final String _excludedOutput;
-
-  /// The separate full-generation test fence brackets each actual filesystem
-  /// dependency with native witnesses and hashes; it cannot publish receipts.
-  final void Function(String kind, String path)? testRead;
-
-  /// Syntax only: URI resolution and observations always use the actual context.
-  final Map<String, (String, List<String?>?)>? directiveCache;
   final Map<String, String> _observations = {};
   final Map<String, String> _evidence = {};
   bool _cacheable = true;
@@ -110,21 +100,41 @@ final class ContractInputs {
         }
         final file = resources.getFile(path);
         if (!file.exists) continue;
-        final text = file.readAsStringSync();
-        final previous = directiveCache?[path];
-        final uris = previous != null && previous.$1 == text
-            ? previous.$2
-            : _directives(text, path);
-        directiveCache?[path] = (text, uris);
-        if (uris == null) {
+        final parsed = parseString(
+          content: file.readAsStringSync(),
+          path: path,
+          throwIfDiagnostics: false,
+        );
+        if (parsed.errors.isNotEmpty) {
           _cacheable = false;
           break;
         }
         // Match analyzer's file: -> package:/dart: canonicalization, including
         // generated package-source fallback for relative imports.
         final containing = FileSource(file, canonicalUri);
-        for (final uri in uris) {
-          add(containing, uri);
+        void directive(Directive value) {
+          if (value is UriBasedDirective) {
+            add(containing, value.uri.stringValue);
+          } else if (value is PartOfDirective && value.uri != null) {
+            add(containing, value.uri!.stringValue);
+          }
+          if (value is NamespaceDirective) {
+            for (final alternative in value.configurations) {
+              add(containing, alternative.uri.stringValue);
+            }
+          }
+        }
+
+        for (final value in parsed.unit.directives) {
+          directive(value);
+          if (value is LibraryDirective || value is PartOfDirective) {
+            final comment = value.documentationComment;
+            if (comment != null) {
+              for (final docImport in comment.docImports) {
+                directive(docImport.import);
+              }
+            }
+          }
         }
       }
     } on _InputChanged {
@@ -132,37 +142,6 @@ final class ContractInputs {
     } catch (_) {
       _cacheable = false;
     }
-  }
-
-  static List<String?>? _directives(String text, String path) {
-    final parsed = parseString(
-      content: text,
-      path: path,
-      throwIfDiagnostics: false,
-    );
-    if (parsed.errors.isNotEmpty) return null;
-    Iterable<String?> uris(Directive value) sync* {
-      if (value is UriBasedDirective) {
-        yield value.uri.stringValue;
-      } else if (value is PartOfDirective && value.uri != null) {
-        yield value.uri!.stringValue;
-      }
-      if (value is NamespaceDirective) {
-        for (final alternative in value.configurations) {
-          yield alternative.uri.stringValue;
-        }
-      }
-    }
-
-    return [
-      for (final value in parsed.unit.directives) ...[
-        ...uris(value),
-        if (value is LibraryDirective || value is PartOfDirective)
-          if (value.documentationComment case final comment?)
-            for (final docImport in comment.docImports)
-              ...uris(docImport.import),
-      ],
-    ];
   }
 
   /// Recheck content and invocation-local metadata, including ctime. Metadata is
@@ -280,14 +259,6 @@ final class ContractInputs {
     String Function(T) encode,
   ) {
     if (!cacheable || path == _excludedOutput) return operation();
-    if (testRead case final observe?) {
-      try {
-        observe(kind, path);
-      } on UnsupportedError {
-        _cacheable = false;
-      }
-      return operation();
-    }
     if (!p.isAbsolute(path) || p.normalize(path) != path) {
       _cacheable = false;
       return operation();

@@ -1,5 +1,7 @@
 # Does verified host reuse pay for a desktop worker?
 
+**Subsequent decision:** Desktop reuse was not adopted. The Git worker mechanism used as this experiment's starting point was also retired; see the [observation measurements and retirement decision](verified-aot-observations-2026-11-28.md).
+
 **Keep desktop fresh.** In the strongest selection, reuse eliminated twelve of thirteen host compilations, delivered working private copies to thirteen suites, and preserved every reported case. But full preparation was slower in both warm comparisons. The results justify neither enabling reuse nor claiming a stable slowdown of the size observed.
 
 This is a local experiment following [the inventory](test-artifact-reuse-2026-11-27.md) and [the verified Git implementation](https://github.com/eric1234/adele/pull/285). Exact base: [`516f06aa`](https://github.com/eric1234/adele/commit/516f06aae88319bca3514794459f7857d97971d9). Reproducible, **non-default** [pilot revision `40cabaa9`](https://github.com/eric1234/adele/commit/40cabaa9b709813a718c4123f2cf05498af9656d). The final policy enables no desktop suites; the pilot is identified here so it can be measured without keeping dormant branches in fixtures.
