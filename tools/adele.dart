@@ -1398,7 +1398,7 @@ Future<int> _runTests(TestOptions options) async {
               runtimeExecutable: File.fromUri(
                 bin.uri.resolve('dartaotruntime'),
               ).path,
-              checkProvenance: generation.verify,
+              provenance: generation,
             ).deliver,
             executable: target.executable,
             arguments: arguments,

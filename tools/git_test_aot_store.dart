@@ -7,6 +7,7 @@ import 'dart:io';
 import '../packages/contract_codegen/lib/src/provenance_files.dart';
 import 'desktop_tool_artifacts.dart' show validateToolDepfile;
 import 'git_test_aot_inputs.dart';
+import 'test_contract_provenance.dart';
 
 export 'git_test_aot_inputs.dart' show GitTestAot;
 
@@ -54,7 +55,7 @@ final class GitTestAotStore {
     required Directory repositoryRoot,
     required String dartExecutable,
     required String runtimeExecutable,
-    required Future<void> Function(Set<String>) checkProvenance,
+    required TestContractProvenance provenance,
   }) : this.forTesting(
          scope: scope,
          capture: (recipe) => GitTestAotInputs.capture(
@@ -62,23 +63,20 @@ final class GitTestAotStore {
            recipe: recipe,
            dartExecutable: dartExecutable,
            runtimeExecutable: runtimeExecutable,
+           generationReads: provenance.begin,
          ),
-         checkProvenance: checkProvenance,
        );
 
   GitTestAotStore.forTesting({
     required this.scope,
     required Future<GitTestAotInputs> Function(GitTestAot) capture,
-    required Future<void> Function(Set<String>) checkProvenance,
     Future<void> Function(GitTestAotPoint, File)? checkpoint,
   }) : _scopeId = _dirId(scope, private: true),
        _capture = capture,
-       _checkProvenance = checkProvenance,
        _checkpoint = checkpoint;
 
   final Directory scope;
   final Future<GitTestAotInputs> Function(GitTestAot) _capture;
-  final Future<void> Function(Set<String>) _checkProvenance;
   final Future<void> Function(GitTestAotPoint, File)? _checkpoint;
   final _pending = <GitTestAot, Future<void>>{};
   final _published = <GitTestAot, _Generation>{};
@@ -88,8 +86,7 @@ final class GitTestAotStore {
   /// Returns only after renaming a verified private copy into place.
   Future<void> deliver(GitTestAot recipe, File destination) async {
     final total = Stopwatch()..start();
-    final inputTime = Stopwatch();
-    final provenanceTime = Stopwatch();
+    final observationTime = Stopwatch();
     final compileTime = Stopwatch();
     final prior = _pending[recipe];
     final release = Completer<void>();
@@ -99,13 +96,12 @@ final class GitTestAotStore {
     final queueUs = total.elapsedMicroseconds;
     var status = 'failed';
     Future<GitTestAotInputs> observe([String? expected]) async {
-      final inputs = await _timed(inputTime, () => _capture(recipe));
+      final inputs = await _timed(observationTime, () => _capture(recipe));
       if (expected != null && inputs.digest != expected) {
         throw StateError(
           '${recipe.name} AOT inputs changed during preparation.',
         );
       }
-      await _timed(provenanceTime, () => _checkProvenance(inputs.filePaths));
       _checkScope();
       return inputs;
     }
@@ -170,18 +166,13 @@ final class GitTestAotStore {
     } finally {
       release.complete();
       if (identical(_pending[recipe], release.future)) _pending.remove(recipe);
-      final inputsUs = inputTime.elapsedMicroseconds;
-      final provenanceUs = provenanceTime.elapsedMicroseconds;
+      final observationUs = observationTime.elapsedMicroseconds;
       final compileUs = compileTime.elapsedMicroseconds;
       final artifactUs =
-          total.elapsedMicroseconds -
-          queueUs -
-          inputsUs -
-          provenanceUs -
-          compileUs;
+          total.elapsedMicroseconds - queueUs - observationUs - compileUs;
       stdout.writeln(
         '[git-test-aot] recipe=${recipe.name} status=$status '
-        'queueUs=$queueUs inputsUs=$inputsUs provenanceUs=$provenanceUs '
+        'queueUs=$queueUs observationUs=$observationUs '
         'compileUs=$compileUs artifactUs=$artifactUs',
       );
     }

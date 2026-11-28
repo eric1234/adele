@@ -3,7 +3,11 @@ import 'dart:io';
 
 import 'package:test/test.dart';
 
+// ignore: avoid_relative_lib_imports
+import '../../packages/contract_codegen/lib/src/provenance_files.dart';
+import '../../tools/desktop_artifact_cache.dart' show hashBuildFiles;
 import '../../tools/git_test_aot_inputs.dart';
+import '../../tools/test_contract_provenance.dart';
 
 void main() {
   if (!gitTestAotPlatformEligible) {
@@ -169,6 +173,234 @@ void main() {
     resolve();
   });
   tearDown(() => sandbox.deleteSync(recursive: true));
+
+  test(
+    'byte-bounded and desktop batches return the same sorted hashes',
+    () async {
+      // Cross both the 128-path and 64 KiB limits, including UTF-8 paths.
+      final segment = '\u00e9' * 100;
+      final files = [
+        for (var i = 0; i < 160; i++)
+          write('${sandbox.path}/$segment/$segment/input $i', 'file $i').path,
+      ]..sort();
+      final paths = [...files.reversed, files.first];
+      final desktop = await hashBuildFiles(paths);
+      final bounded = await hashBuildFiles(paths, batchByArgumentBytes: true);
+      expect(bounded.keys, orderedEquals(files));
+      expect(bounded, desktop);
+      expect(bounded.values.toSet(), hasLength(files.length));
+    },
+  );
+
+  group('joint compiler and generation read', () {
+    late String compilerOnly, generatorOnly, source, output, transitive, probe;
+    late ProvenanceFiles generator, proof;
+    late Map<String, String> expected;
+    final wrong = '0' * 64;
+
+    setUp(() async {
+      compilerOnly = '$external/src/leaf.dart';
+      generatorOnly = '$external/lib/not_selected.dart';
+      source = write('$git/lib/contract.dart').path;
+      output = '$git/lib/contract.g.dart';
+      transitive = '${root.path}/unused/lib/not_selected.dart';
+      probe = '${root.path}/unused/lib/analysis_options.yaml';
+      generator = ProvenanceFiles()
+        ..watch('$sdk/bin/dart', read: true) // shared with both recipes
+        ..watch(generatorOnly, read: true);
+      proof = ProvenanceFiles()
+        ..watch(source, read: true)
+        ..watch(output, read: true)
+        ..watch(transitive, read: true)
+        ..watch(probe);
+      expected = await hashBuildFiles({...generator.reads, ...proof.reads});
+    });
+
+    GenerationReadFence begin(Set<String> paths) => beginGenerationReadFence(
+      paths,
+      generator: generator,
+      expectedHashes: expected,
+      outputs: {output: proof},
+    );
+
+    Future<GitTestAotInputs> capture({
+      GitTestAot recipe = GitTestAot.git,
+      Future<Map<String, String>> Function(Iterable<String>) hash =
+          hashBuildFiles,
+      void Function()? afterInitial,
+    }) => GitTestAotInputs.capture(
+      repositoryRoot: root,
+      recipe: recipe,
+      dartExecutable: '$sdk/bin/dart',
+      runtimeExecutable: '$sdk/bin/dartaotruntime',
+      generationReads: begin,
+      hashForTesting: hash,
+      afterInitialStatForTesting: afterInitial,
+    );
+
+    Future<GitTestAotInputs> report(
+      GitTestAot recipe,
+      String path,
+      String? value,
+    ) => capture(
+      recipe: recipe,
+      hash: (paths) async {
+        final hashes = await hashBuildFiles(paths);
+        if (value == null) {
+          hashes.remove(path);
+        } else {
+          hashes[path] = value;
+        }
+        return hashes;
+      },
+    );
+
+    for (final recipe in GitTestAot.values) {
+      test('$recipe rereads the exact union once per capture', () async {
+        final compiler = await observe(recipe);
+        final union = {
+          ...compiler.filePaths,
+          generatorOnly,
+          source,
+          output,
+          if (recipe == GitTestAot.git) transitive,
+        };
+        var calls = 0;
+        Future<Map<String, String>> hash(Iterable<String> paths) {
+          calls++;
+          expect(paths, unorderedEquals(union)); // includes multiplicity
+          return hashBuildFiles(paths);
+        }
+
+        for (var request = 1; request <= 2; request++) {
+          final joint = await capture(recipe: recipe, hash: hash);
+          expect(calls, request);
+          expect(joint.filePaths, unorderedEquals(compiler.filePaths));
+          expect(joint.digest, compiler.digest);
+        }
+      });
+    }
+
+    test('either sibling selects the full proof; an unknown part fails', () {
+      for (final path in [source, output]) {
+        expect(begin({path}).paths, unorderedEquals(expected.keys));
+      }
+      expect(() => begin({'$host/lib/unknown.g.dart'}), throwsStateError);
+    });
+
+    test('deleting both configured siblings fails before hashing', () async {
+      await capture(recipe: GitTestAot.host);
+      File(source).deleteSync();
+      File(output).deleteSync();
+      await expectLater(
+        capture(
+          recipe: GitTestAot.host,
+          afterInitial: () => fail('accepted stale initial generation fence'),
+          hash: (_) => fail('hashed after stale initial generation fence'),
+        ),
+        throwsStateError,
+      );
+    });
+
+    test('requires the expected digest of every selected read', () async {
+      for (final path in expected.keys) {
+        // Host has neither sibling; only Git requires the transitive read.
+        final recipe = path == transitive ? GitTestAot.git : GitTestAot.host;
+        for (final value in [null, wrong]) {
+          await expectLater(
+            report(recipe, path, value),
+            throwsStateError,
+            reason: '$path reported as $value',
+          );
+        }
+      }
+      // Equality of two absent map entries is not evidence of a read.
+      expected.remove(transitive);
+      expect(() => begin({output}).verify(expected), throwsStateError);
+    });
+
+    test('requires and keys a well-formed compiler-only digest', () async {
+      for (final invalid in [null, 'a' * 63, 'g' * 64]) {
+        await expectLater(
+          report(GitTestAot.git, compilerOnly, invalid),
+          throwsStateError,
+          reason: 'compiler digest: $invalid',
+        );
+      }
+      final actual = await capture();
+      final forged = await report(GitTestAot.git, compilerOnly, wrong);
+      expect(forged.digest, isNot(actual.digest));
+    });
+
+    test('later observation reads the new compiler-only bytes', () async {
+      final reads = <String>[];
+      Future<Map<String, String>> hash(Iterable<String> paths) async {
+        final current = await hashBuildFiles(paths, batchByArgumentBytes: true);
+        reads.add(current[compilerOnly]!);
+        return current;
+      }
+
+      final before = await capture(hash: hash);
+      write(compilerOnly, 'new stable bytes');
+      final after = await capture(hash: hash);
+      expect(reads.toSet(), hasLength(2));
+      expect(after.digest, isNot(before.digest));
+    });
+
+    test('restored analyzer bytes still fail the generation fence', () async {
+      final file = File(transitive);
+      final bytes = file.readAsBytesSync();
+      final mtime = file.lastModifiedSync();
+      await expectLater(
+        capture(
+          afterInitial: () {
+            file
+              ..writeAsStringSync('temporary')
+              ..writeAsBytesSync(bytes)
+              ..setLastModifiedSync(mtime);
+          },
+        ),
+        throwsStateError,
+      );
+    });
+
+    test('compiler membership cannot change between two byte reads', () async {
+      await expectLater(
+        capture(
+          hash: (paths) async {
+            final first = await hashBuildFiles([compilerOnly]);
+            write('$external/src/late.dart');
+            final rest = await hashBuildFiles(
+              paths.where((p) => p != compilerOnly),
+            );
+            return {...first, ...rest};
+          },
+        ),
+        throwsStateError,
+      );
+    });
+
+    for (final before in [true, false]) {
+      final phase = before ? 'before capture' : 'after byte reads';
+      test('known negative probe created and removed $phase', () async {
+        await capture();
+        if (before) write(probe).deleteSync();
+        var calls = 0;
+        await expectLater(
+          capture(
+            hash: (paths) async {
+              calls++;
+              final hashes = await hashBuildFiles(paths);
+              if (!before) write(probe).deleteSync();
+              return hashes;
+            },
+          ),
+          throwsStateError,
+        );
+        expect(calls, before ? 0 : 1);
+      });
+    }
+  });
 
   test(
     'only stock entrypoints and fixed compile recipe are expressible',

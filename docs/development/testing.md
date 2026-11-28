@@ -261,7 +261,13 @@ only the pinned Flutter tester in this worker's process group can request
 delivery. A backend inheriting the locator is not an admitted client. Other
 maintained workers have the locator removed. For each request the launcher
 checks package resolution, source membership and bytes, compiler/runtime inputs
-and generation provenance. The per-recipe queue serializes independent suite
+and generation provenance. Within one observation it hashes the union of the
+two inventories once, after establishing both initial mutation witnesses. Only
+compiler paths enter the recipe identity and depfile allowlist; generation
+checks its own required reads and expected outputs. Both sets of filesystem
+witnesses are rechecked before returning. No file digests are reused across
+the admission, post-compilation, or post-copy observations or across requests.
+The per-recipe queue serializes independent suite
 processes. Publication and delivery each stage privately before renaming; the
 launcher verifies retained and copied bytes against the producer digest. The
 suite can overwrite or delete its original, independently named copy.

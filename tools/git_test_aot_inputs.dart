@@ -28,8 +28,13 @@ bool get gitTestAotPlatformEligible =>
           key.startsWith('DART_') && key != 'DART_SUPPRESS_ANALYTICS',
     );
 
-/// One point-in-time observation. Nothing here is a persistent cache key or
-/// evidence of generation: the launcher separately verifies provenance.
+/// Required generation reads and their final check for this observation only.
+typedef GenerationReadFence = ({
+  Set<String> paths,
+  void Function(Map<String, String>) verify,
+});
+
+/// One point-in-time compiler identity, not a persistent cache key.
 class GitTestAotInputs {
   GitTestAotInputs._(
     this.root,
@@ -65,7 +70,9 @@ class GitTestAotInputs {
     required GitTestAot recipe,
     required String dartExecutable,
     required String runtimeExecutable,
+    GenerationReadFence Function(Set<String>)? generationReads,
     void Function()? afterInitialStatForTesting,
+    Future<Map<String, String>> Function(Iterable<String>)? hashForTesting,
   }) async {
     if (!gitTestAotPlatformEligible) {
       throw UnsupportedError(
@@ -89,14 +96,22 @@ class GitTestAotInputs {
     );
     final paths = inventory.observed.keys.toList()..sort();
     final before = inventory.stamps(paths, recheck: false);
+    final generation = generationReads?.call(inventory.files);
     afterInitialStatForTesting?.call();
-    final hashes = await hashBuildFiles(inventory.files);
-    for (final entry in inventory.stamps(paths, recheck: true).entries) {
-      if (before[entry.key] != entry.value) {
-        throw StateError(
-          'Git test AOT input changed while fingerprinting: ${entry.key}. Retry.',
-        );
+    final union = {...inventory.files, ...?generation?.paths};
+    final hashes = hashForTesting == null
+        ? await hashBuildFiles(union, batchByArgumentBytes: true)
+        : await hashForTesting(union);
+    // Keep the compiler's sorted, compiler-only identity and depfile coverage.
+    // Generation-only reads are checked against the semantic proof instead.
+    final sha256 = RegExp(r'^[0-9a-f]{64}$');
+    final compilerHashes = <String, String>{};
+    for (final path in paths.where(inventory.files.contains)) {
+      final hash = hashes[path];
+      if (hash == null || !sha256.hasMatch(hash)) {
+        throw StateError('Missing or invalid Git test AOT checksum: $path');
       }
+      compilerHashes[path] = hash;
     }
     final digest = await digestJson({
       'abi': Abi.current().toString(),
@@ -111,8 +126,18 @@ class GitTestAotInputs {
         '${repositoryRoot.path}/.dart_tool/package_config.json',
       ),
       'stat': before,
-      'sha256': hashes,
+      'sha256': compilerHashes,
     });
+    // Both initial witnesses bracket the shared hash, including recipe assembly.
+    // No await between the final filesystem checks and the completed observation.
+    generation?.verify(hashes);
+    for (final entry in inventory.stamps(paths, recheck: true).entries) {
+      if (before[entry.key] != entry.value) {
+        throw StateError(
+          'Git test AOT input changed while fingerprinting: ${entry.key}. Retry.',
+        );
+      }
+    }
     return GitTestAotInputs._(
       repositoryRoot,
       recipe,

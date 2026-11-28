@@ -7,7 +7,8 @@ import '../packages/contract_codegen/lib/src/provenance_files.dart';
 import 'contract_artifacts.dart';
 import 'desktop_artifact_cache.dart' show hashBuildFiles;
 import 'desktop_tool_artifacts.dart' show validateToolDepfile;
-import 'git_test_aot_inputs.dart' show GitTestAot, gitTestAotPlatformEligible;
+import 'git_test_aot_inputs.dart'
+    show GenerationReadFence, GitTestAot, gitTestAotPlatformEligible;
 
 /// This capability is constructed only from a private successful generation.
 /// No checked-in, incremental, or worker-supplied receipt is admission proof.
@@ -18,49 +19,67 @@ final class TestContractProvenance {
   final Map<String, String> _hashes;
   final Map<String, ProvenanceFiles> _outputs;
 
-  /// Bind every generated part in the actual requested compiler superset.
-  /// Unconfigured, newly introduced or unsupported parts cannot be certified.
-  Future<void> verify(Set<String> filePaths) async {
-    final files = ProvenanceFiles()..merge(_generator.stamps);
-    final reads = {..._generator.reads};
-    for (final entry in _outputs.entries) {
-      // Deleting both a configured source and its output cannot make the
-      // proof disappear by removing them from a later compiler inventory.
-      for (final path in [
-        entry.key,
-        '${entry.key.substring(0, entry.key.length - 7)}.dart',
-      ]) {
-        files.merge({path: entry.value.stamps[path]!});
-        reads.add(path);
-      }
+  GenerationReadFence begin(Set<String> compilerPaths) =>
+      beginGenerationReadFence(
+        compilerPaths,
+        generator: _generator,
+        expectedHashes: _hashes,
+        outputs: _outputs,
+      );
+}
+
+/// Select the complete read and membership proof, not just its intersection
+/// with the compiler tree. Check it before hashing and again at completion.
+GenerationReadFence beginGenerationReadFence(
+  Set<String> compilerPaths, {
+  required ProvenanceFiles generator,
+  required Map<String, String> expectedHashes,
+  required Map<String, ProvenanceFiles> outputs,
+}) {
+  final files = ProvenanceFiles()..merge(generator.stamps);
+  final reads = {...generator.reads};
+  for (final entry in outputs.entries) {
+    // Deleting both a configured source and its output cannot make the
+    // proof disappear by removing them from a later compiler inventory.
+    for (final path in [
+      entry.key,
+      '${entry.key.substring(0, entry.key.length - 7)}.dart',
+    ]) {
+      files.merge({path: entry.value.stamps[path]!});
+      reads.add(path);
     }
-    final requiredOutputs = {
-      ...filePaths.where((p) => p.endsWith('.g.dart')),
-      for (final output in _outputs.keys)
-        if (filePaths.contains(
-          '${output.substring(0, output.length - 7)}.dart',
-        ))
-          output,
-    };
-    for (final path in requiredOutputs) {
-      final proof = _outputs[path];
-      if (proof == null) {
-        throw StateError('Unproven generated test input: $path');
-      }
-      files.merge(proof.stamps);
-      reads.addAll(proof.reads);
-    }
-    files.verify();
-    final current = await hashBuildFiles(reads);
-    for (final path in reads) {
-      if (current[path] != _hashes[path]) {
-        throw StateError(
-          'Contract generation input changed; restart maintained preparation: $path',
-        );
-      }
-    }
-    files.verify();
   }
+  final requiredOutputs = {
+    ...compilerPaths.where((p) => p.endsWith('.g.dart')),
+    for (final output in outputs.keys)
+      if (compilerPaths.contains(
+        '${output.substring(0, output.length - 7)}.dart',
+      ))
+        output,
+  };
+  for (final path in requiredOutputs) {
+    final proof = outputs[path];
+    if (proof == null) {
+      throw StateError('Unproven generated test input: $path');
+    }
+    files.merge(proof.stamps);
+    reads.addAll(proof.reads);
+  }
+  files.verify();
+  return (
+    paths: Set.unmodifiable(reads),
+    verify: (current) {
+      for (final path in reads) {
+        if (expectedHashes[path] == null ||
+            current[path] != expectedHashes[path]) {
+          throw StateError(
+            'Contract generation input changed; restart maintained preparation: $path',
+          );
+        }
+      }
+      files.verify();
+    },
+  );
 }
 
 /// Always runs full configured generation. Only a resolved pinned Linux
@@ -309,7 +328,8 @@ Future<TestContractProvenance?> _generate(
       ...baseline,
       ...observed,
     }, outputs);
-    await resultProof.verify(outputs.keys.toSet());
+    final initial = resultProof.begin(outputs.keys.toSet());
+    initial.verify(await hashBuildFiles(initial.paths));
     return resultProof;
   } finally {
     await scratch.delete(recursive: true);

@@ -60,10 +60,8 @@ esac > "$dep"
     scope: scope,
     capture: (recipe) async {
       observations.add(identity);
-      return _Inputs(root, recipe, useCompiler ?? compiler.path, identity);
-    },
-    checkProvenance: (paths) async {
       if (!provenanceValid) throw StateError('Generation proof changed.');
+      return _Inputs(root, recipe, useCompiler ?? compiler.path, identity);
     },
     checkpoint: checkpoint,
   );

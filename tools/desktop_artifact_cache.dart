@@ -231,11 +231,29 @@ Future<T> withDesktopArtifactCache<T>(
 
 /// SHA-256 is supplied by the same Linux prerequisite as CodeForge preparation.
 /// Hash paths and bytes, never mtimes; batching keeps large dependency sets cheap.
-Future<Map<String, String>> hashBuildFiles(Iterable<String> inputPaths) async {
+Future<Map<String, String>> hashBuildFiles(
+  Iterable<String> inputPaths, {
+  bool batchByArgumentBytes = false,
+}) async {
   final paths = inputPaths.toSet().toList()..sort();
   final hashes = <String, String>{};
-  for (var offset = 0; offset < paths.length; offset += 128) {
-    final batch = paths.skip(offset).take(128).toList();
+  for (var offset = 0; offset < paths.length;) {
+    // Desktop builds keep their existing 128-path batches. For the much
+    // larger Linux x64 test observation, bound argv by UTF-8 bytes instead.
+    var end = offset;
+    if (batchByArgumentBytes) {
+      var bytes = 64; // Fixed argv entries, their pointers and terminators.
+      while (end < paths.length) {
+        final cost = utf8.encode(paths[end]).length + 1 + 8;
+        if (end > offset && bytes + cost > 64 * 1024) break;
+        bytes += cost;
+        end++;
+      }
+    } else {
+      end = (offset + 128).clamp(offset, paths.length);
+    }
+    final batch = paths.sublist(offset, end);
+    offset = end;
     final result = await Process.run('sha256sum', ['--zero', '--', ...batch]);
     if (result.exitCode != 0) {
       throw PluginBuildFailure(
