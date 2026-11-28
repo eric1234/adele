@@ -30,7 +30,13 @@ void main() {
     test(
       'proof binds authoritative output, analyzer resolution and transitives',
       () async {
-        final fixture = await createFixture(
+        // Other suites concurrently create/delete entries in contract_fixtures.
+        // Its parent is deliberately part of the mutation fence, so use an
+        // independent directory under the same checkout and package config.
+        final dir = Directory('test').absolute.createTempSync('provenance-');
+        addTearDown(() => dir.deleteSync(recursive: true));
+        final fixture = ContractFixture(dir, File('${dir.path}/fixture.dart'));
+        await fixture.source.writeAsString(
           "import 'support.dart' as support;\n${minimalContract(namedValue: true).replaceFirst("AdeleMethod('ping')", 'AdeleMethod(support.method)')}",
         );
         final support = File('${fixture.directory.path}/support.dart')

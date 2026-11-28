@@ -116,6 +116,22 @@ Future<TestContractProvenance?> _generate(Directory repositoryRoot) async {
   if (!matchedVm(Platform.resolvedExecutable)) {
     return ordinary('launcher SDK mismatch');
   }
+  // Flutter creates this immediate child on the first native-assets build.
+  // Establish the empty parent before taking the generation fence on a cold
+  // resolved checkout. No hook runs and no hook outputs are reused here.
+  final hooks = Directory('${config.parent.path}/hooks_runner');
+  if (FileSystemEntity.typeSync(hooks.path, followLinks: false) ==
+      FileSystemEntityType.notFound) {
+    if (config.parent.resolveSymbolicLinksSync() != config.parent.path) {
+      return ordinary('noncanonical workspace resolution');
+    }
+    hooks.createSync();
+    // Discard the pre-creation observation, including decoded configuration.
+    return _generate(root);
+  }
+  if (hooks.resolveSymbolicLinksSync() != hooks.path) {
+    return ordinary('noncanonical Flutter hooks directory');
+  }
   final packages = {
     for (final e in resolution['packages'] as List)
       e['name'] as String: e as Map,
